@@ -17,11 +17,11 @@ import type {
   CustomEntry,
   ExtensionAPI,
   ExtensionContext,
-  SessionBeforeCompactEvent,
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { adaptToolForCodeMode, registerCodeModeExtensionTools } from "@howaboua/pi-codex-conversion/code-mode";
 import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
@@ -47,17 +47,8 @@ import {
   extractAutoresearchSessionName,
   reconstructJsonlState,
 } from "./jsonl.ts";
-import {
-  autoresearchSummaryPathsFor,
-  buildAutoresearchCompactionSummary,
-} from "./compaction.ts";
 import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
-import {
-  CODEX_COMPACTION_CAPABILITY_EVENT,
-  CODEX_NATIVE_COMPACTION_KIND,
-  type CodexCompactionCapabilityQuery,
-} from "../codex-compaction/protocol.ts";
 
 const AUTORESEARCH_CREATE_SKILL_PATH = fileURLToPath(
   new URL("./skills/autoresearch-create/SKILL.md", import.meta.url),
@@ -1115,9 +1106,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     runtimeStore.ensure(getSessionKey(ctx));
 
   // Registering through this gates the tool, so a new one can't slip in ungated.
-  const gatedToolNames = new Set<string>();
+  const gatedTools: Parameters<typeof pi.registerTool>[0][] = [];
+  const codeTools = registerCodeModeExtensionTools(pi, () => gatedTools.map((tool) =>
+    adaptToolForCodeMode(tool, { usage: `await tools.${tool.name}(input)` }),
+  ), { isActive: (ctx) => ctx !== undefined && getRuntime(ctx).autoresearchMode });
+  pi.on("session_shutdown", () => codeTools.unregister());
   const registerGatedTool = (tool: Parameters<typeof pi.registerTool>[0]): void => {
-    gatedToolNames.add(tool.name);
+    gatedTools.push(tool);
     pi.registerTool(tool);
   };
 
@@ -1125,10 +1120,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const setAutoresearchMode = (ctx: ExtensionContext, enabled: boolean): void => {
     getRuntime(ctx).autoresearchMode = enabled;
     const activeTools = new Set(pi.getActiveTools()); // setActiveTools replaces the whole set
-    for (const tool of gatedToolNames) {
-      enabled ? activeTools.add(tool) : activeTools.delete(tool);
+    for (const tool of gatedTools) {
+      enabled ? activeTools.add(tool.name) : activeTools.delete(tool.name);
     }
     pi.setActiveTools([...activeTools]);
+    codeTools.refresh();
   };
 
   const recordAutoresearchActivation = (workDir: string, active: boolean): void => {
@@ -1218,49 +1214,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ].join(" ");
   };
 
-  const composeCompactionResumeMessage = (_ctx: ExtensionContext): string => {
-    // The deterministic text summary already contains the rules, ideas, and
-    // recent runs, so this path can resume without another disk read.
-    return [
-      "Run the next iteration now.",
-      "Rank the ideas backlog and latest `next:` hints by plausible relative improvement, then test the highest-impact viable idea with run_experiment + log_experiment.",
-      "Do not re-read .auto/prompt.md or .auto/log.jsonl — the compaction summary already contains them.",
-      BENCHMARK_GUARDRAIL,
-    ].join(" ");
-  };
-
-  const composeNativeCompactionResumeMessage = (_ctx: ExtensionContext): string => [
-    "Native Codex compaction completed. Rehydrate the autoresearch loop from persisted state now.",
+  const composeCompactionResumeMessage = (_ctx: ExtensionContext): string => [
+    "Codex compaction completed. Rehydrate the autoresearch loop from persisted state now.",
     "Re-read .auto/prompt.md, the tail of .auto/log.jsonl, .auto/ideas.md when present, and git log.",
     "Then rank the remaining ideas by plausible relative improvement and test the highest-impact viable one with run_experiment + log_experiment.",
     BENCHMARK_GUARDRAIL,
   ].join(" ");
-
-  const nativeCodexCompactionAvailable = (ctx: ExtensionContext): boolean => {
-    const query: CodexCompactionCapabilityQuery = {
-      provider: ctx.model?.provider,
-      api: ctx.model?.api,
-      available: false,
-    };
-    pi.events.emit(CODEX_COMPACTION_CAPABILITY_EVENT, query);
-    return query.available;
-  };
-
-  const autoresearchCompactionFor = (
-    ctx: ExtensionContext,
-    event: SessionBeforeCompactEvent,
-  ) => {
-    if (!getRuntime(ctx).autoresearchMode || nativeCodexCompactionAvailable(ctx)) return undefined;
-    return {
-      compaction: {
-        summary: buildAutoresearchCompactionSummary(
-          autoresearchSummaryPathsFor(resolveWorkDir(ctx.cwd)),
-        ),
-        firstKeptEntryId: event.preparation.firstKeptEntryId,
-        tokensBefore: event.preparation.tokensBefore,
-      },
-    };
-  };
 
   const sendWhenReady = (ctx: ExtensionContext, message: string): void => {
     if (ctx.isIdle()) {
@@ -1522,7 +1481,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   pi.on("agent_start", async (_event, ctx) => {
     const runtime = getRuntime(ctx);
     runtime.experimentsThisSession = 0;
-    pausePendingResume(runtime);
+    // An upstream continuation or user turn consumes our pending recovery.
+    cancelPendingResume(runtime);
   });
 
   const ensurePendingResume = (
@@ -1544,22 +1504,22 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     schedulePendingResume(ctx, runtime, composeMessage(ctx));
   };
 
-  pi.on("session_before_compact", async (event, ctx) => {
-    pausePendingResume(getRuntime(ctx));
-    return autoresearchCompactionFor(ctx, event);
+  pi.on("session_before_compact", async (_event, ctx) => {
+    cancelPendingResume(getRuntime(ctx));
   });
 
-  pi.on("session_compact", async (event, ctx) => {
-    const details = event.compactionEntry.details;
-    const nativeCodex = details !== null
-      && typeof details === "object"
-      && !Array.isArray(details)
-      && details.kind === CODEX_NATIVE_COMPACTION_KIND;
-    ensurePendingResume(
-      ctx,
-      shouldAutoResumeAfterCompact,
-      nativeCodex ? composeNativeCompactionResumeMessage : composeCompactionResumeMessage,
-    );
+  pi.on("session_compact", async (_event, ctx) => {
+    ensurePendingResume(ctx, shouldAutoResumeAfterCompact, composeCompactionResumeMessage);
+  });
+
+  pi.on("session_compact_failed", async (_event, ctx) => {
+    const runtime = getRuntime(ctx);
+    cancelPendingResume(runtime);
+    runtime.experimentsThisSession = 0;
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    reschedulePendingResume(ctx, getRuntime(ctx));
   });
 
   pi.on("agent_end", async (_event, ctx) => {

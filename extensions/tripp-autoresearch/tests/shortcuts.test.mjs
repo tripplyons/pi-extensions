@@ -156,6 +156,7 @@ function withAgentDir(agentDir, fn) {
 function collectRegisteredShortcuts() {
   const shortcuts = [];
   autoresearchExtension({
+    events: { on() { return () => {}; }, emit() {} },
     on() {},
     registerTool() {},
     registerCommand() {},

@@ -1,12 +1,9 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ThinkingLevel } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ThinkingLevel } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { withStatusCard } from "../tool-status-style/style.ts";
+import { adaptToolForCodeMode, registerCodeModeExtensionTools } from "@howaboua/pi-codex-conversion/code-mode";
 import { ASYNC_JOB_COMPLETED_EVENT, type AsyncJobCompletedEvent } from "./events.ts";
 import {
 	startAgentRun,
@@ -18,20 +15,8 @@ import {
 	type SpawnChild,
 } from "./runner.ts";
 
-const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"];
 const MAX_DELIVERY_CHARS = 12_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
-const AGENT_SWARM_ACTIVITY_EVENT = "tripp:agent-swarm-activity";
-const SUBAGENT_TOOL_NAMES = ["subagent", "subagent_process"];
-
-/**
- * agent-swarm records root/worker attachment in durable per-session state and
- * announces transitions on the shared activity event. Mirror just enough of
- * that layout to detect a swarm-bound session without a runtime dependency.
- */
-const swarmStateRoot = () => process.env.PI_SWARM_HOME ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "agent-swarm");
-const swarmSessionIndexFile = (sessionId: string) => join(swarmStateRoot(), "sessions", `${sessionId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
-const swarmBoundSession = (sessionId: string) => process.env.PI_SWARM_WORKER === "1" || existsSync(swarmSessionIndexFile(sessionId));
 
 interface PublicSubagentJob {
 	id: string;
@@ -40,7 +25,6 @@ interface PublicSubagentJob {
 	cwd: string;
 	model?: string;
 	thinking: ThinkingLevel;
-	tools: string[];
 	status: AgentRunStatus;
 	exitCode: number | null;
 	startedAt: number;
@@ -88,10 +72,6 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the child; defaults to the current directory" })),
 	model: Type.Optional(Type.String({ description: "Model override; defaults to the parent model" })),
 	thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
-	write: Type.Optional(Type.Boolean({ description: "Add edit and write tools. Default: false" })),
-	tools: Type.Optional(Type.Array(StringEnum(["read", "bash", "edit", "write", "grep", "find", "ls"] as const), {
-		description: "Exact built-in tool allowlist; overrides the read/research default and write flag. An empty list disables all tools.",
-	})),
 });
 
 const SubagentProcessParams = Type.Object({
@@ -251,33 +231,6 @@ const processResult = (
 export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild = spawn) {
 	const manager = new SubagentManager(pi, spawnChild);
 
-	let swarmMode = false;
-
-	const applySwarmToolVisibility = () => {
-		const active = pi.getActiveTools();
-		const next = swarmMode
-			? active.filter((name) => !SUBAGENT_TOOL_NAMES.includes(name))
-			: [...new Set([...active, ...SUBAGENT_TOOL_NAMES])];
-		if (next.length !== active.length) pi.setActiveTools(next);
-	};
-
-	const requireSwarmInactive = () => {
-		if (swarmMode) throw new Error("agent-swarm mode is active; delegate with swarm_spawn instead of subagent");
-	};
-
-	pi.events.on(AGENT_SWARM_ACTIVITY_EVENT, (value) => {
-		const kind = (value as { kind?: unknown } | null)?.kind;
-		if (kind === "activate" || kind === "resume") swarmMode = true;
-		else if (kind === "clear") swarmMode = false;
-		else return;
-		applySwarmToolVisibility();
-	});
-
-	pi.on("session_start", async (_event, ctx) => {
-		swarmMode = swarmBoundSession(ctx.sessionManager.getSessionId());
-		applySwarmToolVisibility();
-	});
-
 	pi.on("session_shutdown", async () => manager.cleanup());
 
 	pi.registerMessageRenderer<CompletionMessageDetails>("subagent-completion", (message, { expanded }, theme) => {
@@ -289,31 +242,25 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 		return new Text(`${header}\n\n${theme.fg("toolOutput", headTailExcerpt(jobResultText(job), MAX_DELIVERY_CHARS))}`, 0, 0);
 	});
 
-	pi.registerTool(withStatusCard({
+	const subagent = defineTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Start an asynchronous, session-scoped Pi subagent with isolated context. Returns a job id immediately. The child defaults to read/search/bash tools, inherits the parent model and thinking level, and runs without extensions or session persistence. Completion is delivered automatically and wakes sleep.",
+		description: "Start an asynchronous, session-scoped Pi subagent with isolated context. Returns a job id immediately. The child inherits the parent model and thinking level, loads Codex conversion with full Code tools, and runs without session persistence. It can edit files and run shell commands. Completion is delivered automatically.",
 		promptSnippet: "Start an isolated asynchronous Pi subagent and receive its result automatically",
 		promptGuidelines: [
 			"Use subagent for independent research or delegated work that benefits from an isolated context window.",
-			"Subagent starts asynchronously; do other useful work or use sleep while waiting instead of polling repeatedly.",
-			"Set subagent write=true only when the delegated task must edit files.",
+			"Subagent starts asynchronously; do other useful work instead of polling repeatedly.",
 		],
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			requireSwarmInactive();
 			const task = params.task.trim();
 			if (!task) throw new Error("task is required");
-			const tools = params.tools !== undefined
-				? [...new Set(params.tools)]
-				: [...DEFAULT_TOOLS, ...(params.write ? ["edit", "write"] : [])];
 			const model = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
 			const job = manager.start({
 				task,
 				cwd: params.cwd ?? ctx.cwd,
 				model,
 				thinking: params.thinking ?? ctx.thinkingLevel,
-				tools,
 			});
 			return {
 				content: [{ type: "text" as const, text: `Started ${job.id} (pid ${job.pid}). Result will be delivered automatically.` }],
@@ -328,9 +275,9 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 			const details = result.details as SubagentToolDetails | undefined;
 			return new Text(theme.fg("muted", details ? `started ${formatJob(details.job)}` : "failed to start"), 0, 0);
 		},
-	}));
+	});
 
-	pi.registerTool(withStatusCard({
+	const subagentProcess = defineTool({
 		name: "subagent_process",
 		label: "Subagent Process",
 		description: "Manage session-scoped asynchronous subagents. Actions: list, output (id, optional character offset/limit), kill (id), clear. Output defaults to the final retained chunk. Completion results are delivered automatically.",
@@ -338,7 +285,6 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 		promptGuidelines: ["Use subagent_process to inspect or stop subagent jobs; do not poll jobs whose completion will be delivered automatically."],
 		parameters: SubagentProcessParams,
 		async execute(_toolCallId, params) {
-			requireSwarmInactive();
 			switch (params.action) {
 				case "list": {
 					const jobs = manager.list();
@@ -369,7 +315,15 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 			const text = result.content[0];
 			return new Text(theme.fg("muted", text?.type === "text" ? text.text : ""), 0, 0);
 		},
-	}));
+	});
+
+	pi.registerTool(subagent);
+	pi.registerTool(subagentProcess);
+	const registration = registerCodeModeExtensionTools(pi, () => [
+		adaptToolForCodeMode(subagent, { usage: 'await tools.subagent({ task: "Research the issue" })' }),
+		adaptToolForCodeMode(subagentProcess, { usage: 'await tools.subagent_process({ action: "list" })' }),
+	]);
+	pi.on("session_shutdown", () => registration.unregister());
 }
 
 export default createSubagentExtension;

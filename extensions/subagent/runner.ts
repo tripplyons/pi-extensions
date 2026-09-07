@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-coding-agent";
 
 const MAX_CAPTURE_CHARS = 1_000_000;
@@ -32,7 +33,6 @@ export interface AgentRunOptions {
 	cwd: string;
 	model?: string;
 	thinking: ThinkingLevel;
-	tools: string[];
 }
 
 export interface AgentRunSnapshot extends AgentRunOptions {
@@ -118,7 +118,7 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 		"--print",
 		"--no-session",
 		"--no-extensions",
-		"--tools", options.tools.join(","),
+		"--extension", fileURLToPath(new URL("../pi-codex-conversion/index.ts", import.meta.url)),
 		"--thinking", options.thinking,
 	];
 	if (options.model) args.push("--model", options.model);
@@ -137,7 +137,6 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 	const startedAt = Date.now();
 	const state: AgentRunSnapshot = {
 		...options,
-		tools: [...options.tools],
 		pid: child.pid ?? -1,
 		status: "running",
 		exitCode: null,
@@ -151,7 +150,7 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 		protocolDiagnostics: "",
 		usage: emptyUsage(),
 	};
-	const snapshot = (): AgentRunSnapshot => ({ ...state, tools: [...state.tools], usage: { ...state.usage } });
+	const snapshot = (): AgentRunSnapshot => ({ ...state, usage: { ...state.usage } });
 	let stdoutBuffer = "";
 	let requestedTermination: "killed" | undefined;
 	let finalized = false;

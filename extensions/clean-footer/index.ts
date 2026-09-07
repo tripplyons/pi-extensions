@@ -17,15 +17,6 @@ const formatTokens = (count: number) => {
 
 const plainStatus = (status: string | undefined) => status?.replace(ANSI_ESCAPE, "").trim() ?? "";
 
-const statusIsOn = (statuses: ReadonlyMap<string, string>, key: string) =>
-	plainStatus(statuses.get(key)).endsWith(" on");
-
-const todoStatus = (statuses: ReadonlyMap<string, string>) => {
-	const status = plainStatus(statuses.get("todo"));
-	if (!status || status === "todo none") return undefined;
-	return status;
-};
-
 export default function cleanFooterExtension(pi: ExtensionAPI) {
 	let working = false;
 	let maxCost = 0;
@@ -75,14 +66,10 @@ export default function cleanFooterExtension(pi: ExtensionAPI) {
 						theme.fg("muted", contextUsage),
 						theme.fg("muted", `$${maxCost.toFixed(2)}`),
 					];
-					if (statusIsOn(statuses, "local")) parts.push(theme.fg("muted", "local"));
-					if (statusIsOn(statuses, "codex-fast-mode")) parts.push(theme.fg("muted", "fast"));
-					if (statusIsOn(statuses, "model-fusion")) parts.push(theme.fg("muted", "fusion"));
-					if (statusIsOn(statuses, "goal")) parts.push(theme.fg("muted", "goal"));
-					if (statusIsOn(statuses, "context-compression")) parts.push(theme.fg("muted", "compression"));
-					if (statusIsOn(statuses, "review")) parts.push(theme.fg("muted", "review"));
-					const todo = todoStatus(statuses);
-					if (todo) parts.push(theme.fg("muted", todo));
+					for (const value of statuses.values()) {
+						const status = plainStatus(value);
+						if (status) parts.push(theme.fg("muted", status));
+					}
 
 					return [truncateToWidth(parts.join(theme.fg("dim", SEPARATOR)), width)];
 				},

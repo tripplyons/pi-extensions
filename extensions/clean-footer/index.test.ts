@@ -1,8 +1,5 @@
-import { describe, expect, mock, test } from "bun:test";
-
-mock.module("@earendil-works/pi-tui", () => ({
-	truncateToWidth: (text: string) => text,
-}));
+import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 const { default: cleanFooterExtension } = await import("./index.ts");
 
@@ -102,34 +99,15 @@ describe("clean footer extension statuses", () => {
 		expect(footer.render(200)[0]).toContain("$0.00 | local");
 	});
 
-	test("shows fusion while enabled, regardless of progress status", async () => {
+	test("shows upstream status verbatim and removes cleared statuses", async () => {
 		const harness = createHarness();
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
-		harness.statuses.set("model-fusion", "fusion on");
-		harness.statuses.set("model-fusion-progress", "background review");
-		expect(harness.footer().render(200)[0]).toContain("$0.00 | fusion");
-		harness.statuses.delete("model-fusion");
-		expect(harness.footer().render(200)[0]).not.toContain("fusion");
-	});
-
-	test("shows an active goal", async () => {
-		const harness = createHarness();
-		harness.statuses.set("goal", "goal on");
-
-		await harness.handlers.get("session_start")?.({}, harness.ctx);
-
-		expect(harness.footer().render(200)[0]).toContain("$0.00 | goal");
-	});
-
-	test("shows compression only while enabled", async () => {
-		const harness = createHarness();
-		await harness.handlers.get("session_start")?.({}, harness.ctx);
-		const footer = harness.footer();
-		expect(footer.render(200)[0]).not.toContain("compression");
-		harness.statuses.set("context-compression", "compression on");
-		expect(footer.render(200)[0]).toContain("$0.00 | compression");
-		harness.statuses.delete("context-compression");
-		expect(footer.render(200)[0]).not.toContain("compression");
+		harness.statuses.set("codex-adapter", "\x1b[32mCode | Remote | Hybrid\x1b[0m");
+		harness.statuses.set("other-package", "waiting for input");
+		expect(harness.footer().render(200)[0]).toContain("$0.00 | Code | Remote | Hybrid | waiting for input");
+		harness.statuses.delete("codex-adapter");
+		expect(harness.footer().render(200)[0]).not.toContain("Remote");
+		expect(visibleWidth(harness.footer().render(30)[0])).toBeLessThanOrEqual(30);
 	});
 
 	test("keeps the cost total from decreasing after context changes", async () => {

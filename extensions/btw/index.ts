@@ -166,8 +166,7 @@ export default function (pi: ExtensionAPI) {
 				const modelArg = `${model.provider}/${model.id}${thinkingLevel === "off" ? "" : `:${thinkingLevel}`}`;
 				const args = ["--mode", "json", "-p", "--session", tempSession.filePath, "--model", modelArg];
 
-				const activeTools = pi.getActiveTools();
-				if (activeTools.length) args.push("--tools", activeTools.join(","));
+				// Code's outer tool projection is not a child-session allowlist.
 				args.push(buildSideQuestion(question, allowTools));
 
 				const invocation = getPiInvocation(args);

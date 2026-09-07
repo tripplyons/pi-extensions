@@ -1,47 +1,7 @@
-import { describe, expect, jest, mock, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { PassThrough } from "node:stream";
-
-class MockBox {
-	children: any[] = [];
-	addChild(child: any) { this.children.push(child); }
-	clear() { this.children = []; }
-	invalidate() {}
-	render(width: number) { return this.children.flatMap((child) => child.render(width)); }
-}
-
-class MockText {
-	constructor(public text: string) {}
-	invalidate() {}
-	render() { return this.text.split("\n"); }
-}
-
-mock.module("@earendil-works/pi-ai", () => ({
-	StringEnum: (values: readonly string[], options: object = {}) => ({ type: "string", enum: [...values], ...options }),
-}));
-mock.module("typebox", () => ({
-	Type: {
-		Array: (items: object, options: object = {}) => ({ type: "array", items, ...options }),
-		Boolean: (options: object = {}) => ({ type: "boolean", ...options }),
-		Integer: (options: object = {}) => ({ type: "integer", ...options }),
-		Object: (properties: object) => ({ type: "object", properties }),
-		Optional: (schema: object) => schema,
-		String: (options: object = {}) => ({ type: "string", ...options }),
-	},
-}));
-mock.module("@earendil-works/pi-tui", () => ({
-	Box: MockBox,
-	Container: class {
-		invalidate() {}
-		render() { return []; }
-	},
-	Text: MockText,
-	truncateToWidth: (text: string, width: number) => text.slice(0, width),
-	visibleWidth: (text: string) => text.length,
-}));
+import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
 
 const { createSubagentExtension } = await import("./index.ts");
 
@@ -79,9 +39,13 @@ const createHarness = ({ closeOnKill = true } = {}) => {
 			emit(channel: string, event: any) { emitted.push({ channel, event }); listeners.get(channel)?.(event); },
 			on(channel: string, handler: (value: any) => void) { listeners.set(channel, handler); return () => { listeners.delete(channel); }; },
 		},
+		getAllTools: () => [...tools.values()],
 		getActiveTools: () => [...activeTools],
 		setActiveTools: (names: string[]) => { activeTools = [...names]; },
-		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
+		on(event: string, handler: (...args: any[]) => any) {
+			const previous = handlers.get(event);
+			handlers.set(event, async (...args) => { await previous?.(...args); return handler(...args); });
+		},
 		registerMessageRenderer() {},
 		registerTool(tool: any) { tools.set(tool.name, tool); },
 		sendMessage(message: any, options: any) { messages.push({ message, options }); },
@@ -94,7 +58,7 @@ const createHarness = ({ closeOnKill = true } = {}) => {
 		sessionManager: { getSessionId: () => "session-test" },
 	};
 	return {
-		children, emitted, handlers, invocations, messages, tools, ctx,
+		children, emitted, handlers, invocations, messages, tools, ctx, pi,
 		activeTools: () => activeTools,
 		emitEvent: (channel: string, event: any) => pi.events.emit(channel, event),
 	};
@@ -111,6 +75,24 @@ const assistantEvent = (text: string, extra: object = {}) => `${JSON.stringify({
 })}\n`;
 
 describe("asynchronous subagent", () => {
+	test("exposes both tools through the published Code adapter and unregisters on shutdown", async () => {
+		const harness = createHarness();
+		const snapshot = () => getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true);
+		const registered = snapshot();
+		expect(registered.tools.map((tool) => tool.name)).toEqual(["subagent", "subagent_process"]);
+		let captured: any;
+		const result = await registered.tools[0].invoke({ task: "Code child" }, {
+			extensionContext: harness.ctx,
+			captureResult: (value: any) => { captured = value; },
+		} as any, new AbortController().signal);
+		expect(result).toContain("Started sub_1");
+		expect(captured.details.job.cwd).toBe(harness.ctx.cwd);
+		expect(harness.invocations[0].args).toContain("--extension");
+		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+		expect(snapshot().tools).toEqual([]);
+		expect(harness.children[0].killedWith).toContain("SIGTERM");
+	});
+
 	test("returns immediately with inherited model and auto-delivers completion", async () => {
 		const harness = createHarness();
 		const result = await harness.tools.get("subagent").execute(
@@ -125,7 +107,9 @@ describe("asynchronous subagent", () => {
 		expect(harness.tools.get("subagent").parameters.properties).not.toHaveProperty("timeoutSeconds");
 		expect(harness.invocations[0].args).toContain("--no-extensions");
 		expect(harness.invocations[0].args).toContain("test-provider/test-model");
-		expect(harness.invocations[0].args).toContain("read,grep,find,ls,bash");
+		expect(harness.invocations[0].args).not.toContain("--tools");
+		const extensionIndex = harness.invocations[0].args.indexOf("--extension");
+		expect(harness.invocations[0].args[extensionIndex + 1]).toBe(new URL("../pi-codex-conversion/index.ts", import.meta.url).pathname);
 
 		harness.children[0].stdout.write(assistantEvent("auth report"));
 		harness.children[0].emit("close", 0);
@@ -134,7 +118,7 @@ describe("asynchronous subagent", () => {
 		expect(harness.messages).toHaveLength(1);
 		expect(harness.messages[0].message.content).toContain("auth report");
 		expect(harness.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
-		expect(harness.emitted[0].event).toMatchObject({ source: "subagent", id: "sub_1", status: "exited" });
+		expect(harness.emitted.find(({ event }) => event?.source === "subagent")?.event).toMatchObject({ source: "subagent", id: "sub_1", status: "exited" });
 		const output = await harness.tools.get("subagent_process").execute("output", { action: "output", id: "sub_1" });
 		expect(output.details.jobs[0].usage).toMatchObject({ input: 10, output: 5, turns: 1 });
 	});
@@ -147,7 +131,7 @@ describe("asynchronous subagent", () => {
 		await Bun.sleep(1);
 
 		expect(harness.messages[0].message.content).toContain("quota exceeded");
-		expect(harness.emitted[0].event.status).toBe("failed");
+		expect(harness.emitted.find(({ event }) => event?.source === "subagent")?.event.status).toBe("failed");
 	});
 
 	test("kills jobs explicitly and suppresses delivery during session cleanup", async () => {
@@ -184,17 +168,11 @@ describe("asynchronous subagent", () => {
 		expect(finishedTool.content[0].text).not.toContain("secret-result");
 	});
 
-	test("honors an empty tool allowlist", async () => {
+	test("does not advertise tool restrictions", () => {
 		const harness = createHarness();
-		await harness.tools.get("subagent").execute(
-			"start",
-			{ task: "no tools", tools: [] },
-			undefined,
-			undefined,
-			harness.ctx,
-		);
-		const toolsIndex = harness.invocations[0].args.indexOf("--tools");
-		expect(harness.invocations[0].args[toolsIndex + 1]).toBe("");
+		const properties = harness.tools.get("subagent").parameters.properties;
+		expect(properties).not.toHaveProperty("write");
+		expect(properties).not.toHaveProperty("tools");
 	});
 
 	test("finalizes kill after SIGKILL when close never arrives", async () => {
@@ -290,58 +268,5 @@ describe("asynchronous subagent", () => {
 		await expect(processTool.execute("output", { action: "output", id: "sub_1", limit: 50_001 })).rejects.toThrow("limit");
 		await expect(processTool.execute("output", { action: "output", id: "sub_1", offset: 10_000 })).rejects.toThrow("exceeds retained output");
 		await expect(processTool.execute("kill", { action: "kill" })).rejects.toThrow("id is required");
-	});
-});
-
-describe("agent-swarm gating", () => {
-	const clearSwarmEnv = () => {
-		delete process.env.PI_SWARM_WORKER;
-		delete process.env.PI_SWARM_HOME;
-	};
-
-	test("hides tools at session start when the session is bound to a swarm run", async () => {
-		clearSwarmEnv();
-		const stateRoot = mkdtempSync(join(tmpdir(), "pi-subagent-swarm-"));
-		try {
-			process.env.PI_SWARM_HOME = stateRoot;
-			mkdirSync(join(stateRoot, "sessions"), { recursive: true });
-			writeFileSync(join(stateRoot, "sessions", "session-test.json"), "{}\n");
-			const harness = createHarness();
-			await harness.handlers.get("session_start")?.({}, harness.ctx);
-			expect(harness.activeTools()).toEqual(["read", "bash"]);
-			await expect(harness.tools.get("subagent").execute("call", { task: "x" }, undefined, undefined, harness.ctx)).rejects.toThrow("swarm_spawn");
-		} finally {
-			rmSync(stateRoot, { recursive: true, force: true });
-			clearSwarmEnv();
-		}
-	});
-
-	test("hides tools when running as a swarm worker", async () => {
-		clearSwarmEnv();
-		process.env.PI_SWARM_WORKER = "1";
-		try {
-			const harness = createHarness();
-			await harness.handlers.get("session_start")?.({}, harness.ctx);
-			expect(harness.activeTools()).toEqual(["read", "bash"]);
-		} finally {
-			clearSwarmEnv();
-		}
-	});
-
-	test("toggles tools when swarm activity activates and clears mid-session", async () => {
-		clearSwarmEnv();
-		const harness = createHarness();
-		await harness.handlers.get("session_start")?.({}, harness.ctx);
-		expect(harness.activeTools()).toEqual(["read", "bash", "subagent", "subagent_process"]);
-
-		harness.emitEvent("tripp:agent-swarm-activity", { kind: "activate", source: "state", nodeId: "node_root" });
-		expect(harness.activeTools()).toEqual(["read", "bash"]);
-		await expect(harness.tools.get("subagent").execute("call", { task: "x" }, undefined, undefined, harness.ctx)).rejects.toThrow("swarm_spawn");
-		await expect(harness.tools.get("subagent_process").execute("call", { action: "list" })).rejects.toThrow("swarm_spawn");
-
-		harness.emitEvent("tripp:agent-swarm-activity", { kind: "clear", source: "state", nodeId: "node_root" });
-		expect(harness.activeTools()).toEqual(["read", "bash", "subagent", "subagent_process"]);
-		const list = await harness.tools.get("subagent_process").execute("call", { action: "list" });
-		expect(list.details.error).toBeUndefined();
 	});
 });

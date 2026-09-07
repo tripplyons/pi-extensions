@@ -9,8 +9,24 @@
     "test": "bash extensions/run-tests.sh"
   },
   "pi": {
-    "extensions": ["./extensions/*/index.ts"],
-    "skills": ["./extensions/web-search-and-extract/skills"]
+    "extensions": [
+      "./extensions/pi-codex-conversion/index.ts",
+      "./extensions/auto-rename/index.ts",
+      "./extensions/autocomplete/index.ts",
+      "./extensions/btw/index.ts",
+      "./extensions/clean-footer/index.ts",
+      "./extensions/hide-empty-editor/index.ts",
+      "./extensions/message-window/index.ts",
+      "./extensions/nvim-session-export/index.ts",
+      "./extensions/stash/index.ts",
+      "./extensions/subagent/index.ts",
+      "./extensions/syntax-punctuation/index.ts",
+      "./extensions/thinking-counter/index.ts",
+      "./extensions/tripp-autoresearch/index.ts"
+    ]
+  },
+  "dependencies": {
+    "@howaboua/pi-codex-conversion": "3.0.30"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
 
 import autoresearchExtension, {
   shouldAutoActivateAutoresearch,
@@ -12,7 +13,8 @@ import autoresearchExtension, {
 const ACTIVATION_ENTRY = "pi-autoresearch.activation";
 const AUTORESEARCH_TOOLS = ["init_experiment", "log_experiment", "run_experiment"];
 
-function createHarness({ cwd, branch = [], initialActiveTools = [], nativeCodexAvailable = false }) {
+function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
+  const tools = new Map();
   const commands = new Map();
   const handlers = new Map();
   const eventHandlers = new Map();
@@ -23,24 +25,28 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], nativeCodexA
   let activeTools = [...initialActiveTools];
   let aborted = false;
 
-  autoresearchExtension({
+  const pi = {
     events: {
       on(name, handler) {
         eventHandlers.set(name, [...(eventHandlers.get(name) ?? []), handler]);
         return () => eventHandlers.set(name, (eventHandlers.get(name) ?? []).filter((candidate) => candidate !== handler));
       },
       emit(name, data) {
-        if (nativeCodexAvailable && name === "tripp:codex-compaction:v1:capability") data.available = true;
         for (const handler of eventHandlers.get(name) ?? []) handler(data);
       },
     },
     on(name, handler) {
-      handlers.set(name, handler);
+      const previous = handlers.get(name);
+      handlers.set(name, async (...args) => {
+        await previous?.(...args);
+        return handler(...args);
+      });
     },
     appendEntry(customType, data) {
       appendedEntries.push({ customType, data });
     },
-    registerTool() {},
+    registerTool(tool) { tools.set(tool.name, tool); },
+    getAllTools() { return [...tools.values()]; },
     registerCommand(name, command) {
       commands.set(name, command);
     },
@@ -54,7 +60,8 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], nativeCodexA
     sendUserMessage(content, options) {
       sentMessages.push({ content, options });
     },
-  });
+  };
+  autoresearchExtension(pi);
 
   const ctx = {
     cwd,
@@ -80,6 +87,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], nativeCodexA
   };
 
   return {
+    codeTools: () => getCodeModeExtensionToolSnapshot(pi, ctx, true).tools,
     appendedEntries,
     commands,
     handlers,
@@ -104,12 +112,12 @@ function activationEntry(workDir, active = true) {
   };
 }
 
-test("registers the vendored skills directory with Pi", () => {
+test("registers the vendored skills directory with Pi", async () => {
   const harness = createHarness({ cwd: "/project" });
   const discover = harness.handlers.get("resources_discover");
   assert.ok(discover);
 
-  const result = discover();
+  const result = await discover();
   assert.equal(result.skillPaths.length, 1);
   for (const name of ["autoresearch-create", "autoresearch-finalize", "autoresearch-hooks"]) {
     assert.equal(existsSync(join(result.skillPaths[0], name, "SKILL.md")), true);
@@ -514,11 +522,11 @@ test("/autoresearch start without a goal shows usage", async () => {
   }
 });
 
-test("native Codex owns compaction while active autoresearch rehydrates from disk afterward", async () => {
+test("upstream owns compaction while active autoresearch rehydrates from disk afterward", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-native-compact-"));
   try {
     await writeSameCwdLog(cwd);
-    const nativeHarness = createHarness({ cwd, nativeCodexAvailable: true });
+    const nativeHarness = createHarness({ cwd });
     await nativeHarness.handlers.get("session_start")?.({}, nativeHarness.ctx);
 
     const intercepted = await nativeHarness.handlers.get("session_before_compact")?.({
@@ -542,12 +550,48 @@ test("native Codex owns compaction while active autoresearch rehydrates from dis
     const fallback = await fallbackHarness.handlers.get("session_before_compact")?.({
       preparation: { firstKeptEntryId: "entry-1", tokensBefore: 20_000 },
     }, fallbackHarness.ctx);
-    assert.match(fallback.compaction.summary, /# Autoresearch Compaction Summary/);
+    assert.equal(fallback, undefined);
     await fallbackHarness.handlers.get("session_shutdown")?.({}, fallbackHarness.ctx);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("Code tools follow autoresearch activation and shutdown", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-code-"));
+  const harness = createHarness({ cwd });
+  try {
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    assert.deepEqual(harness.codeTools(), []);
+    await writeSameCwdLog(cwd);
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    assert.deepEqual(harness.codeTools().map((tool) => tool.name).sort(), AUTORESEARCH_TOOLS);
+    await harness.commands.get("autoresearch").handler("pause", harness.ctx);
+    assert.deepEqual(harness.codeTools(), []);
+    await harness.handlers.get("session_shutdown")({}, harness.ctx);
+    assert.deepEqual(harness.codeTools(), []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+for (const continuation of ["agent_start", "session_compact_failed", "session_shutdown"]) {
+  test(`${continuation} cancels pending compaction recovery`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-recovery-"));
+    const harness = createHarness({ cwd });
+    try {
+      await writeSameCwdLog(cwd);
+      await harness.handlers.get("session_start")({}, harness.ctx);
+      await harness.handlers.get("session_compact")({}, harness.ctx);
+      await harness.handlers.get(continuation)({}, harness.ctx);
+      await new Promise((resolve) => setTimeout(resolve, 850));
+      assert.deepEqual(harness.sentMessages, []);
+      await harness.handlers.get("session_shutdown")({}, harness.ctx);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+}
 
 test("deleted logs do not leave a stale autoresearch widget from session history", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
