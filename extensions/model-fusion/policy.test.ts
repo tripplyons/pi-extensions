@@ -43,6 +43,10 @@ describe("fusion policy", () => {
 		expect(packet).toContain("review target".repeat(5000));
 		for (const excluded of ["secret reasoning", "opaque signature", "private image", "x".repeat(TOOL_ARGUMENT_CHARS), "y".repeat(TOOL_RESULT_CHARS)]) expect(packet).not.toContain(excluded);
 		expect(packet.match(/\[\.\.\. truncated \.\.\.\]/g)).toHaveLength(2);
+		const parameters = packet.split("TOOL CALL custom_tool (call-1)\n")[1].split("\n\nTOOL RESULT")[0];
+		const result = packet.split("TOOL RESULT custom_tool (call-1); error: true\n")[1].split("\n\nUSER")[0];
+		expect(parameters.length).toBe(1000);
+		expect(result.length).toBe(1000);
 	});
 	test("loads defaults without a config and rejects configuration errors", async () => {
 		expect((await loadConfig("/tmp/nonexistent-fusion-config-123456789.json")).actor.model).toBe("gpt-5.6-luna");

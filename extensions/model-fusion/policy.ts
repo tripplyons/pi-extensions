@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 export const COOLDOWN_MS = 5 * 60_000;
-export const TOOL_ARGUMENT_CHARS = 4_000;
-export const TOOL_RESULT_CHARS = 8_000;
+export const TOOL_ARGUMENT_CHARS = 1_000;
+export const TOOL_RESULT_CHARS = 1_000;
 export type ContextMessage = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
 export type Verdict = { verdict: "pass" | "revise" | "uncertain"; findings: string[]; checks: string[] };
 export type Review = { model: string; verdict?: Verdict; error?: string };

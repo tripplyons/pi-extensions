@@ -120,8 +120,8 @@ Credentials come from Pi's registry, never this file. `reviewEveryToolCalls` acc
   main context, plus every tool call and textual result, including custom tools.
   New messages since the latest context snapshot are included. There is no overall
   packet cap and no truncation of user/assistant text or the review target.
-  Each tool call's parameters are capped at 4,000 characters; each tool result at
-  8,000 characters. Truncation is explicit. Compacted-away history and other
+  Each tool call's parameters and each tool result are capped at 1,000 characters,
+  including the truncation marker. Truncation is explicit. Compacted-away history and other
   branches are not replayed. Custom extension messages are not part of this transcript.
   A large main context can exceed a reviewer's context window and fail review.
 - No additional files are read to build a review. System prompts, model reasoning,
