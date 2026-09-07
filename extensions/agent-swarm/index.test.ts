@@ -170,7 +170,7 @@ const createReadyWorker = (directory: string) => {
 		`const path = require("path");`,
 		`const file = path.join(process.env.PI_SWARM_HOME, "runs", process.env.PI_SWARM_RUN_ID, "nodes", process.env.PI_SWARM_NODE_ID + ".json");`,
 		`const node = JSON.parse(fs.readFileSync(file, "utf8"));`,
-		`fs.writeFileSync(path.join(process.env.PI_SWARM_HOME, process.env.PI_SWARM_NODE_ID + ".launch.json"), JSON.stringify({ args: process.argv.slice(1), fastMode: process.env.PI_SWARM_CODEX_FAST_MODE }));`,
+		`fs.writeFileSync(path.join(process.env.PI_SWARM_HOME, process.env.PI_SWARM_NODE_ID + ".launch.json"), JSON.stringify({ args: process.argv.slice(1), fastMode: process.env.PI_SWARM_CODEX_FAST_MODE, fusion: process.env.PI_SWARM_FUSION }));`,
 		`node.status = "ready"; node.readyAt = Date.now(); node.version++; node.updatedAt = Date.now();`,
 		`fs.writeFileSync(file, JSON.stringify(node));`,
 	].join(" ");
@@ -1334,7 +1334,7 @@ describe("activation and hierarchy gate", () => {
 		}
 	}, 40_000);
 
-	tmuxTest("creates a child worktree and transfers dirty changes without mutating the parent", async () => {
+	for (const fusionEnabled of [false, true]) tmuxTest(`creates a child worktree with root fusion ${fusionEnabled ? "on" : "off"} without mutating the parent`, async () => {
 		const repo = mkdtempSync(join(tmpdir(), "pi-agent-swarm-repo-"));
 		const state = mkdtempSync(join(tmpdir(), "pi-agent-swarm-state-"));
 		const worker = createReadyWorker(state);
@@ -1352,6 +1352,8 @@ describe("activation and hierarchy gate", () => {
 		try {
 			await harness.commands.get("swarm:start").handler("root", harness.context);
 			harness.sessionEntries.push({ type: "custom", customType: "codex-fast-mode-state", data: { enabled: true } });
+			harness.sessionEntries.push({ type: "custom", customType: "model-fusion-state", data: { enabled: !fusionEnabled } });
+			harness.sessionEntries.push({ type: "custom", customType: "model-fusion-state", data: { enabled: fusionEnabled } });
 			const spawn = harness.tools.get("swarm_spawn");
 			await expect(spawn.execute("call", { task: "work" }, undefined, undefined, harness.context)).rejects.toThrow("dirtyMode");
 			await expect(spawn.execute("call", { task: "work", dirtyMode: "commit-parent" }, undefined, undefined, harness.context)).rejects.toThrow("protected branch");
@@ -1365,6 +1367,8 @@ describe("activation and hierarchy gate", () => {
 			expect(extensionPaths.some((path: string) => path.endsWith("/codex-fast-mode/index.ts"))).toBe(true);
 			expect(launch.args).toContain("--approve");
 			expect(launch.fastMode).toBe("on");
+			expect(launch.fusion).toBe(fusionEnabled ? "on" : "off");
+			expect(extensionPaths.filter((path: string) => path.endsWith("/model-fusion/index.ts"))).toHaveLength(fusionEnabled ? 1 : 0);
 			expect(readFileSync(join(child.worktreePath, "tracked.txt"), "utf8")).toBe("dirty\n");
 			expect(git(repo, "branch", "--show-current")).toBe("main");
 			expect(git(repo, "status", "--porcelain")).toContain("tracked.txt");

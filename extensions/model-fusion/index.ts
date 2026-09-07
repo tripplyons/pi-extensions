@@ -164,7 +164,10 @@ export default function (pi: ExtensionAPI) {
 		deactivate(ctx);
 		previous = undefined;
 		const entry = [...ctx.sessionManager.getEntries()].reverse().find((entry) => entry.type === "custom" && entry.customType === "model-fusion-state");
-		if (entry?.type !== "custom") return;
+		if (entry?.type !== "custom") {
+			if (process.env.PI_SWARM_FUSION === "on") await configure("on", ctx);
+			return;
+		}
 		const stored = entry.data as { enabled?: boolean; previous?: { provider: string; model: string; thinking: ReturnType<ExtensionAPI["getThinkingLevel"]> } };
 		if (stored?.enabled !== true) return;
 		const model = stored.previous && ctx.modelRegistry.find(stored.previous.provider, stored.previous.model);

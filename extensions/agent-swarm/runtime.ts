@@ -13,6 +13,7 @@ import {
 	AGENT_SWARM_ACTIVITY_EVENT,
 	CLAIM_TIMEOUT_MS,
 	CODEX_FAST_MODE_ENV,
+	CODEX_FAST_MODE_CUSTOM_TYPE,
 	COMPACTION_INTERRUPTION_WINDOW_MS,
 	INCOMPLETE_STOP_REASONS,
 	LIVE_PANE_LINES,
@@ -58,7 +59,7 @@ import {
 	readJson,
 	readNode,
 	readRun,
-	rootFastModeEnabled,
+	rootSessionModeEnabled,
 	runFile,
 	runPath,
 	safeId,
@@ -1253,7 +1254,12 @@ class SwarmRuntime {
 	private launchWorker(run: RunRecord, node: NodeRecord, ctx: ExtensionContext) {
 		const piBin = process.env.PI_BIN ?? "pi";
 		const sessionId = `swarm-${node.nodeId}`;
-		const extensionPaths = [extensionFile, ...run.config.workerExtensions.map((name) => join(extensionsDir, name, "index.ts"))];
+		const fusionEnabled = this.requireIdentity().isWorker
+			? process.env.PI_SWARM_FUSION === "on"
+			: rootSessionModeEnabled(ctx, "model-fusion-state");
+		const workerExtensions = new Set(run.config.workerExtensions);
+		if (fusionEnabled) workerExtensions.add("model-fusion");
+		const extensionPaths = [extensionFile, ...[...workerExtensions].map((name) => join(extensionsDir, name, "index.ts"))];
 		const trustFlag = ctx.isProjectTrusted() ? "--approve" : "--no-approve";
 		const args = ["--no-extensions", "--no-skills", trustFlag, "--session-id", sessionId, "--name", node.sessionName ?? node.nodeId];
 		if (ctx.model) args.push("--model", `${ctx.model.provider}/${ctx.model.id}`);
@@ -1266,7 +1272,8 @@ class SwarmRuntime {
 			`PI_SWARM_NODE_ID=${node.nodeId}`,
 			`PI_SWARM_PARENT_ID=${node.parentId ?? ""}`,
 			`PI_SWARM_HOME=${stateRoot()}`,
-			`${CODEX_FAST_MODE_ENV}=${rootFastModeEnabled(ctx) ? "on" : "off"}`,
+			`${CODEX_FAST_MODE_ENV}=${rootSessionModeEnabled(ctx, CODEX_FAST_MODE_CUSTOM_TYPE) ? "on" : "off"}`,
+			`PI_SWARM_FUSION=${fusionEnabled ? "on" : "off"}`,
 		];
 		if (!tmuxSessionExists(run.tmuxSession)) {
 			runTmux(["new-session", "-d", "-s", run.tmuxSession, "-n", node.tmuxWindow ?? node.nodeId, "-c", node.cwd, "env", ...envArgs, piBin, ...args]);

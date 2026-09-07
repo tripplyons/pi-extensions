@@ -82,6 +82,26 @@ test("disabled is inert; enable keeps native identity and disable restores prior
 	expect(h.thinking()).toBe("high");
 });
 
+test("swarm launch enables fusion but saved off survives reload", async () => {
+	const previous = process.env.PI_SWARM_FUSION;
+	process.env.PI_SWARM_FUSION = "on";
+	try {
+		const h = harness();
+		await h.emit("session_start");
+		expect(h.ctx.model.id).toBe("gpt-5.6-luna");
+		expect(h.tools()).toContain("fusion_escalate");
+		expect(h.entries.at(-1)).toMatchObject({ customType: "model-fusion-state", data: { enabled: true } });
+		await h.prompt(); await h.finish();
+		expect(calls).toHaveLength(2);
+		await h.command("off");
+		await h.emit("session_start");
+		expect(h.tools()).not.toContain("fusion_escalate");
+	} finally {
+		if (previous === undefined) delete process.env.PI_SWARM_FUSION;
+		else process.env.PI_SWARM_FUSION = previous;
+	}
+});
+
 test("both reviewers get main-context tool evidence, not reasoning or images, and pass settles", async () => {
 	const h = harness();
 	await h.command("on"); await h.prompt();

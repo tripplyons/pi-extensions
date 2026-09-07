@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-	CODEX_FAST_MODE_CUSTOM_TYPE,
 	defaultConfig,
 	LOCK_STALE_MS,
 	LOCK_TIMEOUT_MS,
@@ -183,12 +182,12 @@ export const readNode = (runId: string, nodeId: string) => {
 
 export const childNodes = (runId: string, node: NodeRecord) => node.childIds.map((childId) => readNode(runId, childId));
 
-export const rootFastModeEnabled = (ctx: ExtensionContext) => {
+export const rootSessionModeEnabled = (ctx: ExtensionContext, customType: string) => {
 	type SessionEntry = { type?: string; customType?: string; data?: { enabled?: unknown } };
 	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntries?: () => readonly SessionEntry[] };
 	let enabled: boolean | undefined;
 	for (const entry of manager.getEntries?.() ?? []) {
-		if (entry.type !== "custom" || entry.customType !== CODEX_FAST_MODE_CUSTOM_TYPE) continue;
+		if (entry.type !== "custom" || entry.customType !== customType) continue;
 		if (typeof entry.data?.enabled === "boolean") enabled = entry.data.enabled;
 	}
 	return enabled ?? false;

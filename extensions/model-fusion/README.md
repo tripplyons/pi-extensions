@@ -13,7 +13,11 @@ Astra supplies bounded advice, never tools or a replacement actor.
 /fusion reload
 ```
 
-- New sessions start disabled. Enabled state and the prior model selection are
+- New sessions start disabled, except swarm workers launched by a fusion-enabled
+  root. Swarm loads this extension automatically and passes the root's enabled
+  state to workers and their descendants. This is launch-time inheritance, not
+  live synchronization. A worker's saved `/fusion off` wins on resume.
+  Enabled state and the prior model selection are
   saved in the session, so reload/resume restores fusion after validating its
   configuration and authentication. The compact footer shows `fusion` while on.
   In-flight reviews and cadence counters are not restored.

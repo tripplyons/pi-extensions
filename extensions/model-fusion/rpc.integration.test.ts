@@ -53,7 +53,7 @@ test.skipIf(!piAvailable).each(["ordinary", "goal", "progress", "progress-pass"]
 	await writeFile(join(directory, "model-fusion.json"), JSON.stringify({ actor: slot("actor"), reviewers: [slot("reviewer-a"), slot("reviewer-b")], frontier: slot("frontier") }));
 	await writeFile(join(directory, "provider.ts"), `export default function(pi) { pi.registerProvider("fusion-test", { baseUrl: "http://127.0.0.1:${server.port}/v1", apiKey: "test-only", api: "openai-completions", models: ${JSON.stringify(["actor", "reviewer-a", "reviewer-b", "frontier"].map((id) => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })))} }); }`);
 	const args = ["--mode", "rpc", "--session-dir", join(directory, "sessions"), "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "--provider", "fusion-test", "--model", "actor", "-e", join(directory, "provider.ts"), "-e", fileURLToPath(new URL("./index.ts", import.meta.url)), ...(goal ? ["-e", fileURLToPath(new URL("../goal/index.ts", import.meta.url))] : [])];
-	const launch = (resume = false) => spawn("pi", [...args, ...(resume ? ["--continue"] : [])], { cwd: directory, env: { ...process.env, PI_CODING_AGENT_DIR: directory }, stdio: ["pipe", "pipe", "pipe"] });
+	const launch = (resume = false) => spawn("pi", [...args, ...(resume ? ["--continue"] : [])], { cwd: directory, env: { ...process.env, PI_CODING_AGENT_DIR: directory, PI_SWARM_FUSION: mode === "ordinary" ? "on" : "off" }, stdio: ["pipe", "pipe", "pipe"] });
 	let child = launch();
 	const events: any[] = [];
 	let stderr = "";
@@ -82,7 +82,7 @@ test.skipIf(!piAvailable).each(["ordinary", "goal", "progress", "progress-pass"]
 		throw new Error(`RPC event timeout: ${stderr}\n${JSON.stringify(events.slice(-5))}`);
 	};
 	try {
-		send({ id: "on", type: "prompt", message: "/fusion on" });
+		send({ id: "on", type: "prompt", message: mode === "ordinary" ? "/fusion status" : "/fusion on" });
 		expect((await wait((event) => event.id === "on")).success).toBe(true);
 		send({ id: "task", type: "prompt", message: "Write result.txt and verify the result." });
 		if (goal) await wait((event) => event.type === "tool_execution_end" && event.toolName === "update_goal" && event.result?.terminate);
