@@ -66,7 +66,8 @@ Extensions run with your user permissions.
 
 Agent Swarm reads optional settings from `<agent-dir>/agent-swarm.json`.
 The agent directory defaults to `~/.pi/agent`; override it with `PI_CODING_AGENT_DIR`.
-Autoresearch includes its skills.
+Autoresearch and web search include their skills. Web search also bundles its
+CLI; no separate script installation is needed.
 
 Bundled third-party code retains its licenses in
 [`codex-compaction`](extensions/codex-compaction/LICENSE) and
