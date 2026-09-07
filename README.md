@@ -5,17 +5,17 @@
 ## Install
 
 ```sh
-pi install git:git@github.com:tripplyons/pi-extensions
+pi install git:https://github.com/tripplyons/pi-extensions.git
 ```
 
-GitHub SSH access is required while the repository is private. Run `pi config`
-to enable or disable individual extensions. Update with `pi update --extensions`.
+Run `pi config` to enable or disable individual extensions.
+Update with `pi update --extensions`.
 Do not also install copies under `~/.pi/agent/extensions/`.
 
 For local development:
 
 ```sh
-git clone git@github.com:tripplyons/pi-extensions.git
+git clone https://github.com/tripplyons/pi-extensions.git
 cd pi-extensions
 pi install "$PWD"
 ```
