@@ -101,7 +101,14 @@ test.skipIf(!piAvailable).each(["ordinary", "goal", "progress", "progress-pass"]
 		expect(requests.filter((request) => request.model === "reviewer-a")).toHaveLength(goal || progress ? 3 : 2);
 		expect(requests.filter((request) => request.model === "reviewer-b")).toHaveLength(goal || progress ? 3 : 2);
 		expect(requests.filter((request) => request.model === "frontier")).toHaveLength(1);
-		for (const request of requests.filter((request) => request.model !== "actor")) expect(request.tools ?? []).toHaveLength(0);
+		for (const request of requests.filter((request) => request.model !== "actor")) {
+			expect(request.tools ?? []).toHaveLength(0);
+			const packet = JSON.stringify(request.messages);
+			expect(packet).toContain("Write result.txt and verify the result.");
+			expect(packet).toContain("TOOL CALL write");
+			expect(packet).toContain("TOOL RESULT write");
+			expect(packet).toContain("Successfully wrote to result.txt");
+		}
 		expect(events.some((event) => event.method === "notify" && event.message?.includes("bounded review cycle ended"))).toBe(true);
 		if (mode === "ordinary") {
 			child.kill("SIGTERM");

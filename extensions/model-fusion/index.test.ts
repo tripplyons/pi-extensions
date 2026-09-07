@@ -53,8 +53,12 @@ function harness() {
 	const prompt = async (text = "fix the bug", source = "interactive") => {
 		await emit("input", { text, source });
 		await emit("message_start", { message: { role: "user", content: [{ type: "text", text }] } });
+		await emit("message_end", { message: { role: "user", content: [{ type: "text", text }] } });
 	};
-	const finish = (message = response("Implemented and tested")) => emit("turn_end", { message, toolResults: [] });
+	const finish = async (message = response("Implemented and tested")) => {
+		await emit("message_end", { message });
+		return emit("turn_end", { message, toolResults: [] });
+	};
 	const escalate = (signal = ctx.signal) => tools.get("fusion_escalate").execute("id", { problem: "Need independent diagnosis" }, signal, undefined, ctx);
 	return { ctx, emit, command, prompt, finish, escalate, messages, entries, notices, tools: () => activeTools, thinking: () => thinking };
 }
@@ -78,10 +82,10 @@ test("disabled is inert; enable keeps native identity and disable restores prior
 	expect(h.thinking()).toBe("high");
 });
 
-test("both reviewers get bounded tool-free evidence, not reasoning or images, and pass settles", async () => {
+test("both reviewers get main-context tool evidence, not reasoning or images, and pass settles", async () => {
 	const h = harness();
 	await h.command("on"); await h.prompt();
-	await h.emit("tool_result", { toolName: "bash", input: { command: "python3 -m unittest" }, isError: true, content: [{ type: "text", text: "test failed: empty input" }, { type: "image", data: "private-image" }] });
+	await h.emit("message_end", { message: { role: "toolResult", toolName: "bash", toolCallId: "call-1", isError: true, content: [{ type: "text", text: "test failed: empty input" }, { type: "image", data: "private-image" }] } });
 	await h.finish(); await h.finish();
 	expect(calls).toHaveLength(2);
 	for (const call of calls) {
@@ -92,6 +96,26 @@ test("both reviewers get bounded tool-free evidence, not reasoning or images, an
 	}
 	expect(h.messages).toHaveLength(0);
 	expect(h.notices.at(-1)).toContain("review passed");
+});
+
+test("review context follows Pi's active context and includes new messages without replaying discarded history", async () => {
+	const h = harness();
+	await h.command("on"); await h.prompt("continue");
+	await h.emit("context", { messages: [
+		{ role: "user", content: "original full requirement" },
+		{ role: "assistant", content: [{ type: "text", text: "earlier analysis summary" }, { type: "thinking", thinking: "private reasoning" }] },
+		{ role: "user", content: "continue" },
+	] });
+	await h.finish();
+	const packet = calls[0].context.messages[0].content[0].text;
+	expect(packet).toContain("original full requirement");
+	expect(packet).toContain("earlier analysis summary");
+	expect(packet).toContain("Implemented and tested");
+	expect(packet).not.toContain("private reasoning");
+	await h.prompt("after compaction");
+	await h.emit("context", { messages: [{ role: "user", content: "retained main context" }] });
+	await h.finish();
+	expect(calls[2].context.messages[0].content[0].text).not.toContain("original full requirement");
 });
 
 test("unresolved reviews cause exactly one cheap repair, one Astra advisory, and one final actor continuation", async () => {
@@ -130,7 +154,7 @@ test("goal continuations reopen review without resetting frontier allowance", as
 	await expect(h.escalate()).rejects.toThrow("cooldown");
 	await h.finish();
 	expect(calls).toHaveLength(5);
-	expect(calls.at(-1)?.context.messages[0].content[0].text).toContain("Continue testing the goal");
+	expect(calls.at(-1)?.context.messages[0].content[0].text).toContain("fix the bug");
 });
 
 test("goal continuation starts a task when fusion was enabled mid-goal", async () => {

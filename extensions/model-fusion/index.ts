@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_PATH, DEFAULT_CONFIG, loadConfig, type Config } from "./config.ts";
-import { addEvidence, createTask, evidencePacket, nextAction, parseVerdict, reserveEscalation, type Review, type Task } from "./policy.ts";
+import { createTask, evidencePacket, nextAction, parseVerdict, reserveEscalation, type ContextMessage, type Review, type Task } from "./policy.ts";
 import { FRONTIER_PROMPT, requestAdvice, REVIEW_PROMPT } from "./requests.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -10,6 +10,7 @@ export default function (pi: ExtensionAPI) {
 	let selecting = false;
 	let task: Task | undefined;
 	let toolCalls = 0;
+	let mainContext: ContextMessage[] = [];
 	let reviewedThrough = 0;
 	const progressRequests = new Set<AbortController>();
 	const cancelProgress = () => {
@@ -148,7 +149,7 @@ export default function (pi: ExtensionAPI) {
 			if (signal?.aborted) abort();
 			try {
 				snapshot.controller.signal.throwIfAborted();
-				const advice = await frontier(ctx, snapshot, evidencePacket(snapshot, problem));
+				const advice = await frontier(ctx, snapshot, evidencePacket(mainContext, problem));
 				if (!current(snapshot)) throw new Error("Fusion task superseded");
 				status(ctx, "frontier advice received");
 				return { content: [{ type: "text", text: advice.text }], details: { model: config.frontier.model, reasoning: config.frontier.reasoning }, usage: advice.usage };
@@ -169,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 		const model = stored.previous && ctx.modelRegistry.find(stored.previous.provider, stored.previous.model);
 		await configure("on", ctx, model && stored.previous ? { model, thinking: stored.previous.thinking } : undefined);
 	};
-	pi.on("session_start", (_event, ctx) => restore(ctx));
+	pi.on("session_start", (_event, ctx) => { mainContext = []; return restore(ctx); });
 	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.on("session_before_switch", (_event, ctx) => { deactivate(ctx); previous = undefined; });
 	pi.on("session_before_fork", (_event, ctx) => { deactivate(ctx); previous = undefined; });
@@ -196,7 +197,6 @@ export default function (pi: ExtensionAPI) {
 			const prompt = typeof content === "string" ? content : content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
 			if (!task) task = createTask(prompt);
 			else {
-				addEvidence(task, `Goal continuation:\n${prompt}`);
 				if (task.phase === "done") task.phase = "draft";
 			}
 			status(ctx, task.phase);
@@ -213,18 +213,17 @@ export default function (pi: ExtensionAPI) {
 		task = createTask(text);
 		status(ctx, "draft");
 	});
-	pi.on("context", (event) => ({
-		messages: event.messages.filter((message) => message.role !== "custom" || message.customType !== "model-fusion" || (enabled && task && !task.controller.signal.aborted && (message.details as { taskId?: string } | undefined)?.taskId === task.id)),
-	}));
+	pi.on("context", (event) => {
+		const messages = event.messages.filter((message) => message.role !== "custom" || message.customType !== "model-fusion" || (enabled && task && !task.controller.signal.aborted && (message.details as { taskId?: string } | undefined)?.taskId === task.id));
+		mainContext = [...messages];
+		return { messages };
+	});
+	pi.on("message_end", (event) => {
+		mainContext.push(event.message);
+	});
 	pi.on("before_agent_start", (event) => {
 		if (!enabled) return;
 		return { systemPrompt: `${event.systemPrompt}\n\nFusion mode: You are the sole tool-using actor. Your proposed completion will be independently reviewed. Treat review and frontier advice as fallible; verify concrete claims with tools. Use fusion_escalate only for a genuine unresolved blocker. Never wait out its cooldown. Do not claim a review or test passed unless it did.` };
-	});
-	pi.on("tool_result", (event) => {
-		if (!enabled || !task) return;
-		const text = event.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
-		const input = ["read", "write", "edit", "bash", "grep", "find", "ls"].includes(event.toolName) ? JSON.stringify(event.input) : "[custom tool arguments omitted]";
-		addEvidence(task, `Tool: ${event.toolName}; error: ${event.isError}\nInput: ${input}\nOutput: ${text}`);
 	});
 	const reviewCompletion = async (candidate: string, ctx: ExtensionContext): Promise<string | undefined> => {
 		cancelProgress();
@@ -243,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (!current(snapshot)) return;
 			status(ctx, "reviewing draft");
-			const packet = evidencePacket(snapshot, candidate);
+			const packet = evidencePacket(mainContext, candidate);
 			const reviews = await collectReviews(ctx, snapshot, packet);
 			if (!current(snapshot)) return;
 			pi.appendEntry("model-fusion-review", { phase: snapshot.phase, reviews });
@@ -261,7 +260,7 @@ export default function (pi: ExtensionAPI) {
 				return `Independent review found unresolved issues. Verify these fallible findings, fix concrete defects, and run relevant checks. This is the one cheap repair round.\n${findings}`;
 			}
 			snapshot.phase = "frontier";
-			const advice = await frontier(ctx, snapshot, evidencePacket(snapshot, `${candidate}\n\nREVIEW FINDINGS\n${findings}`));
+			const advice = await frontier(ctx, snapshot, evidencePacket(mainContext, `${candidate}\n\nREVIEW FINDINGS\n${findings}`));
 			if (!current(snapshot)) return;
 			pi.appendEntry("model-fusion-frontier", { model: config.frontier.model, reasoning: config.frontier.reasoning });
 			return `Frontier advice (fallible; verify with tools). Perform one final repair/check pass, then report any unresolved issues honestly.\n${advice.text}`;
@@ -284,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 		progressRequests.add(controller);
 		try {
 			status(ctx, `background review through tool call ${throughCall}`);
-			const packet = evidencePacket(snapshot, "Work is still in progress, not a proposed completion. Review recent tool evidence for concrete mistakes or a wrong approach. Do not request completion merely because the task is unfinished.");
+			const packet = evidencePacket(mainContext, "Work is still in progress, not a proposed completion. Review recent tool evidence for concrete mistakes or a wrong approach. Do not request completion merely because the task is unfinished.");
 			const reviews = await collectReviews(ctx, snapshot, packet, controller.signal);
 			if (!current(snapshot) || controller.signal.aborted) return;
 			const finishedAt = Date.now();
@@ -320,8 +319,7 @@ export default function (pi: ExtensionAPI) {
 		if (!enabled || event.toolName !== "update_goal" || !["complete", "blocked"].includes(String(event.input.status))) return;
 		if (!task) task = createTask("Review the active goal before its terminating status update.");
 		const goal = [...ctx.sessionManager.getBranch()].reverse().find((entry) => entry.type === "custom" && entry.customType === "goal-state");
-		if (goal?.type === "custom") addEvidence(task, `Active goal: ${JSON.stringify(goal.data)}`);
-		const advice = await reviewCompletion(`Actor requests update_goal: ${JSON.stringify(event.input)}`, ctx);
+		const advice = await reviewCompletion(`Actor requests update_goal: ${JSON.stringify(event.input)}\nActive goal: ${goal?.type === "custom" ? JSON.stringify(goal.data) : "not recorded"}`, ctx);
 		if (advice) return { block: true, reason: advice };
 	});
 }

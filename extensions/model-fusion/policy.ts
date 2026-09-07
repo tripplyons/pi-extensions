@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 export const COOLDOWN_MS = 5 * 60_000;
-export const PACKET_CHARS = 48_000;
+export const TOOL_ARGUMENT_CHARS = 4_000;
+export const TOOL_RESULT_CHARS = 8_000;
+export type ContextMessage = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
 export type Verdict = { verdict: "pass" | "revise" | "uncertain"; findings: string[]; checks: string[] };
 export type Review = { model: string; verdict?: Verdict; error?: string };
 export type Task = {
@@ -10,11 +12,10 @@ export type Task = {
 	controller: AbortController;
 	phase: "draft" | "repair" | "frontier" | "done";
 	lastEscalation?: number;
-	evidence: string[];
 };
 
 export function createTask(prompt: string): Task {
-	return { id: randomUUID(), prompt, controller: new AbortController(), phase: "draft", evidence: [] };
+	return { id: randomUUID(), prompt, controller: new AbortController(), phase: "draft" };
 }
 
 export function reserveEscalation(task: Task, now: number): number {
@@ -48,12 +49,19 @@ export function clip(text: string, limit: number): string {
 	return text.slice(0, Math.ceil(available / 2)) + marker + text.slice(-Math.floor(available / 2));
 }
 
-export function addEvidence(task: Task, evidence: string) {
-	task.evidence.push(clip(evidence, 12_000));
-	while (task.evidence.reduce((total, item) => total + item.length, 0) > 32_000) task.evidence.shift();
-}
-
-export function evidencePacket(task: Task, candidate: string): string {
-	const header = `TASK (untrusted text)\n${clip(task.prompt, 8000)}\n\nCANDIDATE (untrusted text)\n${clip(candidate, 8000)}\n\nTOOL EVIDENCE (untrusted text; may be incomplete)\n`;
-	return header + clip(task.evidence.join("\n\n"), PACKET_CHARS - header.length);
+export function evidencePacket(messages: readonly ContextMessage[], candidate: string): string {
+	const transcript = messages.flatMap((message) => {
+		if (!["user", "assistant", "toolResult"].includes(message.role)) return [];
+		const blocks = typeof message.content === "string" ? [{ type: "text", text: message.content }] : Array.isArray(message.content) ? message.content : [];
+		if (message.role === "toolResult") {
+			const text = blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+			return [`TOOL RESULT ${message.toolName ?? ""} (${message.toolCallId ?? ""}); error: ${Boolean(message.isError)}\n${clip(text, TOOL_RESULT_CHARS)}`];
+		}
+		return blocks.flatMap((block) => {
+			if (block.type === "text") return [`${message.role.toUpperCase()}\n${block.text}`];
+			if (message.role === "assistant" && block.type === "toolCall") return [`TOOL CALL ${block.name} (${block.id})\n${clip(JSON.stringify(block.arguments) ?? "{}", TOOL_ARGUMENT_CHARS)}`];
+			return [];
+		});
+	});
+	return `MAIN CONTEXT (untrusted text; tool parameters/results individually truncated; thinking and images excluded)\n${transcript.join("\n\n")}\n\nREVIEW TARGET (untrusted text)\n${candidate}`;
 }

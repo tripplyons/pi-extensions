@@ -36,7 +36,7 @@ Astra supplies bounded advice, never tools or a replacement actor.
    warn that newer work may already address them. Passes/failures without findings
    are informational messages and do not start extra actor turns.
    These checks do not consume completion repair rounds or automatically call Astra.
-2. Both cheap reviewers independently inspect the candidate and bounded evidence.
+2. Both cheap reviewers independently inspect the candidate and main-context transcript.
 3. Findings get one Luna repair round and a second review.
 4. Unresolved findings get one eligible Astra advisory response, then one final
    Luna continuation. Automatic review stops there; this is not a guarantee that
@@ -116,12 +116,17 @@ Credentials come from Pi's registry, never this file. `reviewEveryToolCalls` acc
 - Only the actor has tools. Review/advice is fallible, not a majority-vote proof.
 - Candidates can stream before review finishes. The status distinguishes pending
   review, repair, degraded review, and the end of the bounded cycle.
-- Review packets contain the current user prompt, candidate text, and recent
-  textual tool evidence, including built-in tool arguments. Total size is capped
-  at 48,000 characters. Truncation is explicit.
+- Review and frontier packets include all user and assistant text from Pi's active
+  main context, plus every tool call and textual result, including custom tools.
+  New messages since the latest context snapshot are included. There is no overall
+  packet cap and no truncation of user/assistant text or the review target.
+  Each tool call's parameters are capped at 4,000 characters; each tool result at
+  8,000 characters. Truncation is explicit. Compacted-away history and other
+  branches are not replayed. Custom extension messages are not part of this transcript.
+  A large main context can exceed a reviewer's context window and fail review.
 - No additional files are read to build a review. System prompts, model reasoning,
   images, and native provider checkpoints are not included. **Tool text can still
-  contain secrets.** This is not a redaction system. Enable only with providers
+  contain secrets, as can user/assistant text and tool arguments.** This is not a redaction system. Enable only with providers
   permitted to receive the task's code and output.
 - Cancellation aborts pending requests; results from superseded tasks are ignored.
   It cannot undo edits already made by the actor.
