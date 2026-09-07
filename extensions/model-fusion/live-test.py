@@ -76,7 +76,7 @@ if __name__ == "__main__": unittest.main()
             state = wait(lambda event: event.get("id") == "state", 30)["data"]
             assert state["model"]["provider"] == "openai-codex"
             assert state["model"]["id"] == "gpt-5.6-luna"
-            assert state["thinkingLevel"] == "xhigh"
+            assert state["thinkingLevel"] == "max"
             send({"id": "task", "type": "prompt", "message": (
                 "Fix slugify in slug.py so it lowercases ASCII letters, preserves digits, "
                 "replaces each run of non-ASCII-alphanumeric characters with one hyphen, "

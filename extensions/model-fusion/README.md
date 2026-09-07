@@ -79,7 +79,7 @@ Optional `~/.pi/agent/model-fusion.json` (under `PI_CODING_AGENT_DIR` if set):
   "actor": {
     "provider": "openai-codex",
     "model": "gpt-5.6-luna",
-    "reasoning": "xhigh"
+    "reasoning": "max"
   },
   "reviewers": [
     {

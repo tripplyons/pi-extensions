@@ -7,7 +7,7 @@ export type Slot = { provider: string; model: string; reasoning: Reasoning };
 export type Config = { actor: Slot; reviewers: Slot[]; frontier: Slot; timeoutMs: number; reviewEveryToolCalls: number };
 export const CONFIG_PATH = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "model-fusion.json");
 export const DEFAULT_CONFIG: Config = {
-	actor: { provider: "openai-codex", model: "gpt-5.6-luna", reasoning: "xhigh" },
+	actor: { provider: "openai-codex", model: "gpt-5.6-luna", reasoning: "max" },
 	reviewers: [
 		{ provider: "openrouter", model: "meta/muse-spark-1.3-contributor", reasoning: "low" },
 		{ provider: "openrouter", model: "z-ai/glm-5.3-flash", reasoning: "medium" },

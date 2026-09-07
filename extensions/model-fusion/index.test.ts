@@ -76,7 +76,7 @@ test("disabled is inert; enable keeps native identity and disable restores prior
 	expect(h.tools()).not.toContain("fusion_escalate");
 	await h.command("on");
 	expect(h.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-5.6-luna" });
-	expect(h.thinking()).toBe("xhigh");
+	expect(h.thinking()).toBe("max");
 	await h.command("off");
 	expect(h.ctx.model.id).toBe("original");
 	expect(h.thinking()).toBe("high");
