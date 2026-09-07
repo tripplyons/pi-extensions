@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 
 const piAvailable = Bun.which("pi") !== null;
 
-test.skipIf(!piAvailable).each([false, true])("real Pi RPC runs bounded fusion with terminating goal tools: %s", async (goal) => {
+test.skipIf(!piAvailable).each(["ordinary", "goal", "progress"])("real Pi RPC runs fusion: %s", async (mode) => {
+	const goal = mode === "goal";
+	const progress = mode === "progress";
 	const directory = await mkdtemp(join(tmpdir(), "fusion-rpc-"));
 	const requests: any[] = [];
 	let actorTurns = 0;
@@ -21,7 +23,7 @@ test.skipIf(!piAvailable).each([false, true])("real Pi RPC runs bounded fusion w
 			if (goal && actorTurns === 1) {
 				delta = { role: "assistant", tool_calls: [{ index: 0, id: "create-goal", type: "function", function: { name: "create_goal", arguments: JSON.stringify({ objective: "Write and verify result.txt" }) } }] };
 				finish = "tool_calls";
-			} else if (actorTurns === (goal ? 2 : 1)) {
+			} else if ((progress ? actorTurns <= 10 : actorTurns === (goal ? 2 : 1))) {
 				delta = { role: "assistant", tool_calls: [{ index: 0, id: "write-fixture", type: "function", function: { name: "write", arguments: JSON.stringify({ path: "result.txt", content: "real tool executed\n" }) } }] };
 				finish = "tool_calls";
 			} else if (goal && actorTurns === 3) {
@@ -71,15 +73,16 @@ test.skipIf(!piAvailable).each([false, true])("real Pi RPC runs bounded fusion w
 		else await wait((event) => event.type === "agent_settled");
 		expect(events.filter((event) => event.type === "extension_error")).toEqual([]);
 		expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("real tool executed\n");
-		expect(actorTurns).toBe(goal ? 6 : 4);
+		expect(actorTurns).toBe(goal ? 6 : progress ? 13 : 4);
+		if (progress) expect(JSON.stringify(requests.filter((request) => request.model === "actor")[10].messages)).toContain("Progress review (fallible)");
 		if (goal) {
 			const results = events.filter((event) => event.type === "tool_execution_end" && event.toolName === "update_goal");
 			expect(results).toHaveLength(3);
 			expect(results.slice(0, 2).every((event) => event.isError)).toBe(true);
 			expect(results[2].result.terminate).toBe(true);
 		}
-		expect(requests.filter((request) => request.model === "reviewer-a")).toHaveLength(goal ? 3 : 2);
-		expect(requests.filter((request) => request.model === "reviewer-b")).toHaveLength(goal ? 3 : 2);
+		expect(requests.filter((request) => request.model === "reviewer-a")).toHaveLength(goal || progress ? 3 : 2);
+		expect(requests.filter((request) => request.model === "reviewer-b")).toHaveLength(goal || progress ? 3 : 2);
 		expect(requests.filter((request) => request.model === "frontier")).toHaveLength(1);
 		for (const request of requests.filter((request) => request.model !== "actor")) expect(request.tools ?? []).toHaveLength(0);
 		expect(events.some((event) => event.method === "notify" && event.message?.includes("bounded review cycle ended"))).toBe(true);

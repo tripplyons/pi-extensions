@@ -25,7 +25,10 @@ Astra supplies bounded advice, never tools or a replacement actor.
 
 ## Flow
 
-1. Luna performs the task using Pi's normal tools.
+1. Luna performs the task using Pi's normal tools. Every 10 tool-use turns, both
+   reviewers check recent progress. Findings steer the next actor turn; these
+   checks do not consume completion repair rounds or automatically call Astra.
+   One actor response counts as one turn, even if it calls several tools.
 2. Both cheap reviewers independently inspect the candidate and bounded evidence.
 3. Findings get one Luna repair round and a second review.
 4. Unresolved findings get one eligible Astra advisory response, then one final
@@ -68,7 +71,7 @@ Optional `~/.pi/agent/model-fusion.json` (under `PI_CODING_AGENT_DIR` if set):
     {
       "provider": "openrouter",
       "model": "meta/muse-spark-1.3-contributor",
-      "reasoning": "medium"
+      "reasoning": "low"
     },
     {
       "provider": "openrouter",
@@ -109,7 +112,7 @@ Credentials come from Pi's registry, never this file.
 - Native actor identity is retained for provider-specific extensions such as
   Codex compaction. Reviewers receive portable text, not opaque checkpoints.
 - Normal actor usage and nested `fusion_escalate` usage use Pi accounting.
-  Hook-driven review calls are not included in Pi session totals; there is no
+  Hook-driven progress and completion review calls are not included in Pi session totals; there is no
   custom cost/quota tracker. Do not read the footer as total fusion spending.
 - Lower frontier reliance is the design objective, not a measured savings claim.
   A successful live test does not establish frontier-equivalent quality.

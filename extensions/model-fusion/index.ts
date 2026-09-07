@@ -9,6 +9,7 @@ export default function (pi: ExtensionAPI) {
 	let enabled = false;
 	let selecting = false;
 	let task: Task | undefined;
+	let toolTurns = 0;
 	let pendingInputs: Array<{ text: string; source: string }> = [];
 	let previous: { model: NonNullable<ExtensionContext["model"]>; thinking: ReturnType<ExtensionAPI["getThinkingLevel"]> } | undefined;
 
@@ -16,6 +17,7 @@ export default function (pi: ExtensionAPI) {
 	const invalidate = () => {
 		task?.controller.abort(new Error("Fusion task superseded"));
 		task = undefined;
+		toolTurns = 0;
 	};
 	const deactivate = (ctx: ExtensionContext) => {
 		enabled = false;
@@ -33,6 +35,15 @@ export default function (pi: ExtensionAPI) {
 		if (!current(snapshot)) return;
 		pi.sendMessage({ customType: "model-fusion", content, display: true, details: { taskId: snapshot.id } }, { deliverAs: "followUp", triggerTurn: true });
 	};
+	const collectReviews = (ctx: ExtensionContext, snapshot: Task, packet: string): Promise<Review[]> => Promise.all(config.reviewers.map(async (slot) => {
+		const model = `${slot.provider}/${slot.model}`;
+		try {
+			const advice = await requestAdvice(ctx, slot, config, REVIEW_PROMPT, packet, snapshot.controller.signal);
+			return { model, verdict: parseVerdict(advice.text) };
+		} catch (error) {
+			return { model, error: error instanceof Error ? error.message : String(error) };
+		}
+	}));
 	const frontier = async (ctx: ExtensionContext, snapshot: Task, packet: string) => {
 		const remaining = reserveEscalation(snapshot, Date.now());
 		if (remaining) throw new Error(`Frontier cooldown: ${Math.ceil(remaining / 1000)} seconds remaining; do not wait just to retry`);
@@ -201,15 +212,7 @@ export default function (pi: ExtensionAPI) {
 			if (!current(snapshot)) return;
 			status(ctx, "reviewing draft");
 			const packet = evidencePacket(snapshot, candidate);
-			const reviews: Review[] = await Promise.all(config.reviewers.map(async (slot) => {
-				const model = `${slot.provider}/${slot.model}`;
-				try {
-					const advice = await requestAdvice(ctx, slot, config, REVIEW_PROMPT, packet, snapshot.controller.signal);
-					return { model, verdict: parseVerdict(advice.text) };
-				} catch (error) {
-					return { model, error: error instanceof Error ? error.message : String(error) };
-				}
-			}));
+			const reviews = await collectReviews(ctx, snapshot, packet);
 			if (!current(snapshot)) return;
 			pi.appendEntry("model-fusion-review", { phase: snapshot.phase, reviews });
 			const action = nextAction(snapshot.phase, reviews);
@@ -240,7 +243,30 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 	pi.on("turn_end", async (event, ctx) => {
+		if (enabled && task && event.message.role === "assistant" && event.message.stopReason === "toolUse" && !ctx.signal?.aborted && !event.toolResults.some((result) => "terminate" in result && result.terminate)) {
+			if (++toolTurns < 10) return;
+			toolTurns = 0;
+			const snapshot = task;
+			const signal = ctx.signal;
+			const abort = () => snapshot.controller.abort(signal?.reason);
+			signal?.addEventListener("abort", abort, { once: true });
+			try {
+				status(ctx, "reviewing progress");
+				const packet = evidencePacket(snapshot, "Work is still in progress, not a proposed completion. Review recent tool evidence for concrete mistakes or a wrong approach. Do not request completion merely because the task is unfinished.");
+				const reviews = await collectReviews(ctx, snapshot, packet);
+				if (!current(snapshot)) return;
+				pi.appendEntry("model-fusion-review", { phase: "progress", reviews });
+				if (reviews.some((review) => review.verdict && review.verdict.verdict !== "pass")) {
+					pi.sendMessage({ customType: "model-fusion", content: `Progress review (fallible): verify these findings and correct concrete mistakes while continuing the task. This is not a request to finish.\n${JSON.stringify(reviews)}`, display: true, details: { taskId: snapshot.id } }, { deliverAs: "steer", triggerTurn: true });
+					note(ctx, "progress findings delivered");
+				} else note(ctx, reviews.some((review) => review.error) ? "progress review incomplete/degraded" : "progress review passed");
+			} finally {
+				signal?.removeEventListener("abort", abort);
+			}
+			return;
+		}
 		if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some((block) => block.type === "toolCall")) return;
+		toolTurns = 0;
 		const snapshot = task;
 		const advice = await reviewCompletion(event.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n"), ctx);
 		if (snapshot && advice) followUp(snapshot, advice);

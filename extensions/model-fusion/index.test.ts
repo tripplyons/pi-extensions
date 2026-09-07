@@ -88,7 +88,7 @@ test("both reviewers get bounded tool-free evidence, not reasoning or images, an
 		expect(call.context.tools).toBeUndefined();
 		expect(call.context.messages[0].content[0].text).toContain("test failed");
 		expect(JSON.stringify(call.context)).not.toContain("private-image");
-		expect(call.options.reasoning).toBe("medium");
+		expect(call.options.reasoning).toBe(call.model.id.includes("muse-spark") ? "low" : "medium");
 	}
 	expect(h.messages).toHaveLength(0);
 	expect(h.notices.at(-1)).toContain("review passed");
@@ -159,6 +159,35 @@ test("native checkpoint mismatch prevents switching away from a usable model", a
 	await h.command("on");
 	expect(h.ctx.model.id).toBe("original");
 	expect(h.notices.at(-1)).toContain("Start a new session");
+});
+
+test("progress reviews run every ten tool-use turns and steer without consuming completion repair", async () => {
+	const h = harness();
+	await h.command("on"); await h.prompt();
+	const turn = () => h.finish({ ...response("Working"), stopReason: "toolUse" });
+	for (let i = 0; i < 9; i++) await turn();
+	expect(calls).toHaveLength(0);
+	await turn();
+	expect(calls).toHaveLength(2);
+	expect(h.messages).toHaveLength(0);
+	answer = async () => response(verdict("revise"));
+	for (let i = 0; i < 10; i++) await turn();
+	expect(calls).toHaveLength(4);
+	expect(h.messages[0].options.deliverAs).toBe("steer");
+	expect(h.entries.at(-1).data.phase).toBe("progress");
+	await h.finish();
+	expect(calls).toHaveLength(6);
+	expect(h.messages[1].options.deliverAs).toBe("followUp");
+	expect(h.messages[1].message.content).toContain("one cheap repair round");
+});
+
+test("new prompts reset progress cadence", async () => {
+	const h = harness();
+	await h.command("on"); await h.prompt();
+	for (let i = 0; i < 9; i++) await h.finish({ ...response("Working"), stopReason: "toolUse" });
+	await h.prompt("different task");
+	await h.finish({ ...response("Working"), stopReason: "toolUse" });
+	expect(calls).toHaveLength(0);
 });
 
 test("missing auth prevents activation without model changes", async () => {

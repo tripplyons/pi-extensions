@@ -9,7 +9,7 @@ export const CONFIG_PATH = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(
 export const DEFAULT_CONFIG: Config = {
 	actor: { provider: "openai-codex", model: "gpt-5.6-luna", reasoning: "xhigh" },
 	reviewers: [
-		{ provider: "openrouter", model: "meta/muse-spark-1.3-contributor", reasoning: "medium" },
+		{ provider: "openrouter", model: "meta/muse-spark-1.3-contributor", reasoning: "low" },
 		{ provider: "openrouter", model: "z-ai/glm-5.3-flash", reasoning: "medium" },
 	],
 	frontier: { provider: "openai-codex", model: "gpt-6-astra", reasoning: "low" },
