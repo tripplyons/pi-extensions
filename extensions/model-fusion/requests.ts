@@ -39,7 +39,7 @@ export async function requestAdvice(ctx: ExtensionContext, slot: Slot, config: C
 				messages: [{ role: "user", content: [{ type: "text", text: packet }], timestamp: Date.now() }],
 			}, {
 				apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
-				signal: controller.signal, maxTokens: config.maxTokens,
+				signal: controller.signal,
 				reasoning: slot.reasoning === "off" ? undefined : slot.reasoning,
 			});
 			controller.signal.throwIfAborted();

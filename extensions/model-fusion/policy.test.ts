@@ -37,7 +37,9 @@ describe("fusion policy", () => {
 	});
 	test("loads defaults without a config and rejects configuration errors", async () => {
 		expect((await loadConfig("/tmp/nonexistent-fusion-config-123456789.json")).actor.model).toBe("gpt-5.6-luna");
-		for (const value of [null, [], { mystery: 1 }, { reviewers: [] }, { timeoutMs: -1 }, { maxTokens: 0 }, { actor: { provider: "x", model: "y", reasoning: "bogus" } }, { reviewers: [{ provider: "x", model: "y" }, { provider: "x", model: "y" }] }]) expect(() => parseConfig(value)).toThrow();
+		for (const value of [null, [], { mystery: 1 }, { reviewers: [] }, { timeoutMs: -1 }, { maxTokens: 0 }, { reviewEveryToolCalls: 0 }, { reviewEveryToolCalls: 1.5 }, { reviewEveryToolCalls: 1001 }, { actor: { provider: "x", model: "y", reasoning: "bogus" } }, { reviewers: [{ provider: "x", model: "y" }, { provider: "x", model: "y" }] }]) expect(() => parseConfig(value)).toThrow();
+		expect(parseConfig({}).reviewEveryToolCalls).toBe(10);
+		expect(parseConfig({ reviewEveryToolCalls: 7 }).reviewEveryToolCalls).toBe(7);
 		expect(parseConfig({ frontier: { provider: "local", model: "custom" } }).frontier.reasoning).toBe("low");
 	});
 });

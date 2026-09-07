@@ -13,7 +13,10 @@ Astra supplies bounded advice, never tools or a replacement actor.
 /fusion reload
 ```
 
-- Starts disabled, including after session resume or navigation.
+- New sessions start disabled. Enabled state and the prior model selection are
+  saved in the session, so reload/resume restores fusion after validating its
+  configuration and authentication. The compact footer shows `fusion` while on.
+  In-flight reviews and cadence counters are not restored.
 - Enable/reload while idle. Enabling selects the configured actor at its configured
   reasoning level. Disabling restores the previous model and reasoning.
 - Selecting a model yourself disables fusion without overriding your selection.
@@ -25,10 +28,14 @@ Astra supplies bounded advice, never tools or a replacement actor.
 
 ## Flow
 
-1. Luna performs the task using Pi's normal tools. Every 10 tool-use turns, both
-   reviewers check recent progress. Findings steer the next actor turn; these
-   checks do not consume completion repair rounds or automatically call Astra.
-   One actor response counts as one turn, even if it calls several tools.
+1. Luna performs the task using Pi's normal tools. Every 10 individual tool calls
+   by default, both reviewers check a snapshot of recent progress in the background.
+   Calls in a batch count separately; the review starts after the batch finishes.
+   Luna keeps working. Each result posts its snapshot time, elapsed time, and how
+   many more calls the actor completed. Findings steer a later turn and explicitly
+   warn that newer work may already address them. Passes/failures without findings
+   are informational messages and do not start extra actor turns.
+   These checks do not consume completion repair rounds or automatically call Astra.
 2. Both cheap reviewers independently inspect the candidate and bounded evidence.
 3. Findings get one Luna repair round and a second review.
 4. Unresolved findings get one eligible Astra advisory response, then one final
@@ -37,13 +44,20 @@ Astra supplies bounded advice, never tools or a replacement actor.
 
 One unavailable reviewer produces a visible degraded result. If no reviewer
 returns a valid verdict, fusion attempts eligible frontier advice. Invalid JSON,
-truncated responses, and request failures are not passing reviews.
+truncated responses, and request failures are not passing reviews. Fusion imposes
+no advisory output-token cap; the request timeout still applies. Provider/SDK
+output limits may still apply.
 
 `fusion_escalate` lets the actor request frontier advice for a concrete blocker.
 It shares the automatic escalation allowance: one immediate attempt per genuine
 user prompt, then at least five minutes between further attempts on that prompt.
 A new user prompt resets the allowance. Failed attempts consume it. The extension
 never waits out the timer or retries automatically on a timer.
+
+Completion reviews still block. They supersede and cancel unfinished progress
+reviews. New prompts, session navigation, disabling fusion, and aborts also discard
+pending results. Multiple progress snapshots may be in flight; timing labels
+identify their order, rather than implying that a late result reviewed newer work.
 
 ## Goal loops
 
@@ -85,7 +99,7 @@ Optional `~/.pi/agent/model-fusion.json` (under `PI_CODING_AGENT_DIR` if set):
     "reasoning": "low"
   },
   "timeoutMs": 90000,
-  "maxTokens": 2048
+  "reviewEveryToolCalls": 10
 }
 ```
 
@@ -93,7 +107,9 @@ These are the embedded defaults; no config file is required. Top-level omissions
 use defaults. Each supplied slot requires `provider` and `model`; reasoning
 omission means `low`. Configure 1–4 distinct reviewers. Unknown settings and
 invalid values are rejected; failed reloads retain the working configuration.
-Credentials come from Pi's registry, never this file.
+Credentials come from Pi's registry, never this file. `reviewEveryToolCalls` accepts
+1–1000. Remove the former `maxTokens` setting from existing overrides.
+`/fusion reload` rereads this JSON; use Pi's `/reload` for extension code changes.
 
 ## Boundaries
 

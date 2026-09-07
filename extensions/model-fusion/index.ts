@@ -9,15 +9,30 @@ export default function (pi: ExtensionAPI) {
 	let enabled = false;
 	let selecting = false;
 	let task: Task | undefined;
-	let toolTurns = 0;
+	let toolCalls = 0;
+	let reviewedThrough = 0;
+	const progressRequests = new Set<AbortController>();
+	const cancelProgress = () => {
+		for (const controller of progressRequests) controller.abort(new Error("Progress review superseded"));
+		progressRequests.clear();
+	};
 	let pendingInputs: Array<{ text: string; source: string }> = [];
 	let previous: { model: NonNullable<ExtensionContext["model"]>; thinking: ReturnType<ExtensionAPI["getThinkingLevel"]> } | undefined;
 
-	const status = (ctx: ExtensionContext, text: string) => ctx.ui.setStatus("model-fusion", enabled ? `fusion: ${text}` : undefined);
+	const status = (ctx: ExtensionContext, text: string) => {
+		ctx.ui.setStatus("model-fusion", enabled ? "fusion on" : undefined);
+		ctx.ui.setStatus("model-fusion-progress", enabled ? text : undefined);
+	};
+	const persist = () => pi.appendEntry("model-fusion-state", {
+		enabled,
+		previous: previous ? { provider: previous.model.provider, model: previous.model.id, thinking: previous.thinking } : undefined,
+	});
 	const invalidate = () => {
+		cancelProgress();
+		reviewedThrough = 0;
 		task?.controller.abort(new Error("Fusion task superseded"));
 		task = undefined;
-		toolTurns = 0;
+		toolCalls = 0;
 	};
 	const deactivate = (ctx: ExtensionContext) => {
 		enabled = false;
@@ -35,10 +50,10 @@ export default function (pi: ExtensionAPI) {
 		if (!current(snapshot)) return;
 		pi.sendMessage({ customType: "model-fusion", content, display: true, details: { taskId: snapshot.id } }, { deliverAs: "followUp", triggerTurn: true });
 	};
-	const collectReviews = (ctx: ExtensionContext, snapshot: Task, packet: string): Promise<Review[]> => Promise.all(config.reviewers.map(async (slot) => {
+	const collectReviews = (ctx: ExtensionContext, snapshot: Task, packet: string, signal = snapshot.controller.signal): Promise<Review[]> => Promise.all(config.reviewers.map(async (slot) => {
 		const model = `${slot.provider}/${slot.model}`;
 		try {
-			const advice = await requestAdvice(ctx, slot, config, REVIEW_PROMPT, packet, snapshot.controller.signal);
+			const advice = await requestAdvice(ctx, slot, config, REVIEW_PROMPT, packet, signal);
 			return { model, verdict: parseVerdict(advice.text) };
 		} catch (error) {
 			return { model, error: error instanceof Error ? error.message : String(error) };
@@ -51,9 +66,7 @@ export default function (pi: ExtensionAPI) {
 		return requestAdvice(ctx, config.frontier, config, FRONTIER_PROMPT, packet, snapshot.controller.signal);
 	};
 
-	pi.registerCommand("fusion", {
-		description: "Opt-in cheap-model fusion: on, off, status, reload",
-		handler: async (args, ctx) => {
+	const configure = async (args: string, ctx: ExtensionContext, restored?: typeof previous) => {
 			const action = args.trim() || "status";
 			if (action === "status") {
 				ctx.ui.notify(`Fusion ${enabled ? "on" : "off"}; actor ${config.actor.provider}/${config.actor.model}; phase ${task?.phase ?? "idle"}; config ${CONFIG_PATH}`, "info");
@@ -70,6 +83,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				if (action === "off") {
 					deactivate(ctx);
+					persist();
 					if (previous) {
 						if (!(await pi.setModel(previous.model))) throw new Error("Fusion disabled, but prior model authentication is unavailable");
 						pi.setThinkingLevel(previous.thinking);
@@ -105,16 +119,20 @@ export default function (pi: ExtensionAPI) {
 				} finally {
 					selecting = false;
 				}
-				if (!enabled) previous = selection;
+				if (!enabled) previous = restored ?? selection;
 				invalidate();
 				config = loaded;
 				enabled = true;
+				persist();
 				pi.setActiveTools([...new Set([...pi.getActiveTools(), "fusion_escalate"])]);
 				note(ctx, "on; selected task/tool evidence will be sent to configured reviewers");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
-		},
+	};
+	pi.registerCommand("fusion", {
+		description: "Opt-in cheap-model fusion: on, off, status, reload",
+		handler: (args, ctx) => configure(args, ctx),
 	});
 
 	pi.registerTool({
@@ -141,7 +159,18 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => { deactivate(ctx); previous = undefined; });
+	const restore = async (ctx: ExtensionContext) => {
+		deactivate(ctx);
+		previous = undefined;
+		const entry = [...ctx.sessionManager.getEntries()].reverse().find((entry) => entry.type === "custom" && entry.customType === "model-fusion-state");
+		if (entry?.type !== "custom") return;
+		const stored = entry.data as { enabled?: boolean; previous?: { provider: string; model: string; thinking: ReturnType<ExtensionAPI["getThinkingLevel"]> } };
+		if (stored?.enabled !== true) return;
+		const model = stored.previous && ctx.modelRegistry.find(stored.previous.provider, stored.previous.model);
+		await configure("on", ctx, model && stored.previous ? { model, thinking: stored.previous.thinking } : undefined);
+	};
+	pi.on("session_start", (_event, ctx) => restore(ctx));
+	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.on("session_before_switch", (_event, ctx) => { deactivate(ctx); previous = undefined; });
 	pi.on("session_before_fork", (_event, ctx) => { deactivate(ctx); previous = undefined; });
 	pi.on("session_before_tree", (_event, ctx) => { deactivate(ctx); previous = undefined; });
@@ -150,6 +179,7 @@ export default function (pi: ExtensionAPI) {
 		if (!enabled || selecting) return;
 		deactivate(ctx);
 		previous = undefined;
+		persist();
 		ctx.ui.notify("Fusion disabled after model selection changed", "info");
 	});
 	pi.on("input", (event, ctx) => {
@@ -197,6 +227,8 @@ export default function (pi: ExtensionAPI) {
 		addEvidence(task, `Tool: ${event.toolName}; error: ${event.isError}\nInput: ${input}\nOutput: ${text}`);
 	});
 	const reviewCompletion = async (candidate: string, ctx: ExtensionContext): Promise<string | undefined> => {
+		cancelProgress();
+		reviewedThrough = toolCalls;
 		const snapshot = task;
 		if (!enabled || !snapshot || snapshot.phase === "done") return;
 		if (snapshot.phase === "frontier") {
@@ -242,31 +274,44 @@ export default function (pi: ExtensionAPI) {
 			if (task === snapshot && snapshot.controller.signal.aborted) status(ctx, "cancelled");
 		}
 	};
+	const reviewProgress = async (ctx: ExtensionContext, snapshot: Task, fromCall: number, throughCall: number) => {
+		const startedAt = Date.now();
+		const controller = new AbortController();
+		const signal = ctx.signal;
+		const abort = () => controller.abort(signal?.reason);
+		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) abort();
+		progressRequests.add(controller);
+		try {
+			status(ctx, `background review through tool call ${throughCall}`);
+			const packet = evidencePacket(snapshot, "Work is still in progress, not a proposed completion. Review recent tool evidence for concrete mistakes or a wrong approach. Do not request completion merely because the task is unfinished.");
+			const reviews = await collectReviews(ctx, snapshot, packet, controller.signal);
+			if (!current(snapshot) || controller.signal.aborted) return;
+			const finishedAt = Date.now();
+			const timing = { startedAt, finishedAt, elapsedMs: finishedAt - startedAt, fromCall, throughCall, deliveredAtCall: toolCalls };
+			const actionable = reviews.some((review) => review.verdict && review.verdict.verdict !== "pass");
+			const outcome = actionable ? "findings" : reviews.some((review) => review.error) ? "incomplete/degraded" : "passed";
+			pi.appendEntry("model-fusion-review", { taskId: snapshot.id, phase: "progress", timing, reviews });
+			const content = `Background progress review: ${outcome}. Snapshot after tool call ${throughCall} (checkpoint interval ${fromCall}–${throughCall}), started ${new Date(startedAt).toISOString()}, finished ${new Date(finishedAt).toISOString()} (${(timing.elapsedMs / 1000).toFixed(1)}s); actor has since completed ${toolCalls - throughCall} more tool calls.\n${actionable ? "Findings are fallible and may already be addressed by newer work. Verify against current state; do not repeat fixes or finish merely because this review arrived." : "Informational result only; no reply or extra work is requested."}\n${JSON.stringify(reviews)}`;
+			pi.sendMessage({ customType: "model-fusion", content, display: true, details: { taskId: snapshot.id, timing } }, { deliverAs: "steer", triggerTurn: actionable });
+			note(ctx, `progress review ${outcome} (${(timing.elapsedMs / 1000).toFixed(1)}s)`);
+		} catch (error) {
+			if (current(snapshot) && !controller.signal.aborted) note(ctx, `progress review failed: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			signal?.removeEventListener("abort", abort);
+			progressRequests.delete(controller);
+		}
+	};
 	pi.on("turn_end", async (event, ctx) => {
 		if (enabled && task && event.message.role === "assistant" && event.message.stopReason === "toolUse" && !ctx.signal?.aborted && !event.toolResults.some((result) => "terminate" in result && result.terminate)) {
-			if (++toolTurns < 10) return;
-			toolTurns = 0;
-			const snapshot = task;
-			const signal = ctx.signal;
-			const abort = () => snapshot.controller.abort(signal?.reason);
-			signal?.addEventListener("abort", abort, { once: true });
-			try {
-				status(ctx, "reviewing progress");
-				const packet = evidencePacket(snapshot, "Work is still in progress, not a proposed completion. Review recent tool evidence for concrete mistakes or a wrong approach. Do not request completion merely because the task is unfinished.");
-				const reviews = await collectReviews(ctx, snapshot, packet);
-				if (!current(snapshot)) return;
-				pi.appendEntry("model-fusion-review", { phase: "progress", reviews });
-				if (reviews.some((review) => review.verdict && review.verdict.verdict !== "pass")) {
-					pi.sendMessage({ customType: "model-fusion", content: `Progress review (fallible): verify these findings and correct concrete mistakes while continuing the task. This is not a request to finish.\n${JSON.stringify(reviews)}`, display: true, details: { taskId: snapshot.id } }, { deliverAs: "steer", triggerTurn: true });
-					note(ctx, "progress findings delivered");
-				} else note(ctx, reviews.some((review) => review.error) ? "progress review incomplete/degraded" : "progress review passed");
-			} finally {
-				signal?.removeEventListener("abort", abort);
-			}
+			toolCalls += event.toolResults.length;
+			if (toolCalls - reviewedThrough < config.reviewEveryToolCalls) return;
+			const fromCall = reviewedThrough + 1;
+			reviewedThrough = toolCalls;
+			void reviewProgress(ctx, task, fromCall, toolCalls);
 			return;
 		}
 		if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some((block) => block.type === "toolCall")) return;
-		toolTurns = 0;
 		const snapshot = task;
 		const advice = await reviewCompletion(event.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n"), ctx);
 		if (snapshot && advice) followUp(snapshot, advice);

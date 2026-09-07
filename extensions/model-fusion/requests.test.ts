@@ -8,6 +8,14 @@ const ctx: any = { modelRegistry: {
 	getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "secret-never-log" }),
 } };
 
+test("advisory options omit an output token cap", async () => {
+	complete = async (_model, _context, options) => {
+		expect(options).not.toHaveProperty("maxTokens");
+		return { content: [{ type: "text", text: "advice" }], stopReason: "stop", usage: {} };
+	};
+	await requestAdvice(ctx, DEFAULT_CONFIG.reviewers[0], DEFAULT_CONFIG, REVIEW_PROMPT, "evidence", new AbortController().signal);
+});
+
 test("deadline cancels a provider that never settles", async () => {
 	let signal: AbortSignal | undefined;
 	complete = async (_model, _context, options) => {

@@ -26,7 +26,7 @@ function harness() {
 	const ctx: any = {
 		model: { provider: "openai-codex", id: "original" },
 		signal: new AbortController().signal,
-		sessionManager: { getBranch: () => [] },
+		sessionManager: { getBranch: () => [], getEntries: () => entries.map((entry) => ({ type: "custom", ...entry })) },
 		isIdle: () => true,
 		modelRegistry: {
 			find: (provider: string, id: string) => ({ provider, id }),
@@ -161,32 +161,71 @@ test("native checkpoint mismatch prevents switching away from a usable model", a
 	expect(h.notices.at(-1)).toContain("Start a new session");
 });
 
-test("progress reviews run every ten tool-use turns and steer without consuming completion repair", async () => {
+const toolBatch = (h: ReturnType<typeof harness>, count: number) => h.emit("turn_end", { message: { ...response("Working"), stopReason: "toolUse" }, toolResults: Array.from({ length: count }, () => ({ role: "toolResult" })) });
+const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+test("background progress counts individual calls and posts delayed passes without triggering turns", async () => {
+	const pending: Array<() => void> = [];
+	answer = () => new Promise((resolve) => pending.push(() => resolve(response(verdict()))));
 	const h = harness();
 	await h.command("on"); await h.prompt();
-	const turn = () => h.finish({ ...response("Working"), stopReason: "toolUse" });
-	for (let i = 0; i < 9; i++) await turn();
+	await toolBatch(h, 9);
 	expect(calls).toHaveLength(0);
-	await turn();
+	await toolBatch(h, 1);
+	await flush();
 	expect(calls).toHaveLength(2);
 	expect(h.messages).toHaveLength(0);
-	answer = async () => response(verdict("revise"));
-	for (let i = 0; i < 10; i++) await turn();
-	expect(calls).toHaveLength(4);
-	expect(h.messages[0].options.deliverAs).toBe("steer");
+	await toolBatch(h, 3);
+	for (const resolve of pending) resolve();
+	await flush();
+	expect(h.messages[0].options.triggerTurn).toBe(false);
+	expect(h.messages[0].message.content).toContain("3 more tool calls");
+	expect(h.messages[0].message.details.timing.throughCall).toBe(10);
 	expect(h.entries.at(-1).data.phase).toBe("progress");
+	answer = async () => response(verdict("revise"));
+	await toolBatch(h, 7); await flush();
+	expect(h.messages[1].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+	expect(h.messages[1].message.content).toContain("may already be addressed");
 	await h.finish();
-	expect(calls).toHaveLength(6);
-	expect(h.messages[1].options.deliverAs).toBe("followUp");
-	expect(h.messages[1].message.content).toContain("one cheap repair round");
+	expect(h.messages[2].message.content).toContain("one cheap repair round");
+});
+
+test.each(["input", "session_before_switch", "session_shutdown", "completion", "goal", "abort"])("%s discards pending background results", async (event) => {
+	const pending: Array<() => void> = [];
+	answer = () => new Promise((resolve) => pending.push(() => resolve(response(verdict("revise")))));
+	const h = harness();
+	const controller = new AbortController(); h.ctx.signal = controller.signal;
+	await h.command("on"); await h.prompt(); await toolBatch(h, 10); await flush();
+	answer = async () => response(verdict());
+	if (event === "completion") await h.finish();
+	else if (event === "goal") await h.emit("tool_call", { toolName: "update_goal", input: { status: "complete" } });
+	else if (event === "abort") controller.abort();
+	else if (event === "input") await h.prompt("replacement");
+	else await h.emit(event);
+	for (const resolve of pending) resolve();
+	await flush();
+	expect(h.messages).toHaveLength(0);
+	expect(calls.slice(0, 2).every((call) => call.options.signal.aborted)).toBe(true);
+});
+
+test("fusion persists across reload/resume, preserves prior selection, and respects explicit off", async () => {
+	const h = harness();
+	await h.command("on");
+	await h.emit("session_start", { reason: "reload" });
+	expect(h.tools()).toContain("fusion_escalate");
+	await h.prompt(); await h.finish(); expect(calls).toHaveLength(2);
+	await h.command("off");
+	expect(h.ctx.model.id).toBe("original");
+	await h.emit("session_start", { reason: "resume" });
+	expect(h.tools()).not.toContain("fusion_escalate");
 });
 
 test("new prompts reset progress cadence", async () => {
 	const h = harness();
 	await h.command("on"); await h.prompt();
-	for (let i = 0; i < 9; i++) await h.finish({ ...response("Working"), stopReason: "toolUse" });
+	await toolBatch(h, 9);
 	await h.prompt("different task");
-	await h.finish({ ...response("Working"), stopReason: "toolUse" });
+	await toolBatch(h, 1);
 	expect(calls).toHaveLength(0);
 });
 

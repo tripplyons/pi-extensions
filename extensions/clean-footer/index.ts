@@ -77,6 +77,7 @@ export default function cleanFooterExtension(pi: ExtensionAPI) {
 					];
 					if (statusIsOn(statuses, "local")) parts.push(theme.fg("muted", "local"));
 					if (statusIsOn(statuses, "codex-fast-mode")) parts.push(theme.fg("muted", "fast"));
+					if (statusIsOn(statuses, "model-fusion")) parts.push(theme.fg("muted", "fusion"));
 					if (statusIsOn(statuses, "goal")) parts.push(theme.fg("muted", "goal"));
 					if (statusIsOn(statuses, "context-compression")) parts.push(theme.fg("muted", "compression"));
 					if (statusIsOn(statuses, "review")) parts.push(theme.fg("muted", "review"));

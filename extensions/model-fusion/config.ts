@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 export type Reasoning = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Slot = { provider: string; model: string; reasoning: Reasoning };
-export type Config = { actor: Slot; reviewers: Slot[]; frontier: Slot; timeoutMs: number; maxTokens: number };
+export type Config = { actor: Slot; reviewers: Slot[]; frontier: Slot; timeoutMs: number; reviewEveryToolCalls: number };
 export const CONFIG_PATH = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "model-fusion.json");
 export const DEFAULT_CONFIG: Config = {
 	actor: { provider: "openai-codex", model: "gpt-5.6-luna", reasoning: "xhigh" },
@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG: Config = {
 	],
 	frontier: { provider: "openai-codex", model: "gpt-6-astra", reasoning: "low" },
 	timeoutMs: 90_000,
-	maxTokens: 2048,
+	reviewEveryToolCalls: 10,
 };
 
 function object(value: unknown, path: string): Record<string, unknown> {
@@ -42,7 +42,7 @@ function slot(value: unknown, path: string): Slot {
 
 export function parseConfig(value: unknown): Config {
 	const fields = object(value, "config");
-	keys(fields, ["actor", "reviewers", "frontier", "timeoutMs", "maxTokens"], "config");
+	keys(fields, ["actor", "reviewers", "frontier", "timeoutMs", "reviewEveryToolCalls"], "config");
 	const reviewers = fields.reviewers ?? DEFAULT_CONFIG.reviewers;
 	if (!Array.isArray(reviewers) || reviewers.length < 1 || reviewers.length > 4) throw new Error("config.reviewers: expected 1–4 slots");
 	const config = {
@@ -50,9 +50,9 @@ export function parseConfig(value: unknown): Config {
 		reviewers: reviewers.map((value, index) => slot(value, `config.reviewers[${index}]`)),
 		frontier: slot(fields.frontier ?? DEFAULT_CONFIG.frontier, "config.frontier"),
 		timeoutMs: fields.timeoutMs ?? DEFAULT_CONFIG.timeoutMs,
-		maxTokens: fields.maxTokens ?? DEFAULT_CONFIG.maxTokens,
+		reviewEveryToolCalls: fields.reviewEveryToolCalls ?? DEFAULT_CONFIG.reviewEveryToolCalls,
 	};
-	for (const [key, max] of [["timeoutMs", 600_000], ["maxTokens", 32_768]] as const) {
+	for (const [key, max] of [["timeoutMs", 600_000], ["reviewEveryToolCalls", 1000]] as const) {
 		const value = config[key];
 		if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > max) throw new Error(`config.${key}: expected an integer from 1 to ${max}`);
 	}

@@ -102,6 +102,16 @@ describe("clean footer extension statuses", () => {
 		expect(footer.render(200)[0]).toContain("$0.00 | local");
 	});
 
+	test("shows fusion while enabled, regardless of progress status", async () => {
+		const harness = createHarness();
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		harness.statuses.set("model-fusion", "fusion on");
+		harness.statuses.set("model-fusion-progress", "background review");
+		expect(harness.footer().render(200)[0]).toContain("$0.00 | fusion");
+		harness.statuses.delete("model-fusion");
+		expect(harness.footer().render(200)[0]).not.toContain("fusion");
+	});
+
 	test("shows an active goal", async () => {
 		const harness = createHarness();
 		harness.statuses.set("goal", "goal on");
