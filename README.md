@@ -53,7 +53,7 @@ Extensions run with your user permissions.
 | goal | Tracks goals and continues work automatically. Use `/goal`. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window. |
-| [model-fusion](extensions/model-fusion/README.md) | Combines a Luna actor, cheap completion reviewers, and bounded Astra advice. Enable with `/fusion on`. |
+| [model-fusion](extensions/model-fusion/README.md) | Combines a Luna actor, cheap completion reviewers, and bounded Astra advice, including goal-loop completion checks. Enable with `/fusion on`. |
 | nvim-session-export | Exports the session to Neovim with `/nvim`. |
 | openai-codex-usage | Reports Codex usage with `/usage`. |
 | review | Runs code reviews with `/review`. |

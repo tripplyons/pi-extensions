@@ -17,6 +17,9 @@ Astra supplies bounded advice, never tools or a replacement actor.
 - Enable/reload while idle. Enabling selects the configured actor at its configured
   reasoning level. Disabling restores the previous model and reasoning.
 - Selecting a model yourself disables fusion without overriding your selection.
+- Enable fusion before native compaction. A checkpoint from another actor model
+  prevents activation without changing your current model. Start a new session
+  or configure fusion's actor to match that checkpoint.
 - The package manifest discovers this directory's `index.ts`. For isolated testing,
   use `pi --no-extensions -e /absolute/path/to/model-fusion/index.ts`.
 
@@ -38,6 +41,17 @@ It shares the automatic escalation allowance: one immediate attempt per genuine
 user prompt, then at least five minutes between further attempts on that prompt.
 A new user prompt resets the allowance. Failed attempts consume it. The extension
 never waits out the timer or retries automatically on a timer.
+
+## Goal loops
+
+Goal continuations start another bounded review cycle, including when fusion was
+turned on mid-goal. They do not reset the five-minute frontier allowance.
+`update_goal` completion and blocked calls are reviewed before the tool can end
+the run. Findings block that call and return repair instructions to the actor;
+no follow-up is left waiting behind a terminating tool.
+
+The final repair is still not independently re-reviewed. Reviewer outages or a
+frontier cooldown produce an incomplete-review notice, not an endless goal gate.
 
 ## Configuration
 
@@ -119,7 +133,8 @@ bun test extensions/model-fusion/rpc.integration.test.ts
 ```
 
 Run test files separately: Bun module mocks are process-global. The RPC test uses
-real Pi and a local fake inference server; it makes no paid calls.
+real Pi and a local fake inference server, including the actual goal extension's
+terminating tool; it makes no paid calls.
 
 The explicit live test creates a disposable coding fixture, uses all four default
 models, loads Codex compaction alongside fusion, and checks the resulting file

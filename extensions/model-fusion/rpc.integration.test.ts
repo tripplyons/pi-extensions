@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const piAvailable = Bun.which("pi") !== null;
 
-test.skipIf(!piAvailable)("real Pi RPC runs bounded review, repair, frontier advice, and native tool execution against fake inference", async () => {
+test.skipIf(!piAvailable).each([false, true])("real Pi RPC runs bounded fusion with terminating goal tools: %s", async (goal) => {
 	const directory = await mkdtemp(join(tmpdir(), "fusion-rpc-"));
 	const requests: any[] = [];
 	let actorTurns = 0;
@@ -18,12 +18,20 @@ test.skipIf(!piAvailable)("real Pi RPC runs bounded review, repair, frontier adv
 		let finish = "stop";
 		if (body.model === "actor") {
 			actorTurns++;
-			if (actorTurns === 1) {
+			if (goal && actorTurns === 1) {
+				delta = { role: "assistant", tool_calls: [{ index: 0, id: "create-goal", type: "function", function: { name: "create_goal", arguments: JSON.stringify({ objective: "Write and verify result.txt" }) } }] };
+				finish = "tool_calls";
+			} else if (actorTurns === (goal ? 2 : 1)) {
 				delta = { role: "assistant", tool_calls: [{ index: 0, id: "write-fixture", type: "function", function: { name: "write", arguments: JSON.stringify({ path: "result.txt", content: "real tool executed\n" }) } }] };
+				finish = "tool_calls";
+			} else if (goal && actorTurns === 3) {
+				delta = { role: "assistant", content: "Fixture written; the goal still needs its final check." };
+			} else if (goal) {
+				delta = { role: "assistant", tool_calls: [{ index: 0, id: `complete-${actorTurns}`, type: "function", function: { name: "update_goal", arguments: JSON.stringify({ status: "complete" }) } }] };
 				finish = "tool_calls";
 			} else delta = { role: "assistant", content: "Candidate implementation complete." };
 		} else if (body.model === "frontier") delta = { role: "assistant", content: "Check the fixture and report remaining uncertainty." };
-		else delta = { role: "assistant", content: JSON.stringify({ verdict: "revise", findings: ["The candidate has not demonstrated the requested check."], checks: ["Inspect the fixture."] }) };
+		else delta = { role: "assistant", content: JSON.stringify({ verdict: goal && actorTurns === 3 ? "pass" : "revise", findings: goal && actorTurns === 3 ? [] : ["The candidate has not demonstrated the requested check."], checks: ["Inspect the fixture."] }) };
 		const chunk = (choices: any[], usage?: any) => ({ id: "completion", object: "chat.completion.chunk", created: 1, model: body.model, choices, ...(usage ? { usage } : {}) });
 		const frames = [chunk([{ index: 0, delta, finish_reason: null }]), chunk([{ index: 0, delta: {}, finish_reason: finish }], { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 })];
 		return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
@@ -31,7 +39,7 @@ test.skipIf(!piAvailable)("real Pi RPC runs bounded review, repair, frontier adv
 	const slot = (model: string) => ({ provider: "fusion-test", model, reasoning: "off" });
 	await writeFile(join(directory, "model-fusion.json"), JSON.stringify({ actor: slot("actor"), reviewers: [slot("reviewer-a"), slot("reviewer-b")], frontier: slot("frontier") }));
 	await writeFile(join(directory, "provider.ts"), `export default function(pi) { pi.registerProvider("fusion-test", { baseUrl: "http://127.0.0.1:${server.port}/v1", apiKey: "test-only", api: "openai-completions", models: ${JSON.stringify(["actor", "reviewer-a", "reviewer-b", "frontier"].map((id) => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })))} }); }`);
-	const child = spawn("pi", ["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "--provider", "fusion-test", "--model", "actor", "-e", join(directory, "provider.ts"), "-e", fileURLToPath(new URL("./index.ts", import.meta.url))], { cwd: directory, env: { ...process.env, PI_CODING_AGENT_DIR: directory }, stdio: ["pipe", "pipe", "pipe"] });
+	const child = spawn("pi", ["--mode", "rpc", "--session-dir", join(directory, "sessions"), "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "--provider", "fusion-test", "--model", "actor", "-e", join(directory, "provider.ts"), "-e", fileURLToPath(new URL("./index.ts", import.meta.url)), ...(goal ? ["-e", fileURLToPath(new URL("../goal/index.ts", import.meta.url))] : [])], { cwd: directory, env: { ...process.env, PI_CODING_AGENT_DIR: directory }, stdio: ["pipe", "pipe", "pipe"] });
 	const events: any[] = [];
 	let stderr = "";
 	let buffer = "";
@@ -59,12 +67,19 @@ test.skipIf(!piAvailable)("real Pi RPC runs bounded review, repair, frontier adv
 		send({ id: "on", type: "prompt", message: "/fusion on" });
 		expect((await wait((event) => event.id === "on")).success).toBe(true);
 		send({ id: "task", type: "prompt", message: "Write result.txt and verify the result." });
-		await wait((event) => event.type === "agent_settled");
+		if (goal) await wait((event) => event.type === "tool_execution_end" && event.toolName === "update_goal" && event.result?.terminate);
+		else await wait((event) => event.type === "agent_settled");
 		expect(events.filter((event) => event.type === "extension_error")).toEqual([]);
 		expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("real tool executed\n");
-		expect(actorTurns).toBe(4);
-		expect(requests.filter((request) => request.model === "reviewer-a")).toHaveLength(2);
-		expect(requests.filter((request) => request.model === "reviewer-b")).toHaveLength(2);
+		expect(actorTurns).toBe(goal ? 6 : 4);
+		if (goal) {
+			const results = events.filter((event) => event.type === "tool_execution_end" && event.toolName === "update_goal");
+			expect(results).toHaveLength(3);
+			expect(results.slice(0, 2).every((event) => event.isError)).toBe(true);
+			expect(results[2].result.terminate).toBe(true);
+		}
+		expect(requests.filter((request) => request.model === "reviewer-a")).toHaveLength(goal ? 3 : 2);
+		expect(requests.filter((request) => request.model === "reviewer-b")).toHaveLength(goal ? 3 : 2);
 		expect(requests.filter((request) => request.model === "frontier")).toHaveLength(1);
 		for (const request of requests.filter((request) => request.model !== "actor")) expect(request.tools ?? []).toHaveLength(0);
 		expect(events.some((event) => event.method === "notify" && event.message?.includes("bounded review cycle ended"))).toBe(true);

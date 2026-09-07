@@ -26,6 +26,7 @@ function harness() {
 	const ctx: any = {
 		model: { provider: "openai-codex", id: "original" },
 		signal: new AbortController().signal,
+		sessionManager: { getBranch: () => [] },
 		isIdle: () => true,
 		modelRegistry: {
 			find: (provider: string, id: string) => ({ provider, id }),
@@ -120,6 +121,44 @@ test("tool and automatic escalation share allowance; extension inputs do not res
 	await h.prompt("new user prompt");
 	await h.escalate();
 	expect(calls).toHaveLength(2);
+});
+
+test("goal continuations reopen review without resetting frontier allowance", async () => {
+	const h = harness();
+	await h.command("on"); await h.prompt(); await h.escalate(); await h.finish();
+	await h.emit("message_start", { message: { role: "custom", customType: "goal-continuation", content: "Continue testing the goal" } });
+	await expect(h.escalate()).rejects.toThrow("cooldown");
+	await h.finish();
+	expect(calls).toHaveLength(5);
+	expect(calls.at(-1)?.context.messages[0].content[0].text).toContain("Continue testing the goal");
+});
+
+test("goal continuation starts a task when fusion was enabled mid-goal", async () => {
+	const h = harness();
+	await h.command("on");
+	await h.emit("message_start", { message: { role: "custom", customType: "goal-continuation", content: "Finish the fixture" } });
+	await h.finish();
+	expect(calls).toHaveLength(2);
+});
+
+test("terminating goal updates are reviewed and blocked for bounded repairs", async () => {
+	answer = async (call) => response(call.model.id === "gpt-6-astra" ? "Verify the fixture" : verdict("revise"));
+	const h = harness();
+	await h.command("on"); await h.prompt();
+	const update = () => h.emit("tool_call", { toolName: "update_goal", input: { status: "complete" } });
+	expect((await update()).block).toBe(true);
+	expect((await update()).block).toBe(true);
+	expect(await update()).toBeUndefined();
+	expect(calls).toHaveLength(5);
+	expect(h.messages).toHaveLength(0);
+});
+
+test("native checkpoint mismatch prevents switching away from a usable model", async () => {
+	const h = harness();
+	h.ctx.sessionManager.getBranch = () => [{ type: "compaction", details: { kind: "openai-codex-native-compaction", modelKey: "openai-codex:openai-codex-responses:gpt-6-astra" } }];
+	await h.command("on");
+	expect(h.ctx.model.id).toBe("original");
+	expect(h.notices.at(-1)).toContain("Start a new session");
 });
 
 test("missing auth prevents activation without model changes", async () => {

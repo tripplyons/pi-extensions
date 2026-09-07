@@ -81,6 +81,12 @@ export default function (pi: ExtensionAPI) {
 				if (!ctx.model) throw new Error("No active model to restore after fusion");
 				const selection = { model: ctx.model, thinking: pi.getThinkingLevel() };
 				const actor = ctx.modelRegistry.find(loaded.actor.provider, loaded.actor.model)!;
+				const checkpoint = [...ctx.sessionManager.getBranch()].reverse().find((entry) => entry.type === "compaction" || (entry.type === "custom" && entry.customType === "openai-codex-native-compaction"));
+				const details = checkpoint?.type === "compaction" ? checkpoint.details : checkpoint?.type === "custom" ? checkpoint.data : undefined;
+				const native = details as { kind?: string; modelKey?: string } | undefined;
+				if (native?.kind === "openai-codex-native-compaction" && native.modelKey !== `${actor.provider}:${actor.api}:${actor.id}`) {
+					throw new Error("Fusion cannot switch this native-compacted session to its actor. Start a new session and enable /fusion on before working, or configure the actor to match the checkpoint model.");
+				}
 				selecting = true;
 				try {
 					if (!(await pi.setModel(actor))) throw new Error("Actor authentication unavailable");
@@ -143,7 +149,19 @@ export default function (pi: ExtensionAPI) {
 		status(ctx, "awaiting user prompt delivery");
 	});
 	pi.on("message_start", (event, ctx) => {
-		if (!enabled || event.message.role !== "user") return;
+		if (!enabled) return;
+		if (event.message.role === "custom" && ["goal-continuation", "goal-objective-updated"].includes(event.message.customType)) {
+			const content = event.message.content;
+			const prompt = typeof content === "string" ? content : content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+			if (!task) task = createTask(prompt);
+			else {
+				addEvidence(task, `Goal continuation:\n${prompt}`);
+				if (task.phase === "done") task.phase = "draft";
+			}
+			status(ctx, task.phase);
+			return;
+		}
+		if (event.message.role !== "user") return;
 		const content = event.message.content;
 		const text = typeof content === "string" ? content : content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
 		// Match queued prompts by text; expanded skills/templates consume the oldest input.
@@ -167,10 +185,9 @@ export default function (pi: ExtensionAPI) {
 		const input = ["read", "write", "edit", "bash", "grep", "find", "ls"].includes(event.toolName) ? JSON.stringify(event.input) : "[custom tool arguments omitted]";
 		addEvidence(task, `Tool: ${event.toolName}; error: ${event.isError}\nInput: ${input}\nOutput: ${text}`);
 	});
-	pi.on("turn_end", async (event, ctx) => {
+	const reviewCompletion = async (candidate: string, ctx: ExtensionContext): Promise<string | undefined> => {
 		const snapshot = task;
 		if (!enabled || !snapshot || snapshot.phase === "done") return;
-		if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some((block) => block.type === "toolCall")) return;
 		if (snapshot.phase === "frontier") {
 			snapshot.phase = "done";
 			note(ctx, "bounded review cycle ended; final repair is not independently re-reviewed");
@@ -183,7 +200,6 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (!current(snapshot)) return;
 			status(ctx, "reviewing draft");
-			const candidate = event.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
 			const packet = evidencePacket(snapshot, candidate);
 			const reviews: Review[] = await Promise.all(config.reviewers.map(async (slot) => {
 				const model = `${slot.provider}/${slot.model}`;
@@ -207,14 +223,13 @@ export default function (pi: ExtensionAPI) {
 			if (action === "repair") {
 				snapshot.phase = "repair";
 				status(ctx, degraded ? "repair (degraded review)" : "repair");
-				followUp(snapshot, `Independent review found unresolved issues. Verify these fallible findings, fix concrete defects, and run relevant checks. This is the one cheap repair round.\n${findings}`);
-				return;
+				return `Independent review found unresolved issues. Verify these fallible findings, fix concrete defects, and run relevant checks. This is the one cheap repair round.\n${findings}`;
 			}
 			snapshot.phase = "frontier";
 			const advice = await frontier(ctx, snapshot, evidencePacket(snapshot, `${candidate}\n\nREVIEW FINDINGS\n${findings}`));
 			if (!current(snapshot)) return;
 			pi.appendEntry("model-fusion-frontier", { model: config.frontier.model, reasoning: config.frontier.reasoning });
-			followUp(snapshot, `Frontier advice (fallible; verify with tools). Perform one final repair/check pass, then report any unresolved issues honestly.\n${advice.text}`);
+			return `Frontier advice (fallible; verify with tools). Perform one final repair/check pass, then report any unresolved issues honestly.\n${advice.text}`;
 		} catch (error) {
 			if (!current(snapshot)) return;
 			snapshot.phase = "done";
@@ -223,5 +238,19 @@ export default function (pi: ExtensionAPI) {
 			signal?.removeEventListener("abort", abort);
 			if (task === snapshot && snapshot.controller.signal.aborted) status(ctx, "cancelled");
 		}
+	};
+	pi.on("turn_end", async (event, ctx) => {
+		if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || event.message.content.some((block) => block.type === "toolCall")) return;
+		const snapshot = task;
+		const advice = await reviewCompletion(event.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n"), ctx);
+		if (snapshot && advice) followUp(snapshot, advice);
+	});
+	pi.on("tool_call", async (event, ctx) => {
+		if (!enabled || event.toolName !== "update_goal" || !["complete", "blocked"].includes(String(event.input.status))) return;
+		if (!task) task = createTask("Review the active goal before its terminating status update.");
+		const goal = [...ctx.sessionManager.getBranch()].reverse().find((entry) => entry.type === "custom" && entry.customType === "goal-state");
+		if (goal?.type === "custom") addEvidence(task, `Active goal: ${JSON.stringify(goal.data)}`);
+		const advice = await reviewCompletion(`Actor requests update_goal: ${JSON.stringify(event.input)}`, ctx);
+		if (advice) return { block: true, reason: advice };
 	});
 }
