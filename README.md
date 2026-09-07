@@ -29,7 +29,7 @@ Local edits load after `/reload` or a restart. No build step is needed.
 - OpenAI Codex authentication in Pi for Codex-specific features.
 - uv for web search and extraction. The helper declares its Python dependencies.
 - Neovim for `/nvim`.
-- Separately installed computer-use tools for `/computer-use`.
+- [codex-computer-use-mcp](https://www.npmjs.com/package/codex-computer-use-mcp) for `/computer-use`. Install separately with `pi install npm:codex-computer-use-mcp`.
 - Bun and Python 3 for tests. Run `npm test` from the checkout.
 
 Extensions run with your user permissions.
