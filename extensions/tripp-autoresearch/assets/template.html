@@ -47,7 +47,7 @@
     }
     .card-label { color: var(--muted); font-size: 12px; font-weight: 600; }
     .metric-label { color: var(--accent); }
-    .card-value { margin-top: 8px; font-size: 24px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .card-value { margin-top: 8px; font-size: 24px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .card-value.good { color: var(--good); }
 
     .chart-panel {
@@ -87,6 +87,8 @@
       border-radius: 10px;
       padding: 10px 12px;
       min-width: 180px;
+      max-width: calc(100% - 16px);
+      overflow-wrap: anywhere;
       box-shadow: 0 8px 28px rgba(0,0,0,0.45);
       transform: translateY(4px);
       transition: opacity 0.15s ease, transform 0.15s ease;
@@ -283,7 +285,6 @@
       checks_failed: 'checks failed',
     };
     const HOVER_DISTANCE_THRESHOLD = 36;
-    const TOOLTIP_WIDTH = 210;
     const TOOLTIP_OFFSET = 14;
     const CHART_MARGINS = { left: 56, right: 18, top: 16, bottom: 30 };
     const MONOTONE_HANDLE_RATIO = 0.33;
@@ -507,6 +508,7 @@
       session.direction = config.bestDirection || 'lower';
       session.baseline = runs[0] ? runs[0].metric : null;
       findBestRun(runs);
+      session.scorePrecision = scorePrecision(runs.map(run => run.metric));
     }
 
     function findBestRun(runs) {
@@ -633,10 +635,8 @@
       }
       values.push(bounds.max);
       const ticks = [...new Set(values)];
-      let precision = 6;
-      const label = value => Number(value.toPrecision(precision)).toString() + session.metricUnit;
-      while (precision < 17 && new Set(ticks.map(label)).size < ticks.length) precision++;
-      return ticks.map(value => ({ value, label: label(value) }));
+      const precision = scorePrecision(ticks);
+      return ticks.map(value => ({ value, label: scoreLabel(value, precision) + session.metricUnit }));
     }
 
     function buildChartGeometry(canvasWidth, canvasHeight, metricRange, plotLeft = CHART_MARGINS.left) {
@@ -918,9 +918,9 @@
       const run = session.runs[point.runIndex];
       if (!run) return;
 
+      document.getElementById('chart-tooltip').innerHTML = tooltipHtml(run, point.runIndex);
       positionTooltip(point);
       positionCrosshair(point);
-      document.getElementById('chart-tooltip').innerHTML = tooltipHtml(run, point.runIndex);
       document.getElementById('chart-tooltip').classList.add('visible');
       document.getElementById('chart-wrap').setAttribute('aria-live', 'polite');
     }
@@ -936,11 +936,12 @@
 
     function positionTooltip(point) {
       const tooltip = document.getElementById('chart-tooltip');
+      const tooltipWidth = tooltip.offsetWidth;
       let left = point.x + TOOLTIP_OFFSET;
-      if (left + TOOLTIP_WIDTH > chartState.geometry.canvasWidth - CHART_MARGINS.right) {
-        left = point.x - TOOLTIP_WIDTH - TOOLTIP_OFFSET;
+      if (left + tooltipWidth > chartState.geometry.canvasWidth - CHART_MARGINS.right) {
+        left = point.x - tooltipWidth - TOOLTIP_OFFSET;
       }
-      tooltip.style.left = left + 'px';
+      tooltip.style.left = Math.max(8, left) + 'px';
       tooltip.style.top = Math.max(8, point.y - 18) + 'px';
     }
 
@@ -1042,7 +1043,24 @@
 
     function formatMetric(value) {
       if (value == null || Number.isNaN(value)) return '—';
-      return Number(value).toFixed(2) + session.metricUnit;
+      return scoreLabel(Number(value), session.scorePrecision) + session.metricUnit;
+    }
+
+    function scoreLabel(value, precision = 6) {
+      const rounded = Number(value.toPrecision(precision));
+      if (!Number.isFinite(rounded) && Number.isFinite(value)) return value.toExponential(precision - 1);
+      if (rounded === 0) return '0';
+      const magnitude = Math.abs(rounded);
+      if (magnitude < 1e-4 || magnitude >= 1e9) return rounded.toExponential();
+      return String(rounded);
+    }
+
+    function scorePrecision(values) {
+      const distinct = [...new Set(values.filter(value => typeof value === 'number' && Number.isFinite(value)))];
+      for (let precision = 6; precision < 17; precision++) {
+        if (new Set(distinct.map(value => scoreLabel(value, precision))).size === distinct.length) return precision;
+      }
+      return 17;
     }
 
     function formatConfidence(confidence) {
@@ -1200,9 +1218,29 @@
       let y = shareDrawSessionName(ctx, anchor);
       y = shareDrawMetricName(ctx, anchor, y);
 
-      const metricLayout = shareDrawMetricValues(ctx, anchor, y);
+      ctx.save();
+      const pad = sharePad();
+      const factor = Math.min(1, (SHARE_W - anchor.x - pad.right) / shareMetricWidth(ctx));
+      ctx.translate(anchor.x, y);
+      ctx.scale(factor, factor);
+      const metricLayout = shareDrawMetricValues(ctx, { x: 0 }, 0);
       shareDrawMetricDelta(ctx, metricLayout);
+      ctx.restore();
       ctx.textBaseline = 'top';
+    }
+
+    function shareMetricWidth(ctx) {
+      ctx.font = '800 ' + shareSettings.metricSize + 'px ' + SHARE_MONO;
+      let width = ctx.measureText(formatMetric(session.baseline)).width + ctx.measureText(formatMetric(session.best)).width + 40;
+      ctx.font = '700 ' + shareSettings.arrowSize + 'px ' + SHARE_SANS;
+      width += ctx.measureText('\u2192').width;
+      const percent = shareImprovementPct();
+      if (percent != null) {
+        ctx.font = '800 ' + shareSettings.deltaSize + 'px ' + SHARE_MONO;
+        const arrow = session.direction === 'lower' ? '\u2193' : '\u2191';
+        width += 24 + ctx.measureText(arrow + Math.abs(percent).toFixed(1) + '%').width;
+      }
+      return width;
     }
 
     function shareMetricAnchor() {

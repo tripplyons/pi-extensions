@@ -87,6 +87,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
   };
 
   return {
+    tools,
     codeTools: () => getCodeModeExtensionToolSnapshot(pi, ctx, true).tools,
     appendedEntries,
     commands,
@@ -237,6 +238,59 @@ async function writeSameCwdLog(cwd) {
     ].join("\n") + "\n",
   );
 }
+
+test("score formatting reaches terminal widgets and experiment tool output", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-scores-"));
+  const harness = createHarness({ cwd });
+  const theme = { fg: (_color, text) => text, bold: text => text };
+  try {
+    await mkdir(join(cwd, '.auto'));
+    const runs = Array.from({ length: 8 }, (_, index) => ({
+      run: index + 1, metric: index === 0 ? 1 + Number.EPSILON : 1,
+      metrics: { latency_ms: index === 0 ? 0.11928001 : 0.11928002, count: -1234.5 },
+      status: 'keep', commit: 'abcdef0', description: 'Precision fixture',
+      segment: 0, timestamp: 0, confidence: null,
+    }));
+    const config = { type: 'config', metricName: 'score', metricUnit: '', bestDirection: 'lower' };
+    const log = [config, ...runs].map(value => JSON.stringify(value)).join('\n') + '\n';
+    await writeFile(join(cwd, '.auto/log.jsonl'), log);
+    await harness.handlers.get('session_start')({}, harness.ctx);
+    const widget = harness.widgets.findLast(entry => typeof entry.widget === 'function').widget({}, theme);
+    for (const width of [80, 120, 200]) {
+      const lines = widget.render(width);
+      assert.ok(lines.every(line => line.length <= width));
+      assert.ok(lines.some(line => line.includes('Baseline:') && line.includes('1.0000000000000002')));
+      assert.ok(lines.some(line => line.includes('Progress:') && line.includes('score: 1')));
+      if (width === 200) assert.ok(lines.some(line => line.includes('0.11928002ms')));
+    }
+    const runTool = harness.tools.get('run_experiment');
+    const result = await runTool.execute('score-test', {
+      command: "printf 'METRIC score=1.0000000000000004\\nMETRIC latency_ms=0.11928003\\n'",
+      timeout_seconds: 5,
+    }, undefined, undefined, harness.ctx);
+    const text = result.content.map(item => item.text).join('\n');
+    assert.ok(text.includes('1.0000000000000002'));
+    assert.ok(text.includes('1.0000000000000004'));
+    assert.ok(text.includes('0.11928003ms'));
+    const renderedRun = runTool.renderResult(result, {}, theme).render(200).join('\n');
+    assert.ok(renderedRun.includes('score: 1'));
+
+    const state = { results: runs, currentSegment: 0, bestMetric: runs[0].metric,
+      metricName: 'score', metricUnit: '', bestDirection: 'lower',
+      secondaryMetrics: [{ name: 'latency_ms', unit: 'ms' }, { name: 'count', unit: '' }] };
+    const renderedLog = harness.tools.get('log_experiment').renderResult({
+      details: { experiment: runs[0], state }, content: [],
+    }, {}, theme).render(200).join('\n');
+    assert.ok(renderedLog.includes('score: 1.0000000000000002'));
+    assert.ok(renderedLog.includes('best: 1'));
+    assert.ok(renderedLog.includes('latency_ms=0.11928001ms'));
+    assert.ok(renderedLog.includes('count=-1,234.5'));
+    assert.equal(readFileSync(join(cwd, '.auto/log.jsonl'), 'utf8'), log);
+  } finally {
+    await harness.handlers.get('session_shutdown')?.({}, harness.ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 test("setup turns receive the jump-climb strategy in the system prompt", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-setup-prompt-"));

@@ -63,6 +63,14 @@ filter recalculates these bounds from the visible runs. Axis labels use enough
 digits to distinguish their values; table and summary formatting does not affect
 point positions.
 
+Scores in the terminal, browser, tool output, and exported image start at six
+significant digits. Compared scores get more digits when needed to distinguish
+them. For example, `0.11928ms` and `0.11688ms` no longer both display as `0.12ms`.
+Each metric chooses its precision separately. Paging and the kept-only filter
+do not change dashboard score precision. Very small or large scores use scientific
+notation, such as `1.234e-5ms`. Stored metrics, percentages, and confidence scores
+are unchanged.
+
 After three measurements, a confidence score compares the best improvement with
 observed noise. It is advisory; repeat noisy benchmarks before accepting results.
 

@@ -48,6 +48,7 @@ import {
   reconstructJsonlState,
 } from "./jsonl.ts";
 import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
+import { formatScore as formatNum, scorePrecision } from "./scores.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
 
 const AUTORESEARCH_CREATE_SKILL_PATH = fileURLToPath(
@@ -321,33 +322,15 @@ function parseMetricLines(output: string): Map<string, number> {
   return metrics;
 }
 
-/** Format a number with comma-separated thousands: 15586 → "15,586" */
-function commas(n: number): string {
-  const s = String(Math.round(n));
-  const parts: string[] = [];
-  for (let i = s.length; i > 0; i -= 3) {
-    parts.unshift(s.slice(Math.max(0, i - 3), i));
-  }
-  return parts.join(",");
-}
-
-/** Format number with commas, preserving one decimal for fractional values */
-function fmtNum(n: number, decimals: number = 0): string {
-  if (decimals > 0) {
-    const int = Math.floor(Math.abs(n));
-    const frac = (Math.abs(n) - int).toFixed(decimals).slice(1); // ".3"
-    return (n < 0 ? "-" : "") + commas(int) + frac;
-  }
-  return commas(n);
-}
-
-function formatNum(value: number | null, unit: string): string {
-  if (value === null) return "—";
-  const u = unit || "";
-  // Integers: no decimals
-  if (value === Math.round(value)) return fmtNum(value) + u;
-  // Fractional: 2 decimal places
-  return fmtNum(value, 2) + u;
+function metricPrecisions(st: ExperimentState, primary: number | null = null, secondary: Record<string, number> = {}) {
+  const runs = currentResults(st.results, st.currentSegment);
+  return {
+    primary: scorePrecision([st.bestMetric, primary, ...runs.map(run => run.metric)]),
+    secondary: Object.fromEntries(
+      [...new Set([...st.secondaryMetrics.map(metric => metric.name), ...Object.keys(secondary)])].map(name =>
+        [name, scorePrecision([secondary[name], ...runs.map(run => run.metrics?.[name])])]),
+    ),
+  };
 }
 
 /** Lazy temp file allocator — returns the same path on subsequent calls */
@@ -797,6 +780,7 @@ function renderDashboardLines(
   }
 
   const cur = currentResults(st.results, st.currentSegment);
+  const precision = metricPrecisions(st);
   const kept = cur.filter((r) => r.status === "keep").length;
   const discarded = cur.filter((r) => r.status === "discard").length;
   const crashed = cur.filter((r) => r.status === "crash").length;
@@ -846,7 +830,7 @@ function renderDashboardLines(
   const baselineSuffix = baselineRunNumber === null ? "" : ` #${baselineRunNumber}`;
   lines.push(
     truncateToWidth(
-      `  ${th.fg("muted", "Baseline:")} ${th.fg("muted", `★ ${st.metricName}: ${formatNum(baseline, st.metricUnit)}${baselineSuffix}`)}`,
+      `  ${th.fg("muted", "Baseline:")} ${th.fg("muted", `★ ${st.metricName}: ${formatNum(baseline, st.metricUnit, precision.primary)}${baselineSuffix}`)}`,
       width
     )
   );
@@ -854,7 +838,7 @@ function renderDashboardLines(
 
   // Progress: best primary metric with delta + run number
   if (bestPrimary !== null) {
-    let progressLine = `  ${th.fg("muted", "Progress:")} ${th.fg("warning", th.bold(`★ ${st.metricName}: ${formatNum(bestPrimary, st.metricUnit)}`))}${th.fg("dim", ` #${bestRunNum}`)}`;
+    let progressLine = `  ${th.fg("muted", "Progress:")} ${th.fg("warning", th.bold(`★ ${st.metricName}: ${formatNum(bestPrimary, st.metricUnit, precision.primary)}`))}${th.fg("dim", ` #${bestRunNum}`)}`;
 
     if (baseline !== null && baseline !== 0 && bestPrimary !== baseline) {
       const pct = ((bestPrimary - baseline) / baseline) * 100;
@@ -876,7 +860,7 @@ function renderDashboardLines(
         const val = bestSecondary[sm.name];
         const bv = baselineSec[sm.name];
         if (val !== undefined) {
-          let part = th.fg("muted", `${sm.name}: ${formatNum(val, sm.unit)}`);
+          let part = th.fg("muted", `${sm.name}: ${formatNum(val, sm.unit, precision.secondary[sm.name])}`);
           if (bv !== undefined && bv !== 0 && val !== bv) {
             const p = ((val - bv) / bv) * 100;
             const s = p > 0 ? "+" : "";
@@ -923,9 +907,11 @@ function renderDashboardLines(
   );
 
   // Column definitions
-  // Primary column: "★ " prefix (2 visible) + metric name + 1 padding, clamped to 25% of width
+  // Keep complete scores before allocating space to descriptions and secondary columns.
   const primaryLabel = "★ " + (st.metricName || "metric");
-  const primaryW = Math.max(11, Math.min(Math.floor(width * 0.25), visibleWidth(primaryLabel) + 1));
+  const primaryW = Math.max(11, Math.min(Math.floor(width * 0.25), visibleWidth(primaryLabel) + 1),
+    ...rowsToRender.map(run => visibleWidth(formatNum(run.metric, st.metricUnit,
+      run.segment === st.currentSegment ? precision.primary : 6)) + 1));
   const col = { idx: 3, commit: 8, primary: primaryW, status: 15 };
   const minDescW = Math.max(10, Math.floor(width * 0.25));
   const fixedW = col.idx + col.commit + col.primary + col.status + 6;
@@ -936,7 +922,8 @@ function renderDashboardLines(
     for (const r of rowsToRender) {
       const val = (r.metrics ?? {})[sm.name];
       if (val !== undefined) {
-        maxW = Math.max(maxW, visibleWidth(formatNum(val, sm.unit)));
+        maxW = Math.max(maxW, visibleWidth(formatNum(val, sm.unit,
+          r.segment === st.currentSegment ? precision.secondary[sm.name] : 6)));
       }
     }
     return maxW + 1;
@@ -1016,7 +1003,7 @@ function renderDashboardLines(
           : "warning";
 
     // Primary metric with color coding
-    const primaryStr = formatNum(r.metric, st.metricUnit);
+    const primaryStr = formatNum(r.metric, st.metricUnit, isOld ? 6 : precision.primary);
     let primaryColor: Parameters<typeof th.fg>[0] = isOld ? "dim" : "text";
     if (!isOld) {
       if (isBaseline) {
@@ -1053,7 +1040,7 @@ function renderDashboardLines(
       const colW = secColWidths[si];
       const val = rowMetrics[sm.name];
       if (val !== undefined) {
-        const secStr = formatNum(val, sm.unit);
+        const secStr = formatNum(val, sm.unit, isOld ? 6 : precision.secondary[sm.name]);
         let secColor: Parameters<typeof th.fg>[0] = "dim";
         if (!isOld) {
           const bv = baselineSecondary[sm.name];
@@ -1997,6 +1984,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         ? Object.fromEntries(parsedMetricMap)
         : null;
       const parsedPrimary = parsedMetricMap.get(state.metricName) ?? null;
+      const precision = metricPrecisions(state, parsedPrimary, parsedMetrics ?? {});
 
       const details: RunDetails = {
         command: params.command,
@@ -2038,7 +2026,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       if (state.bestMetric !== null) {
-        text += `📊 Current best ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}\n`;
+        text += `📊 Current best ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit, precision.primary)}\n`;
       }
 
       // Show parsed METRIC lines to the LLM
@@ -2048,13 +2036,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         // Human-readable summary
         text += `\n📐 Parsed metrics:`;
         if (parsedPrimary !== null) {
-          text += ` ★ ${state.metricName}=${formatNum(parsedPrimary, state.metricUnit)}`;
+          text += ` ★ ${state.metricName}=${formatNum(parsedPrimary, state.metricUnit, precision.primary)}`;
         }
         for (const [name, value] of secondary) {
           // Infer unit from name suffix for display
           const sm = state.secondaryMetrics.find((m) => m.name === name);
           const unit = sm?.unit ?? "";
-          text += ` ${name}=${formatNum(value, unit)}`;
+          text += ` ${name}=${formatNum(value, unit, precision.secondary[name])}`;
         }
 
         // Machine-ready values for log_experiment (raw numbers, not formatted)
@@ -2328,15 +2316,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       // Build response text
       const segmentCount = currentResults(state.results, state.currentSegment).length;
+      const precision = metricPrecisions(state, params.metric, secondaryMetrics);
       let text = `Logged #${state.results.length}: ${experiment.status} — ${experiment.description}`;
 
       if (state.bestMetric !== null) {
-        text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}`;
+        text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit, precision.primary)}`;
         if (segmentCount > 1 && params.status === "keep" && params.metric > 0) {
           const delta = params.metric - state.bestMetric;
           const pct = ((delta / state.bestMetric) * 100).toFixed(1);
           const sign = delta > 0 ? "+" : "";
-          text += ` | this: ${formatNum(params.metric, state.metricUnit)} (${sign}${pct}%)`;
+          text += ` | this: ${formatNum(params.metric, state.metricUnit, precision.primary)} (${sign}${pct}%)`;
         }
       }
 
@@ -2347,7 +2336,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         for (const [name, value] of Object.entries(secondaryMetrics)) {
           const def = state.secondaryMetrics.find((m) => m.name === name);
           const unit = def?.unit ?? "";
-          let part = `${name}: ${formatNum(value, unit)}`;
+          let part = `${name}: ${formatNum(value, unit, precision.secondary[name])}`;
           const bv = baselines[name];
           if (bv !== undefined && state.results.length > 1 && bv !== 0) {
             const d = value - bv;
@@ -2531,6 +2520,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       const { experiment: exp, state: s } = d;
+      const precision = metricPrecisions(s, exp.metric, exp.metrics);
       const color =
         exp.status === "keep"
           ? "success"
@@ -2550,7 +2540,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         metricParts.push(`wall: ${d.wallClockSeconds.toFixed(1)}s`);
       }
       if (exp.metric > 0) {
-        metricParts.push(`${s.metricName}: ${formatNum(exp.metric, s.metricUnit)}`);
+        metricParts.push(`${s.metricName}: ${formatNum(exp.metric, s.metricUnit, precision.primary)}`);
       }
       if (metricParts.length > 0) {
         text += theme.fg("dim", " (") + theme.fg("warning", metricParts.join(theme.fg("dim", ", "))) + theme.fg("dim", ")");
@@ -2569,7 +2559,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
         text +=
           theme.fg("dim", " │ ") +
-          theme.fg("warning", `★ best: ${formatNum(best, s.metricUnit)}`);
+          theme.fg("warning", `★ best: ${formatNum(best, s.metricUnit, precision.primary)}`);
       }
 
       // Show secondary metrics inline
@@ -2577,7 +2567,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         const parts: string[] = [];
         for (const [name, value] of Object.entries(exp.metrics)) {
           const def = s.secondaryMetrics.find((m) => m.name === name);
-          parts.push(`${name}=${formatNum(value, def?.unit ?? "")}`);
+          parts.push(`${name}=${formatNum(value, def?.unit ?? "", precision.secondary[name])}`);
         }
         text += theme.fg("dim", `  ${parts.join(" ")}`);
       }

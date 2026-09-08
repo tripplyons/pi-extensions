@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { scoreLabel, scorePrecision, formatScore } from "../scores.ts";
 
 const template = fs.readFileSync(new URL("../assets/template.html", import.meta.url), "utf8");
 const script = template.match(/<script>([\s\S]*)<\/script>/)?.[1];
@@ -265,4 +266,77 @@ test("close-value axis labels stay distinct and fit the left margin", () => {
   assert.equal(new Set(labels.map(label => label.text)).size, labels.length);
   assert.ok(labels.some(label => label.text === "1.0000000000000002"));
   assert.ok(labels.every(label => label.x - canvas.measureText(label.text).width >= 0));
+});
+
+for (const [value, expected] of [
+  [0.11928, '0.11928'], [0.11688, '0.11688'], [0.00001234, '1.234e-5'],
+  [1.999, '1.999'], [1.9999999, '2'], [-123, '-123'], [-1234.5, '-1234.5'],
+  [0, '0'], [-0, '0'], [1e-4, '0.0001'], [9.9999999e-5, '0.0001'],
+  [1e9, '1e+9'], [999999999, '1e+9'], [Number.MIN_VALUE, '5e-324'],
+  [Number.MAX_VALUE, '1.79769e+308'],
+]) {
+  test(`score labels agree across terminal and browser for ${value}`, () => {
+    assert.equal(scoreLabel(value), expected);
+    assert.equal(dashboardValue(`scoreLabel(${value})`), expected);
+    assert.equal(formatScore(value, 'ms').replaceAll(',', ''), expected + 'ms');
+  });
+}
+
+test('compared scores remain distinct without mixing missing or equal values', () => {
+  for (const values of [[1, 1 + Number.EPSILON], [0.11928001, 0.11928002], [1e-14, 1.00000001e-14], [Number.MAX_VALUE, Number.MAX_VALUE / 2]]) {
+    const precision = scorePrecision([...values, null, undefined, values[0]]);
+    assert.equal(new Set(values.map(value => scoreLabel(value, precision))).size, values.length);
+    const browser = JSON.parse(dashboardValue(`
+      const values = ${JSON.stringify(values)};
+      const precision = scorePrecision(values);
+      JSON.stringify({ precision, labels: values.map(value => scoreLabel(value, precision)) });
+    `));
+    assert.equal(browser.precision, precision);
+    assert.deepEqual(browser.labels, values.map(value => scoreLabel(value, precision)));
+  }
+  assert.equal(formatScore(-1234.5, 'ms'), '-1,234.5ms');
+  assert.equal(formatScore(null, 'ms'), '—');
+});
+
+test('loaded scores keep their precision in cards, table values and tooltips after filtering', () => {
+  const result = JSON.parse(dashboardValue(`
+    applyParsedData({ metricUnit: 'ms', bestDirection: 'lower' }, [
+      { metric: 1.0000000000000002, status: 'discard' },
+      { metric: 1, status: 'keep' }
+    ]);
+    renderCards();
+    const before = session.runs.map(metricDisplay);
+    session.keptOnly = true;
+    renderCards();
+    JSON.stringify({ before, after: session.runs.map(metricDisplay),
+      card: document.getElementById('baseline-best').textContent,
+      tooltip: tooltipHeader(session.runs[0], 0) });
+  `));
+  assert.deepEqual(result.before, ['1.0000000000000002ms', '1ms']);
+  assert.deepEqual(result.after, result.before);
+  assert.equal(result.card, '1.0000000000000002ms → 1ms');
+  assert.ok(result.tooltip.includes('1.0000000000000002ms'));
+});
+
+test('export fits long scores and delta without dropping distinguishing digits', () => {
+  const canvas = recordingCanvas();
+  const scales = [];
+  canvas.translate = () => {};
+  canvas.scale = (x, y) => scales.push([x, y]);
+  canvas.measureText = text => ({ width: text.length * Number(canvas.font.match(/([\d.]+)px/)[1]) * 0.6 });
+  const expectedScale = dashboardValue(`
+    applyParsedData({ metricUnit: 'ms', bestDirection: 'lower' }, [
+      { metric: 1.0000000000000004, status: 'keep' },
+      { metric: 1.0000000000000002, status: 'keep' }
+    ]);
+    const ctx = document.getElementById('chart').getContext('2d');
+    const available = SHARE_W - sharePad().left - sharePad().right;
+    const factor = available / shareMetricWidth(ctx);
+    shareDrawMetric(ctx);
+    factor;
+  `, canvas);
+  assert.ok(expectedScale > 0 && expectedScale < 1);
+  assert.deepEqual(scales, [[expectedScale, expectedScale]]);
+  assert.ok(canvas.labels.some(label => label.text === '1.0000000000000004ms'));
+  assert.ok(canvas.labels.some(label => label.text === '1.0000000000000002ms'));
 });
