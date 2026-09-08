@@ -285,8 +285,6 @@
     const HOVER_DISTANCE_THRESHOLD = 36;
     const TOOLTIP_WIDTH = 210;
     const TOOLTIP_OFFSET = 14;
-    const CHART_PADDING_BELOW = 0.15;
-    const CHART_PADDING_ABOVE = 0.12;
     const CHART_MARGINS = { left: 56, right: 18, top: 16, bottom: 30 };
     const MONOTONE_HANDLE_RATIO = 0.33;
     const MONO_FONT = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -620,37 +618,48 @@
       const metrics = runs.filter(run => run.metric > 0).map(run => run.metric);
       if (metrics.length === 0) return null;
 
-      const rawMin = Math.min(...metrics);
-      const rawMax = Math.max(...metrics);
-      const spread = (rawMax - rawMin) || (rawMax * 0.1) || 1;
-
-      return {
-        min: Math.max(0, rawMin - spread * CHART_PADDING_BELOW),
-        max: rawMax + spread * CHART_PADDING_ABOVE,
-      };
+      return { min: Math.min(...metrics), max: Math.max(...metrics) };
     }
 
-    function buildChartGeometry(canvasWidth, canvasHeight, metricRange) {
-      const plotWidth = canvasWidth - CHART_MARGINS.left - CHART_MARGINS.right;
+    function metricPosition(value, bounds) {
+      if (bounds.min === bounds.max) return 0.5;
+      return (value - bounds.min) / (bounds.max - bounds.min);
+    }
+
+    function metricTicks(bounds, divisions = 4) {
+      const values = [bounds.min];
+      for (let i = 1; i < divisions; i++) {
+        values.push(bounds.min + (bounds.max - bounds.min) * (i / divisions));
+      }
+      values.push(bounds.max);
+      const ticks = [...new Set(values)];
+      let precision = 6;
+      const label = value => Number(value.toPrecision(precision)).toString() + session.metricUnit;
+      while (precision < 17 && new Set(ticks.map(label)).size < ticks.length) precision++;
+      return ticks.map(value => ({ value, label: label(value) }));
+    }
+
+    function buildChartGeometry(canvasWidth, canvasHeight, metricRange, plotLeft = CHART_MARGINS.left) {
+      const plotWidth = canvasWidth - plotLeft - CHART_MARGINS.right;
       const plotHeight = canvasHeight - CHART_MARGINS.top - CHART_MARGINS.bottom;
-      const range = Math.max(1, metricRange.max - metricRange.min);
 
       return {
         canvasWidth,
         canvasHeight,
         plotWidth,
         plotHeight,
+        plotLeft,
         metricMin: metricRange.min,
         metricMax: metricRange.max,
-        metricRange: range,
+        metricRange: metricRange.max - metricRange.min,
 
         runToX(index, count) {
-          if (count <= 1) return CHART_MARGINS.left + plotWidth / 2;
-          return CHART_MARGINS.left + (index / (count - 1)) * plotWidth;
+          if (count <= 1) return plotLeft + plotWidth / 2;
+          return plotLeft + (index / (count - 1)) * plotWidth;
         },
 
         metricToY(metric) {
-          return CHART_MARGINS.top + plotHeight - ((metric - metricRange.min) / range) * plotHeight;
+          return CHART_MARGINS.top + (1 - metricPosition(metric, metricRange)) * plotHeight;
         },
 
         crashY() {
@@ -715,35 +724,33 @@
       chartState.geometry = null;
       if (!metricRange) return;
 
-      const geo = buildChartGeometry(width, height, metricRange);
+      const ticks = metricTicks(metricRange);
+      ctx.font = MONO_FONT;
+      const plotLeft = Math.max(CHART_MARGINS.left, ...ticks.map(tick => ctx.measureText(tick.label).width + 16));
+      const geo = buildChartGeometry(width, height, metricRange, plotLeft);
       chartState.geometry = geo;
       chartState.points = computeChartPoints(geo, runs);
 
-      drawGrid(ctx, geo);
+      drawGrid(ctx, geo, ticks);
       drawCurve(ctx, chartState.points);
       drawDots(ctx, chartState.points, highlightRunIndex);
       drawXLabels(ctx, geo, runs);
     }
 
-    function drawGrid(ctx, geo) {
-      const step = chooseTickStep(geo.metricRange);
-      let tick = Math.ceil(geo.metricMin / step) * step;
-
-      while (tick <= geo.metricMax) {
-        const y = geo.metricToY(tick);
+    function drawGrid(ctx, geo, ticks) {
+      for (const tick of ticks) {
+        const y = geo.metricToY(tick.value);
 
         ctx.strokeStyle = COLORS.grid;
         ctx.beginPath();
-        ctx.moveTo(CHART_MARGINS.left, y);
+        ctx.moveTo(geo.plotLeft, y);
         ctx.lineTo(geo.canvasWidth - CHART_MARGINS.right, y);
         ctx.stroke();
 
         withLabelStyle(ctx, (c) => {
           c.textAlign = 'right';
-          c.fillText(formatMetric(tick), CHART_MARGINS.left - 8, y + 3);
+          c.fillText(tick.label, geo.plotLeft - 8, y + 3);
         });
-
-        tick += step;
       }
     }
 
@@ -995,16 +1002,6 @@
         if (best == null || isBetter(metric, best)) best = metric;
       }
       return best;
-    }
-
-    function chooseTickStep(range) {
-      const rough = range / 6;
-      const magnitude = Math.pow(10, Math.floor(Math.log10(Math.max(rough, 1e-9))));
-      const normalized = rough / magnitude;
-      if (normalized <= 1) return magnitude;
-      if (normalized <= 2) return 2 * magnitude;
-      if (normalized <= 5) return 5 * magnitude;
-      return 10 * magnitude;
     }
 
     function statusBadge(status) {
@@ -1282,15 +1279,14 @@
       if (drawable.length === 0) return;
 
       const pad = sharePad();
-      const cL = pad.left, cR = SHARE_W - pad.right;
+      const bounds = computeMetricRange(drawable);
+      const ticks = metricTicks(bounds, 1);
+      ctx.save();
+      ctx.font = '14px ' + SHARE_MONO;
+      const cL = Math.max(pad.left, ...ticks.map(tick => ctx.measureText(tick.label).width + 32));
+      const cR = SHARE_W - pad.right;
       const cT = shareSettings.chartTop, cB = SHARE_H - shareSettings.chartBottomOffset;
       const cW = cR - cL, cH = cB - cT;
-
-      const vals = drawable.map(r => r.metric);
-      const lo = Math.min(...vals), hi = Math.max(...vals);
-      const sp = (hi - lo) || (hi * 0.1) || 1;
-      const minV = Math.max(0, lo - sp * 0.2), maxV = hi + sp * 0.15;
-      const range = Math.max(1, maxV - minV);
 
       function toX(run) {
         const runIndex = session.runs.indexOf(run);
@@ -1298,7 +1294,13 @@
           ? cL + cW / 2
           : cL + (runIndex / (session.runs.length - 1)) * cW;
       }
-      function toY(v) { return cT + cH - ((v - minV) / range) * cH; }
+      function toY(v) { return cT + (1 - metricPosition(v, bounds)) * cH; }
+
+      ctx.fillStyle = COLORS.label;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'alphabetic';
+      for (const tick of ticks) ctx.fillText(tick.label, cL - 24, toY(tick.value) + 4);
+      ctx.restore();
 
       const dotPts = drawable.map(r => ({ x: toX(r), y: toY(r.metric) }));
       const { indices, bestIdx } = shareVisibleDots(drawable);

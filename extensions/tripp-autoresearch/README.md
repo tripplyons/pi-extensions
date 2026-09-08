@@ -56,6 +56,13 @@ Press Escape to interrupt a running turn. Use `/autoresearch pause` to leave loo
 Results appear above the editor. Press Ctrl+Shift+F for a fullscreen table.
 Navigate with arrow keys, j/k, PageUp/PageDown, or g/G; close with Escape or q.
 
+The browser chart and exported image position points using the raw metric values.
+The Y-axis runs from the observed minimum at the bottom to the maximum at the top,
+without padding or a forced range. Equal-valued runs stay centered. The kept-only
+filter recalculates these bounds from the visible runs. Axis labels use enough
+digits to distinguish their values; table and summary formatting does not affect
+point positions.
+
 After three measurements, a confidence score compares the best improvement with
 observed noise. It is advisory; repeat noisy benchmarks before accepting results.
 
