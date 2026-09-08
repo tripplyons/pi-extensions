@@ -1,3 +1,6 @@
+import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+
 export interface TranscriptItem {
 	role?: string;
 	type?: string;
@@ -15,7 +18,7 @@ interface MessageWindowEvent {
 }
 
 interface InteractiveModeLike {
-	chatContainer: { clear(): void };
+	chatContainer: { children: Component[]; clear(): void };
 	editor: { addToHistory?(text: string): void };
 	sessionManager: { buildContextEntries(): unknown[] };
 	getUserMessageText(message: TranscriptItem): string;
@@ -62,6 +65,10 @@ export const installMessageWindow = (prototype: InteractiveModePrototype, maxMes
 		const availableMessages = maxMessages - (reservedSlots.get(this) ?? 0);
 		const windowed = windowTranscriptItems(items, availableMessages).items;
 		originalRenderSessionItems.call(this, windowed, { ...options, populateHistory: false });
+		// Pi's history renderer leaves restored tool arguments in the streaming state.
+		for (const component of this.chatContainer.children) {
+			if (component instanceof ToolExecutionComponent) component.setArgsComplete();
+		}
 	};
 
 	const rebuildWindow = (mode: InteractiveModeLike) => {

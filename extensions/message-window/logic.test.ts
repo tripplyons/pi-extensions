@@ -61,7 +61,7 @@ describe("installMessageWindow", () => {
 		const history: string[] = [];
 		let clearCount = 0;
 		const mode = {
-			chatContainer: { clear() { clearCount++; } },
+			chatContainer: { children: [], clear() { clearCount++; } },
 			editor: { addToHistory(text: string) { history.push(text); } },
 			sessionManager: { buildContextEntries: () => entries },
 			getUserMessageText: (message: TranscriptItem) => message.text as string,

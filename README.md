@@ -39,7 +39,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | btw | Answers side questions with `/btw`; `/btw:tools` allows Code tools. |
 | clean-footer | Shows session metrics and upstream extension statuses. |
 | hide-empty-editor | Hides the empty editor. |
-| message-window | Limits the visible transcript window. |
+| message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | subagent | Runs isolated asynchronous children with full Code tools. |
