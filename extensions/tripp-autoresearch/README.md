@@ -22,6 +22,12 @@ For preparation without experiments, ask for **setup only**. Start it later with
 Loops modify files, create commits, and make model requests. Use a dedicated
 branch and configure provider spending limits.
 
+The active prompt requires explicit experiment and check timeouts based on
+healthy wall-clock durations, usually about twice the baseline. For unknown
+workloads, it starts with a 60-second experiment deadline unless there is evidence
+for a longer run. It also requires bounded subprocesses and remote-job cleanup.
+Timeouts trigger failure diagnosis rather than automatic retries with longer limits.
+
 ## Commands
 
 | Command | Use |

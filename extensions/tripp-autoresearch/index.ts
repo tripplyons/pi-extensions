@@ -218,13 +218,13 @@ const RunParams = Type.Object({
   }),
   timeout_seconds: Type.Optional(
     Type.Number({
-      description: "Kill after this many seconds (default: 600)",
+      description: "Kill after this many seconds. Set explicitly from healthy wall-clock runtime, usually about 2x baseline; start at 60 if unknown. Default: 600.",
     })
   ),
   checks_timeout_seconds: Type.Optional(
     Type.Number({
       description:
-        "Kill .auto/checks.sh after this many seconds (default: 300). Only relevant when the checks file exists.",
+        "Kill .auto/checks.sh after this many seconds. Set separately from healthy check duration, usually about 2x. Default: 300. Only relevant when the checks file exists.",
     })
   ),
 });

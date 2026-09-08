@@ -51,6 +51,14 @@ Use this benchmark-winning strategy throughout setup and every later iteration:
 6. **Use rejected work as evidence.** Record the idea, measured result, and failure reason in `asi` and the session files. Never repeat a rejected idea unchanged. Try the next highest-impact distinct idea.
 7. **Keep climbing.** Continue until interrupted or `maxIterations` stops the session. If no credible improvement is obvious, re-read the source and measurements, widen the search, and choose a structurally different idea instead of ending the loop.
 
+### Keep experiments time-bounded
+
+- Set `timeout_seconds` explicitly on every `run_experiment` call. Use the shortest deadline that allows a healthy run to finish. Start with 60 seconds when runtime is unknown; use a longer initial deadline only when the workload provides evidence that it needs one.
+- Once the baseline succeeds, use about twice its observed wall-clock duration, including startup, as the candidate deadline. For example, a 20-second baseline gets a 40-second timeout. Tighten this as healthy runs get faster. Set `checks_timeout_seconds` separately from measured check duration. Do not rely on the 600-second experiment or 300-second checks defaults for short workloads.
+- Run cheap syntax and correctness checks before expensive work. Bound subprocesses, network requests, and remote jobs inside `.auto/measure.sh` and `.auto/checks.sh` too. Their deadlines must expire before the outer tool deadline so they can report errors and clean up. Ensure remote work is cancelled on failure or timeout; killing the local client may leave it running.
+- Treat a timeout as a failed run, not a reason to wait indefinitely or automatically retry with a larger limit. Inspect the output for crashes, hangs, and slow phases. Log benchmark timeouts as `crash` and check timeouts as `checks_failed`, with the deadline and diagnosis in `asi`, then try another idea. Increase a deadline only with evidence that a valid workload needs more time; record the reason and keep the benchmark workload comparable.
+- Record healthy benchmark and check durations, chosen deadlines, and remote cancellation commands in `.auto/prompt.md`. Apply these limits during setup-only validation and after resuming or compaction as well.
+
 ## Setup
 
 1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
@@ -78,6 +86,10 @@ This is the heart of the session. A fresh agent with no context should be able t
 
 ## How to Run
 `./.auto/measure.sh` — outputs `METRIC name=number` lines.
+
+## Timeouts
+<Healthy benchmark/check durations, explicit timeout_seconds and
+checks_timeout_seconds, and subprocess/remote-job deadlines and cancellation commands.>
 
 ## Files in Scope
 <Every file the agent may modify, with a brief note on what it does.>
