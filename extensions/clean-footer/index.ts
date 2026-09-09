@@ -6,6 +6,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const SEPARATOR = " | ";
 const WORKING_MARKER = "[*]";
+const HIDDEN_STATUS_KEY = "codex-adapter";
 
 const formatTokens = (count: number) => {
 	if (count < 1_000) return String(count);
@@ -66,7 +67,8 @@ export default function cleanFooterExtension(pi: ExtensionAPI) {
 						theme.fg("muted", contextUsage),
 						theme.fg("muted", `$${maxCost.toFixed(2)}`),
 					];
-					for (const value of statuses.values()) {
+					for (const [key, value] of statuses) {
+						if (key === HIDDEN_STATUS_KEY) continue;
 						const status = plainStatus(value);
 						if (status) parts.push(theme.fg("muted", status));
 					}

@@ -99,14 +99,15 @@ describe("clean footer extension statuses", () => {
 		expect(footer.render(200)[0]).toContain("$0.00 | local");
 	});
 
-	test("shows upstream status verbatim and removes cleared statuses", async () => {
+	test("hides the Codex adapter status and shows other statuses", async () => {
 		const harness = createHarness();
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
 		harness.statuses.set("codex-adapter", "\x1b[32mCode | Remote | Hybrid\x1b[0m");
 		harness.statuses.set("other-package", "waiting for input");
-		expect(harness.footer().render(200)[0]).toContain("$0.00 | Code | Remote | Hybrid | waiting for input");
-		harness.statuses.delete("codex-adapter");
+		expect(harness.footer().render(200)[0]).toContain("$0.00 | waiting for input");
 		expect(harness.footer().render(200)[0]).not.toContain("Remote");
+		harness.statuses.delete("other-package");
+		expect(harness.footer().render(200)[0]).not.toContain("waiting for input");
 		expect(visibleWidth(harness.footer().render(30)[0])).toBeLessThanOrEqual(30);
 	});
 
