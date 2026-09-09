@@ -12,6 +12,7 @@ import { captureWindow } from "./tmux.ts";
 import { SwarmTree } from "./tree-ui.ts";
 import { defaultConfig, WORKER_ENV, type RequestKind } from "./types.ts";
 import { WorkerMailbox } from "./worker.ts";
+import { renderSwarmCall, renderSwarmResult } from "./tool-render.ts";
 
 export default async function (pi: ExtensionAPI) {
 	// Pi's Jiti fallback resolves require conditions; the short export is import-only.
@@ -131,6 +132,10 @@ export default async function (pi: ExtensionAPI) {
 			async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal) { return result(await operate(kind, params, signal)); },
 		})),
 	];
+	for (const tool of tools) Object.assign(tool, {
+		renderCall: (args: unknown, theme: any) => renderSwarmCall(tool.name, args, theme),
+		renderResult: (output: any, _options: unknown, theme: any) => renderSwarmResult(tool.name, output, theme),
+	});
 	for (const tool of tools) pi.registerTool(tool);
 	const registration = registerCodeModeExtensionTools(pi, () => tools.map((tool) => adaptToolForCodeMode(tool, { usage: `await tools.${tool.name}({...})` })));
 
@@ -349,7 +354,9 @@ export default async function (pi: ExtensionAPI) {
 			description: action === "kill" ? "Stop all original worker groups" : "Remove clean worker worktrees and private run data, retaining generated branches",
 			async handler(_args, ctx) { await execute(); ctx.ui.notify(`Swarm ${action} finished. Detached descendants may survive.`, "info"); },
 		});
-		const tool = { name: `swarm_${action}`, label: `Swarm ${action}`, description: `Root only: ${action} the swarm. Clear refuses dirty worktrees before stopping workers, removes private run data, and retains generated branches and a cleared-run marker. Detached descendants may survive.`, parameters: Type.Object({}), execute };
+		const name = `swarm_${action}`;
+		const tool = { name, label: `Swarm ${action}`, description: `Root only: ${action} the swarm. Clear refuses dirty worktrees before stopping workers, removes private run data, and retains generated branches and a cleared-run marker. Detached descendants may survive.`, parameters: Type.Object({}), execute,
+			renderCall: (args: unknown, theme: any) => renderSwarmCall(name, args, theme), renderResult: (output: any, _options: unknown, theme: any) => renderSwarmResult(name, output, theme) };
 		pi.registerTool(tool);
 		tools.push(tool);
 	}
