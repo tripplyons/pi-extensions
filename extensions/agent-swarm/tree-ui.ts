@@ -5,15 +5,32 @@ import { formatWorkerOutput, sanitizeTerminalText } from "./output-format.ts";
 
 const plain = (text: string) => sanitizeTerminalText(text).replace(/[\r\n\t]/g, " ");
 
-const treeRows = (nodes: NodeRecord[]) => {
+const terminalStatuses = new Set<NodeStatus>(["completed", "rejected", "failed", "stopped"]);
+
+const treeRows = (allNodes: NodeRecord[], hideTerminal = false) => {
+	const visible = (node: NodeRecord) => !hideTerminal || node.parentId === null || node.role === "coordinator" || !terminalStatuses.has(node.status);
+	const nodes = allNodes.filter(visible);
 	const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+	const allById = new Map(allNodes.map((node) => [node.nodeId, node]));
+	const visibleParent = (node: NodeRecord): string | null => {
+		let parentId = node.parentId;
+		const seen = new Set<string>();
+		while (parentId && !seen.has(parentId)) {
+			seen.add(parentId);
+			const parent = allById.get(parentId);
+			if (!parent) return null;
+			if (visible(parent)) return parent.nodeId;
+			parentId = parent.parentId;
+		}
+		return null;
+	};
 	const visited = new Set<string>();
 	const rows: { node: NodeRecord; prefix: string }[] = [];
 	const compare = (left: NodeRecord, right: NodeRecord) => left.createdAt - right.createdAt || left.nodeId.localeCompare(right.nodeId);
 	const children = (parent: NodeRecord) => {
-		const declared = parent.childIds.map((id) => byId.get(id)).filter((node): node is NodeRecord => node?.parentId === parent.nodeId);
+		const declared = parent.childIds.map((id) => byId.get(id)).filter((node): node is NodeRecord => visibleParent(node) === parent.nodeId);
 		const declaredIds = new Set(declared.map((node) => node.nodeId));
-		const unlisted = nodes.filter((node) => node.parentId === parent.nodeId && !declaredIds.has(node.nodeId)).sort(compare);
+		const unlisted = nodes.filter((node) => visibleParent(node) === parent.nodeId && !declaredIds.has(node.nodeId)).sort(compare);
 		return [...declared, ...unlisted];
 	};
 	const visit = (node: NodeRecord, guides = "", connector = "") => {
@@ -24,7 +41,7 @@ const treeRows = (nodes: NodeRecord[]) => {
 		const nextGuides = guides + (connector === "├─ " ? "│  " : connector === "└─ " ? "   " : "");
 		descendants.forEach((child, index) => visit(child, nextGuides, index === descendants.length - 1 ? "└─ " : "├─ "));
 	};
-	const roots = nodes.filter((node) => node.parentId === null).sort((left, right) => Number(right.role === "coordinator") - Number(left.role === "coordinator") || compare(left, right));
+	const roots = nodes.filter((node) => visibleParent(node) === null).sort((left, right) => Number(right.role === "coordinator") - Number(left.role === "coordinator") || compare(left, right));
 	for (const root of roots) visit(root);
 	for (const orphan of nodes.filter((node) => !visited.has(node.nodeId)).sort(compare)) visit(orphan);
 	return rows;
@@ -40,6 +57,7 @@ const statusColor = (status: NodeStatus): ThemeColor => {
 export class SwarmTree {
 	private selected = 0;
 	private offset = 0;
+	private hideTerminal = false;
 	constructor(private theme: Pick<Theme, "fg">, private nodes: () => NodeRecord[], private output: (node: NodeRecord) => string, private close: () => void, private backlog: (node: NodeRecord) => number = () => 0) {}
 	invalidate() {}
 	handleInput(data: string) {
@@ -48,10 +66,11 @@ export class SwarmTree {
 		if (data === "k" || matchesKey(data, "up")) { this.selected--; this.offset = 0; }
 		if (data === "]") this.offset++;
 		if (data === "[") this.offset = Math.max(0, this.offset - 1);
+		if (data === " ") { this.hideTerminal = !this.hideTerminal; this.offset = 0; }
 	}
 	render(width: number): string[] {
 		if (width < 1) return [];
-		const rows = treeRows(this.nodes());
+		const rows = treeRows(this.nodes(), this.hideTerminal);
 		this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
 		const node = rows[this.selected]?.node;
 		const tree = rows.map((row, index) => {
@@ -82,6 +101,6 @@ export class SwarmTree {
 				return `${left}${" ".repeat(leftWidth - visibleWidth(left))} ${this.theme.fg("dim", "│")} ${truncateToWidth(details[index] ?? "", width - leftWidth - 3)}`;
 			});
 		})();
-		return [...lines, this.theme.fg("dim", "↑↓ / j k select · [ ] scroll details · q / esc close")].map((line) => truncateToWidth(line, width));
+		return [...lines, this.theme.fg("dim", `↑↓ / j k select · space ${this.hideTerminal ? "show" : "hide"} terminal · [ ] scroll details · q / esc close`)].map((line) => truncateToWidth(line, width));
 	}
 }

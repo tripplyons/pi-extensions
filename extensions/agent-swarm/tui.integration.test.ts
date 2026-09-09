@@ -52,3 +52,39 @@ test("tree renders parents before their nested children", () => {
 	expect(styled).toContain("\x1b[33mstarting\x1b[0m");
 	expect(styled).toContain("\x1b[31mfailed\x1b[0m");
 });
+
+test("space hides terminal nodes, promotes visible descendants, and clamps selection", () => {
+	const root = makeNode("run_test", "node_root", "coordinator", "Coordinate", "/tmp", null);
+	const manager = makeNode("run_test", "node_manager", "manager", "Done managing", "/tmp/manager", root.nodeId);
+	const worker = makeNode("run_test", "node_worker", "worker", "Still working", "/tmp/worker", manager.nodeId);
+	const failed = makeNode("run_test", "node_failed", "worker", "Failed", "/tmp/failed", root.nodeId);
+	root.childIds = [manager.nodeId, failed.nodeId];
+	manager.childIds = [worker.nodeId];
+	manager.status = "completed";
+	failed.status = "failed";
+	const tree = new SwarmTree(theme, () => [failed, worker, manager, root], () => "", () => {});
+
+	for (let index = 0; index < 3; index++) tree.handleInput("j");
+	expect(plain(tree.render(120).join("\n"))).toContain("worker node_failed");
+	tree.handleInput(" ");
+	const hidden = plain(tree.render(120).join("\n"));
+	expect(hidden).not.toContain("node_manager");
+	expect(hidden).not.toContain("node_failed");
+	expect(hidden).toContain("└─ worker e_worker");
+	expect(hidden).toContain("space show terminal");
+	expect(hidden).toContain("Task: Still working");
+
+	tree.handleInput(" ");
+	const shown = plain(tree.render(120).join("\n"));
+	expect(shown).toContain("node_manager");
+	expect(shown).toContain("node_failed");
+	expect(shown).toContain("space hide terminal");
+});
+
+test("terminal coordinator remains visible when terminal nodes are hidden", () => {
+	const root = makeNode("run_test", "node_root", "coordinator", "Done", "/tmp", null);
+	root.status = "completed";
+	const tree = new SwarmTree(theme, () => [root], () => "", () => {});
+	tree.handleInput(" ");
+	expect(plain(tree.render(80).join("\n"))).toContain("coordinator ode_root completed");
+});
