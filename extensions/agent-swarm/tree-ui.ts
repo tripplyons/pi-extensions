@@ -5,10 +5,10 @@ import { formatWorkerOutput, sanitizeTerminalText } from "./output-format.ts";
 
 const plain = (text: string) => sanitizeTerminalText(text).replace(/[\r\n\t]/g, " ");
 
-const terminalStatuses = new Set<NodeStatus>(["completed", "rejected", "failed", "stopped"]);
+const hiddenStatuses = new Set<NodeStatus>(["completed", "stopped"]);
 
 const treeRows = (allNodes: NodeRecord[], hideTerminal = false) => {
-	const visible = (node: NodeRecord) => !hideTerminal || node.parentId === null || node.role === "coordinator" || !terminalStatuses.has(node.status);
+	const visible = (node: NodeRecord) => !hideTerminal || node.parentId === null || node.role === "coordinator" || !hiddenStatuses.has(node.status);
 	const nodes = allNodes.filter(visible);
 	const byId = new Map(nodes.map((node) => [node.nodeId, node]));
 	const allById = new Map(allNodes.map((node) => [node.nodeId, node]));
@@ -101,6 +101,6 @@ export class SwarmTree {
 				return `${left}${" ".repeat(leftWidth - visibleWidth(left))} ${this.theme.fg("dim", "│")} ${truncateToWidth(details[index] ?? "", width - leftWidth - 3)}`;
 			});
 		})();
-		return [...lines, this.theme.fg("dim", `↑↓ / j k select · space ${this.hideTerminal ? "show" : "hide"} terminal · [ ] scroll details · q / esc close`)].map((line) => truncateToWidth(line, width));
+		return [...lines, this.theme.fg("dim", `↑↓ / j k select · space ${this.hideTerminal ? "show" : "hide"} completed/stopped · [ ] scroll details · q / esc close`)].map((line) => truncateToWidth(line, width));
 	}
 }
