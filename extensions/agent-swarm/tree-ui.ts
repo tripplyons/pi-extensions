@@ -28,7 +28,7 @@ const treeRows = (allNodes: NodeRecord[], hideTerminal = false) => {
 	const rows: { node: NodeRecord; prefix: string }[] = [];
 	const compare = (left: NodeRecord, right: NodeRecord) => left.createdAt - right.createdAt || left.nodeId.localeCompare(right.nodeId);
 	const children = (parent: NodeRecord) => {
-		const declared = parent.childIds.map((id) => byId.get(id)).filter((node): node is NodeRecord => visibleParent(node) === parent.nodeId);
+		const declared = parent.childIds.map((id) => byId.get(id)).filter((node): node is NodeRecord => node !== undefined && visibleParent(node) === parent.nodeId);
 		const declaredIds = new Set(declared.map((node) => node.nodeId));
 		const unlisted = nodes.filter((node) => visibleParent(node) === parent.nodeId && !declaredIds.has(node.nodeId)).sort(compare);
 		return [...declared, ...unlisted];

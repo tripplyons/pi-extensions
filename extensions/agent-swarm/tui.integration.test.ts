@@ -72,18 +72,18 @@ test("space hides completed/stopped nodes, promotes descendants, and clamps sele
 	expect(plain(tree.render(120).join("\n"))).toContain("worker node_stopped");
 	tree.handleInput(" ");
 	const hidden = plain(tree.render(120).join("\n"));
-	expect(hidden).not.toContain("node_manager");
+	expect(hidden).not.toContain("manager _manager completed");
 	expect(hidden).not.toContain("node_stopped");
-	expect(hidden).toContain("node_failed");
-	expect(hidden).toContain("node_rejected");
+	expect(hidden).toContain("e_failed failed");
+	expect(hidden).toContain("rejected rejected");
 	expect(hidden).toContain("└─ worker e_worker");
 	expect(hidden).toContain("space show completed/stopped");
 	expect(hidden).toContain("Task: Still working");
 
 	tree.handleInput(" ");
 	const shown = plain(tree.render(120).join("\n"));
-	expect(shown).toContain("node_manager");
-	expect(shown).toContain("node_stopped");
+	expect(shown).toContain("manager _manager completed");
+	expect(shown).toContain("worker _stopped stopped");
 	expect(shown).toContain("space hide completed/stopped");
 });
 
