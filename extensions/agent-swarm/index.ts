@@ -51,7 +51,7 @@ export default async function (pi: ExtensionAPI) {
 	const taskView = (view: ReturnType<typeof snapshot>, full = false) => {
 		const next = cursorFor(view);
 		if (full || !taskCursor || taskCursor.runId !== next.runId || taskCursor.nodeId !== next.nodeId) return { value: view, next };
-		const nodes = view.nodes.filter((node) => taskCursor!.nodeVersions.get(node.nodeId) !== node.version);
+		const nodes = view.nodes.filter((node) => node.nodeId !== next.nodeId && taskCursor!.nodeVersions.get(node.nodeId) !== node.version);
 		const messages = view.messages.filter((message) => !taskCursor!.messageIds.has(message.messageId));
 		const acknowledgedMessageIds = [...taskCursor.messageIds].filter((id) => !next.messageIds.has(id));
 		const node = taskCursor.nodeVersion !== next.nodeVersion ? view.node : undefined;

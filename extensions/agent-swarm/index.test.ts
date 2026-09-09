@@ -106,6 +106,11 @@ test("swarm_task returns a full view followed by versioned deltas and can refres
 		expect(await invoke()).toEqual(view);
 		expect(await invoke()).toEqual({ schemaVersion: 2, runId: root.runId, full: false, changed: false });
 
+		root.version++;
+		const selfChanged = await invoke();
+		expect(selfChanged.node).toEqual(root);
+		expect(selfChanged.nodes).toBeUndefined();
+
 		child.version++;
 		view.messages.push({ messageId: "message_new", runId: root.runId, toNodeId: root.nodeId, body: "report" });
 		const changed = await invoke();
@@ -119,6 +124,9 @@ test("swarm_task returns a full view followed by versioned deltas and can refres
 		expect((await invoke()).status).toBe("stopped");
 		expect(await invoke({ full: true })).toEqual(view);
 		expect(await invoke()).toEqual({ schemaVersion: 2, runId: root.runId, full: false, changed: false });
+
+		await active.handlers.get("session_switch")!({}, ctx);
+		expect(await invoke()).toEqual(view);
 	} finally {
 		await active.handlers.get("session_shutdown")?.({}, ctx);
 		resume.mockRestore();
