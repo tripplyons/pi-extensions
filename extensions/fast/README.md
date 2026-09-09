@@ -1,7 +1,7 @@
 # Session fast mode
 
 - `/fast` enables Codex priority requests. Run it again to force standard requests.
-- The footer shows `session fast: on` or `session fast: off`.
+- The footer shows `fast` while the override is enabled and clears when it is disabled.
 - The override applies to subsequent chat requests using `openai-codex`.
   Other providers and independent subagent sessions are unchanged.
 - `/reload`, `/new`, `/resume`, forks, and restarting Pi clear the override.

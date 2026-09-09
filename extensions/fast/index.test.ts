@@ -39,10 +39,11 @@ test("toggle overrides request tier without changing the original request", asyn
   expect(session.request(payload)).toBe(payload);
   await session.toggle();
   expect(session.request(payload).service_tier).toBe("priority");
+  expect(session.statuses.get("fast")).toBe("fast");
   await session.toggle();
   expect(session.request(payload)).toEqual({ ...payload, service_tier: "default" });
   expect(payload.service_tier).toBe("priority");
-  expect(session.statuses.get("session-fast")).toBe("session fast: off");
+  expect(session.statuses.get("fast")).toBeUndefined();
 });
 
 test("session lifecycle clears the override and instances remain isolated", async () => {
@@ -55,7 +56,7 @@ test("session lifecycle clears the override and instances remain isolated", asyn
     expect(other.request(payload)).toBe(payload);
     session.start(reason);
     expect(session.request(payload)).toBe(payload);
-    expect(session.statuses.get("session-fast")).toBeUndefined();
+    expect(session.statuses.get("fast")).toBeUndefined();
   }
 });
 

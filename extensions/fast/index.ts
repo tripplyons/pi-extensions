@@ -5,7 +5,7 @@ export default function fastExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     fast = undefined;
-    ctx.ui.setStatus("session-fast", undefined);
+    ctx.ui.setStatus("fast", undefined);
   });
 
   pi.registerCommand("fast", {
@@ -20,7 +20,7 @@ export default function fastExtension(pi: ExtensionAPI) {
         return;
       }
       fast = !fast;
-      ctx.ui.setStatus("session-fast", `session fast: ${fast ? "on" : "off"}`);
+      ctx.ui.setStatus("fast", fast ? "fast" : undefined);
       ctx.ui.notify(`Session fast mode ${fast ? "on" : "off"}. Applies to the next request.`, "info");
     },
   });
