@@ -1,10 +1,13 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { sanitizeTerminalText } from "./output-format.ts";
 
 type ToolResult = { content?: Array<{ type?: string; text?: string }>; details?: unknown };
 type Paint = Pick<Theme, "fg" | "bold">;
 
-const clean = (value: unknown) => String(value ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+// Tool arguments and controller errors are untrusted terminal input. Strip both
+// terminal commands and invisible direction/format characters before styling.
+const clean = (value: unknown) => sanitizeTerminalText(String(value ?? "")).replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
 const preview = (value: unknown, limit = 72) => { const text = clean(value); return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}…` : text; };
 const id = (value: unknown) => { const text = clean(value); return text.startsWith("node_") && text.length > 13 ? text.slice(-8) : text || "…"; };
 const colorForStatus = (status: string): ThemeColor => ["running", "completed", "active", "accepted", "accept", "integrated", "cleared"].includes(status) ? "success" : ["failed", "rejected", "reject", "error"].includes(status) ? "error" : ["starting", "awaiting-review", "rework", "request-changes", "paused"].includes(status) ? "warning" : "muted";
@@ -18,6 +21,10 @@ export function renderSwarmCall(name: string, args: unknown, theme: Paint) {
 	if (input.nodeId) fields.push(theme.fg("accent", id(input.nodeId)));
 	if (input.action) fields.push(theme.fg(colorForStatus(clean(input.action)), clean(input.action)));
 	if (input.requestId) fields.push(theme.fg("accent", preview(input.requestId, 24)));
+	if (Array.isArray(input.acknowledge) && input.acknowledge.length) fields.push(value(theme, "ack", `${input.acknowledge.length} message${input.acknowledge.length === 1 ? "" : "s"}`));
+	if (input.reviewTargetId) fields.push(value(theme, "review", id(input.reviewTargetId), "accent"));
+	if (typeof input.includeDirty === "boolean") fields.push(value(theme, "dirty files", input.includeDirty ? "included" : "excluded", input.includeDirty ? "warning" : "muted"));
+	if (typeof input.full === "boolean") fields.push(value(theme, "output", input.full ? "full" : "summary"));
 	if (input.task) fields.push(value(theme, "task", input.task));
 	if (input.body) fields.push(value(theme, "message", input.body));
 	if (input.text) fields.push(value(theme, "result", input.text));
@@ -42,6 +49,7 @@ export function renderSwarmResult(name: string, result: ToolResult, theme: Paint
 	// intentionally retained for the model, while the UI shows its useful payload.
 	if (object.ok === true && object.result && typeof object.result === "object") object = object.result;
 	const lines: string[] = [];
+	if (object.changed === false) lines.push(theme.fg("muted", "no changes"));
 	if (object.pending === true) lines.push(theme.fg("warning", "request pending"));
 	if (object.status) lines.push(value(theme, "status", object.status, colorForStatus(clean(object.status))));
 	const nodes = Array.isArray(object.nodes) ? object.nodes : object.node ? [object.node] : object.nodeId ? [object] : [];
