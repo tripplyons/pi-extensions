@@ -71,7 +71,8 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 			const paths = {
 				worktree: node.cwd, workerHome: privateHome, workerTmp: workerTmp(run.runId, node.nodeId),
 				outbox: outboxDir(run.runId, node.nodeId), inbox: inboxDir(run.runId, node.nodeId),
-				readableRuntime: [nodeExecutable, dirname(dirname(gitExecutable)), dirname(dirname(dirname(dirname(dirname(pi))))), dirname(dirname(dirname(dirname(conversion)))), dirname(extension), run.gitCommonDir],
+				stateRoot: stateRoot(), coordinatorWorktree: run.gitRoot, gitCommonDir: run.gitCommonDir,
+				hostHome: homedir(), sourceAgentDir: sourceAgent,
 				readOnlyWorktree: node.role === "reviewer",
 			};
 			writeFileSync(profile, sandboxProfile(paths), { mode: 0o600 });

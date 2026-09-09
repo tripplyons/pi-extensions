@@ -23,7 +23,11 @@ macTest("supervisor pauses group execution and enforces timeout after controller
 	for (const path of [worktree, workerHome, workerTmp, outbox, inbox]) mkdirSync(path);
 	const node = realpathSync(spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim());
 	const profile = join(root, "profile.sb");
-	writeFileSync(profile, sandboxProfile({ worktree, workerHome, workerTmp, outbox, inbox, readableRuntime: [node] }));
+	writeFileSync(profile, sandboxProfile({
+		worktree, workerHome, workerTmp, outbox, inbox, stateRoot: root,
+		coordinatorWorktree: join(root, "coordinator"), gitCommonDir: join(root, "git-common"),
+		hostHome: join(root, "host-home"), sourceAgentDir: join(root, "host-home", ".pi", "agent"),
+	}));
 	const statusFile = join(root, "status.json");
 	const commandFile = join(root, "command.json");
 	const activityFile = join(worktree, "activity");

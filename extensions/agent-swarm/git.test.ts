@@ -40,7 +40,11 @@ macTest("dirty snapshots preserve the parent and workers cannot stage into share
 		for (const path of [workerHome, workerTmp, outbox, inbox]) mkdirSync(path);
 		const profile = join(root, "worker.sb");
 		const executable = realpathSync(spawnSync("/usr/bin/xcrun", ["--find", "git"], { encoding: "utf8" }).stdout.trim());
-		writeFileSync(profile, sandboxProfile({ worktree: child.path, workerHome, workerTmp, outbox, inbox, readableRuntime: [before.commonDir, dirname(dirname(executable))] }));
+		writeFileSync(profile, sandboxProfile({
+			worktree: child.path, workerHome, workerTmp, outbox, inbox,
+			stateRoot: process.env.PI_SWARM_HOME, coordinatorWorktree: source, gitCommonDir: before.commonDir,
+			hostHome: join(root, "host-home"), sourceAgentDir: join(root, "host-home", ".pi", "agent"),
+		}));
 		const denied = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, executable, "-C", child.path, "add", "-A"], { encoding: "utf8", env: { HOME: workerHome, PATH: "/usr/bin:/bin" } });
 		expect(denied.status).not.toBe(0);
 		expect(denied.stderr).toMatch(/Operation not permitted|Permission denied/);

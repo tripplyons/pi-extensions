@@ -169,7 +169,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		if (!mailbox && !runtime) return;
 		const node = snapshot().node;
-		return { systemPrompt: `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.` };
+		return { systemPrompt: `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.` };
 	});
 	pi.on("agent_end", async (event) => {
 		if (!mailbox) return;
@@ -243,7 +243,7 @@ export default async function (pi: ExtensionAPI) {
 		description: "Show swarm commands and isolation limits",
 		async handler(_args, ctx) {
 			if (mailbox) throw new Error("Root-only command");
-			ctx.ui.notify("/swarm:start <objective> · /swarm:status · /swarm:tree · /swarm:pause · /swarm:resume [runId] · /swarm:runs · /swarm:kill · /swarm:clear\nmacOS sandbox-exec and tmux required. Linked Git history and repository configuration are readable. Workers hold inference credentials and can use outbound network. Lifecycle controls cover original process groups only; detached descendants may survive. Git content filters and custom merge drivers are unsupported. Only managers integrate, always into generated branches. Root integration is manual.", "info");
+			ctx.ui.notify("/swarm:start <objective> · /swarm:status · /swarm:tree · /swarm:pause · /swarm:resume [runId] · /swarm:runs · /swarm:kill · /swarm:clear\nmacOS sandbox-exec and tmux required. Host file reads are unrestricted. Writes are allowed except for the coordinator checkout, Git and swarm authority, common credentials, and system paths. Workers hold inference credentials and can use outbound network. Lifecycle controls cover original process groups only; detached descendants may survive. Git content filters and custom merge drivers are unsupported. Only managers integrate, always into generated branches. Root integration is manual.", "info");
 		},
 	});
 	pi.registerCommand("swarm:status", {

@@ -14,9 +14,8 @@ macTest("installed Pi and conversion start offline with private configuration un
 	const [worktree, workerHome, workerTmp, outbox, inbox] = ["worktree", "home", "tmp", "outbox", "inbox"].map((name) => join(root, name));
 	for (const path of [worktree, workerHome, workerTmp, outbox, inbox]) mkdirSync(path);
 	const cli = realpathSync(spawnSync("which", ["pi"], { encoding: "utf8" }).stdout.trim());
-	const piPackage = dirname(dirname(dirname(cli)));
 	const conversion = realpathSync(fileURLToPath(import.meta.resolve("@howaboua/pi-codex-conversion")));
-	const conversionPackage = dirname(dirname(conversion));
+	const swarm = realpathSync(fileURLToPath(new URL("./index.ts", import.meta.url)));
 	const node = realpathSync(spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim());
 	const agentDir = join(workerHome, ".pi", "agent");
 	mkdirSync(agentDir, { recursive: true });
@@ -37,20 +36,22 @@ macTest("installed Pi and conversion start offline with private configuration un
 			pi.on('session_start', async (_event, ctx) => {
 				const result = await exec.execute('probe-code', {code:'text(6 * 7)'}, new AbortController().signal, undefined, ctx);
 				const shell = await exec.execute('probe-shell', {code:'text(await tools.exec_command({cmd:"printf sandboxed > code-owned"}))'}, new AbortController().signal, undefined, ctx);
-				writeFileSync(${JSON.stringify(probeFile)}, JSON.stringify({tools:pi.getActiveTools(), result, shell}));
+				writeFileSync(${JSON.stringify(probeFile)}, JSON.stringify({tools:pi.getActiveTools(), allTools:pi.getAllTools().map(tool => tool.name), result, shell}));
 			});
 		};
 	`);
 	const profile = join(root, "profile.sb");
 	try {
-		writeFileSync(profile, sandboxProfile({ worktree, workerHome, workerTmp, outbox, inbox, readableRuntime: [
-			node, dirname(dirname(piPackage)), dirname(dirname(conversionPackage)),
-		] }));
+		writeFileSync(profile, sandboxProfile({
+			worktree, workerHome, workerTmp, outbox, inbox, stateRoot: root,
+			coordinatorWorktree: join(root, "coordinator"), gitCommonDir: join(root, "git-common"),
+			hostHome: join(root, "host-home"), sourceAgentDir: join(root, "host-home", ".pi", "agent"),
+		}));
 		const result = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, node, cli,
 			"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
-			"--no-context-files", "--no-approve", "--no-session", "--model", "openai-codex/gpt-5.4", "--extension", fixture,
+			"--no-context-files", "--no-approve", "--no-session", "--model", "openai-codex/gpt-5.4", "--extension", swarm, "--extension", fixture,
 		], {
-			cwd: worktree, env: { HOME: workerHome, TMPDIR: workerTmp, PI_CODING_AGENT_DIR: agentDir, PATH: `${dirname(node)}:/usr/bin:/bin` },
+			cwd: worktree, env: { HOME: workerHome, TMPDIR: workerTmp, PI_CODING_AGENT_DIR: agentDir, PI_SWARM_HOME: join(root, "swarm-state"), PATH: `${dirname(node)}:/usr/bin:/bin` },
 			input: '{"id":"probe","type":"get_state"}\n', encoding: "utf8", timeout: 10000,
 		});
 		if (result.status !== 0) throw new Error(`Sandboxed Pi startup failed: ${result.error?.message ?? result.stderr}`);
@@ -63,6 +64,7 @@ macTest("installed Pi and conversion start offline with private configuration un
 		const tools = probe.tools;
 		expect(tools).toContain("exec");
 		expect(tools).toContain("wait");
+		expect(probe.allTools).toContain("swarm_spawn");
 		expect(tools).not.toContain("subagent");
 		expect(JSON.stringify(probe.result.content)).toContain("42");
 		expect(readFileSync(join(worktree, "code-owned"), "utf8")).toBe("sandboxed");

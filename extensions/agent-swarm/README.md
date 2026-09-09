@@ -4,11 +4,13 @@
 
 ## Security boundary
 
-Every worker runs under `/usr/bin/sandbox-exec` in a linked Git worktree. Workers can edit their own worktree files, private home, private temporary directory, and request outbox. They cannot write the source repository's shared Git metadata. The unsandboxed root control plane creates branches and commits, integrates accepted manager children, updates state, and cleans worktrees.
+Every worker runs under `/usr/bin/sandbox-exec` in a linked Git worktree. File reads are unrestricted. A worker can read every file available to the host user, including credentials, other repositories, the coordinator checkout, sibling worktrees, and swarm control state.
 
-The worker receives a private copy of the Pi files required for Codex authentication. It does not receive the original credential file, SSH configuration, cloud credentials, user extensions, skills, web tools, or ask tools. Outbound network access is required for model calls. The macOS sandbox cannot restrict that access to an inference host, so a worker can transmit data it can read. Use a managed sandbox with host-side credential injection for a stronger network boundary. This version fails closed outside macOS and has no external launcher backend.
+File writes use a denylist. Workers may write any host-user-writable location except the coordinator checkout, shared Git metadata, swarm authority and sibling state, common credential locations, and system or application paths. The worker's own worktree, private home, temporary directory, and request outbox are exceptions within the protected swarm state root. Reviewers cannot write their worktrees. Workers can still modify other repositories, documents, user configuration, and installed tools not covered by the denylist.
 
-Linked worktrees share readable Git history, object storage, and repository configuration. Workers cannot write that shared metadata. Do not put credentials in repository remotes or local Git configuration. Standalone clones would provide a stronger Git boundary but are not used by this configuration.
+The worker receives a private copy of the Pi files required for Codex authentication, but unrestricted reads also expose the original credential file, SSH and cloud credentials, user extensions, skills, and other host files. User web and ask tools are not loaded. Outbound network access is required for model calls. The macOS sandbox cannot restrict that access to an inference host, so a worker can transmit any readable data. Use a managed sandbox with host-side credential injection for a stronger boundary. This version fails closed outside macOS and has no external launcher backend.
+
+Linked worktrees share Git history, object storage, and repository configuration. The write denylist protects that shared metadata. Do not put credentials in repository remotes or local Git configuration because workers can read them.
 
 Git LFS, custom content filters, and custom merge drivers are unsupported. Controller Git operations reject active filters before processing worktree content. Integration rejects custom merge attributes before merging. Controller subprocesses also disable configured filter and merge-driver commands in case attributes change after preflight. Built-in text, binary, and union merge behavior remains available. Hooks, fsmonitor hooks, signing, external diff, and textconv are disabled.
 
@@ -84,6 +86,6 @@ Closing the root releases ownership but does not kill workers. Supervisors conti
 
 Cleanup refuses dirty worktrees. Clear checks every retained worktree before stopping anything, then checks again after stopping the groups. Generated branches remain for human recovery. A cleared-run marker preserves the lock inode and prevents reconnection to deleted run data.
 
-The macOS policy explicitly denies sibling process inspection, including raw process-argument syscalls. DNS uses the system mDNSResponder socket; arbitrary host Unix sockets are denied. These restrictions do not provide CPU, disk, or inference-spending quotas. The extension and coordinator still run with the user's permissions.
+The macOS policy explicitly denies sibling process inspection, including raw process-argument syscalls. DNS uses the system mDNSResponder socket; arbitrary host Unix sockets are denied. File write denials cover the current checkout and known credential locations, not all valuable host files. These restrictions do not provide CPU, disk, or inference-spending quotas. The extension and coordinator still run with the user's permissions.
 
 Use `subagent` for a one-shot, session-scoped child. New subagents are disabled while a session is attached to an active or paused swarm because they bypass swarm limits and isolation. `subagent_process` remains available for jobs started before activation.

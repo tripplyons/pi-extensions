@@ -1,4 +1,4 @@
-import { realpathSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -8,13 +8,36 @@ export interface SandboxPaths {
 	workerTmp: string;
 	outbox: string;
 	inbox: string;
-	readableRuntime: string[];
+	stateRoot: string;
+	coordinatorWorktree: string;
+	gitCommonDir: string;
+	hostHome: string;
+	sourceAgentDir: string;
 	readOnlyWorktree?: boolean;
 }
 
 const canonicalExisting = (path: string) => realpathSync(resolve(path));
 const canonicalDestination = (path: string) => join(realpathSync(dirname(resolve(path))), resolve(path).split(sep).at(-1)!);
+const canonicalDeniedPath = (path: string) => {
+	let existing = resolve(path);
+	const suffix: string[] = [];
+	while (!existsSync(existing)) {
+		const parent = dirname(existing);
+		if (parent === existing) throw new Error(`Cannot resolve denied path: ${path}`);
+		suffix.unshift(existing.split(sep).at(-1)!);
+		existing = parent;
+	}
+	return join(realpathSync(existing), ...suffix);
+};
 const quoteScheme = (value: string) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+
+const systemWriteDenials = ["/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc"];
+const credentialWriteDenials = (home: string, sourceAgentDir: string) => [
+	join(home, ".ssh"), join(home, ".aws"), join(home, ".azure"), join(home, ".docker"), join(home, ".kube"),
+	join(home, ".config", "gcloud"), join(home, ".config", "gh"), join(home, "Library", "Keychains"),
+	join(home, ".netrc"), join(home, ".git-credentials"), join(home, ".npmrc"), join(home, ".pypirc"),
+	join(sourceAgentDir, "auth.json"),
+];
 
 export const assertMacSandboxAvailable = () => {
 	if (process.platform !== "darwin") throw new Error("agent-swarm requires macOS sandbox-exec");
@@ -28,7 +51,7 @@ export const sandboxProfile = (paths: SandboxPaths) => {
 	const temporary = canonicalExisting(paths.workerTmp);
 	const outbox = canonicalExisting(paths.outbox);
 	const inbox = canonicalExisting(paths.inbox);
-	const runtime = paths.readableRuntime.map(canonicalExisting);
+	const state = canonicalExisting(paths.stateRoot);
 	const privateRoots = [worktree, home, temporary, outbox, inbox];
 	for (let index = 0; index < privateRoots.length; index++) {
 		const path = privateRoots[index];
@@ -37,8 +60,6 @@ export const sandboxProfile = (paths: SandboxPaths) => {
 			if (path === other || path.startsWith(other + sep) || other.startsWith(path + sep)) throw new Error("Sandbox private paths must not overlap");
 		}
 	}
-	if (runtime.includes("/")) throw new Error("Sandbox runtime cannot expose the filesystem root");
-	const readable = ["/System", "/usr", "/bin", "/sbin", "/private/etc", worktree, home, temporary, outbox, inbox, ...runtime];
 	return [
 		"(version 1)",
 		"(deny default)",
@@ -50,17 +71,16 @@ export const sandboxProfile = (paths: SandboxPaths) => {
 		"(allow mach-lookup)",
 		"(allow network-outbound (remote tcp) (remote udp))",
 		'(allow network-outbound (literal "/private/var/run/mDNSResponder"))',
-		"(allow file-read-metadata)",
-		'(allow file-read-data (literal "/"))',
-		'(allow file-read* (literal "/private/var/select/sh"))',
-		...["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"].map((path) => `(allow file-read* (literal ${quoteScheme(path)}))`),
-		...readable.map((path) => `(allow file-read* (subpath ${quoteScheme(path)}))`),
-		...(paths.readOnlyWorktree ? [] : [`(allow file-write* (subpath ${quoteScheme(worktree)}))`]),
+		"(allow file-read*)",
+		"(allow file-write*)",
+		`(deny file-write* (require-all (subpath ${quoteScheme(state)}) ${[
+			home, temporary, outbox, ...(!paths.readOnlyWorktree ? [worktree] : []),
+		].map((path) => `(require-not (subpath ${quoteScheme(path)}))`).join(" ")}))`,
+		...[paths.coordinatorWorktree, paths.gitCommonDir, ...systemWriteDenials, ...credentialWriteDenials(paths.hostHome, paths.sourceAgentDir)]
+			.map(canonicalDeniedPath)
+			.map((path) => `(deny file-write* (subpath ${quoteScheme(path)}))`),
+		`(deny file-write* (require-all (subpath ${quoteScheme("/dev")}) (require-not (literal ${quoteScheme("/dev/null")}))))`,
 		`(deny file-write* (literal ${quoteScheme(join(worktree, ".git"))}))`,
-		`(allow file-write* (subpath ${quoteScheme(home)}))`,
-		`(allow file-write* (subpath ${quoteScheme(temporary)}))`,
-		`(allow file-write* (subpath ${quoteScheme(outbox)}))`,
-		`(allow file-write* (literal ${quoteScheme("/dev/null")}))`,
 		...privateRoots.map((path) => `(deny file-write-unlink (literal ${quoteScheme(path)}))`),
 	].join("\n") + "\n";
 };

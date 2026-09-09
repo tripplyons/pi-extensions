@@ -29,7 +29,7 @@ export class SwarmTree {
 		});
 		const details = node ? [
 			`${node.role} ${node.nodeId}`, `Parent: ${node.parentId ?? "none"}`, `Task: ${plain(node.task)}`,
-			`Sandbox: ${node.sandbox?.backend ?? "root session"}`, "Network: outbound TCP/UDP; worker holds inference credentials",
+			`Sandbox: ${node.sandbox?.backend ?? "root session"}`, "Files: unrestricted reads; denylist writes", "Network: outbound TCP/UDP; worker holds inference credentials",
 			"Lifecycle: original process groups only; detached descendants may survive",
 			`Deadline: ${node.deadlineAt ? new Date(node.deadlineAt).toISOString() : "none"}`,
 			`Activity: ${Math.max(0, Math.floor((Date.now() - node.updatedAt) / 1000))}s ago`,
