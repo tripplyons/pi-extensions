@@ -94,3 +94,36 @@ test("terminal coordinator remains visible when terminal nodes are hidden", () =
 	tree.handleInput(" ");
 	expect(plain(tree.render(80).join("\n"))).toContain("coordinator ode_root completed");
 });
+
+test("details auto-follow growth, pin on scroll, resume at bottom, and reset on selection", () => {
+	const root = makeNode("run_test", "node_root", "coordinator", "Coordinate", "/tmp", null);
+	const child = makeNode("run_test", "node_child", "worker", "Implement", "/tmp/child", root.nodeId);
+	root.childIds = [child.nodeId];
+	let rootLines = Array.from({ length: 30 }, (_, index) => `root-${index}`);
+	const tree = new SwarmTree(theme, () => [root, child], (node) => node === root ? rootLines.join("\n") : Array.from({ length: 30 }, (_, index) => `child-${index}`).join("\n"), () => {});
+
+	let rendered = plain(tree.render(79).join("\n"));
+	expect(rendered).toContain("root-29");
+	expect(rendered).not.toContain("root-0\n");
+	rootLines.push("root-30");
+	expect(plain(tree.render(79).join("\n"))).toContain("root-30");
+
+	tree.handleInput("[");
+	rendered = plain(tree.render(79).join("\n"));
+	expect(rendered).not.toContain("root-30");
+	rootLines.push("root-31");
+	rendered = plain(tree.render(79).join("\n"));
+	expect(rendered).not.toContain("root-31");
+
+	tree.handleInput("]");
+	tree.handleInput("]");
+	rendered = plain(tree.render(79).join("\n"));
+	expect(rendered).toContain("root-31");
+	rootLines.push("root-32");
+	expect(plain(tree.render(79).join("\n"))).toContain("root-32");
+
+	tree.handleInput("j");
+	rendered = plain(tree.render(120).join("\n"));
+	expect(rendered).toContain("child-29");
+	expect(rendered).not.toContain("child-0\n");
+});

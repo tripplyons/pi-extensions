@@ -58,14 +58,16 @@ export class SwarmTree {
 	private selected = 0;
 	private offset = 0;
 	private hideTerminal = false;
+	private followOutput = true;
+	private selectedNodeId?: string;
 	constructor(private theme: Pick<Theme, "fg">, private nodes: () => NodeRecord[], private output: (node: NodeRecord) => string, private close: () => void, private backlog: (node: NodeRecord) => number = () => 0) {}
 	invalidate() {}
 	handleInput(data: string) {
 		if (data === "q" || matchesKey(data, "escape")) this.close();
-		if (data === "j" || matchesKey(data, "down")) { this.selected++; this.offset = 0; }
-		if (data === "k" || matchesKey(data, "up")) { this.selected--; this.offset = 0; }
+		if (data === "j" || matchesKey(data, "down")) { this.selected++; this.offset = 0; this.followOutput = true; }
+		if (data === "k" || matchesKey(data, "up")) { this.selected--; this.offset = 0; this.followOutput = true; }
 		if (data === "]") this.offset++;
-		if (data === "[") this.offset = Math.max(0, this.offset - 1);
+		if (data === "[") { this.offset = Math.max(0, this.offset - 1); this.followOutput = false; }
 		if (data === " ") { this.hideTerminal = !this.hideTerminal; this.offset = 0; }
 	}
 	render(width: number): string[] {
@@ -73,6 +75,11 @@ export class SwarmTree {
 		const rows = treeRows(this.nodes(), this.hideTerminal);
 		this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
 		const node = rows[this.selected]?.node;
+		if (node?.nodeId !== this.selectedNodeId) {
+			this.selectedNodeId = node?.nodeId;
+			this.offset = 0;
+			this.followOutput = true;
+		}
 		const tree = rows.map((row, index) => {
 			const selected = index === this.selected;
 			const marker = selected ? this.theme.fg("accent", ">") : " ";
@@ -80,7 +87,7 @@ export class SwarmTree {
 			return `${marker} ${this.theme.fg("dim", row.prefix)}${role} ${this.theme.fg("dim", row.node.nodeId.slice(-8))} ${this.theme.fg(statusColor(row.node.status), row.node.status)}`;
 		});
 		const detail = (label: string, value: string, color: ThemeColor = "muted") => `${this.theme.fg("dim", `${label}:`)} ${this.theme.fg(color, plain(value))}`;
-		const details = node ? [
+		const allDetails = node ? [
 			`${this.theme.fg("accent", node.role)} ${this.theme.fg("dim", node.nodeId)}`,
 			detail("Parent", node.parentId ?? "none"), detail("Task", node.task),
 			detail("Sandbox", node.sandbox?.backend ?? "root session"), detail("Files", "unrestricted reads; denylist writes"), detail("Network", "outbound TCP/UDP; worker holds inference credentials"),
@@ -93,7 +100,14 @@ export class SwarmTree {
 			detail("Integration", node.integrationCommit ?? "none", node.integrationCommit ? "success" : "dim"),
 			detail("Cleanup", node.cleanedAt ? "removed" : "retained"), detail("Failure", node.failure ?? "none", node.failure ? "error" : "dim"), "",
 			...formatWorkerOutput(this.output(node)).split("\n").map((line) => this.theme.fg("toolOutput", plain(line))),
-		].slice(this.offset, this.offset + 24) : [this.theme.fg("dim", "No nodes")];
+		] : [this.theme.fg("dim", "No nodes")];
+		const maxOffset = Math.max(0, allDetails.length - 24);
+		if (this.followOutput) this.offset = maxOffset;
+		else {
+			this.offset = Math.min(this.offset, maxOffset);
+			if (this.offset === maxOffset) this.followOutput = true;
+		}
+		const details = allDetails.slice(this.offset, this.offset + 24);
 		const lines = width < 80 ? [...tree.slice(Math.max(0, this.selected - 4), this.selected + 5), "", ...details] : (() => {
 			const leftWidth = Math.floor(width * 0.4);
 			return Array.from({ length: Math.max(tree.length, details.length) }, (_, index) => {
