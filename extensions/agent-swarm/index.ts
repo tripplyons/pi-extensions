@@ -351,11 +351,11 @@ export default async function (pi: ExtensionAPI) {
 			return result({ status: action === "clear" ? "cleared" : "stopped" });
 		};
 		pi.registerCommand(`swarm:${action}`, {
-			description: action === "kill" ? "Stop all original worker groups" : "Remove clean worker worktrees and private run data, retaining generated branches",
+			description: action === "kill" ? "Stop all original worker groups" : "Remove clean worker worktrees and private run data after active children have been killed",
 			async handler(_args, ctx) { await execute(); ctx.ui.notify(`Swarm ${action} finished. Detached descendants may survive.`, "info"); },
 		});
 		const name = `swarm_${action}`;
-		const tool = { name, label: `Swarm ${action}`, description: `Root only: ${action} the swarm. Clear refuses dirty worktrees before stopping workers, removes private run data, and retains generated branches and a cleared-run marker. Detached descendants may survive.`, parameters: Type.Object({}), execute,
+		const tool = { name, label: `Swarm ${action}`, description: `Root only: ${action} the swarm. Clear requires active children to be killed first, refuses dirty worktrees, removes private run data, and retains generated branches and a cleared-run marker. Detached descendants may survive.`, parameters: Type.Object({}), execute,
 			renderCall: (args: unknown, theme: any) => renderSwarmCall(name, args, theme), renderResult: (output: any, _options: unknown, theme: any) => renderSwarmResult(name, output, theme) };
 		pi.registerTool(tool);
 		tools.push(tool);

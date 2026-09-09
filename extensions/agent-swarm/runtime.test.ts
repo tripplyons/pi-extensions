@@ -77,7 +77,7 @@ macTest("authenticated hierarchy completes, reviews, and integrates only into it
 		const workerSnapshot = readJson<{ nodes: NodeRecord[] }>(join(inboxDir(active.runId, worker.nodeId), "snapshot.json"))!;
 		expect(workerSnapshot.nodes.map((node) => node.nodeId).sort()).toEqual([manager.nodeId, worker.nodeId].sort());
 		writeFileSync(join(manager.cwd, "uncommitted"), "Retain this work");
-		await expect(active.clear()).rejects.toThrow("dirty");
+		await expect(active.clear()).rejects.toThrow("/swarm:kill");
 		expect(statuses.get(manager.nodeId)).toBe("running");
 		rmSync(join(manager.cwd, "uncommitted"));
 		const queuedId = newId("req");

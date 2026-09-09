@@ -55,7 +55,7 @@ Workers inherit their parent's model and thinking level. Optional `roleModels` a
 - `/swarm:resume [runId]` reconnects and resumes workers.
 - `/swarm:kill` stops workers but keeps state and worktrees.
 - `/swarm:runs` lists retained runs for reconnection.
-- `/swarm:clear` removes clean worktrees, worker credentials, sessions, mailboxes, and audit records. It retains generated branches and a cleared-run marker with the ownership lock inode.
+- `/swarm:clear` refuses while children are active. Run `/swarm:kill` first, then clear removes clean worktrees, worker credentials, sessions, mailboxes, and audit records. It retains generated branches and a cleared-run marker with the ownership lock inode.
 - `/swarm:help` summarizes commands and limits.
 
 ## Code tools
@@ -86,7 +86,7 @@ The root takes a kernel-backed exclusive lock. Reopening its session reconnects 
 
 Closing the root releases ownership but does not kill workers. Supervisors continue enforcing active-time limits on their original process groups. Paused groups remain paused until a root resumes them. Failed or stopped workers restart explicitly; restart rotates their capability.
 
-Cleanup refuses dirty worktrees. Clear checks every retained worktree before stopping anything, then checks again after stopping the groups. Generated branches remain for human recovery. A cleared-run marker preserves the lock inode and prevents reconnection to deleted run data.
+Cleanup refuses dirty worktrees. Clear refuses to detach active children: kill them first. It then checks every retained worktree before cleanup and again before removal. Generated branches remain for human recovery. A cleared-run marker preserves the lock inode and prevents reconnection to deleted run data.
 
 The macOS policy explicitly denies sibling process inspection, including raw process-argument syscalls. DNS uses the system mDNSResponder socket; arbitrary host Unix sockets are denied. File write denials cover the current checkout and known credential locations, not all valuable host files. These restrictions do not provide CPU, disk, or inference-spending quotas. The extension and coordinator still run with the user's permissions.
 

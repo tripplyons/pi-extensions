@@ -319,6 +319,7 @@ export class SwarmRuntime {
 	clear() {
 		return this.serial(async () => {
 			const nodes = this.nodes().filter((node) => node.role !== "coordinator" && !node.cleanedAt);
+			if (nodes.some((node) => !terminalStatuses.has(node.status))) throw new Error("Active swarm children must be killed before clearing. Run /swarm:kill first.");
 			for (const node of nodes) assertCleanWorktree(node);
 			for (const node of nodes) await this.processes.set(node, "stopped");
 			// Recheck after stopping; workers may have edited during the first pass.
