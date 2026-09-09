@@ -1,5 +1,6 @@
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { NodeRecord } from "./types.ts";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { NodeRecord, NodeStatus } from "./types.ts";
 
 const plain = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
@@ -28,10 +29,17 @@ const treeRows = (nodes: NodeRecord[]) => {
 	return rows;
 };
 
+const statusColor = (status: NodeStatus): ThemeColor => {
+	if (status === "running" || status === "completed") return "success";
+	if (status === "starting" || status === "awaiting-review" || status === "rework") return "warning";
+	if (status === "failed" || status === "rejected") return "error";
+	return "dim";
+};
+
 export class SwarmTree {
 	private selected = 0;
 	private offset = 0;
-	constructor(private nodes: () => NodeRecord[], private output: (node: NodeRecord) => string, private close: () => void, private backlog: (node: NodeRecord) => number = () => 0) {}
+	constructor(private theme: Pick<Theme, "fg">, private nodes: () => NodeRecord[], private output: (node: NodeRecord) => string, private close: () => void, private backlog: (node: NodeRecord) => number = () => 0) {}
 	invalidate() {}
 	handleInput(data: string) {
 		if (data === "q" || matchesKey(data, "escape")) this.close();
@@ -45,26 +53,34 @@ export class SwarmTree {
 		const rows = treeRows(this.nodes());
 		this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
 		const node = rows[this.selected]?.node;
-		const tree = rows.map((row, index) => `${index === this.selected ? ">" : " "} ${row.prefix}${row.node.role} ${row.node.nodeId.slice(-8)} ${row.node.status}`);
+		const tree = rows.map((row, index) => {
+			const selected = index === this.selected;
+			const marker = selected ? this.theme.fg("accent", ">") : " ";
+			const role = this.theme.fg(selected ? "accent" : "muted", row.node.role);
+			return `${marker} ${this.theme.fg("dim", row.prefix)}${role} ${this.theme.fg("dim", row.node.nodeId.slice(-8))} ${this.theme.fg(statusColor(row.node.status), row.node.status)}`;
+		});
+		const detail = (label: string, value: string, color: ThemeColor = "muted") => `${this.theme.fg("dim", `${label}:`)} ${this.theme.fg(color, plain(value))}`;
 		const details = node ? [
-			`${node.role} ${node.nodeId}`, `Parent: ${node.parentId ?? "none"}`, `Task: ${plain(node.task)}`,
-			`Sandbox: ${node.sandbox?.backend ?? "root session"}`, "Files: unrestricted reads; denylist writes", "Network: outbound TCP/UDP; worker holds inference credentials",
-			"Lifecycle: original process groups only; detached descendants may survive",
-			`Deadline: ${node.deadlineAt ? new Date(node.deadlineAt).toISOString() : "none"}`,
-			`Activity: ${Math.max(0, Math.floor((Date.now() - node.updatedAt) / 1000))}s ago`,
-			`Pending requests: ${this.backlog(node)}`,
-			`Branch: ${node.branch ?? "none"}`, `Result: ${node.result?.commit ?? "none"}`,
-			`Review: ${node.review?.action ?? "none"}`, `Integration: ${node.integrationCommit ?? "none"}`,
-			`Cleanup: ${node.cleanedAt ? "removed" : "retained"}`, `Failure: ${node.failure ?? "none"}`, "",
-			...this.output(node).split("\n").map(plain),
-		].slice(this.offset, this.offset + 24) : ["No nodes"];
+			`${this.theme.fg("accent", node.role)} ${this.theme.fg("dim", node.nodeId)}`,
+			detail("Parent", node.parentId ?? "none"), detail("Task", node.task),
+			detail("Sandbox", node.sandbox?.backend ?? "root session"), detail("Files", "unrestricted reads; denylist writes"), detail("Network", "outbound TCP/UDP; worker holds inference credentials"),
+			detail("Lifecycle", "original process groups only; detached descendants may survive"),
+			detail("Deadline", node.deadlineAt ? new Date(node.deadlineAt).toISOString() : "none"),
+			detail("Activity", `${Math.max(0, Math.floor((Date.now() - node.updatedAt) / 1000))}s ago`),
+			detail("Pending requests", String(this.backlog(node))),
+			detail("Branch", node.branch ?? "none"), detail("Result", node.result?.commit ?? "none", node.result?.commit ? "success" : "dim"),
+			detail("Review", node.review?.action ?? "none", node.review?.action === "accept" ? "success" : node.review?.action === "reject" ? "error" : node.review?.action === "request-changes" ? "warning" : "dim"),
+			detail("Integration", node.integrationCommit ?? "none", node.integrationCommit ? "success" : "dim"),
+			detail("Cleanup", node.cleanedAt ? "removed" : "retained"), detail("Failure", node.failure ?? "none", node.failure ? "error" : "dim"), "",
+			...this.output(node).split("\n").map((line) => this.theme.fg("toolOutput", plain(line))),
+		].slice(this.offset, this.offset + 24) : [this.theme.fg("dim", "No nodes")];
 		const lines = width < 80 ? [...tree.slice(Math.max(0, this.selected - 4), this.selected + 5), "", ...details] : (() => {
 			const leftWidth = Math.floor(width * 0.4);
 			return Array.from({ length: Math.max(tree.length, details.length) }, (_, index) => {
-				const left = truncateToWidth(plain(tree[index] ?? ""), leftWidth);
-				return `${left}${" ".repeat(leftWidth - visibleWidth(left))} │ ${truncateToWidth(plain(details[index] ?? ""), width - leftWidth - 3)}`;
+				const left = truncateToWidth(tree[index] ?? "", leftWidth);
+				return `${left}${" ".repeat(leftWidth - visibleWidth(left))} ${this.theme.fg("dim", "│")} ${truncateToWidth(details[index] ?? "", width - leftWidth - 3)}`;
 			});
 		})();
-		return [...lines, "↑↓ / j k select · [ ] scroll details · q / esc close"].map((line) => truncateToWidth(line, width));
+		return [...lines, this.theme.fg("dim", "↑↓ / j k select · [ ] scroll details · q / esc close")].map((line) => truncateToWidth(line, width));
 	}
 }

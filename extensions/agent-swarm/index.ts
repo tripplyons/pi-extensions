@@ -259,8 +259,8 @@ export default async function (pi: ExtensionAPI) {
 			if (mailbox) throw new Error("Root-only command");
 			const active = requireRuntime();
 			let refresh: ReturnType<typeof setInterval> | undefined;
-			try { await ctx.ui.custom<void>((tui, _theme, _keys, done) => {
-				const tree = new SwarmTree(() => active.run.clearedAt ? [] : active.nodes(), (node) => {
+			try { await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+				const tree = new SwarmTree(theme, () => active.run.clearedAt ? [] : active.nodes(), (node) => {
 					if (!node.tmuxSession || !node.tmuxWindow) return "No worker output";
 					try { return captureWindow(node.tmuxSession, node.tmuxWindow); }
 					catch (error) { return String(error); }
