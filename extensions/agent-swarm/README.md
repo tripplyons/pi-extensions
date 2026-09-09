@@ -48,7 +48,7 @@ Workers inherit their parent's model and thinking level. Optional `roleModels` a
 
 - `/swarm:start <objective>` activates the current session as coordinator.
 - `/swarm:status` shows the hierarchy.
-- `/swarm:tree` opens live node details and tmux output. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
+- `/swarm:tree` opens a parent-first nested hierarchy with live node details and tmux output. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
 - `/swarm:pause` freezes worker process groups.
 - `/swarm:resume [runId]` reconnects and resumes workers.
 - `/swarm:kill` stops workers but keeps state and worktrees.

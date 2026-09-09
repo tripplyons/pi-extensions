@@ -21,3 +21,22 @@ test("tree navigates live nodes and constrains terminal output at narrow widths"
 	tree.handleInput("q");
 	expect(closed).toBe(true);
 });
+
+test("tree renders parents before their nested children", () => {
+	const root = makeNode("run_test", "node_root", "coordinator", "Coordinate", "/tmp", null);
+	const manager = makeNode("run_test", "node_manager", "manager", "Manage", "/tmp/manager", root.nodeId);
+	const worker = makeNode("run_test", "node_worker", "worker", "Implement", "/tmp/worker", manager.nodeId);
+	const sibling = makeNode("run_test", "node_sibling", "worker", "Check", "/tmp/sibling", root.nodeId);
+	root.childIds = [manager.nodeId, sibling.nodeId];
+	manager.childIds = [worker.nodeId];
+	const tree = new SwarmTree(() => [worker, sibling, manager, root], () => "", () => {});
+	const rendered = tree.render(79).join("\n");
+	const coordinatorAt = rendered.indexOf("coordinator ode_root");
+	const managerAt = rendered.indexOf("├─ manager _manager");
+	const workerAt = rendered.indexOf("│  └─ worker e_worker");
+	const siblingAt = rendered.indexOf("└─ worker _sibling");
+	expect(coordinatorAt).toBeGreaterThanOrEqual(0);
+	expect(managerAt).toBeGreaterThan(coordinatorAt);
+	expect(workerAt).toBeGreaterThan(managerAt);
+	expect(siblingAt).toBeGreaterThan(workerAt);
+});
