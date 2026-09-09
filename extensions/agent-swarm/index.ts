@@ -27,6 +27,11 @@ export default async function (pi: ExtensionAPI) {
 	let lastWake = "";
 	let pollInterval = 250;
 	let context: ExtensionContext | undefined;
+	// Keep the provider's system-prefix byte-for-byte stable for the lifetime of an
+	// attachment. before_agent_start is called for every run (and its input can be
+	// rebuilt as tools and session state change), so deriving this on every call
+	// defeats provider prefix caching even when the swarm instructions are unchanged.
+	let attachedSystemPrompt: string | undefined;
 	const processes = createWorkerProcesses(fileURLToPath(import.meta.url));
 	const requireRuntime = () => {
 		if (!runtime) throw new Error("No swarm attached. Use /swarm:start <objective> first.");
@@ -159,6 +164,7 @@ export default async function (pi: ExtensionAPI) {
 		ctx.ui.setStatus("agent-swarm", undefined);
 		context = undefined;
 		lastWake = "";
+		attachedSystemPrompt = undefined;
 		await startSession(ctx);
 	});
 	pi.on("agent_start", async () => {
@@ -167,9 +173,13 @@ export default async function (pi: ExtensionAPI) {
 		pendingAcknowledgements = [];
 	});
 	pi.on("before_agent_start", async (event) => {
-		if (!mailbox && !runtime) return;
-		const node = snapshot().node;
-		return { systemPrompt: `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.` };
+		const attached = mailbox || (runtime && runtime.run.status !== "stopped");
+		if (!attached) return;
+		if (!attachedSystemPrompt) {
+			const node = snapshot().node;
+			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
+		}
+		return { systemPrompt: attachedSystemPrompt };
 	});
 	pi.on("agent_end", async (event) => {
 		if (!mailbox) return;
@@ -198,6 +208,7 @@ export default async function (pi: ExtensionAPI) {
 		if (heartbeatTimer) clearTimeout(heartbeatTimer);
 		await runtime?.close();
 		runtime = undefined;
+		attachedSystemPrompt = undefined;
 		attachment?.dispose();
 		attachment = undefined;
 		ctx.ui.setStatus("agent-swarm", undefined);
@@ -282,6 +293,7 @@ export default async function (pi: ExtensionAPI) {
 				context?.ui.setStatus("agent-swarm", undefined);
 			}
 			attachment?.set(false);
+			attachedSystemPrompt = undefined;
 			return result({ status: action === "clear" ? "cleared" : "stopped" });
 		};
 		pi.registerCommand(`swarm:${action}`, {

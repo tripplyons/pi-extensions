@@ -13,17 +13,51 @@ function harness(entries: any[] = []) {
 	const bus = new EventEmitter();
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, Function>();
+	const commands = new Map<string, any>();
 	const messages: any[] = [];
 	const pi = {
 		events: { emit: (name: string, value: unknown) => bus.emit(name, value), on(name: string, listener: (...args: any[]) => void) { bus.on(name, listener); return () => bus.off(name, listener); } },
 		registerTool(tool: any) { tools.set(tool.name, tool); },
-		registerCommand() {},
+		registerCommand(name: string, command: any) { commands.set(name, command); },
 		getAllTools: () => [...tools.values()],
 		on(name: string, handler: Function) { handlers.set(name, handler); },
 		sendMessage(message: any) { messages.push(message); entries.push({ type: "message", message: { role: "custom", ...message } }); },
 	};
-	return { pi, handlers, tools, messages };
+	return { pi, handlers, tools, commands, messages };
 }
+
+test("swarm system prompt is frozen across turns and child lifecycle changes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-prompt-"));
+	const previous = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = directory;
+	const root = makeNode("run_prompt", "node_root", "coordinator", "Objective", directory, null);
+	const child = makeNode(root.runId, "node_child", "worker", "Work", directory, root.nodeId);
+	const view = { status: "active", node: root, nodes: [root, child], messages: [] };
+	const runtime = { runId: root.runId, root, run: { status: "active", config: { pollIntervalMs: 50, maxInlineBytes: 65536 } }, view: () => view, async poll() {}, async close() {}, async kill() { this.run.status = "stopped"; } };
+	const resume = spyOn(SwarmRuntime, "resume").mockResolvedValue(runtime as any);
+	const active = harness();
+	const ctx = { sessionManager: { getSessionId: () => "prompt", getBranch: () => [] }, ui: { notify() {}, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
+	try {
+		writeJson(sessionFile("prompt"), { runId: root.runId });
+		await extension(active.pi as any);
+		await active.handlers.get("session_start")!({}, ctx);
+		const first = await active.handlers.get("before_agent_start")!({ systemPrompt: "base before swarm state changes" }, ctx);
+		child.status = "running";
+		view.messages.push({ messageId: "message_1" });
+		const second = await active.handlers.get("before_agent_start")!({ systemPrompt: "rebuilt base after another turn" }, ctx);
+		child.status = "awaiting-review";
+		const third = await active.handlers.get("before_agent_start")!({ systemPrompt: "another rebuilt base" }, ctx);
+		expect(second.systemPrompt).toBe(first.systemPrompt);
+		expect(third.systemPrompt).toBe(first.systemPrompt);
+		await active.commands.get("swarm:kill").handler("", ctx);
+		expect(await active.handlers.get("before_agent_start")!({ systemPrompt: "after stop" }, ctx)).toBeUndefined();
+	} finally {
+		await active.handlers.get("session_shutdown")?.({}, ctx);
+		resume.mockRestore();
+		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
 
 test("every registered swarm operation is callable through Code mode and unregisters on shutdown", async () => {
 	const { pi, handlers, tools } = harness();
