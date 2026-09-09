@@ -15,6 +15,7 @@
       "./extensions/autocomplete/index.ts",
       "./extensions/btw/index.ts",
       "./extensions/clean-footer/index.ts",
+      "./extensions/fast/index.ts",
       "./extensions/hide-empty-editor/index.ts",
       "./extensions/message-window/index.ts",
       "./extensions/nvim-session-export/index.ts",

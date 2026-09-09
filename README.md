@@ -1,6 +1,6 @@
 # pi-extensions
 
-13 extensions for [Pi](https://pi.dev/): Codex conversion and 12 selected local extensions. This package supports Code mode only.
+14 extensions for [Pi](https://pi.dev/): Codex conversion and 13 selected local extensions. This package supports Code mode only.
 
 ## Install
 
@@ -16,7 +16,7 @@ pi install npm:@howaboua/pi-codex-imagegen@0.0.3
 pi install npm:@howaboua/pi-ask@0.0.8
 ```
 
-The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 16 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.
+The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 17 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.
 
 Configure Code mode before starting a fresh session. See [conversion setup and migration](extensions/pi-codex-conversion/README.md). The sibling dotfiles repository manages installation and configuration. Local source edits load after `/reload` or a restart. Dependency changes require `npm ci --omit=dev` first.
 
@@ -38,6 +38,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | autocomplete | Adds editor completions for files, skills, and commands. |
 | btw | Answers side questions with `/btw`; `/btw:tools` allows Code tools. |
 | clean-footer | Shows session metrics and upstream extension statuses. |
+| [fast](extensions/fast/README.md) | Toggles Codex priority requests for the session with `/fast`, without saving settings. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
