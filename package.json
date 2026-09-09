@@ -17,14 +17,17 @@
       "./extensions/btw/index.ts",
       "./extensions/clean-footer/index.ts",
       "./extensions/fast/index.ts",
+      "./extensions/goal/index.ts",
       "./extensions/hide-empty-editor/index.ts",
       "./extensions/message-window/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/stash/index.ts",
       "./extensions/subagent/index.ts",
       "./extensions/syntax-punctuation/index.ts",
+      "./extensions/thinking-selector/index.ts",
       "./extensions/thinking-counter/index.ts",
-      "./extensions/tripp-autoresearch/index.ts"
+      "./extensions/tripp-autoresearch/index.ts",
+      "./extensions/usage/index.ts"
     ]
   },
   "dependencies": {

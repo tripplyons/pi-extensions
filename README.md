@@ -1,6 +1,6 @@
 # pi-extensions
 
-15 extensions for [Pi](https://pi.dev/): Codex conversion and 14 selected local extensions. This package supports Code mode only.
+18 extensions for [Pi](https://pi.dev/): Codex conversion and 17 selected local extensions. This package supports Code mode only.
 
 ## Install
 
@@ -16,7 +16,7 @@ pi install npm:@howaboua/pi-codex-imagegen@0.0.3
 pi install npm:@howaboua/pi-ask@0.0.8
 ```
 
-The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 18 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.
+The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 21 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.
 
 Configure Code mode before starting a fresh session. See [conversion setup and migration](extensions/pi-codex-conversion/README.md). The sibling dotfiles repository manages installation and configuration. Local source edits load after `/reload` or a restart. Dependency changes require `npm ci --omit=dev` first.
 
@@ -40,13 +40,16 @@ Extensions and subagents run with your user permissions, including shell and fil
 | btw | Answers side questions with `/btw`; `/btw:tools` allows Code tools. |
 | clean-footer | Shows session metrics and upstream extension statuses. |
 | [fast](extensions/fast/README.md) | Toggles Codex priority requests for the session with `/fast`, without saving settings. |
+| goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | subagent | Runs asynchronous Code children; swarm attachment blocks new jobs. |
 | syntax-punctuation | Styles syntax punctuation. |
+| thinking-selector | Opens the active model's thinking-level picker with Ctrl+T. |
 | thinking-counter | Displays thinking progress. |
 | [tripp-autoresearch](extensions/tripp-autoresearch/README.md) | Runs experiment loops with benchmarks and keep/revert decisions. |
+| usage | Shows current Codex limits in a dismissible `/usage` overlay. |
 
 Autoresearch includes its skills and retains its [upstream license](extensions/tripp-autoresearch/LICENSE). Codex conversion is an npm dependency with its own license and attribution.
