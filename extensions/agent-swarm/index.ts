@@ -32,12 +32,41 @@ export default async function (pi: ExtensionAPI) {
 	// rebuilt as tools and session state change), so deriving this on every call
 	// defeats provider prefix caching even when the swarm instructions are unchanged.
 	let attachedSystemPrompt: string | undefined;
+	type TaskCursor = { runId: string; status: string; nodeId: string; nodeVersion: number; nodeVersions: Map<string, number>; messageIds: Set<string> };
+	let taskCursor: TaskCursor | undefined;
 	const processes = createWorkerProcesses(fileURLToPath(import.meta.url));
 	const requireRuntime = () => {
 		if (!runtime) throw new Error("No swarm attached. Use /swarm:start <objective> first.");
 		return runtime;
 	};
 	const snapshot = () => mailbox ? mailbox.snapshot() : requireRuntime().view();
+	const cursorFor = (view: ReturnType<typeof snapshot>): TaskCursor => ({
+		runId: view.node.runId,
+		status: view.status,
+		nodeId: view.node.nodeId,
+		nodeVersion: view.node.version,
+		nodeVersions: new Map(view.nodes.map((node) => [node.nodeId, node.version])),
+		messageIds: new Set(view.messages.map((message) => message.messageId)),
+	});
+	const taskView = (view: ReturnType<typeof snapshot>, full = false) => {
+		const next = cursorFor(view);
+		if (full || !taskCursor || taskCursor.runId !== next.runId || taskCursor.nodeId !== next.nodeId) return { value: view, next };
+		const nodes = view.nodes.filter((node) => taskCursor!.nodeVersions.get(node.nodeId) !== node.version);
+		const messages = view.messages.filter((message) => !taskCursor!.messageIds.has(message.messageId));
+		const acknowledgedMessageIds = [...taskCursor.messageIds].filter((id) => !next.messageIds.has(id));
+		const node = taskCursor.nodeVersion !== next.nodeVersion ? view.node : undefined;
+		const status = taskCursor.status !== next.status ? view.status : undefined;
+		const changed = Boolean(status || node || nodes.length || messages.length || acknowledgedMessageIds.length);
+		return {
+			value: {
+				schemaVersion: 2, runId: next.runId, full: false, changed,
+				...(status ? { status } : {}), ...(node ? { node } : {}),
+				...(nodes.length ? { nodes } : {}), ...(messages.length ? { messages } : {}),
+				...(acknowledgedMessageIds.length ? { acknowledgedMessageIds } : {}),
+			},
+			next,
+		};
+	};
 	const operate = (kind: RequestKind, payload: Record<string, unknown>, signal?: AbortSignal) => {
 		if (mailbox) return mailbox.request(kind, payload, signal);
 		const active = requireRuntime();
@@ -57,9 +86,9 @@ export default async function (pi: ExtensionAPI) {
 	};
 	const tools = [
 		{
-			name: "swarm_task", label: "Swarm task", description: "Read your durable assignment, visible relatives, and pending messages. Inspect a pending request without repeating it.",
-			parameters: Type.Object({ requestId: Type.Optional(Type.String()), acknowledge: Type.Optional(Type.Array(Type.String())) }),
-			async execute(_id: string, params: { requestId?: string; acknowledge?: string[] }) {
+			name: "swarm_task", label: "Swarm task", description: "Read your durable assignment and updates. The first read is full; later reads return only changes. Pass full to refresh the complete view, requestId to inspect an operation, or acknowledge after reading messages.",
+			parameters: Type.Object({ requestId: Type.Optional(Type.String()), acknowledge: Type.Optional(Type.Array(Type.String())), full: Type.Optional(Type.Boolean()) }),
+			async execute(_id: string, params: { requestId?: string; acknowledge?: string[]; full?: boolean }) {
 				if (params.requestId) {
 					if (!mailbox) throw new Error("Request lookup is worker-only");
 					return result(mailbox.response(params.requestId) ?? { pending: true });
@@ -68,7 +97,10 @@ export default async function (pi: ExtensionAPI) {
 					await operate("heartbeat", { claimIds: params.acknowledge });
 					await operate("heartbeat", { ackIds: params.acknowledge });
 				}
-				return result(snapshot());
+				const read = taskView(snapshot(), params.full === true);
+				const output = result(read.value);
+				taskCursor = read.next;
+				return output;
 			},
 		},
 		{
@@ -130,6 +162,7 @@ export default async function (pi: ExtensionAPI) {
 		timer = setTimeout(() => void poll(ctx), 250);
 	};
 	const startSession = async (ctx: ExtensionContext) => {
+		taskCursor = undefined;
 		context = ctx;
 		const previousWake = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "custom" && entry.message.customType === "swarm-monitor").at(-1);
 		if (previousWake?.type === "message" && previousWake.message.role === "custom") lastWake = (previousWake.message.details as { fingerprint?: string })?.fingerprint ?? "";
@@ -173,6 +206,7 @@ export default async function (pi: ExtensionAPI) {
 		context = undefined;
 		lastWake = "";
 		attachedSystemPrompt = undefined;
+		taskCursor = undefined;
 		await startSession(ctx);
 	});
 	pi.on("agent_start", async () => {
@@ -185,7 +219,7 @@ export default async function (pi: ExtensionAPI) {
 		if (!attached) return;
 		if (!attachedSystemPrompt) {
 			const node = snapshot().node;
-			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
+			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages; after its first full view, later reads are deltas unless you pass full: true. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
 		}
 		return { systemPrompt: attachedSystemPrompt };
 	});
@@ -221,6 +255,7 @@ export default async function (pi: ExtensionAPI) {
 		await runtime?.close();
 		runtime = undefined;
 		attachedSystemPrompt = undefined;
+		taskCursor = undefined;
 		attachment?.dispose();
 		attachment = undefined;
 		ctx.ui.setStatus("agent-swarm", undefined);

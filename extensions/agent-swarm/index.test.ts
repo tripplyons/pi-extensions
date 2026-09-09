@@ -81,6 +81,52 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 	}
 });
 
+test("swarm_task returns a full view followed by versioned deltas and can refresh its baseline", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-task-"));
+	const previous = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = directory;
+	const root = makeNode("run_task", "node_root", "coordinator", "Objective", directory, null);
+	const child = makeNode(root.runId, "node_child", "worker", "Work", directory, root.nodeId);
+	const view: any = { status: "active", node: root, nodes: [root, child], messages: [] };
+	const runtime = {
+		runId: root.runId, root, run: { status: "active", config: { pollIntervalMs: 1000, maxInlineBytes: 65536 } },
+		view: () => view, async poll() {}, async close() {},
+		async act(_nodeId: string, kind: string, payload: any) {
+			if (kind === "heartbeat" && payload.ackIds) view.messages = view.messages.filter((message: any) => !payload.ackIds.includes(message.messageId));
+		},
+	};
+	const resume = spyOn(SwarmRuntime, "resume").mockResolvedValue(runtime as any);
+	const active = harness();
+	const ctx = { sessionManager: { getSessionId: () => "task", getBranch: () => [] }, ui: { notify() {}, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
+	const invoke = async (params: any = {}) => JSON.parse((await active.tools.get("swarm_task").execute("id", params)).content[0].text);
+	try {
+		writeJson(sessionFile("task"), { runId: root.runId });
+		await extension(active.pi as any);
+		await active.handlers.get("session_start")!({}, ctx);
+		expect(await invoke()).toEqual(view);
+		expect(await invoke()).toEqual({ schemaVersion: 2, runId: root.runId, full: false, changed: false });
+
+		child.version++;
+		view.messages.push({ messageId: "message_new", runId: root.runId, toNodeId: root.nodeId, body: "report" });
+		const changed = await invoke();
+		expect(changed.changed).toBe(true);
+		expect(changed.nodes).toEqual([child]);
+		expect(changed.messages).toEqual(view.messages);
+
+		const acknowledged = await invoke({ acknowledge: ["message_new"] });
+		expect(acknowledged.acknowledgedMessageIds).toEqual(["message_new"]);
+		view.status = "stopped";
+		expect((await invoke()).status).toBe("stopped");
+		expect(await invoke({ full: true })).toEqual(view);
+		expect(await invoke()).toEqual({ schemaVersion: 2, runId: root.runId, full: false, changed: false });
+	} finally {
+		await active.handlers.get("session_shutdown")?.({}, ctx);
+		resume.mockRestore();
+		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("every registered swarm operation is callable through Code mode and unregisters on shutdown", async () => {
 	const { pi, handlers, tools } = harness();
 	await extension(pi as any);

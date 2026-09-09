@@ -68,7 +68,7 @@ const manager = await tools.swarm_spawn({
 text(manager);
 ```
 
-- `swarm_task` reads the durable task and inbox. Pass `requestId` to inspect a pending operation, or `acknowledge` with message IDs after reading them.
+- `swarm_task` reads the durable task and inbox. Its first successful read returns the complete view; subsequent reads in that extension session return only changed run, node, and message state. Pass `full: true` to return a complete view and reset the delta baseline, `requestId` to inspect a pending operation, or `acknowledge` with message IDs after reading them.
 - `swarm_spawn` creates a direct child. `includeDirty: true` copies a dirty parent snapshot without changing the parent. Reviewer assignments require `reviewTargetId` for a direct child awaiting review.
 - `swarm_send`, `swarm_tree`, and `swarm_observe` provide direct-edge messages and scoped observation. Only the root can capture tmux output.
 - `swarm_complete` submits text and optional verification. The controller commits implementation changes on the node's generated branch.
