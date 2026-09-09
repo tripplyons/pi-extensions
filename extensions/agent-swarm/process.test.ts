@@ -5,11 +5,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOST_RELEASE, codeModeHostBinaryName } from "@howaboua/pi-codex-conversion/dist/tools/code-mode/host-assets.js";
 import { git } from "./git.ts";
-import { createWorkerProcesses } from "./process.ts";
+import { createWorkerProcesses, inheritedFastEnvironment } from "./process.ts";
 import { SwarmRuntime } from "./runtime.ts";
 import { ensureDir, readNode, workerHome } from "./state.ts";
 import { captureWindow, tmux } from "./tmux.ts";
 import type { NodeRecord } from "./types.ts";
+
+test("worker launch environment preserves enabled and disabled fast mode", () => {
+	expect(inheritedFastEnvironment(true)).toBe("1");
+	expect(inheritedFastEnvironment(false)).toBe("0");
+});
 
 const liveTest = process.platform === "darwin" && process.env.PI_SWARM_TEST_MODEL && process.env.PI_SWARM_TEST_CODE_HOST ? test : test.skip;
 

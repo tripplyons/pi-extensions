@@ -3,6 +3,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export default function fastExtension(pi: ExtensionAPI) {
   let fast: boolean | undefined;
 
+  pi.events.on("fast:query", (query: { enabled?: boolean }) => { query.enabled = fast === true; });
+
   pi.on("session_start", (_event, ctx) => {
     fast = undefined;
     ctx.ui.setStatus("fast", undefined);

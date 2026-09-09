@@ -25,6 +25,7 @@ const executable = (name: string) => {
 	if (result.status !== 0) throw new Error(`Required executable unavailable: ${name}`);
 	return realpathSync(result.stdout.trim());
 };
+export const inheritedFastEnvironment = (enabled: boolean | undefined) => enabled ? "1" : "0";
 
 export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 	const status = (node: NodeRecord) => readJson<ProcessStatus>(join(controlDirectory(node), "status.json"));
@@ -80,6 +81,7 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 				HOME: privateHome, TMPDIR: paths.workerTmp, PI_CODING_AGENT_DIR: agentDir,
 				PATH: `${dirname(nodeExecutable)}:${dirname(gitExecutable)}:/usr/bin:/bin:/usr/sbin:/sbin`,
 				[WORKER_ENV]: "1", PI_SWARM_HOME: stateRoot(), PI_SWARM_RUN: run.runId, PI_SWARM_NODE: node.nodeId,
+				PI_SWARM_FAST: inheritedFastEnvironment(run.config.fastMode),
 				PI_SWARM_TOKEN: readFileSync(tokenFile(run.runId, node.nodeId), "utf8"),
 			});
 			const args = [pi, "--mode", "json", "--print", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve",

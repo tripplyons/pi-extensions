@@ -2,6 +2,8 @@
 
 `agent-swarm` runs a durable hierarchy of Pi workers in tmux. It requires Codex Code mode, macOS `sandbox-exec`, tmux, Git, Node, and a stored Pi credential for the selected model's provider. Other platforms refuse worker launch.
 
+Workers snapshot the coordinator session's current `/fast` setting when they are spawned and use the same Codex service tier without changing the active swarm system prompt.
+
 ## Security boundary
 
 Every worker runs under `/usr/bin/sandbox-exec` in a linked Git worktree. File reads are unrestricted. A worker can read every file available to the host user, including credentials, other repositories, the coordinator checkout, sibling worktrees, and swarm control state.

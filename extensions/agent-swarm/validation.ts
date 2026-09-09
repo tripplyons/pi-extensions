@@ -55,6 +55,7 @@ export function validateConfig(value: unknown): asserts value is SwarmConfig {
 	if ((value.maxActiveChildren as number) > (value.maxActiveNodes as number)) throw new Error("maxActiveChildren cannot exceed maxActiveNodes");
 	if (!Array.isArray(value.protectedBranches) || !value.protectedBranches.every((item) => text(item) && item)) throw new Error("protectedBranches must contain non-empty names");
 	if (!Array.isArray(value.allowedRoles) || !value.allowedRoles.every((item) => ["manager", "worker", "reviewer"].includes(item))) throw new Error("allowedRoles contains an unknown role");
+	if (value.fastMode !== undefined && typeof value.fastMode !== "boolean") throw new Error("fastMode must be a boolean");
 	for (const key of ["roleModels", "roleThinking"]) {
 		if (value[key] === undefined) continue;
 		if (!record(value[key])) throw new Error(`${key} must be an object`);

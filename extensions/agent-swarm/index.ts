@@ -6,11 +6,11 @@ import { Type } from "typebox";
 import { publishSwarmAttachment } from "./events.ts";
 import { createWorkerProcesses } from "./process.ts";
 import { SwarmRuntime } from "./runtime.ts";
-import { queuedRequests, readJson, readRun, runDir, sessionFile, stateRoot, workerTmp } from "./state.ts";
+import { queuedRequests, readJson, readRun, runDir, sessionFile, stateRoot, updateRun, workerTmp } from "./state.ts";
 import { previewAt } from "./artifacts.ts";
 import { captureWindow } from "./tmux.ts";
 import { SwarmTree } from "./tree-ui.ts";
-import { WORKER_ENV, type RequestKind } from "./types.ts";
+import { defaultConfig, WORKER_ENV, type RequestKind } from "./types.ts";
 import { WorkerMailbox } from "./worker.ts";
 
 export default async function (pi: ExtensionAPI) {
@@ -38,9 +38,17 @@ export default async function (pi: ExtensionAPI) {
 		return runtime;
 	};
 	const snapshot = () => mailbox ? mailbox.snapshot() : requireRuntime().view();
-	const operate = (kind: RequestKind, payload: Record<string, unknown>, signal?: AbortSignal) => mailbox
-		? mailbox.request(kind, payload, signal)
-		: requireRuntime().act(requireRuntime().root.nodeId, kind, payload);
+	const operate = (kind: RequestKind, payload: Record<string, unknown>, signal?: AbortSignal) => {
+		if (mailbox) return mailbox.request(kind, payload, signal);
+		const active = requireRuntime();
+		if (kind === "spawn") {
+			const fast: { enabled?: boolean } = {};
+			pi.events.emit("fast:query", fast);
+			active.run.config.fastMode = fast.enabled === true;
+			updateRun(active.runId, (run) => { run.config.fastMode = active.run.config.fastMode; });
+		}
+		return active.act(active.root.nodeId, kind, payload);
+	};
 	const result = (value: unknown) => {
 		let body = JSON.stringify(value, null, 2);
 		if (mailbox) body = previewAt(join(workerTmp(mailbox.runId, mailbox.nodeId), "tool-output"), body, mailbox.snapshot().maxInlineBytes);
@@ -181,6 +189,10 @@ export default async function (pi: ExtensionAPI) {
 		}
 		return { systemPrompt: attachedSystemPrompt };
 	});
+	pi.on("before_provider_request", (event) => {
+		if (process.env[WORKER_ENV] !== "1" || !event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return;
+		return { ...event.payload, service_tier: process.env.PI_SWARM_FAST === "1" ? "priority" : "default" };
+	});
 	pi.on("agent_end", async (event) => {
 		if (!mailbox) return;
 		const last = event.messages.at(-1);
@@ -218,7 +230,9 @@ export default async function (pi: ExtensionAPI) {
 		async handler(objective, ctx) {
 			if (mailbox || runtime) throw new Error("Already attached to a swarm");
 			if (!ctx.model) throw new Error("Select a model before starting a swarm");
-			runtime = await SwarmRuntime.create({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), objective, model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() }, processes);
+			const fast: { enabled?: boolean } = {};
+			pi.events.emit("fast:query", fast);
+			runtime = await SwarmRuntime.create({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), objective, model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel(), config: { ...defaultConfig, fastMode: fast.enabled === true } }, processes);
 			attach(ctx);
 			ctx.ui.notify(`Swarm ${runtime.runId} started. Detached descendants are outside lifecycle control.`, "info");
 		},

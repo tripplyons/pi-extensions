@@ -19,6 +19,7 @@ export interface SwarmConfig {
 	allowedRoles: Exclude<Role, "coordinator">[];
 	roleModels?: Partial<Record<Exclude<Role, "coordinator">, string>>;
 	roleThinking?: Partial<Record<Exclude<Role, "coordinator">, string>>;
+	fastMode?: boolean;
 }
 
 export const defaultConfig: SwarmConfig = {

@@ -20,11 +20,33 @@ function harness(entries: any[] = []) {
 		registerTool(tool: any) { tools.set(tool.name, tool); },
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		getAllTools: () => [...tools.values()],
+		getThinkingLevel: () => "low",
 		on(name: string, handler: Function) { handlers.set(name, handler); },
 		sendMessage(message: any) { messages.push(message); entries.push({ type: "message", message: { role: "custom", ...message } }); },
 	};
-	return { pi, handlers, tools, commands, messages };
+	return { pi, bus, handlers, tools, commands, messages };
 }
+
+test("swarm start snapshots both enabled and disabled coordinator fast mode", async () => {
+	for (const enabled of [true, false]) {
+		const active = harness();
+		active.bus.on("fast:query", (query: { enabled?: boolean }) => { query.enabled = enabled; });
+		const created: any[] = [];
+		const create = spyOn(SwarmRuntime, "create").mockImplementation(async (input: any) => {
+			created.push(input);
+			return { runId: "run_fast", run: { status: "active", config: input.config }, view: () => ({ status: "active", node: makeNode("run_fast", "node_root", "coordinator", "x", "/tmp", null), nodes: [], messages: [] }), async poll() {}, async close() {} } as any;
+		});
+		const ctx = { cwd: "/tmp", model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "fast", getBranch: () => [] }, ui: { notify() {}, setStatus() {} } };
+		try {
+			await extension(active.pi as any);
+			await active.commands.get("swarm:start").handler("objective", ctx);
+			expect(created[0].config.fastMode).toBe(enabled);
+		} finally {
+			await active.handlers.get("session_shutdown")?.({}, ctx);
+			create.mockRestore();
+		}
+	}
+});
 
 test("swarm system prompt is frozen across turns and child lifecycle changes", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-prompt-"));

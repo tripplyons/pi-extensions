@@ -9,6 +9,7 @@ function setup() {
   const statuses = new Map<string, string | undefined>();
   const notices: string[] = [];
   let command: { handler: Function };
+	const eventHandlers = new Map<string, Function>();
   const ctx = {
     model: {
       id: "gpt-5.4", name: "GPT-5.4", provider: "openai-codex",
@@ -22,6 +23,7 @@ function setup() {
     },
   } as unknown as ExtensionCommandContext;
   fastExtension({
+		events: { on: (name: string, handler: Function) => { eventHandlers.set(name, handler); return () => eventHandlers.delete(name); } },
     on: (name: string, handler: Function) => handlers.set(name, handler),
     registerCommand: (_name: string, value: { handler: Function }) => { command = value; },
   } as unknown as ExtensionAPI);
@@ -29,6 +31,7 @@ function setup() {
     ctx, statuses, notices,
     toggle: (args = "") => command.handler(args, ctx),
     start: (reason: string) => handlers.get("session_start")!({ reason }, ctx),
+		fast: () => { const query: { enabled?: boolean } = {}; eventHandlers.get("fast:query")!(query); return query.enabled; },
     request: (payload: unknown) => handlers.get("before_provider_request")!({ payload }, ctx) ?? payload,
   };
 }
@@ -37,10 +40,12 @@ test("toggle overrides request tier without changing the original request", asyn
   const session = setup();
   const payload = { model: "gpt-5.4", service_tier: "priority", reasoning: { effort: "high" } };
   expect(session.request(payload)).toBe(payload);
-  await session.toggle();
+	await session.toggle();
+	expect(session.fast()).toBe(true);
   expect(session.request(payload).service_tier).toBe("priority");
   expect(session.statuses.get("fast")).toBe("fast");
-  await session.toggle();
+	await session.toggle();
+	expect(session.fast()).toBe(false);
   expect(session.request(payload)).toEqual({ ...payload, service_tier: "default" });
   expect(payload.service_tier).toBe("priority");
   expect(session.statuses.get("fast")).toBeUndefined();
