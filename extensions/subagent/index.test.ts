@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
+import { publishSwarmAttachment, SWARM_ATTACHMENT_CHANGED_EVENT, SWARM_ATTACHMENT_QUERY_EVENT } from "../agent-swarm/events.ts";
 
 const { createSubagentExtension } = await import("./index.ts");
 
@@ -19,7 +20,7 @@ class FakeChild extends EventEmitter {
 	}
 }
 
-const createHarness = ({ closeOnKill = true } = {}) => {
+const createHarness = ({ closeOnKill = true, initiallyAttached = false } = {}) => {
 	const children: FakeChild[] = [];
 	const invocations: Array<{ command: string; args: string[]; options: any }> = [];
 	const tools = new Map<string, any>();
@@ -50,6 +51,7 @@ const createHarness = ({ closeOnKill = true } = {}) => {
 		registerTool(tool: any) { tools.set(tool.name, tool); },
 		sendMessage(message: any, options: any) { messages.push({ message, options }); },
 	};
+	const attachment = initiallyAttached ? publishSwarmAttachment(pi as any, true) : undefined;
 	createSubagentExtension(pi as any, spawnChild as any);
 	const ctx = {
 		cwd: "/tmp/project",
@@ -58,7 +60,7 @@ const createHarness = ({ closeOnKill = true } = {}) => {
 		sessionManager: { getSessionId: () => "session-test" },
 	};
 	return {
-		children, emitted, handlers, invocations, messages, tools, ctx, pi,
+		children, emitted, handlers, invocations, messages, tools, ctx, pi, attachment,
 		activeTools: () => activeTools,
 		emitEvent: (channel: string, event: any) => pi.events.emit(channel, event),
 	};
@@ -75,6 +77,42 @@ const assistantEvent = (text: string, extra: object = {}) => `${JSON.stringify({
 })}\n`;
 
 describe("asynchronous subagent", () => {
+	test("initial attachment hides creation and session start repairs stale direct visibility", async () => {
+		const harness = createHarness({ initiallyAttached: true });
+		expect(getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.map((tool) => tool.name)).toEqual(["subagent_process"]);
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		expect(harness.activeTools()).not.toContain("subagent");
+		harness.pi.setActiveTools(["subagent", "subagent_process"]);
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		expect(harness.activeTools()).toEqual(["subagent_process"]);
+		harness.attachment!.dispose();
+		expect(harness.activeTools()).toContain("subagent");
+		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+	});
+
+	test("late attachment publisher gates a previously captured Code tool", async () => {
+		const harness = createHarness();
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		const stale = getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.find((tool) => tool.name === "subagent")!;
+		const attachment = publishSwarmAttachment(harness.pi as any, true);
+		await expect(stale.invoke({ task: "bypass" }, { extensionContext: harness.ctx } as any, new AbortController().signal)).rejects.toThrow("disabled");
+		expect(harness.invocations).toHaveLength(0);
+		attachment.set(true);
+		expect(harness.activeTools()).not.toContain("subagent");
+		attachment.dispose();
+		expect(harness.activeTools()).toContain("subagent");
+		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+	});
+
+	test("detachment does not enable a direct tool that was already inactive", async () => {
+		const harness = createHarness();
+		harness.pi.setActiveTools(["subagent_process"]);
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		const attachment = publishSwarmAttachment(harness.pi as any, true);
+		attachment.dispose();
+		expect(harness.activeTools()).toEqual(["subagent_process"]);
+		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+	});
 	test("exposes both tools through the published Code adapter and unregisters on shutdown", async () => {
 		const harness = createHarness();
 		const snapshot = () => getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true);
@@ -91,6 +129,25 @@ describe("asynchronous subagent", () => {
 		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
 		expect(snapshot().tools).toEqual([]);
 		expect(harness.children[0].killedWith).toContain("SIGTERM");
+	});
+
+	test("blocks creation while attached to a swarm and keeps process management available", async () => {
+		const harness = createHarness();
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		let attached = true;
+		harness.pi.events.on(SWARM_ATTACHMENT_QUERY_EVENT, (query: { attached: boolean }) => { query.attached = attached; });
+		harness.emitEvent(SWARM_ATTACHMENT_CHANGED_EVENT, { attached });
+
+		expect(harness.activeTools()).not.toContain("subagent");
+		expect(harness.activeTools()).toContain("subagent_process");
+		expect(getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.map((tool) => tool.name)).toEqual(["subagent_process"]);
+		await expect(harness.tools.get("subagent").execute("stale", { task: "bypass" }, undefined, undefined, harness.ctx)).rejects.toThrow("disabled");
+		expect(harness.invocations).toHaveLength(0);
+
+		attached = false;
+		harness.emitEvent(SWARM_ATTACHMENT_CHANGED_EVENT, { attached });
+		expect(harness.activeTools()).toContain("subagent");
+		expect(getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.map((tool) => tool.name)).toEqual(["subagent", "subagent_process"]);
 	});
 
 	test("returns immediately with inherited model and auto-delivers completion", async () => {

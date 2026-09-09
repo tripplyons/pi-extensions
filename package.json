@@ -11,6 +11,7 @@
   "pi": {
     "extensions": [
       "./extensions/pi-codex-conversion/index.ts",
+      "./extensions/agent-swarm/index.ts",
       "./extensions/auto-rename/index.ts",
       "./extensions/autocomplete/index.ts",
       "./extensions/btw/index.ts",

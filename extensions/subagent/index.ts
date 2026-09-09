@@ -14,6 +14,10 @@ import {
 	type RunningAgent,
 	type SpawnChild,
 } from "./runner.ts";
+import {
+	isSwarmAttached,
+	SWARM_ATTACHMENT_CHANGED_EVENT,
+} from "../agent-swarm/events.ts";
 
 const MAX_DELIVERY_CHARS = 12_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
@@ -230,6 +234,30 @@ const processResult = (
 
 export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild = spawn) {
 	const manager = new SubagentManager(pi, spawnChild);
+	let subagentVisible = true;
+	let restoreDirectSubagent = false;
+	let sessionStarted = false;
+	let codeRegistration: ReturnType<typeof registerCodeModeExtensionTools> | undefined;
+	const syncSwarmGate = () => {
+		const visible = !isSwarmAttached(pi);
+		const changed = visible !== subagentVisible;
+		if (visible && !changed) return;
+		const activeTools = pi.getActiveTools();
+		const active = activeTools.includes("subagent");
+		if (changed && !visible) restoreDirectSubagent = active;
+		subagentVisible = visible;
+		if (!visible && active) pi.setActiveTools(activeTools.filter((name) => name !== "subagent"));
+		if (visible && changed && restoreDirectSubagent && !active) pi.setActiveTools([...activeTools, "subagent"]);
+		if (visible && changed) restoreDirectSubagent = false;
+		if (changed) codeRegistration?.refresh();
+	};
+	const stopSwarmGate = pi.events.on(SWARM_ATTACHMENT_CHANGED_EVENT, () => {
+		if (sessionStarted) syncSwarmGate();
+	});
+	pi.on("session_start", () => {
+		sessionStarted = true;
+		syncSwarmGate();
+	});
 
 	pi.on("session_shutdown", async () => manager.cleanup());
 
@@ -253,6 +281,7 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 		],
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (isSwarmAttached(pi)) throw new Error("subagent creation is disabled while this session is attached to an agent swarm");
 			const task = params.task.trim();
 			if (!task) throw new Error("task is required");
 			const model = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
@@ -319,11 +348,15 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 
 	pi.registerTool(subagent);
 	pi.registerTool(subagentProcess);
-	const registration = registerCodeModeExtensionTools(pi, () => [
-		adaptToolForCodeMode(subagent, { usage: 'await tools.subagent({ task: "Research the issue" })' }),
+	codeRegistration = registerCodeModeExtensionTools(pi, () => [
+		...(!isSwarmAttached(pi) ? [adaptToolForCodeMode(subagent, { usage: 'await tools.subagent({ task: "Research the issue" })' })] : []),
 		adaptToolForCodeMode(subagentProcess, { usage: 'await tools.subagent_process({ action: "list" })' }),
 	]);
-	pi.on("session_shutdown", () => registration.unregister());
+	pi.on("session_shutdown", () => {
+		sessionStarted = false;
+		stopSwarmGate();
+		codeRegistration?.unregister();
+	});
 }
 
 export default createSubagentExtension;

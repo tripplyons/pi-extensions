@@ -27,7 +27,7 @@ test("Pi discovers the explicit package whitelist with unique tool registrations
     await loader.reload();
     const result = loader.getExtensions();
     expect(result.errors).toEqual([]);
-    expect(result.extensions).toHaveLength(14 + addons.length);
+    expect(result.extensions).toHaveLength(15 + addons.length);
     expect(result.extensions.filter((extension) => extension.commands.has("fast"))).toHaveLength(1);
     const names = result.extensions.flatMap((extension) => [...extension.tools.keys()]);
     expect(new Set(names).size).toBe(names.length);
@@ -35,10 +35,13 @@ test("Pi discovers the explicit package whitelist with unique tool registrations
     expect(names).toContain("wait");
     expect(names).toContain("new_context");
     expect(names).toContain("subagent");
+    expect(names).toContain("swarm_spawn");
+    expect(names).toContain("swarm_integrate");
+    expect(result.extensions.filter((extension) => extension.commands.has("swarm:start"))).toHaveLength(1);
     expect(names).toContain("run_experiment");
     await loader.reload();
     expect(loader.getExtensions().errors).toEqual([]);
-    expect(loader.getExtensions().extensions).toHaveLength(14 + addons.length);
+    expect(loader.getExtensions().extensions).toHaveLength(15 + addons.length);
   } finally {
     process.argv[1] = originalScript;
     await rm(dir, { recursive: true, force: true });
