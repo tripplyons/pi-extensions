@@ -1,8 +1,9 @@
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { NodeRecord, NodeStatus } from "./types.ts";
+import { formatWorkerOutput, sanitizeTerminalText } from "./output-format.ts";
 
-const plain = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+const plain = (text: string) => sanitizeTerminalText(text).replace(/[\r\n\t]/g, " ");
 
 const treeRows = (nodes: NodeRecord[]) => {
 	const byId = new Map(nodes.map((node) => [node.nodeId, node]));
@@ -72,7 +73,7 @@ export class SwarmTree {
 			detail("Review", node.review?.action ?? "none", node.review?.action === "accept" ? "success" : node.review?.action === "reject" ? "error" : node.review?.action === "request-changes" ? "warning" : "dim"),
 			detail("Integration", node.integrationCommit ?? "none", node.integrationCommit ? "success" : "dim"),
 			detail("Cleanup", node.cleanedAt ? "removed" : "retained"), detail("Failure", node.failure ?? "none", node.failure ? "error" : "dim"), "",
-			...this.output(node).split("\n").map((line) => this.theme.fg("toolOutput", plain(line))),
+			...formatWorkerOutput(this.output(node)).split("\n").map((line) => this.theme.fg("toolOutput", plain(line))),
 		].slice(this.offset, this.offset + 24) : [this.theme.fg("dim", "No nodes")];
 		const lines = width < 80 ? [...tree.slice(Math.max(0, this.selected - 4), this.selected + 5), "", ...details] : (() => {
 			const leftWidth = Math.floor(width * 0.4);
