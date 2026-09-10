@@ -41,6 +41,8 @@ export interface ResultRecord {
 	commit: string | null;
 	verification?: string;
 	submittedAt: number;
+	/** Null until the submitting turn ends; absent in older submissions. */
+	settledAt?: number | null;
 }
 
 export interface ReviewRecord {

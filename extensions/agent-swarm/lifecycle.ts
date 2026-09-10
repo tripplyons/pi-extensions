@@ -3,7 +3,7 @@ import { terminalStatuses, type NodeRecord, type NodeStatus, type Role, type Swa
 const transitions: Record<NodeStatus, ReadonlySet<NodeStatus>> = {
 	starting: new Set(["running", "failed", "stopped"]),
 	running: new Set(["awaiting-review", "failed", "stopped"]),
-	"awaiting-review": new Set(["completed", "rework", "rejected", "stopped"]),
+	"awaiting-review": new Set(["completed", "rework", "rejected", "failed", "stopped"]),
 	rework: new Set(["running", "awaiting-review", "failed", "stopped"]),
 	completed: new Set(),
 	rejected: new Set(),

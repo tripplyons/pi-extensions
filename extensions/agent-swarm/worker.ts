@@ -39,17 +39,19 @@ export class WorkerMailbox {
 				const snapshot = this.snapshot();
 				writeRequest({ schemaVersion: SCHEMA_VERSION, requestId, runId: this.runId, nodeId: this.nodeId, token: this.token, kind, payload: packPayload(this.runId, this.nodeId, requestId, payload, snapshot.maxInlineBytes), expectedVersion: snapshot.node.version, createdAt: Date.now() });
 				const deadline = Date.now() + 30000;
-				while (Date.now() < deadline) {
+				while (true) {
 					signal?.throwIfAborted();
 					const response = this.response(requestId);
 					if (response) {
 						if (response.ok) return response.result;
-						if (response.error?.includes("Stale worker request")) break;
+						if (kind !== "complete" && response.error?.includes("Stale worker request")) break;
 						throw new Error(response.error ?? "Controller rejected the request");
 					}
+					// A suspended worker may wake after the deadline with a durable
+					// response already waiting. Read it before deciding to time out.
+					if (Date.now() >= deadline) return { pending: true, requestId, message: "The controller has not answered. Inspect this request with swarm_task; do not repeat the operation." };
 					await new Promise((resolve) => setTimeout(resolve, 100));
 				}
-				if (!this.response(requestId)) return { pending: true, requestId, message: "The controller has not answered. Inspect this request with swarm_task; do not repeat the operation." };
 			}
 			throw new Error("Worker state kept changing; inspect swarm_task before retrying");
 		});

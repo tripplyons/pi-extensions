@@ -27,7 +27,7 @@ Stop, pause, and timeout operate on the original worker process group. A descend
 
 Only direct parents issue instructions or review results. Managers integrate only into generated manager branches; the coordinator may integrate only its own accepted direct child into the root checkout. Integration never pushes.
 
-Defaults limit a run to depth 2, four active children per coordinator or manager, eight active nodes, and 30 minutes per worker. Awaiting-review nodes consume capacity but stay paused, so review time does not consume their execution allowance. A spawn or restart may request a longer execution allowance with `timeoutMs`, up to the configured two-hour maximum. The selected allowance persists across later restarts. Configure these values in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/agent-swarm.json` before starting a run:
+Defaults limit a run to depth 2, four active children per coordinator or manager, eight active nodes, and 30 minutes per worker. Awaiting-review nodes consume capacity. Their submitting turn finishes before the worker pauses, so the completion tool can return. Paused review time does not consume the execution allowance. A spawn or restart may request a longer execution allowance with `timeoutMs`, up to the configured two-hour maximum. The selected allowance persists across later restarts. Configure these values in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/agent-swarm.json` before starting a run:
 
 ```json
 {
@@ -53,7 +53,7 @@ New workers at every depth inherit the coordinator session's current model, thin
 - `/swarm:status` shows compact run, lifecycle, role, coordinator-inbox, elapsed-time,
   and total estimated-cost metrics. Cost uses Pi's recorded usage for the full
   coordinator session and every retained or durably snapshotted worker session.
-- `/swarm:tree` opens a parent-first nested hierarchy with live node details and tmux output. Completed and stopped nodes start hidden; press Space to show them. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
+- `/swarm:tree` opens a parent-first nested hierarchy with live node details and tmux output. Submission details distinguish finishing turns from review pauses; paused deadlines show remaining time. Completed and stopped nodes start hidden; press Space to show them. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
 - `/swarm:pause` freezes worker process groups.
 - `/swarm:resume [runId]` reconnects and resumes workers.
 - `/swarm:kill` stops workers but keeps state and worktrees.
@@ -75,7 +75,7 @@ text(manager);
 - Swarm updates and results are delivered as managed messages that wake the agent. When waiting on another node, finish useful current work or end the turn; do not poll `swarm_task` or run sleep loops solely to await state changes.
 - `swarm_spawn` creates a direct child. `includeDirty: true` copies a dirty parent snapshot without changing the parent. Reviewer assignments require `reviewTargetId` for a direct child awaiting review.
 - `swarm_send`, `swarm_tree`, and `swarm_observe` provide direct-edge messages and scoped observation. Only the root can capture tmux output.
-- `swarm_complete` submits text and optional verification. Workers and managers use it instead of running `git add` or `git commit`; the controller exclusively owns Git locks and commits implementation changes on the node's generated branch.
+- `swarm_complete` submits text and optional verification. Workers and managers use it instead of running `git add` or `git commit`; the controller exclusively owns Git locks and commits implementation changes on the node's generated branch. End the turn after submission. `result.settledAt: null` means the submitting turn is still finishing under its execution timeout; a timestamp means the worker reached its review pause. A new submission clears the prior review. An identical resubmission after request-changes is refused.
 - `swarm_review` accepts, rejects, or requests changes. Managers and the root coordinator use the separate `swarm_integrate` operation instead of running `git merge` or `git cherry-pick`; direct-parent and accepted-result checks apply. Managers integrate into generated branches, while the root integrates into its checkout.
 - `swarm_stop`, `swarm_restart`, and `swarm_cleanup` manage direct children. The root may emergency-stop descendants.
 - `swarm_kill` and `swarm_clear` are root-only run operations.
@@ -88,7 +88,9 @@ State lives under `PI_SWARM_HOME`, or `${XDG_STATE_HOME:-~/.local/state}/pi/agen
 
 The root takes a kernel-backed exclusive lock. Reopening its session reconnects the run. `/swarm:resume <runId>` reconnects from another session. Workers retain queued requests while the controller is absent. Completed requests replay their stored response. An interrupted side effect receives an indeterminate-operation error instead of running again. Inspect state before issuing a new operation.
 
-Closing the root releases ownership but does not kill workers. Supervisors continue enforcing active-time limits on their original process groups. Paused groups remain paused until a root resumes them. Failed or stopped workers restart explicitly; restart rotates their capability.
+Closing the root releases ownership but does not kill workers. Supervisors continue enforcing active-time limits on their original process groups, including unfinished submission turns. Exits and timeouts become failures even when a result was submitted; the saved result remains available. Resuming a run leaves settled review workers paused. Only request-changes resumes them for rework. Failed or stopped workers restart explicitly; restart rotates their capability.
+
+After updating the completion protocol, reload the coordinator and restart retained workers at a safe checkpoint to load the new worker hooks. Existing processes do not hot-reload their extension code. Older stored submissions remain readable.
 
 Cleanup refuses dirty worktrees. Clear refuses to detach active children: kill them first. It then checks every retained worktree before cleanup and again before removal. Generated branches remain for human recovery. A cleared-run marker preserves the lock inode and prevents reconnection to deleted run data.
 

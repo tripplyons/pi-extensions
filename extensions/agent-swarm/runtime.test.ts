@@ -50,18 +50,41 @@ macTest("authenticated hierarchy completes, reviews, and integrates only into it
 		await request(worker.nodeId, "send", { nodeId: manager.nodeId, body: "Implementation started" });
 		writeFileSync(join(worker.cwd, "feature"), "implemented\n");
 		await request(worker.nodeId, "complete", { text: "Implemented feature", verification: "Fixture asserts file contents" });
+		expect(statuses.get(worker.nodeId)).toBe("running");
+		const submission = readNode(active.runId, worker.nodeId).result!;
+		expect(submission.settledAt).toBeNull();
+		await request(worker.nodeId, "heartbeat", { settleSubmission: submission.submittedAt });
 		expect(statuses.get(worker.nodeId)).toBe("paused");
+		expect(readNode(active.runId, worker.nodeId).pausedAt).not.toBeNull();
+		await active.setPaused(true);
+		await active.setPaused(false);
+		expect(statuses.get(worker.nodeId)).toBe("paused");
+		const deadline = readNode(active.runId, worker.nodeId).deadlineAt!;
 		await request(manager.nodeId, "review", { nodeId: worker.nodeId, action: "request-changes", feedback: "Add a second line" });
 		expect(statuses.get(worker.nodeId)).toBe("running");
+		expect(readNode(active.runId, worker.nodeId).pausedAt).toBeNull();
+		expect(readNode(active.runId, worker.nodeId).deadlineAt).toBeGreaterThan(deadline);
+		await request(worker.nodeId, "heartbeat", { settleSubmission: submission.submittedAt });
+		expect(statuses.get(worker.nodeId)).toBe("running");
+		expect(readNode(active.runId, worker.nodeId).status).toBe("rework");
+		await expect(request(worker.nodeId, "complete", { text: submission.text, verification: submission.verification })).rejects.toThrow("unchanged after request-changes");
+		expect(readNode(active.runId, worker.nodeId).review?.action).toBe("request-changes");
+		expect(readNode(active.runId, worker.nodeId).status).toBe("rework");
 		writeFileSync(join(worker.cwd, "feature"), "implemented\nrevised\n");
 		await request(worker.nodeId, "complete", { text: "Revised feature" });
-		expect(statuses.get(worker.nodeId)).toBe("paused");
+		expect(statuses.get(worker.nodeId)).toBe("running");
+		expect(readNode(active.runId, worker.nodeId).review).toBeNull();
 		const result = readNode(active.runId, worker.nodeId).result!;
+		await request(worker.nodeId, "heartbeat", { settleSubmission: submission.submittedAt });
+		expect(statuses.get(worker.nodeId)).toBe("running");
+		await request(worker.nodeId, "heartbeat", { settleSubmission: result.submittedAt });
+		expect(statuses.get(worker.nodeId)).toBe("paused");
 		expect(result.commit).not.toBe(original);
 		const reviewer = await request(manager.nodeId, "spawn", { role: "reviewer", task: "Inspect the result", reviewTargetId: worker.nodeId }) as NodeRecord;
 		expect(repositoryInfo(reviewer.cwd).head).toBe(result.commit!);
 		await request(reviewer.nodeId, "ready", { sessionId: "reviewer" });
 		await request(reviewer.nodeId, "complete", { text: "Verified" });
+		await request(reviewer.nodeId, "heartbeat", { settleSubmission: readNode(active.runId, reviewer.nodeId).result!.submittedAt });
 		expect(statuses.get(reviewer.nodeId)).toBe("paused");
 		await request(manager.nodeId, "review", { nodeId: reviewer.nodeId, action: "accept" });
 		await request(manager.nodeId, "review", { nodeId: worker.nodeId, action: "accept" });
@@ -139,10 +162,11 @@ macTest("per-worker timeout is bounded and survives restart", async () => {
 	git(repository, ["add", "initial"]);
 	git(repository, ["commit", "-m", "Initialize fixture"]);
 	const starts: number[] = [];
+	let processStatus: string | undefined;
 	const processes: WorkerProcesses = {
 		async start(run, node) { starts.push(node.timeoutMs ?? run.config.workerTimeoutMs); },
 		async set() {},
-		status() { return null; },
+		status() { return processStatus ? { pid: null, status: processStatus, failure: null } : null; },
 	};
 	let runtime: SwarmRuntime | undefined;
 	try {
@@ -165,6 +189,20 @@ macTest("per-worker timeout is bounded and survives restart", async () => {
 		await runtime.act(runtime.root.nodeId, "restart", { nodeId: worker.nodeId, timeoutMs: recoveryTimeoutMs });
 		expect(starts).toEqual([timeoutMs, timeoutMs, recoveryTimeoutMs]);
 		expect(readNode(runtime.runId, worker.nodeId).timeoutMs).toBe(recoveryTimeoutMs);
+		for (const settledAt of [null, Date.now()]) {
+			if (readNode(runtime.runId, worker.nodeId).status === "failed") await runtime.act(runtime.root.nodeId, "restart", { nodeId: worker.nodeId });
+			updateNode(runtime.runId, worker.nodeId, (node) => { node.status = "running"; });
+			updateNode(runtime.runId, worker.nodeId, (node) => {
+				node.status = "awaiting-review";
+				node.result = { text: "Saved result", commit: "saved", submittedAt: Date.now(), settledAt };
+			});
+			processStatus = settledAt === null ? "timed-out" : "failed";
+			await runtime.poll();
+			const failed = readNode(runtime.runId, worker.nodeId);
+			expect(failed.status).toBe("failed");
+			expect(failed.failure).toBe(`Worker ${processStatus}`);
+			expect(failed.result?.commit).toBe("saved");
+		}
 	} finally {
 		await runtime?.close();
 		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;

@@ -29,12 +29,14 @@ macTest("installed Pi and conversion start offline with private configuration un
 	const complaintFile = join(outbox, "complaints.jsonl");
 	writeFileSync(fixture, `
 		import conversion from ${JSON.stringify(conversion)};
+		import loadComplain from ${JSON.stringify(complain)};
 		import { writeFileSync } from 'node:fs';
 		export default async (pi) => {
 			let exec; let complain;
 			const register = pi.registerTool.bind(pi);
 			pi.registerTool = (tool) => { if (tool.name === 'exec') exec = tool; if (tool.name === 'complain') complain = tool; register(tool); };
 			await conversion(pi);
+			loadComplain(pi);
 			pi.on('session_start', async (_event, ctx) => {
 				const result = await exec.execute('probe-code', {code:'text(6 * 7)'}, new AbortController().signal, undefined, ctx);
 				const shell = await exec.execute('probe-shell', {code:'text(await tools.exec_command({cmd:"printf sandboxed > code-owned"}))'}, new AbortController().signal, undefined, ctx);
@@ -52,7 +54,7 @@ macTest("installed Pi and conversion start offline with private configuration un
 		}));
 		const result = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, node, cli,
 			"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
-			"--no-context-files", "--no-approve", "--no-session", "--model", "openai-codex/gpt-5.4", "--extension", swarm, "--extension", complain, "--extension", fixture,
+			"--no-context-files", "--no-approve", "--no-session", "--model", "openai-codex/gpt-5.4", "--extension", swarm, "--extension", fixture,
 		], {
 			cwd: worktree, env: { HOME: workerHome, TMPDIR: workerTmp, PI_CODING_AGENT_DIR: agentDir, PI_SWARM_HOME: join(root, "swarm-state"), PI_COMPLAIN_LOG: complaintFile, PATH: `${dirname(node)}:/usr/bin:/bin` },
 			input: '{"id":"probe","type":"get_state"}\n', encoding: "utf8", timeout: 10000,

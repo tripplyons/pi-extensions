@@ -122,7 +122,7 @@ export default async function (pi: ExtensionAPI) {
 		...([
 			["spawn", "Spawn a direct child within inherited role, concurrency, and timeout limits.", Type.Object({ task: Type.String(), role: Type.Optional(Type.Union([Type.Literal("manager"), Type.Literal("worker"), Type.Literal("reviewer")])), reviewTargetId: Type.Optional(Type.String()), includeDirty: Type.Optional(Type.Boolean()), timeoutMs: Type.Optional(Type.Integer({ minimum: 1000, description: "Execution-time allowance for this worker. Defaults to workerTimeoutMs and cannot exceed maxWorkerTimeoutMs." })) })],
 			["send", "Send instructions downward or a non-authoritative message to your direct parent.", Type.Object({ nodeId: Type.String(), body: Type.String() })],
-			["complete", "Submit your result and verification. Workers and managers must use this instead of git add/commit; the controller owns index.lock and commits generated branches. Reviewers submit findings without a commit.", Type.Object({ text: Type.String(), verification: Type.Optional(Type.String()) })],
+			["complete", "Submit your result and verification, then end the turn after the tool returns. Workers and managers must use this instead of git add/commit; the controller owns index.lock and commits generated branches. Reviewers submit findings without a commit.", Type.Object({ text: Type.String(), verification: Type.Optional(Type.String()) })],
 			["review", "Accept, reject, or request changes from a direct child awaiting review. Acceptance does not integrate.", Type.Object({ nodeId: Type.String(), action: Type.Union([Type.Literal("accept"), Type.Literal("reject"), Type.Literal("request-changes")]), feedback: Type.Optional(Type.String()) })],
 			["integrate", "Use this instead of git merge/cherry-pick to integrate an accepted direct child through controller-owned Git. Managers merge into their generated branch; the root coordinator merges into its checkout. Never pushes.", Type.Object({ nodeId: Type.String() })],
 			["restart", "Restart a retained failed or stopped direct child, optionally with a new timeout.", Type.Object({ nodeId: Type.String(), timeoutMs: Type.Optional(Type.Integer({ minimum: 1000, description: "Execution-time allowance for this restart. Defaults to the node's prior allowance and cannot exceed maxWorkerTimeoutMs." })) })],
@@ -240,6 +240,10 @@ export default async function (pi: ExtensionAPI) {
 		while (mailbox) {
 			const current = mailbox.snapshot();
 			if (["completed", "rejected", "failed", "stopped"].includes(current.node.status)) return;
+			if (current.node.status === "awaiting-review" && current.node.result?.settledAt === null) {
+				await mailbox.request("heartbeat", { settleSubmission: current.node.result.submittedAt });
+				continue;
+			}
 			const messages = current.messages.filter((message) => !delivered.has(message.messageId));
 			if (current.status === "active" && messages.length && current.node.status !== "awaiting-review") {
 				const ids = messages.map((message) => message.messageId);

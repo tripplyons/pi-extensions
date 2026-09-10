@@ -8,6 +8,20 @@ const colors = { accent: 36, muted: 2, dim: 90, success: 32, error: 31, warning:
 const theme: Pick<Theme, "fg"> = { fg: (color: ThemeColor, text: string) => `\x1b[${colors[color as keyof typeof colors] ?? 0}m${text}\x1b[0m` };
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
+test("review details distinguish a finishing submission from a suspended deadline", () => {
+	const node = makeNode("run_test", "node_worker", "worker", "Work", "/tmp", "node_root");
+	node.status = "awaiting-review";
+	node.result = { text: "Done", commit: "saved", submittedAt: 1000, settledAt: null };
+	node.deadlineAt = 61000;
+	const tree = new SwarmTree(theme, () => [node], () => "", () => {});
+	expect(plain(tree.render(79).join("\n"))).toContain("finishing turn; execution timeout active");
+	node.pausedAt = 1000;
+	node.result.settledAt = 1000;
+	const paused = plain(tree.render(79).join("\n"));
+	expect(paused).toContain("Submission: paused for review");
+	expect(paused).toContain("Deadline: paused; 60s remaining");
+});
+
 test("tree navigates live nodes and constrains terminal output at narrow widths", () => {
 	const root = makeNode("run_test", "node_root", "coordinator", "Inspect 界".repeat(20), "/tmp", null);
 	const child = makeNode("run_test", "node_child", "worker", "Implement", "/tmp/child", root.nodeId);

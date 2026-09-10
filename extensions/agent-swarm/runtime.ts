@@ -138,6 +138,16 @@ export class SwarmRuntime {
 		writeJson(join(runDir(this.runId), "control", "messages", `${message.messageId}.json`), message);
 		return message;
 	}
+	private async setProcess(node: NodeRecord, status: "running" | "paused" | "stopped") {
+		await this.processes.set(node, status);
+		return updateNode(this.runId, node.nodeId, (current) => {
+			if (status === "paused") current.pausedAt ??= Date.now();
+			else if (current.pausedAt !== null) {
+				if (status === "running" && current.deadlineAt !== null) current.deadlineAt += Date.now() - current.pausedAt;
+				current.pausedAt = null;
+			}
+		});
+	}
 
 	act(actorId: string, kind: RequestKind, payload: Record<string, unknown>, defaults?: LiveDefaults) {
 		return this.serial(async () => {
@@ -187,6 +197,7 @@ export class SwarmRuntime {
 		}
 		if (kind === "ready") return updateNode(this.runId, actor.nodeId, (node) => { node.status = "running"; node.sessionId = text(payload.sessionId, "sessionId"); });
 		if (kind === "heartbeat") {
+			if (payload.settleSubmission !== undefined && (!Number.isSafeInteger(payload.settleSubmission) || (payload.settleSubmission as number) < 0)) throw new Error("settleSubmission must be a submission timestamp");
 			for (const key of ["claimIds", "ackIds"]) {
 				if (payload[key] !== undefined && (!Array.isArray(payload[key]) || !(payload[key] as unknown[]).every((id) => typeof id === "string" && /^msg_[A-Za-z0-9]+$/.test(id)))) throw new Error(`${key} must contain message IDs`);
 			}
@@ -196,6 +207,12 @@ export class SwarmRuntime {
 				if (Array.isArray(payload.ackIds) && payload.ackIds.includes(message.messageId) && message.claimedAt) message.acknowledgedAt ??= Date.now();
 				writeJson(join(runDir(this.runId), "control", "messages", `${message.messageId}.json`), message);
 			}
+			// The submitting tool and its Code mode cell must return before we
+			// suspend their process. A delayed idle notice cannot undo a review.
+			if (actor.status === "awaiting-review" && actor.result?.settledAt === null && payload.settleSubmission === actor.result.submittedAt) {
+				await this.setProcess(actor, "paused");
+				updateNode(this.runId, actor.nodeId, (node) => { node.result!.settledAt = Date.now(); });
+			}
 			return { alive: true };
 		}
 		if (kind === "send") return this.send(actor, target!, text(payload.body, "body"));
@@ -203,17 +220,16 @@ export class SwarmRuntime {
 			if (payload.verification !== undefined && typeof payload.verification !== "string") throw new Error("verification must be text");
 			if (descendants(this.runId, actor).some((node) => !terminalStatuses.has(node.status))) throw new Error("Cannot complete while descendants are active or awaiting review");
 			const body = text(payload.text, "text");
-			await this.processes.set(actor, "paused");
+			await this.setProcess(actor, "paused");
 			try {
 				const commit = actor.role === "reviewer" ? null : commitResult(actor, `Complete swarm task ${actor.nodeId}`);
-				const result = { text: body, commit, verification: typeof payload.verification === "string" ? payload.verification : undefined, submittedAt: Date.now() };
-				updateNode(this.runId, actor.nodeId, (node) => { node.result = result; node.status = "awaiting-review"; });
+				const verification = typeof payload.verification === "string" ? payload.verification : undefined;
+				if (actor.review?.action === "request-changes" && actor.result?.commit === commit && actor.result.text === body && actor.result.verification === verification) throw new Error("Submission is unchanged after request-changes; read the review before submitting again");
+				const result = { text: body, commit, verification, submittedAt: Date.now(), settledAt: null };
+				updateNode(this.runId, actor.nodeId, (node) => { node.result = result; node.review = null; node.status = "awaiting-review"; });
 				this.send(actor, readNode(this.runId, actor.parentId!), body, "result");
 				return result;
-			} catch (error) {
-				await this.processes.set(actor, "running");
-				throw error;
-			}
+			} finally { await this.setProcess(actor, "running"); }
 		}
 		if (kind === "review") {
 			if (payload.feedback !== undefined && typeof payload.feedback !== "string") throw new Error("feedback must be text");
@@ -221,7 +237,7 @@ export class SwarmRuntime {
 			const action = payload.action;
 			if (action !== "accept" && action !== "request-changes" && action !== "reject") throw new Error("Invalid review action");
 			const feedback = typeof payload.feedback === "string" ? payload.feedback : undefined;
-			await this.processes.set(target!, action === "request-changes" ? "running" : "stopped");
+			await this.setProcess(target!, action === "request-changes" ? "running" : "stopped");
 			const reviewed = updateNode(this.runId, target!.nodeId, (node) => {
 				node.review = { action, feedback, updatedAt: Date.now() };
 				node.status = action === "accept" ? "completed" : action === "reject" ? "rejected" : "rework";
@@ -230,19 +246,19 @@ export class SwarmRuntime {
 			return reviewed;
 		}
 		if (kind === "integrate") {
-			if (actor.role !== "coordinator") await this.processes.set(actor, "paused");
+			if (actor.role !== "coordinator") await this.setProcess(actor, "paused");
 			try {
 				const commit = integrateResult(this.run, actor, target!);
 				updateNode(this.runId, target!.nodeId, (node) => { node.integrationCommit = commit; });
 				return { commit };
-			} finally { if (actor.role !== "coordinator") await this.processes.set(actor, "running"); }
+			} finally { if (actor.role !== "coordinator") await this.setProcess(actor, "running"); }
 		}
 		if (kind === "stop") {
 			const targets = [target!, ...descendants(this.runId, target!)];
 			if (actor.role !== "coordinator" && targets.slice(1).some((node) => !terminalStatuses.has(node.status))) throw new Error("Stop the child's descendants through their direct parent first");
 			for (const node of targets.reverse()) {
 				if (terminalStatuses.has(node.status)) continue;
-				await this.processes.set(node, "stopped");
+				await this.setProcess(node, "stopped");
 				updateNode(this.runId, node.nodeId, (current) => { current.status = "stopped"; });
 			}
 			return { stopped: target!.nodeId };
@@ -251,13 +267,14 @@ export class SwarmRuntime {
 			if (target!.cleanedAt || !["failed", "stopped"].includes(target!.status)) throw new Error("Only retained failed or stopped nodes can restart");
 			const timeoutMs = requestedTimeout(this.run, payload.timeoutMs, workerTimeoutFor(this.run, target!));
 			assertSpawnLimits(this.run.config, actor, target!.role, this.nodes());
-			await this.processes.set(target!, "stopped");
+			await this.setProcess(target!, "stopped");
 			writeFileSync(tokenFile(this.runId, target!.nodeId), newToken(), { mode: 0o600 });
 			const node = updateNode(this.runId, target!.nodeId, (current) => {
 				current.status = "starting";
 				current.failure = null;
 				current.timeoutMs = timeoutMs;
 				current.deadlineAt = Date.now() + timeoutMs;
+				current.pausedAt = null;
 			});
 			try { await this.processes.start(this.run, node); }
 			catch (error) { updateNode(this.runId, node.nodeId, (current) => { current.status = "failed"; current.failure = String(error); }); throw error; }
@@ -267,7 +284,7 @@ export class SwarmRuntime {
 			if (!terminalStatuses.has(target!.status)) throw new Error("Cleanup requires a terminal node");
 			if (target!.cleanedAt) return target;
 			assertCleanWorktree(target!);
-			await this.processes.set(target!, "stopped");
+			await this.setProcess(target!, "stopped");
 			const estimatedCost = workerCost(target!);
 			git(this.run.gitRoot, ["worktree", "remove", target!.cwd]);
 			if (target!.tmuxSession && target!.tmuxWindow) killWindow(target!.tmuxSession, target!.tmuxWindow);
@@ -300,10 +317,10 @@ export class SwarmRuntime {
 				const node = readNode(this.runId, listed.nodeId);
 				const process = this.processes.status(node);
 				if (process?.pid && node.pid !== process.pid) updateNode(this.runId, node.nodeId, (current) => { current.pid = process.pid; });
-				if (["starting", "running", "rework"].includes(node.status)) {
+				if (["starting", "running", "rework", "awaiting-review"].includes(node.status)) {
 					const startupExpired = node.status === "starting" && this.run.status === "active" && Date.now() - node.updatedAt > this.run.config.startupTimeoutMs;
 					if (startupExpired || process?.status === "exited" || process?.status === "failed" || process?.status === "timed-out") {
-						await this.processes.set(node, "stopped");
+						await this.setProcess(node, "stopped");
 						updateNode(this.runId, node.nodeId, (current) => { current.status = "failed"; current.failure = startupExpired ? "Worker readiness timed out" : process?.failure ?? `Worker ${process?.status}`; });
 					}
 				}
@@ -317,11 +334,8 @@ export class SwarmRuntime {
 			updateRun(this.runId, (run) => { run.status = paused ? "paused" : "active"; });
 			for (const node of this.nodes()) {
 				if (node.role === "coordinator" || terminalStatuses.has(node.status)) continue;
-				await this.processes.set(node, paused ? "paused" : "running");
-				updateNode(this.runId, node.nodeId, (current) => {
-					if (paused) current.pausedAt ??= Date.now();
-					else if (current.pausedAt) { if (current.deadlineAt) current.deadlineAt += Date.now() - current.pausedAt; current.pausedAt = null; }
-				});
+				const reviewPaused = node.status === "awaiting-review" && node.result?.settledAt !== null;
+				await this.setProcess(node, paused || reviewPaused ? "paused" : "running");
 			}
 			this.snapshot();
 		});
@@ -343,7 +357,7 @@ export class SwarmRuntime {
 		return this.serial(async () => {
 			for (const node of this.nodes().reverse()) {
 				if (node.role === "coordinator" || node.cleanedAt) continue;
-				await this.processes.set(node, "stopped");
+				await this.setProcess(node, "stopped");
 				if (!terminalStatuses.has(node.status)) updateNode(this.runId, node.nodeId, (current) => { current.status = "stopped"; });
 			}
 			updateRun(this.runId, (run) => { run.status = "stopped"; });
@@ -356,7 +370,7 @@ export class SwarmRuntime {
 			const nodes = this.nodes().filter((node) => node.role !== "coordinator" && !node.cleanedAt);
 			if (nodes.some((node) => !terminalStatuses.has(node.status))) throw new Error("Active swarm children must be killed before clearing. Run /swarm:kill first.");
 			for (const node of nodes) assertCleanWorktree(node);
-			for (const node of nodes) await this.processes.set(node, "stopped");
+			for (const node of nodes) await this.setProcess(node, "stopped");
 			const estimatedCosts = new Map(nodes.map((node) => [node.nodeId, workerCost(node)]));
 			// Recheck after stopping; workers may have edited during the first pass.
 			for (const node of nodes) assertCleanWorktree(node);
