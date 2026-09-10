@@ -23,6 +23,7 @@
       "./extensions/message-window/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/stash/index.ts",
+      "./extensions/startup-screen/index.ts",
       "./extensions/subagent/index.ts",
       "./extensions/syntax-punctuation/index.ts",
       "./extensions/thinking-selector/index.ts",

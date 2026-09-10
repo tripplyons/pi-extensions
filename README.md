@@ -1,6 +1,6 @@
 # pi-extensions
 
-19 extensions for [Pi](https://pi.dev/): Codex conversion and 18 selected local extensions. This package supports Code mode only.
+20 extensions for [Pi](https://pi.dev/): Codex conversion and 19 selected local extensions. This package supports Code mode only.
 
 ## Install
 
@@ -16,7 +16,7 @@ pi install npm:@howaboua/pi-codex-imagegen@0.0.3
 pi install npm:@howaboua/pi-ask@0.0.8
 ```
 
-The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 21 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.
+The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 22 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.
 
 Configure Code mode before starting a fresh session. See [conversion setup and migration](extensions/pi-codex-conversion/README.md). The sibling dotfiles repository manages installation and configuration. Local source edits load after `/reload` or a restart. Dependency changes require `npm ci --omit=dev` first.
 
@@ -46,6 +46,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
+| [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and keeps startup resource details focused. |
 | subagent | Runs asynchronous Code children; swarm attachment blocks new jobs. |
 | syntax-punctuation | Styles syntax punctuation. |
 | thinking-selector | Opens the active model's thinking-level picker with Ctrl+T. |
