@@ -16,6 +16,7 @@ macTest("installed Pi and conversion start offline with private configuration un
 	const cli = realpathSync(spawnSync("which", ["pi"], { encoding: "utf8" }).stdout.trim());
 	const conversion = realpathSync(fileURLToPath(import.meta.resolve("@howaboua/pi-codex-conversion")));
 	const swarm = realpathSync(fileURLToPath(new URL("./index.ts", import.meta.url)));
+	const complain = realpathSync(fileURLToPath(new URL("../complain/index.ts", import.meta.url)));
 	const node = realpathSync(spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim());
 	const agentDir = join(workerHome, ".pi", "agent");
 	mkdirSync(agentDir, { recursive: true });
@@ -25,17 +26,19 @@ macTest("installed Pi and conversion start offline with private configuration un
 	copyFileSync(process.env.PI_SWARM_TEST_CODE_HOST!, join(hostDirectory, "codex-code-mode-host"));
 	const fixture = join(workerHome, "fixture.ts");
 	const probeFile = join(outbox, "probe.json");
+	const complaintFile = join(outbox, "complaints.jsonl");
 	writeFileSync(fixture, `
 		import conversion from ${JSON.stringify(conversion)};
 		import { writeFileSync } from 'node:fs';
 		export default async (pi) => {
-			let exec;
+			let exec; let complain;
 			const register = pi.registerTool.bind(pi);
-			pi.registerTool = (tool) => { if (tool.name === 'exec') exec = tool; register(tool); };
+			pi.registerTool = (tool) => { if (tool.name === 'exec') exec = tool; if (tool.name === 'complain') complain = tool; register(tool); };
 			await conversion(pi);
 			pi.on('session_start', async (_event, ctx) => {
 				const result = await exec.execute('probe-code', {code:'text(6 * 7)'}, new AbortController().signal, undefined, ctx);
 				const shell = await exec.execute('probe-shell', {code:'text(await tools.exec_command({cmd:"printf sandboxed > code-owned"}))'}, new AbortController().signal, undefined, ctx);
+				await complain.execute('probe-complain', {message:'Sandbox complaint'}, new AbortController().signal, undefined, ctx);
 				writeFileSync(${JSON.stringify(probeFile)}, JSON.stringify({tools:pi.getActiveTools(), allTools:pi.getAllTools().map(tool => tool.name), result, shell}));
 			});
 		};
@@ -49,9 +52,9 @@ macTest("installed Pi and conversion start offline with private configuration un
 		}));
 		const result = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, node, cli,
 			"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
-			"--no-context-files", "--no-approve", "--no-session", "--model", "openai-codex/gpt-5.4", "--extension", swarm, "--extension", fixture,
+			"--no-context-files", "--no-approve", "--no-session", "--model", "openai-codex/gpt-5.4", "--extension", swarm, "--extension", complain, "--extension", fixture,
 		], {
-			cwd: worktree, env: { HOME: workerHome, TMPDIR: workerTmp, PI_CODING_AGENT_DIR: agentDir, PI_SWARM_HOME: join(root, "swarm-state"), PATH: `${dirname(node)}:/usr/bin:/bin` },
+			cwd: worktree, env: { HOME: workerHome, TMPDIR: workerTmp, PI_CODING_AGENT_DIR: agentDir, PI_SWARM_HOME: join(root, "swarm-state"), PI_COMPLAIN_LOG: complaintFile, PATH: `${dirname(node)}:/usr/bin:/bin` },
 			input: '{"id":"probe","type":"get_state"}\n', encoding: "utf8", timeout: 10000,
 		});
 		if (result.status !== 0) throw new Error(`Sandboxed Pi startup failed: ${result.error?.message ?? result.stderr}`);
@@ -65,9 +68,11 @@ macTest("installed Pi and conversion start offline with private configuration un
 		expect(tools).toContain("exec");
 		expect(tools).toContain("wait");
 		expect(probe.allTools).toContain("swarm_spawn");
+		expect(tools).toContain("complain");
 		expect(tools).not.toContain("subagent");
 		expect(JSON.stringify(probe.result.content)).toContain("42");
 		expect(readFileSync(join(worktree, "code-owned"), "utf8")).toBe("sandboxed");
+		expect(JSON.parse(readFileSync(complaintFile, "utf8")).message).toBe("Sandbox complaint");
 		expect(result.stderr).not.toContain("Failed to load extension");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 }, 15000);

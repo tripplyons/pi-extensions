@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { HOST_RELEASE, codeModeHostBinaryName } from "@howaboua/pi-codex-conversion/dist/tools/code-mode/host-assets.js";
 import { installCodeModeHost } from "@howaboua/pi-codex-conversion/dist/tools/code-mode/install-host.js";
+import { complaintLogPath } from "../complain/index.ts";
 import { assertMacSandboxAvailable, sandboxProfile, workerEnvironment } from "./isolation.ts";
 import { processExists } from "./ownership.ts";
 import { ensureDir, inboxDir, outboxDir, readJson, runDir, stateRoot, tokenFile, updateNode, workerHome, workerTmp, writeJson } from "./state.ts";
@@ -49,6 +50,7 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 			const pi = executable("pi");
 			const conversion = realpathSync(fileURLToPath(import.meta.resolve("@howaboua/pi-codex-conversion")));
 			const extension = realpathSync(entryPoint);
+			const complain = realpathSync(fileURLToPath(new URL("../complain/index.ts", import.meta.url)));
 			const privateHome = workerHome(run.runId, node.nodeId);
 			const agentDir = join(privateHome, ".pi", "agent");
 			ensureDir(agentDir);
@@ -81,11 +83,12 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 				HOME: privateHome, TMPDIR: paths.workerTmp, PI_CODING_AGENT_DIR: agentDir,
 				PATH: `${dirname(nodeExecutable)}:${dirname(gitExecutable)}:/usr/bin:/bin:/usr/sbin:/sbin`,
 				[WORKER_ENV]: "1", PI_SWARM_HOME: stateRoot(), PI_SWARM_RUN: run.runId, PI_SWARM_NODE: node.nodeId,
+				PI_COMPLAIN_LOG: complaintLogPath(),
 				PI_SWARM_FAST: inheritedFastEnvironment(run.config.fastMode),
 				PI_SWARM_TOKEN: readFileSync(tokenFile(run.runId, node.nodeId), "utf8"),
 			});
 			const args = [pi, "--mode", "json", "--print", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve",
-				"--extension", conversion, "--extension", extension, "--model", node.model, "--thinking", node.thinking ?? "medium",
+				"--extension", conversion, "--extension", extension, "--extension", complain, "--model", node.model, "--thinking", node.thinking ?? "medium",
 				"--session-dir", join(agentDir, "sessions"), "Read swarm_task for your assignment. Work within your role and submit through swarm_complete."];
 			const config = join(control, "launch.json");
 			writeJson(config, { profile, executable: nodeExecutable, args, cwd: node.cwd, environment, timeoutMs: run.config.workerTimeoutMs, statusFile: join(control, "status.json"), commandFile: join(control, "command.json") });

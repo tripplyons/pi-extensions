@@ -16,6 +16,7 @@
       "./extensions/autocomplete/index.ts",
       "./extensions/btw/index.ts",
       "./extensions/clean-footer/index.ts",
+      "./extensions/complain/index.ts",
       "./extensions/fast/index.ts",
       "./extensions/goal/index.ts",
       "./extensions/hide-empty-editor/index.ts",

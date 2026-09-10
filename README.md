@@ -1,6 +1,6 @@
 # pi-extensions
 
-18 extensions for [Pi](https://pi.dev/): Codex conversion and 17 selected local extensions. This package supports Code mode only.
+19 extensions for [Pi](https://pi.dev/): Codex conversion and 18 selected local extensions. This package supports Code mode only.
 
 ## Install
 
@@ -39,6 +39,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | autocomplete | Adds editor completions for files, skills, and commands. |
 | btw | Answers side questions with `/btw`; `/btw:tools` allows Code tools. |
 | clean-footer | Shows session metrics and upstream extension statuses. |
+| [complain](extensions/complain/README.md) | Records timestamped environment and tool issues for later review. |
 | [fast](extensions/fast/README.md) | Toggles Codex priority requests for the session with `/fast`, without saving settings. |
 | goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
