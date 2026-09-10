@@ -25,7 +25,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "complain",
 		label: "Complain",
-		description: "Record an environment or tool issue for later human review. Saves local plaintext with the current timestamp, session, working directory, model, and thinking level.",
+		description: "Record a material environment or tool issue for later human review. Report proactively when a reproducible infrastructure or harness failure repeatedly impedes work; do not report ordinary task errors or isolated transient failures. Saves local plaintext with the current timestamp, session, working directory, model, and thinking level.",
 		parameters: complainSchema,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			const path = complaintLogPath();

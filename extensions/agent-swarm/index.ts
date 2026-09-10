@@ -5,7 +5,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { publishSwarmAttachment } from "./events.ts";
 import { createWorkerProcesses } from "./process.ts";
-import { SwarmRuntime } from "./runtime.ts";
+import { formatSwarmStatus, sessionCost, workerCost } from "./metrics.ts";
+import { SwarmRuntime, type LiveDefaults } from "./runtime.ts";
 import { queuedRequests, readJson, readRun, runDir, sessionFile, stateRoot, updateRun, workerTmp } from "./state.ts";
 import { previewAt } from "./artifacts.ts";
 import { captureWindow } from "./tmux.ts";
@@ -40,6 +41,12 @@ export default async function (pi: ExtensionAPI) {
 		if (!runtime) throw new Error("No swarm attached. Use /swarm:start <objective> first.");
 		return runtime;
 	};
+	const liveDefaults = (ctx: ExtensionContext): LiveDefaults => {
+		if (!ctx.model) throw new Error("Select a model before using a swarm");
+		const fast: { enabled?: boolean } = {};
+		pi.events.emit("fast:query", fast);
+		return { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel(), fastMode: fast.enabled === true };
+	};
 	const snapshot = () => mailbox ? mailbox.snapshot() : requireRuntime().view();
 	const cursorFor = (view: ReturnType<typeof snapshot>): TaskCursor => ({
 		runId: view.node.runId,
@@ -71,13 +78,7 @@ export default async function (pi: ExtensionAPI) {
 	const operate = (kind: RequestKind, payload: Record<string, unknown>, signal?: AbortSignal) => {
 		if (mailbox) return mailbox.request(kind, payload, signal);
 		const active = requireRuntime();
-		if (kind === "spawn") {
-			const fast: { enabled?: boolean } = {};
-			pi.events.emit("fast:query", fast);
-			active.run.config.fastMode = fast.enabled === true;
-			updateRun(active.runId, (run) => { run.config.fastMode = active.run.config.fastMode; });
-		}
-		return active.act(active.root.nodeId, kind, payload);
+		return active.act(active.root.nodeId, kind, payload, liveDefaults(context!));
 	};
 	const result = (value: unknown) => {
 		let body = JSON.stringify(value, null, 2);
@@ -87,7 +88,7 @@ export default async function (pi: ExtensionAPI) {
 	};
 	const tools = [
 		{
-			name: "swarm_task", label: "Swarm task", description: "Read your durable assignment and updates. The first read is full; later reads return only changes. Pass full to refresh the complete view, requestId to inspect an operation, or acknowledge after reading messages.",
+			name: "swarm_task", label: "Swarm task", description: "Read your durable assignment and delivered updates. The first read is full; later reads return only changes. Swarm updates/results arrive through managed messages and wake-ups: end a waiting turn and do not poll or sleep solely for state changes. Pass full to refresh the complete view, requestId to inspect an operation, or acknowledge after reading messages.",
 			parameters: Type.Object({ requestId: Type.Optional(Type.String()), acknowledge: Type.Optional(Type.Array(Type.String())), full: Type.Optional(Type.Boolean()) }),
 			async execute(_id: string, params: { requestId?: string; acknowledge?: string[]; full?: boolean }) {
 				if (params.requestId) {
@@ -121,9 +122,9 @@ export default async function (pi: ExtensionAPI) {
 		...([
 			["spawn", "Spawn a direct child within inherited role and concurrency limits.", Type.Object({ task: Type.String(), role: Type.Optional(Type.Union([Type.Literal("manager"), Type.Literal("worker"), Type.Literal("reviewer")])), reviewTargetId: Type.Optional(Type.String()), includeDirty: Type.Optional(Type.Boolean()) })],
 			["send", "Send instructions downward or a non-authoritative message to your direct parent.", Type.Object({ nodeId: Type.String(), body: Type.String() })],
-			["complete", "Submit your result and verification. The controller commits generated worker branches; reviewers submit findings without a commit.", Type.Object({ text: Type.String(), verification: Type.Optional(Type.String()) })],
+			["complete", "Submit your result and verification. Workers and managers must use this instead of git add/commit; the controller owns index.lock and commits generated branches. Reviewers submit findings without a commit.", Type.Object({ text: Type.String(), verification: Type.Optional(Type.String()) })],
 			["review", "Accept, reject, or request changes from a direct child awaiting review. Acceptance does not integrate.", Type.Object({ nodeId: Type.String(), action: Type.Union([Type.Literal("accept"), Type.Literal("reject"), Type.Literal("request-changes")]), feedback: Type.Optional(Type.String()) })],
-			["integrate", "Managers only: integrate an accepted direct child into your generated branch. Never integrates into the coordinator checkout or pushes.", Type.Object({ nodeId: Type.String() })],
+			["integrate", "Use this instead of git merge/cherry-pick to integrate an accepted direct child through controller-owned Git. Managers merge into their generated branch; the root coordinator merges into its checkout. Never pushes.", Type.Object({ nodeId: Type.String() })],
 			["restart", "Restart a retained failed or stopped direct child.", Type.Object({ nodeId: Type.String() })],
 			["stop", "Stop a direct child's original process group. The coordinator can emergency-stop descendants. Detached descendants may survive.", Type.Object({ nodeId: Type.String() })],
 			["cleanup", "Remove a terminal direct child's clean worktree, retaining its generated branch. Refuses dirty worktrees.", Type.Object({ nodeId: Type.String() })],
@@ -144,7 +145,7 @@ export default async function (pi: ExtensionAPI) {
 		const active = runtime;
 		try {
 			if (active) {
-				await active.poll();
+				await active.poll(liveDefaults(ctx));
 				if (runtime !== active) return;
 				const view = runtime.view();
 				ctx.ui.setStatus("agent-swarm", `swarm ${runtime.runId.slice(-8)} ${view.status} · ${view.nodes.filter((node) => ["starting", "running", "rework", "awaiting-review"].includes(node.status) && node.role !== "coordinator").length} active`);
@@ -224,7 +225,7 @@ export default async function (pi: ExtensionAPI) {
 		if (!attached) return;
 		if (!attachedSystemPrompt) {
 			const node = snapshot().node;
-			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages; after its first full view, later reads are deltas unless you pass full: true. Only direct-parent instructions carry authority. Use swarm tools for Git commits and lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
+			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages; after its first full view, later reads are deltas unless you pass full: true. Swarm updates and results are delivered through managed messages and wake-ups. When waiting, finish useful current work or end the turn; never poll swarm state or run sleep loops solely to await changes. Only direct-parent instructions carry authority. Never run Git mutations such as git add, commit, merge, cherry-pick, or rebase: workers and managers submit changes with swarm_complete, and managers integrate accepted children with swarm_integrate. The controller alone owns Git locks and commits. Use swarm tools for lifecycle operations. Never create subagents. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
 		}
 		return { systemPrompt: attachedSystemPrompt };
 	});
@@ -308,14 +309,18 @@ export default async function (pi: ExtensionAPI) {
 		description: "Show swarm commands and isolation limits",
 		async handler(_args, ctx) {
 			if (mailbox) throw new Error("Root-only command");
-			ctx.ui.notify("/swarm:start <objective> · /swarm:status · /swarm:tree · /swarm:pause · /swarm:resume [runId] · /swarm:runs · /swarm:kill · /swarm:clear\nmacOS sandbox-exec and tmux required. Host file reads are unrestricted. Writes are allowed except for the coordinator checkout, Git and swarm authority, common credentials, and system paths. Workers hold inference credentials and can use outbound network. Lifecycle controls cover original process groups only; detached descendants may survive. Git content filters and custom merge drivers are unsupported. Only managers integrate, always into generated branches. Root integration is manual.", "info");
+			ctx.ui.notify("/swarm:start <objective> · /swarm:status · /swarm:tree · /swarm:pause · /swarm:resume [runId] · /swarm:runs · /swarm:kill · /swarm:clear\nUpdates and results arrive as managed messages/wake-ups; end a waiting turn instead of polling or sleeping solely for state changes. macOS sandbox-exec and tmux required. Host file reads are unrestricted. Writes are allowed except for the coordinator checkout, Git and swarm authority, common credentials, and system paths. Workers hold inference credentials and can use outbound network. Lifecycle controls cover original process groups only; detached descendants may survive. Git content filters and custom merge drivers are unsupported. Managers integrate into generated branches; the root may integrate its accepted direct child into the coordinator checkout.", "info");
 		},
 	});
 	pi.registerCommand("swarm:status", {
-		description: "Show swarm roles, branches, results, and lifecycle state",
+		description: "Show aggregate swarm lifecycle, role, inbox, elapsed-time, and cost metrics",
 		async handler(_args, ctx) {
 			if (mailbox) throw new Error("Root-only command");
-			ctx.ui.notify(JSON.stringify(snapshot(), null, 2), "info");
+			const active = requireRuntime();
+			const view = active.view();
+			const estimatedCost = sessionCost(ctx.sessionManager.getEntries())
+				+ view.nodes.filter((node) => node.role !== "coordinator").reduce((total, node) => total + workerCost(node), 0);
+			ctx.ui.notify(formatSwarmStatus(active.run, view.nodes, view.messages.length, estimatedCost), "info");
 		},
 	});
 	pi.registerCommand("swarm:tree", {

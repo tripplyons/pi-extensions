@@ -43,5 +43,5 @@ export function authorizeRequest(actor: NodeRecord, kind: SwarmRequest["kind"], 
 	}
 	if (!child) throw new Error("Operation requires a direct child");
 	if (!roleCanSpawn(actor.role)) throw new Error(`${actor.role} cannot manage children`);
-	if (kind === "integrate" && actor.role !== "manager") throw new Error("Only managers integrate children");
+	if (kind === "integrate" && actor.role !== "manager" && actor.role !== "coordinator") throw new Error("Only managers and the coordinator integrate children");
 }

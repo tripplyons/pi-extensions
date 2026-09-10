@@ -1,6 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { isSwarmAttached } from "../agent-swarm/events.ts";
 
 const CUSTOM_TYPE = "goal-state";
 const CONTINUATION_TYPE = "goal-continuation";
@@ -16,6 +17,7 @@ const GOAL_COMMANDS = {
 } as const;
 const GOAL_USAGE = `Usage: /goal [<objective>] or ${Object.values(GOAL_COMMANDS).join(", ")}`;
 const EPHEMERAL_GOAL_MESSAGE = "Goals need a saved session. This session is temporary.\nRun `pi` to start a saved session, or `pi --resume` / `/resume` to reopen one.";
+const SWARM_GOAL_MESSAGE = "Cannot create a goal while this session is attached to an active agent swarm. Finish or clear the swarm first.";
 
 type GoalStatus = "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete";
 
@@ -632,6 +634,7 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (!sessionIsPersisted(ctx)) throw ephemeralGoalError();
+			if (isSwarmAttached(pi)) throw new Error(SWARM_GOAL_MESSAGE);
 			if (goal && goal.status !== "complete") {
 				throw new Error("Cannot create a new goal because this conversation has an unfinished goal; complete the existing goal first.");
 			}
@@ -698,6 +701,10 @@ Marking the goal complete or blocked stops automatic goal continuations and ends
 			const command = reservedGoalArgs.get(text.toLowerCase());
 			if (command) {
 				ctx.ui.notify(`Use ${command} instead of /goal ${text}.`, "warning");
+				return;
+			}
+			if (isSwarmAttached(pi)) {
+				ctx.ui.notify(SWARM_GOAL_MESSAGE, "warning");
 				return;
 			}
 

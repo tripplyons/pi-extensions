@@ -36,9 +36,18 @@ async function setup(sessionFile: string | null = "/sessions/work.jsonl") {
 	return {
 		state,
 		path: complaintLogPath(),
+		description: tool.description,
 		invoke: (toolCallId: string, message: string) => tool.execute(toolCallId, { message }, new AbortController().signal, undefined, ctx),
 	};
 }
+
+test("guidance proactively targets repeated material infrastructure failures", async () => {
+	const extension = await setup();
+	expect(extension.description).toContain("proactively");
+	expect(extension.description).toContain("reproducible infrastructure or harness failure");
+	expect(extension.description).toContain("repeatedly impedes work");
+	expect(extension.description).toContain("do not report ordinary task errors or isolated transient failures");
+});
 
 test("appends concurrent complaints with session context", async () => {
 	const extension = await setup();

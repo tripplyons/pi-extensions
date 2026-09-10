@@ -12,10 +12,11 @@ mock.module("typebox", () => ({
 	},
 }));
 const { default: goalExtension } = await import("./index.ts");
+const { publishSwarmAttachment } = await import("../agent-swarm/events.ts");
 
 type Handler = (...args: any[]) => unknown;
 
-const createHarness = (storedGoal = true, status = "active") => {
+const createHarness = (storedGoal = true, status = "active", swarmAttached = false) => {
 	const startedAt = Date.now() - 5_500;
 	const entries: any[] = storedGoal ? [
 		{
@@ -32,8 +33,20 @@ const createHarness = (storedGoal = true, status = "active") => {
 	const statuses: Array<string | undefined> = [];
 	let activeTools: string[] = [];
 	let idle = true;
+	const eventHandlers = new Map<string, Set<Handler>>();
 
 	const pi = {
+		events: {
+			on(event: string, handler: Handler) {
+				const listeners = eventHandlers.get(event) ?? new Set<Handler>();
+				listeners.add(handler);
+				eventHandlers.set(event, listeners);
+				return () => listeners.delete(handler);
+			},
+			emit(event: string, payload: unknown) {
+				for (const handler of eventHandlers.get(event) ?? []) handler(payload);
+			},
+		},
 		on(event: string, handler: Handler) {
 			const previous = handlers.get(event);
 			handlers.set(event, previous
@@ -61,6 +74,9 @@ const createHarness = (storedGoal = true, status = "active") => {
 			activeTools = [...names];
 		},
 	};
+	if (swarmAttached) {
+		publishSwarmAttachment(pi as any, true);
+	}
 
 	const ctx = {
 		cwd: "/tmp/project",
@@ -316,6 +332,30 @@ describe("goal lifecycle", () => {
 				harness.ctx,
 			),
 		).rejects.toThrow("unfinished goal");
+	});
+
+	test("rejects tool and command goal creation while attached to a swarm without mutating goal state", async () => {
+		const harness = createHarness(false, "active", true);
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		const entryCount = harness.entries.length;
+
+		await expect(
+			harness.tools.get("create_goal").execute("call", { objective: "New goal" }, undefined, undefined, harness.ctx),
+		).rejects.toThrow("Finish or clear the swarm first");
+		await harness.commands.get("goal").handler("New goal", harness.ctx);
+
+		expect(harness.notifications.at(-1)).toContain("Finish or clear the swarm first");
+		expect(harness.entries).toHaveLength(entryCount);
+		expect(latestGoal(harness.entries)).toBeUndefined();
+	});
+
+	test("allows goal creation when detached from a swarm", async () => {
+		const harness = createHarness(false);
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+
+		await harness.tools.get("create_goal").execute("call", { objective: "Detached goal" }, undefined, undefined, harness.ctx);
+
+		expect(latestGoal(harness.entries).objective).toBe("Detached goal");
 	});
 
 });

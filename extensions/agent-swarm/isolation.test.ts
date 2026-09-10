@@ -20,6 +20,17 @@ test("worker environment drops unrelated host credentials", () => {
 	}
 });
 
+test("worker caches, Python bytecode, and uv environments default under worker tmp", () => {
+	const environment = workerEnvironment({ TMPDIR: "/worker/tmp" });
+	expect(environment.XDG_CACHE_HOME).toBe("/worker/tmp/cache");
+	expect(environment.PYTHONPYCACHEPREFIX).toBe("/worker/tmp/python-bytecode");
+	expect(environment.UV_CACHE_DIR).toBe("/worker/tmp/uv-cache");
+	expect(environment.UV_PROJECT_ENVIRONMENT).toBe("/worker/tmp/uv-venv");
+
+	const overridden = workerEnvironment({ TMPDIR: "/worker/tmp", UV_CACHE_DIR: "/explicit/cache" });
+	expect(overridden.UV_CACHE_DIR).toBe("/explicit/cache");
+});
+
 const macTest = process.platform === "darwin" ? test : test.skip;
 const writePolicy = (root: string) => {
 	const coordinatorWorktree = join(root, "coordinator");

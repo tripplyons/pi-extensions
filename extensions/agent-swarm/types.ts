@@ -86,6 +86,7 @@ export interface NodeRecord {
 	thinking: string | null;
 	sandbox: SandboxRecord | null;
 	cleanedAt: number | null;
+	estimatedCost?: number;
 }
 
 export interface RunRecord {

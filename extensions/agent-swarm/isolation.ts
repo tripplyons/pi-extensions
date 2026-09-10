@@ -96,5 +96,13 @@ export const workerEnvironment = (values: Record<string, string>) => {
 	const environment: NodeJS.ProcessEnv = {};
 	for (const name of inheritedEnvironment) if (process.env[name]) environment[name] = process.env[name];
 	for (const [name, value] of Object.entries(values)) environment[name] = value;
+	// Tooling commonly defaults these paths to the current project. That fails for
+	// reviewers, whose source snapshot is intentionally read-only.
+	if (values.TMPDIR) {
+		environment.XDG_CACHE_HOME ??= join(values.TMPDIR, "cache");
+		environment.PYTHONPYCACHEPREFIX ??= join(values.TMPDIR, "python-bytecode");
+		environment.UV_CACHE_DIR ??= join(values.TMPDIR, "uv-cache");
+		environment.UV_PROJECT_ENVIRONMENT ??= join(values.TMPDIR, "uv-venv");
+	}
 	return environment;
 };

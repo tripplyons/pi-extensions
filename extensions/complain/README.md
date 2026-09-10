@@ -6,6 +6,11 @@ The `complain` tool records problems that an agent encounters with its environme
 ${XDG_STATE_HOME:-~/.local/state}/pi/complain/complaints.jsonl
 ```
 
+Use it proactively when a reproducible infrastructure, sandbox, or tool-harness failure
+repeats and materially impedes the work. Include what failed, how to reproduce it, and
+its impact. Do not report ordinary task or code errors, expected validation failures, or
+an isolated transient failure.
+
 Each line contains:
 
 - `timestamp`, as an ISO 8601 UTC value

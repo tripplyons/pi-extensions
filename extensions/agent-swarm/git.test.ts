@@ -3,11 +3,40 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { commitResult, createWorktree, git, repositoryInfo } from "./git.ts";
+import { commitResult, createWorktree, git, integrateResult, repositoryInfo } from "./git.ts";
 import { sandboxProfile } from "./isolation.ts";
 import { type NodeRecord, type RunRecord } from "./types.ts";
 
 const macTest = process.platform === "darwin" ? test : test.skip;
+
+test("root coordinator integrates only its accepted direct-child commit", () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-swarm-root-integrate-")));
+	const previousHome = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = join(root, "state");
+	const source = join(root, "source");
+	mkdirSync(source);
+	try {
+		git(source, ["init", "-b", "main"]);
+		git(source, ["config", "user.name", "Swarm Test"]);
+		git(source, ["config", "user.email", "swarm@example.invalid"]);
+		writeFileSync(join(source, "tracked"), "base\n");
+		git(source, ["add", "tracked"]); git(source, ["commit", "-m", "Initialize fixture"]);
+		const run = { runId: "run_roottest", rootNodeId: "node_root", gitRoot: source, config: { protectedBranches: ["main"] } } as RunRecord;
+		const coordinator = { runId: run.runId, nodeId: run.rootNodeId, parentId: null, role: "coordinator", cwd: source, branch: "main" } as NodeRecord;
+		const created = createWorktree(run, coordinator, "node_manager", false);
+		const manager = { runId: run.runId, nodeId: "node_manager", parentId: coordinator.nodeId, role: "manager", cwd: created.path, branch: created.branch, baseCommit: created.baseCommit, status: "completed", review: { action: "accept" } } as NodeRecord;
+		writeFileSync(join(manager.cwd, "feature"), "integrated\n");
+		manager.result = { text: "done", commit: commitResult(manager, "Complete manager result"), submittedAt: Date.now() };
+		expect(() => integrateResult(run, { ...coordinator, nodeId: "node_impostor" }, manager)).toThrow("root coordinator checkout");
+		expect(() => integrateResult(run, coordinator, { ...manager, status: "awaiting-review" })).toThrow("accepted direct-child commit");
+		const commit = integrateResult(run, coordinator, manager);
+		expect(readFileSync(join(source, "feature"), "utf8")).toBe("integrated\n");
+		expect(repositoryInfo(source).head).toBe(commit);
+	} finally {
+		if (previousHome === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previousHome;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 macTest("dirty snapshots preserve the parent and workers cannot stage into shared Git metadata", () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-swarm-git-")));

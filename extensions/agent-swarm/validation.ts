@@ -20,6 +20,7 @@ export function validNode(value: unknown): value is NodeRecord {
 	if (!["task", "cwd"].every((key) => text(value[key]))) return false;
 	if (!["version", "createdAt", "updatedAt"].every((key) => integer(value[key]))) return false;
 	if (value.lastHeartbeatAt !== undefined && !integer(value.lastHeartbeatAt)) return false;
+	if (value.estimatedCost !== undefined && (typeof value.estimatedCost !== "number" || !Number.isFinite(value.estimatedCost) || value.estimatedCost < 0)) return false;
 	if (!["deadlineAt", "pausedAt", "pid", "cleanedAt"].every((key) => nullableInteger(value[key]))) return false;
 	if (!["sessionId", "branch", "baseCommit", "integrationCommit", "failure", "tmuxSession", "tmuxWindow", "model", "thinking"].every((key) => nullableText(value[key]))) return false;
 	if (value.sandbox !== null) {

@@ -20,12 +20,12 @@ Stop, pause, and timeout operate on the original worker process group. A descend
 
 ## Roles
 
-- The coordinator is the user's root session. It sees the full tree and may stop any descendant.
+- The coordinator is the user's root session. It sees the full tree, may stop any descendant, and may integrate an accepted direct child into its checkout through controller-owned Git.
 - A manager may spawn, instruct, review, restart, stop, and integrate direct children.
 - A worker edits its assignment and submits it to its direct parent.
 - A reviewer gets a read-only snapshot of a direct child's result commit and reports findings to their shared parent.
 
-Only direct parents issue instructions or review results. Only generated manager branches accept swarm integration. The coordinator reports accepted branches for human integration and never merges them.
+Only direct parents issue instructions or review results. Managers integrate only into generated manager branches; the coordinator may integrate only its own accepted direct child into the root checkout. Integration never pushes.
 
 Defaults limit a run to depth 2, four active children per coordinator or manager, eight active nodes, and 30 minutes per worker. Awaiting-review nodes consume capacity. Configure these values in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/agent-swarm.json` before starting a run:
 
@@ -44,18 +44,20 @@ Defaults limit a run to depth 2, four active children per coordinator or manager
 }
 ```
 
-Workers inherit their parent's model and thinking level. Optional `roleModels` and `roleThinking` maps override this per role. Model overrides use `provider/model` names. Workers cannot change the run's configuration.
+New workers at every depth inherit the coordinator session's current model, thinking level, and `/fast` setting at spawn time. Changing those settings affects later spawns only; already-running workers keep their launch settings. Optional `roleModels` and `roleThinking` maps override the current model and thinking level per role. Model overrides use `provider/model` names. Workers cannot change the run's configuration.
 
 ## Commands
 
 - `/swarm:start <objective>` activates the current session as coordinator.
-- `/swarm:status` shows the hierarchy.
+- `/swarm:status` shows compact run, lifecycle, role, coordinator-inbox, elapsed-time,
+  and total estimated-cost metrics. Cost uses Pi's recorded usage for the full
+  coordinator session and every retained or durably snapshotted worker session.
 - `/swarm:tree` opens a parent-first nested hierarchy with live node details and tmux output. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
 - `/swarm:pause` freezes worker process groups.
 - `/swarm:resume [runId]` reconnects and resumes workers.
 - `/swarm:kill` stops workers but keeps state and worktrees.
 - `/swarm:runs` lists retained runs for reconnection.
-- `/swarm:clear` refuses while children are active. Run `/swarm:kill` first, then clear removes clean worktrees, worker credentials, sessions, mailboxes, and audit records. It retains generated branches and a cleared-run marker with the ownership lock inode.
+- `/swarm:clear` refuses while children are active. Run `/swarm:kill` first, then clear removes clean worktrees, worker credentials, sessions, and mailboxes. It retains generated branches, durable node records with final cost snapshots, and a cleared-run marker with the ownership lock inode.
 - `/swarm:help` summarizes commands and limits.
 
 ## Code tools
@@ -69,10 +71,11 @@ text(manager);
 ```
 
 - `swarm_task` reads the durable task and inbox. Its first successful read returns the complete view; subsequent reads in that extension session return only changed run, node, and message state. Pass `full: true` to return a complete view and reset the delta baseline, `requestId` to inspect a pending operation, or `acknowledge` with message IDs after reading them.
+- Swarm updates and results are delivered as managed messages that wake the agent. When waiting on another node, finish useful current work or end the turn; do not poll `swarm_task` or run sleep loops solely to await state changes.
 - `swarm_spawn` creates a direct child. `includeDirty: true` copies a dirty parent snapshot without changing the parent. Reviewer assignments require `reviewTargetId` for a direct child awaiting review.
 - `swarm_send`, `swarm_tree`, and `swarm_observe` provide direct-edge messages and scoped observation. Only the root can capture tmux output.
-- `swarm_complete` submits text and optional verification. The controller commits implementation changes on the node's generated branch.
-- `swarm_review` accepts, rejects, or requests changes. `swarm_integrate` is a separate manager-only operation.
+- `swarm_complete` submits text and optional verification. Workers and managers use it instead of running `git add` or `git commit`; the controller exclusively owns Git locks and commits implementation changes on the node's generated branch.
+- `swarm_review` accepts, rejects, or requests changes. Managers and the root coordinator use the separate `swarm_integrate` operation instead of running `git merge` or `git cherry-pick`; direct-parent and accepted-result checks apply. Managers integrate into generated branches, while the root integrates into its checkout.
 - `swarm_stop`, `swarm_restart`, and `swarm_cleanup` manage direct children. The root may emergency-stop descendants.
 - `swarm_kill` and `swarm_clear` are root-only run operations.
 

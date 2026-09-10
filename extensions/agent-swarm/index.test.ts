@@ -1,13 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
 import extension from "./index.ts";
 import { isSwarmAttached } from "./events.ts";
 import { makeNode, SwarmRuntime } from "./runtime.ts";
-import { sessionFile, writeJson } from "./state.ts";
+import { sessionFile, workerHome, writeJson } from "./state.ts";
 
 function harness(entries: any[] = []) {
 	const bus = new EventEmitter();
@@ -48,6 +48,47 @@ test("swarm start snapshots both enabled and disabled coordinator fast mode", as
 	}
 });
 
+test("swarm status command reports coordinator and durable worker costs", async () => {
+	const root = makeNode("run_status", "node_root", "coordinator", "root", "/tmp", null);
+	const child = makeNode(root.runId, "node_child", "worker", "work", "/tmp", root.nodeId);
+	child.status = "completed";
+	const live = makeNode(root.runId, "node_live", "worker", "live work", "/tmp", root.nodeId);
+	live.status = "running";
+	const cleaned = makeNode(root.runId, "node_cleaned", "worker", "old work", "/tmp", root.nodeId);
+	cleaned.status = "completed";
+	cleaned.cleanedAt = Date.now();
+	cleaned.estimatedCost = 2.25;
+	const runtime = { runId: root.runId, root, run: { status: "active", createdAt: Date.now() - 1000, config: { pollIntervalMs: 50, maxInlineBytes: 65536 } }, view: () => ({ status: "active", node: root, nodes: [root, child, live, cleaned], messages: [{ messageId: "m" }] }), async poll() {}, async close() {} };
+	const resume = spyOn(SwarmRuntime, "resume").mockResolvedValue(runtime as any);
+	const active = harness();
+	let notice = "";
+	const ctx = { model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "status", getBranch: () => [], getEntries: () => [{ type: "message", message: { role: "assistant", usage: { cost: { total: 1.5 } } } }] }, ui: { notify(value: string) { notice = value; }, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-status-"));
+	const previous = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = directory;
+	try {
+		const sessions = join(workerHome(root.runId, child.nodeId), ".pi", "agent", "sessions");
+		mkdirSync(sessions, { recursive: true });
+		writeFileSync(join(sessions, "completed.jsonl"), `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { cost: { total: 1 } } } })}\n`);
+		writeFileSync(join(sessions, "restarted.jsonl"), `${JSON.stringify({ type: "compaction", usage: { cost: { total: 2 } } })}\n`);
+		const liveSessions = join(workerHome(root.runId, live.nodeId), ".pi", "agent", "sessions");
+		mkdirSync(liveSessions, { recursive: true });
+		writeFileSync(join(liveSessions, "live.jsonl"), `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { cost: { total: 0.5 } } } })}\n`);
+		writeJson(sessionFile("status"), { runId: root.runId });
+		await extension(active.pi as any);
+		await active.handlers.get("session_start")!({}, ctx);
+		await active.commands.get("swarm:status").handler("", ctx);
+		expect(notice).toContain("Nodes: 3 · running 1 · completed 2");
+		expect(notice).toContain("Coordinator inbox: 1");
+		expect(notice).toContain("Estimated cost: $7.250");
+	} finally {
+		await active.handlers.get("session_shutdown")?.({}, ctx);
+		resume.mockRestore();
+		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("swarm system prompt is frozen across turns and child lifecycle changes", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-prompt-"));
 	const previous = process.env.PI_SWARM_HOME;
@@ -58,12 +99,20 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 	const runtime = { runId: root.runId, root, run: { status: "active", config: { pollIntervalMs: 50, maxInlineBytes: 65536 } }, view: () => view, async poll() {}, async close() {}, async kill() { this.run.status = "stopped"; } };
 	const resume = spyOn(SwarmRuntime, "resume").mockResolvedValue(runtime as any);
 	const active = harness();
-	const ctx = { sessionManager: { getSessionId: () => "prompt", getBranch: () => [] }, ui: { notify() {}, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
+	const ctx = { model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "prompt", getBranch: () => [] }, ui: { notify() {}, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
 	try {
 		writeJson(sessionFile("prompt"), { runId: root.runId });
 		await extension(active.pi as any);
 		await active.handlers.get("session_start")!({}, ctx);
 		const first = await active.handlers.get("before_agent_start")!({ systemPrompt: "base before swarm state changes" }, ctx);
+		expect(first.systemPrompt).toContain("submit changes with swarm_complete");
+		expect(first.systemPrompt).toContain("managers integrate accepted children with swarm_integrate");
+		expect(first.systemPrompt).toContain("controller alone owns Git locks");
+		expect(first.systemPrompt).toContain("Never run Git mutations");
+		expect(first.systemPrompt).toContain("delivered through managed messages and wake-ups");
+		expect(first.systemPrompt).toContain("end the turn");
+		expect(first.systemPrompt).toContain("never poll swarm state or run sleep loops");
+		expect(active.tools.get("swarm_task").description).toContain("do not poll or sleep solely for state changes");
 		child.status = "running";
 		view.messages.push({ messageId: "message_1" });
 		const second = await active.handlers.get("before_agent_start")!({ systemPrompt: "rebuilt base after another turn" }, ctx);
@@ -97,7 +146,7 @@ test("swarm_task returns a full view followed by versioned deltas and can refres
 	};
 	const resume = spyOn(SwarmRuntime, "resume").mockResolvedValue(runtime as any);
 	const active = harness();
-	const ctx = { sessionManager: { getSessionId: () => "task", getBranch: () => [] }, ui: { notify() {}, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
+	const ctx = { model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "task", getBranch: () => [] }, ui: { notify() {}, setStatus() {} }, isIdle: () => false, hasPendingMessages: () => false };
 	const invoke = async (params: any = {}) => JSON.parse((await active.tools.get("swarm_task").execute("id", params)).content[0].text);
 	try {
 		writeJson(sessionFile("task"), { runId: root.runId });
@@ -162,7 +211,7 @@ test("monitor waits for idle, deduplicates wakes, and restores its generation af
 	const entries: any[] = [];
 	let idle = false;
 	let pending = false;
-	const ctx = { sessionManager: { getSessionId: () => "monitor", getBranch: () => entries }, ui: { notify() {}, setStatus() {} }, isIdle: () => idle, hasPendingMessages: () => pending };
+	const ctx = { model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "monitor", getBranch: () => entries }, ui: { notify() {}, setStatus() {} }, isIdle: () => idle, hasPendingMessages: () => pending };
 	let active = harness(entries);
 	try {
 		writeJson(sessionFile("monitor"), { runId: root.runId });

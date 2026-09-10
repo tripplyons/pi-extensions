@@ -10,20 +10,25 @@ export const git = (cwd: string, args: string[], allowFailure = false, input?: s
 	environment.GIT_OPTIONAL_LOCKS = "0";
 	const options = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-C", cwd];
 	const run = (command: string[], input?: string) => spawnSync("git", [...options, ...command], { encoding: "utf8", env: environment, input });
-	const filters = run(["config", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process|required)$"]);
-	if (filters.error) throw filters.error;
-	if (filters.status !== 0 && filters.status !== 1) throw new Error(`Cannot inspect Git filters: ${filters.stderr.trim()}`);
-	const drivers = new Set(filters.stdout.trim().split("\n").filter(Boolean).map((key) => key.slice("filter.".length, key.lastIndexOf("."))));
-	for (const driver of drivers) {
-		for (const setting of ["clean", "smudge", "process"]) options.push("-c", `filter.${driver}.${setting}=`);
-		options.push("-c", `filter.${driver}.required=false`);
-	}
-	const mergeDrivers = run(["config", "--null", "--name-only", "--get-regexp", "^merge\\..*\\.driver$"]);
-	if (mergeDrivers.error) throw mergeDrivers.error;
-	if (mergeDrivers.status !== 0 && mergeDrivers.status !== 1) throw new Error(`Cannot inspect Git merge drivers: ${mergeDrivers.stderr.trim()}`);
-	for (const key of new Set(mergeDrivers.stdout.split("\0").filter(Boolean))) options.push("-c", `${key}=/usr/bin/false`);
-	const metadataOnly = ["init", "config", "rev-parse", "branch", "ls-files", "ls-tree", "check-attr", "merge-base", "rev-list"];
-	if (!metadataOnly.includes(args[0])) {
+	// Only commands which populate or stage the worktree can invoke a content
+	// filter. Avoid doing several full-tree attribute scans for read-only Git
+	// queries and for commit itself; commitResult's preceding `add` is the
+	// security boundary. This also keeps integration comfortably below the tool
+	// timeout on repositories with cold filesystem caches.
+	const mayInvokeFilters = new Set(["add", "apply", "checkout", "merge", "read-tree", "reset", "restore", "switch", "worktree"]);
+	if (mayInvokeFilters.has(args[0])) {
+		const filters = run(["config", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process|required)$"]);
+		if (filters.error) throw filters.error;
+		if (filters.status !== 0 && filters.status !== 1) throw new Error(`Cannot inspect Git filters: ${filters.stderr.trim()}`);
+		const drivers = new Set(filters.stdout.trim().split("\n").filter(Boolean).map((key) => key.slice("filter.".length, key.lastIndexOf("."))));
+		for (const driver of drivers) {
+			for (const setting of ["clean", "smudge", "process"]) options.push("-c", `filter.${driver}.${setting}=`);
+			options.push("-c", `filter.${driver}.required=false`);
+		}
+		const mergeDrivers = run(["config", "--null", "--name-only", "--get-regexp", "^merge\\..*\\.driver$"]);
+		if (mergeDrivers.error) throw mergeDrivers.error;
+		if (mergeDrivers.status !== 0 && mergeDrivers.status !== 1) throw new Error(`Cannot inspect Git merge drivers: ${mergeDrivers.stderr.trim()}`);
+		for (const key of new Set(mergeDrivers.stdout.split("\0").filter(Boolean))) options.push("-c", `${key}=/usr/bin/false`);
 		const files = run(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
 		if (files.status !== 0) throw new Error(`Cannot inspect Git worktree paths: ${files.stderr.trim()}`);
 		const head = run(["ls-tree", "-r", "--name-only", "-z", "HEAD"]);
@@ -134,7 +139,9 @@ export function assertCleanWorktree(node: NodeRecord) {
 }
 
 export function integrateResult(run: RunRecord, manager: NodeRecord, child: NodeRecord) {
-	if (manager.role !== "manager" || manager.branch !== generatedBranch(manager.runId, manager.nodeId) || run.config.protectedBranches.includes(manager.branch)) throw new Error("Integration requires a generated manager branch");
+	const rootCoordinator = manager.role === "coordinator" && manager.nodeId === run.rootNodeId && manager.parentId === null && manager.runId === run.runId && manager.cwd === run.gitRoot;
+	const generatedManager = manager.role === "manager" && manager.branch === generatedBranch(manager.runId, manager.nodeId) && !run.config.protectedBranches.includes(manager.branch);
+	if (!rootCoordinator && !generatedManager) throw new Error("Integration requires the root coordinator checkout or a generated manager branch");
 	if (child.parentId !== manager.nodeId || child.runId !== manager.runId || child.status !== "completed" || child.review?.action !== "accept" || !child.result?.commit || !child.baseCommit) throw new Error("Integration requires an accepted direct-child commit");
 	if (child.integrationCommit) return child.integrationCommit;
 	assertWorktreePath(manager);

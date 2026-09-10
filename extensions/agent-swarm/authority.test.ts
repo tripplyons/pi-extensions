@@ -19,14 +19,15 @@ test("capabilities bind a request to its mailbox and version", () => {
 	expect(() => authenticateRequest({ ...request, expectedVersion: 0 }, actor, request.token)).toThrow("Stale");
 });
 
-test("only managers integrate and leaves cannot delegate", () => {
+test("managers and the root coordinator integrate direct children; leaves cannot delegate", () => {
 	const child = node("worker", "node_child", "node_parent");
 	for (const role of ["worker", "reviewer"] as const) {
 		expect(() => authorizeRequest(node(role), "spawn")).toThrow("cannot spawn");
 		expect(() => authorizeRequest(node(role), "review", child)).toThrow("cannot manage");
 	}
-	expect(() => authorizeRequest(node("coordinator"), "integrate", child)).toThrow("Only managers");
+	expect(() => authorizeRequest(node("coordinator"), "integrate", child)).not.toThrow();
 	expect(() => authorizeRequest(node("manager"), "integrate", child)).not.toThrow();
+	expect(() => authorizeRequest(node("coordinator"), "integrate", { ...child, parentId: "node_other" })).toThrow("direct child");
 	expect(() => authorizeRequest(node("manager"), "review", { ...child, parentId: "node_other" })).toThrow("direct child");
 	expect(() => authorizeRequest(node("worker"), "send", { ...child, runId: "run_other" })).toThrow("this run");
 	expect(() => authorizeRequest(node("coordinator"), "stop", { ...child, parentId: "node_other" })).not.toThrow();

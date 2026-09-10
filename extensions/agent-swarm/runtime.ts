@@ -5,6 +5,7 @@ import { textPreview, unpackPayload } from "./artifacts.ts";
 import { assertCleanWorktree, commitResult, createWorktree, git, integrateResult, repositoryInfo } from "./git.ts";
 import { assertMacSandboxAvailable } from "./isolation.ts";
 import { assertSpawnLimits } from "./lifecycle.ts";
+import { workerCost } from "./metrics.ts";
 import { acquireRunOwnership } from "./ownership.ts";
 import { applyRequest, readRequest } from "./requests.ts";
 import { killWindow } from "./tmux.ts";
@@ -17,6 +18,8 @@ export interface WorkerProcesses {
 	set(node: NodeRecord, status: "running" | "paused" | "stopped"): Promise<void>;
 	status(node: NodeRecord): { pid: number | null; status: string; failure: string | null } | null;
 }
+
+export interface LiveDefaults { model: string; thinking: string; fastMode: boolean }
 
 export function makeNode(runId: string, nodeId: string, role: Role, task: string, cwd: string, parentId: string | null): NodeRecord {
 	return {
@@ -89,6 +92,15 @@ export class SwarmRuntime {
 		this.queue = pending.catch(() => {});
 		return pending;
 	}
+	private syncDefaults(defaults?: LiveDefaults) {
+		if (!defaults) return;
+		const root = this.root;
+		if (root.model !== defaults.model || root.thinking !== defaults.thinking) updateNode(this.runId, root.nodeId, (node) => {
+			node.model = defaults.model;
+			node.thinking = defaults.thinking;
+		});
+		if (this.run.config.fastMode !== defaults.fastMode) updateRun(this.runId, (run) => { run.config.fastMode = defaults.fastMode; });
+	}
 	private messages(nodeId: string): MessageRecord[] {
 		const directory = join(runDir(this.runId), "control", "messages");
 		if (!existsSync(directory)) return [];
@@ -119,8 +131,9 @@ export class SwarmRuntime {
 		return message;
 	}
 
-	act(actorId: string, kind: RequestKind, payload: Record<string, unknown>) {
+	act(actorId: string, kind: RequestKind, payload: Record<string, unknown>, defaults?: LiveDefaults) {
 		return this.serial(async () => {
+			this.syncDefaults(defaults);
 			if (actorId !== this.run.rootNodeId) throw new Error("Workers must use their authenticated mailbox");
 			const actor = readNode(this.runId, actorId);
 			const target = typeof payload.nodeId === "string" ? readNode(this.runId, payload.nodeId) : undefined;
@@ -148,8 +161,9 @@ export class SwarmRuntime {
 			const node = makeNode(this.runId, newId("node"), role, task, "", actor.nodeId);
 			const worktree = createWorktree(this.run, actor, node.nodeId, payload.includeDirty === true, revision);
 			node.cwd = worktree.path; node.branch = worktree.branch; node.baseCommit = worktree.baseCommit;
-			node.model = this.run.config.roleModels?.[role] ?? actor.model;
-			node.thinking = this.run.config.roleThinking?.[role] ?? actor.thinking;
+			const root = this.root;
+			node.model = this.run.config.roleModels?.[role] ?? root.model;
+			node.thinking = this.run.config.roleThinking?.[role] ?? root.thinking;
 			node.reviewTargetId = reviewTarget?.nodeId ?? null;
 			node.deadlineAt = Date.now() + this.run.config.workerTimeoutMs;
 			for (const path of [inboxDir(this.runId, node.nodeId), outboxDir(this.runId, node.nodeId), workerHome(this.runId, node.nodeId), workerTmp(this.runId, node.nodeId), dirname(tokenFile(this.runId, node.nodeId))]) ensureDir(path);
@@ -203,12 +217,12 @@ export class SwarmRuntime {
 			return reviewed;
 		}
 		if (kind === "integrate") {
-			await this.processes.set(actor, "paused");
+			if (actor.role !== "coordinator") await this.processes.set(actor, "paused");
 			try {
 				const commit = integrateResult(this.run, actor, target!);
 				updateNode(this.runId, target!.nodeId, (node) => { node.integrationCommit = commit; });
 				return { commit };
-			} finally { await this.processes.set(actor, "running"); }
+			} finally { if (actor.role !== "coordinator") await this.processes.set(actor, "running"); }
 		}
 		if (kind === "stop") {
 			const targets = [target!, ...descendants(this.runId, target!)];
@@ -235,18 +249,20 @@ export class SwarmRuntime {
 			if (target!.cleanedAt) return target;
 			assertCleanWorktree(target!);
 			await this.processes.set(target!, "stopped");
+			const estimatedCost = workerCost(target!);
 			git(this.run.gitRoot, ["worktree", "remove", target!.cwd]);
 			if (target!.tmuxSession && target!.tmuxWindow) killWindow(target!.tmuxSession, target!.tmuxWindow);
 			rmSync(workerHome(this.runId, target!.nodeId), { recursive: true, force: true });
 			rmSync(workerTmp(this.runId, target!.nodeId), { recursive: true, force: true });
 			rmSync(tokenFile(this.runId, target!.nodeId), { force: true });
-			return updateNode(this.runId, target!.nodeId, (node) => { node.cleanedAt = Date.now(); });
+			return updateNode(this.runId, target!.nodeId, (node) => { node.cleanedAt = Date.now(); node.estimatedCost = estimatedCost; });
 		}
 		throw new Error(`Unknown swarm operation: ${kind}`);
 	}
 
-	poll() {
+	poll(defaults?: LiveDefaults) {
 		return this.serial(async () => {
+			this.syncDefaults(defaults);
 			this.owner.heartbeat();
 			for (const listed of this.nodes()) {
 				if (listed.role === "coordinator" || listed.cleanedAt) continue;
@@ -322,6 +338,7 @@ export class SwarmRuntime {
 			if (nodes.some((node) => !terminalStatuses.has(node.status))) throw new Error("Active swarm children must be killed before clearing. Run /swarm:kill first.");
 			for (const node of nodes) assertCleanWorktree(node);
 			for (const node of nodes) await this.processes.set(node, "stopped");
+			const estimatedCosts = new Map(nodes.map((node) => [node.nodeId, workerCost(node)]));
 			// Recheck after stopping; workers may have edited during the first pass.
 			for (const node of nodes) assertCleanWorktree(node);
 			for (const node of nodes) {
@@ -330,6 +347,7 @@ export class SwarmRuntime {
 				updateNode(this.runId, node.nodeId, (current) => {
 					if (!terminalStatuses.has(current.status)) current.status = "stopped";
 					current.cleanedAt = Date.now();
+					current.estimatedCost = estimatedCosts.get(node.nodeId);
 				});
 			}
 			updateRun(this.runId, (run) => { run.status = "stopped"; run.clearedAt = Date.now(); });
@@ -338,7 +356,9 @@ export class SwarmRuntime {
 				if (name !== "control") rmSync(join(runDir(this.runId), name), { recursive: true, force: true });
 			}
 			for (const name of readdirSync(join(runDir(this.runId), "control"))) {
-				if (!["run.json", "owner.lock"].includes(name)) rmSync(join(runDir(this.runId), "control", name), { recursive: true, force: true });
+				// Retain node records: their cost snapshots are the only durable usage
+				// source after worker homes and Pi session logs have been removed.
+				if (!["run.json", "owner.lock", "nodes"].includes(name)) rmSync(join(runDir(this.runId), "control", name), { recursive: true, force: true });
 			}
 			this.changed();
 		});

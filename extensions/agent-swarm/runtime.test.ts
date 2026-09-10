@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, repositoryInfo } from "./git.ts";
@@ -61,7 +61,7 @@ macTest("authenticated hierarchy completes, reviews, and integrates only into it
 		await request(reviewer.nodeId, "complete", { text: "Verified" });
 		await request(manager.nodeId, "review", { nodeId: reviewer.nodeId, action: "accept" });
 		await request(manager.nodeId, "review", { nodeId: worker.nodeId, action: "accept" });
-		await expect(active.act(active.root.nodeId, "integrate", { nodeId: manager.nodeId })).rejects.toThrow("Only managers");
+		await expect(active.act(active.root.nodeId, "integrate", { nodeId: manager.nodeId })).rejects.toThrow("accepted direct-child commit");
 		writeFileSync(join(manager.cwd, "feature"), "conflicting change\n");
 		git(manager.cwd, ["add", "feature"]); git(manager.cwd, ["commit", "-m", "Create fixture conflict"]);
 		const beforeConflict = repositoryInfo(manager.cwd).head;
@@ -89,16 +89,31 @@ macTest("authenticated hierarchy completes, reviews, and integrates only into it
 		expect(readJson<SwarmResponse>(responseFile(runId, manager.nodeId, queuedId))?.ok).toBe(true);
 		await active.poll();
 		expect(active.view().messages.filter((message) => message.body === "Queued while controller was absent")).toHaveLength(1);
+		const reviewerSessions = join(workerHome(runId, reviewer.nodeId), ".pi", "agent", "sessions");
+		mkdirSync(reviewerSessions, { recursive: true });
+		writeFileSync(join(reviewerSessions, "review.jsonl"), `${JSON.stringify({ type: "message", message: { role: "assistant", usage: { cost: { total: 1.25 } } } })}\n`);
+		await request(manager.nodeId, "cleanup", { nodeId: reviewer.nodeId });
+		expect(readNode(runId, reviewer.nodeId).estimatedCost).toBe(1.25);
+		expect(existsSync(workerHome(runId, reviewer.nodeId))).toBe(false);
 		await request(manager.nodeId, "complete", { text: "Combined child work" });
 		await active.act(active.root.nodeId, "review", { nodeId: manager.nodeId, action: "accept" });
 		expect(readNode(active.runId, manager.nodeId).status).toBe("completed");
+		const rootIntegration = await active.act(active.root.nodeId, "integrate", { nodeId: manager.nodeId }) as { commit: string };
+		expect(readFileSync(join(directory, "feature"), "utf8")).toBe("implemented\nrevised\n");
+		expect(repositoryInfo(directory).head).toBe(rootIntegration.commit);
+		expect(readNode(active.runId, manager.nodeId).integrationCommit).toBe(rootIntegration.commit);
 		await active.close();
 		runtime = await SwarmRuntime.resume(active.runId, processes);
 		expect(runtime.root.task).toBe("Implement a nested change");
+		const managerSessions = join(workerHome(runId, manager.nodeId), ".pi", "agent", "sessions");
+		mkdirSync(managerSessions, { recursive: true });
+		writeFileSync(join(managerSessions, "manager.jsonl"), `${JSON.stringify({ type: "compaction", usage: { cost: { total: 2.5 } } })}\n`);
 		await runtime.clear();
 		await runtime.close();
 		runtime = undefined;
 		expect(existsSync(workerHome(runId, manager.nodeId))).toBe(false);
+		expect(readNode(runId, manager.nodeId).estimatedCost).toBe(2.5);
+		expect(readNode(runId, reviewer.nodeId).estimatedCost).toBe(1.25);
 		await expect(SwarmRuntime.resume(runId, processes)).rejects.toThrow("cleared");
 	} finally {
 		await runtime?.close();
