@@ -57,7 +57,7 @@ const statusColor = (status: NodeStatus): ThemeColor => {
 export class SwarmTree {
 	private selected = 0;
 	private offset = 0;
-	private hideTerminal = false;
+	private hideTerminal = true;
 	private followOutput = true;
 	private selectedNodeId?: string;
 	constructor(private theme: Pick<Theme, "fg">, private nodes: () => NodeRecord[], private output: (node: NodeRecord) => string, private close: () => void, private backlog: (node: NodeRecord) => number = () => 0) {}

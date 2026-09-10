@@ -53,7 +53,7 @@ test("tree renders parents before their nested children", () => {
 	expect(styled).toContain("\x1b[31mfailed\x1b[0m");
 });
 
-test("space hides completed/stopped nodes, promotes descendants, and clamps selection", () => {
+test("tree starts with completed/stopped nodes hidden and space reveals them", () => {
 	const root = makeNode("run_test", "node_root", "coordinator", "Coordinate", "/tmp", null);
 	const manager = makeNode("run_test", "node_manager", "manager", "Done managing", "/tmp/manager", root.nodeId);
 	const worker = makeNode("run_test", "node_worker", "worker", "Still working", "/tmp/worker", manager.nodeId);
@@ -68,9 +68,6 @@ test("space hides completed/stopped nodes, promotes descendants, and clamps sele
 	stopped.status = "stopped";
 	const tree = new SwarmTree(theme, () => [stopped, rejected, failed, worker, manager, root], () => "", () => {});
 
-	for (let index = 0; index < 5; index++) tree.handleInput("j");
-	expect(plain(tree.render(120).join("\n"))).toContain("worker node_stopped");
-	tree.handleInput(" ");
 	const hidden = plain(tree.render(120).join("\n"));
 	expect(hidden).not.toContain("manager _manager completed");
 	expect(hidden).not.toContain("node_stopped");
@@ -78,20 +75,23 @@ test("space hides completed/stopped nodes, promotes descendants, and clamps sele
 	expect(hidden).toContain("rejected rejected");
 	expect(hidden).toContain("└─ worker e_worker");
 	expect(hidden).toContain("space show completed/stopped");
-	expect(hidden).toContain("Task: Still working");
 
 	tree.handleInput(" ");
 	const shown = plain(tree.render(120).join("\n"));
 	expect(shown).toContain("manager _manager completed");
 	expect(shown).toContain("worker _stopped stopped");
 	expect(shown).toContain("space hide completed/stopped");
+
+	for (let index = 0; index < 5; index++) tree.handleInput("j");
+	expect(plain(tree.render(120).join("\n"))).toContain("worker node_stopped");
+	tree.handleInput(" ");
+	expect(plain(tree.render(120).join("\n"))).toContain("Task: Still working");
 });
 
 test("terminal coordinator remains visible when terminal nodes are hidden", () => {
 	const root = makeNode("run_test", "node_root", "coordinator", "Done", "/tmp", null);
 	root.status = "completed";
 	const tree = new SwarmTree(theme, () => [root], () => "", () => {});
-	tree.handleInput(" ");
 	expect(plain(tree.render(80).join("\n"))).toContain("coordinator ode_root completed");
 });
 

@@ -53,7 +53,7 @@ New workers at every depth inherit the coordinator session's current model, thin
 - `/swarm:status` shows compact run, lifecycle, role, coordinator-inbox, elapsed-time,
   and total estimated-cost metrics. Cost uses Pi's recorded usage for the full
   coordinator session and every retained or durably snapshotted worker session.
-- `/swarm:tree` opens a parent-first nested hierarchy with live node details and tmux output. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
+- `/swarm:tree` opens a parent-first nested hierarchy with live node details and tmux output. Completed and stopped nodes start hidden; press Space to show them. Use arrows or `j`/`k` to select, brackets to scroll details, and Escape to close.
 - `/swarm:pause` freezes worker process groups.
 - `/swarm:resume [runId]` reconnects and resumes workers.
 - `/swarm:kill` stops workers but keeps state and worktrees.
