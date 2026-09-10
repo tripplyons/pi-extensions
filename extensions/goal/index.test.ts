@@ -15,13 +15,13 @@ const { default: goalExtension } = await import("./index.ts");
 
 type Handler = (...args: any[]) => unknown;
 
-const createHarness = (storedGoal = true) => {
+const createHarness = (storedGoal = true, status = "active") => {
 	const startedAt = Date.now() - 5_500;
 	const entries: any[] = storedGoal ? [
 		{
 			type: "custom",
 			customType: "goal-state",
-			data: { objective: "Finish the task", status: "active", activeSince: startedAt },
+			data: { objective: "Finish the task", status, activeSince: status === "active" ? startedAt : null },
 		},
 	] : [];
 	const handlers = new Map<string, Handler>();
@@ -105,7 +105,7 @@ const createHarness = (storedGoal = true) => {
 const latestGoal = (entries: any[]) => entries.findLast((entry) => entry.customType === "goal-state")?.data;
 
 describe("goal lifecycle", () => {
-	test("hides inactive status and labels an active goal without saying on", async () => {
+	test("shows only active goals in the footer", async () => {
 		const inactive = createHarness(false);
 		await inactive.handlers.get("session_start")?.({}, inactive.ctx);
 		expect(inactive.statuses.at(-1)).toBeUndefined();
@@ -113,6 +113,12 @@ describe("goal lifecycle", () => {
 		const active = createHarness();
 		await active.handlers.get("session_start")?.({}, active.ctx);
 		expect(active.statuses.at(-1)).toBe("goal");
+
+		for (const status of ["paused", "blocked", "complete", "budget_limited", "usage_limited"]) {
+			const restored = createHarness(true, status);
+			await restored.handlers.get("session_start")?.({}, restored.ctx);
+			expect(restored.statuses.at(-1)).toBeUndefined();
+		}
 	});
 
 	test("defers a restored goal until session startup has returned", async () => {
@@ -280,6 +286,7 @@ describe("goal lifecycle", () => {
 
 			expect(result.terminate).toBe(true);
 			expect(latestGoal(harness.entries).status).toBe(status);
+			expect(harness.statuses.at(-1)).toBeUndefined();
 		}
 	});
 

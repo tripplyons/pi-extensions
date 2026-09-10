@@ -339,12 +339,11 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const setGoalStatus = (ctx: ExtensionContext) => {
-		if (!goal) {
+		if (goal?.status !== "active") {
 			ctx.ui.setStatus("goal", undefined);
 			return;
 		}
-		const suffix = goal.status === "active" ? "" : ` ${goalStatusLabel(goal.status)}`;
-		ctx.ui.setStatus("goal", ctx.ui.theme.fg("accent", `goal${suffix}`));
+		ctx.ui.setStatus("goal", ctx.ui.theme.fg("accent", "goal"));
 	};
 
 	const queueHiddenPrompt = (content: string, customType: string, deliverAs: "steer" | "followUp") => {
