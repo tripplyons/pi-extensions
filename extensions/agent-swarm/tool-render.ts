@@ -39,7 +39,7 @@ function parse(result: ToolResult): unknown {
 	try { return JSON.parse(text); } catch { return text; }
 }
 
-export function renderSwarmResult(name: string, result: ToolResult, theme: Paint) {
+function renderResult(name: string, result: ToolResult, theme: Paint) {
 	const data = parse(result);
 	if (typeof data === "string") return new Text(theme.fg("error", preview(data, 180) || "No result"), 0, 0);
 	if (!data || typeof data !== "object") return new Text(theme.fg("error", "Invalid swarm result"), 0, 0);
@@ -69,4 +69,16 @@ export function renderSwarmResult(name: string, result: ToolResult, theme: Paint
 	if (object.result && !nodes.length) lines.push(theme.fg("muted", preview(typeof object.result === "string" ? object.result : JSON.stringify(object.result), 180)));
 	if (!lines.length) lines.push(theme.fg("success", `${name.replace(/^swarm_/, "")} succeeded`));
 	return new Text(lines.join("\n"), 0, 0);
+}
+
+export function renderSwarmResult(name: string, result: ToolResult, theme: Paint) {
+	try {
+		return renderResult(name, result, theme);
+	} catch {
+		// Pi can briefly redraw restored tool results while a reloaded theme is
+		// being replaced. A renderer exception makes a successful tool look like
+		// a red failure, so fall back to unstyled content for that redraw.
+		const data = parse(result);
+		return new Text(preview(typeof data === "string" ? data : JSON.stringify(data), 180) || `${name.replace(/^swarm_/, "")} succeeded`, 0, 0);
+	}
 }

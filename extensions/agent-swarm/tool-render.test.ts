@@ -32,6 +32,12 @@ test("renders malformed and error results safely", () => {
 	expect(draw(renderSwarmResult("swarm_task", { content: [{ type: "text", text: JSON.stringify({ changed: false }) }] }, theme))).toContain("<muted>no changes</muted>");
 });
 
+test("does not turn a successful restored result into a renderer error", () => {
+	const result = { content: [{ type: "text", text: JSON.stringify({ status: "active", node: { nodeId: "node_1234567890abcdef", status: "running" } }) }] };
+	const reloadingTheme = { fg: () => { throw new Error("stale theme"); }, bold: (text: string) => text } as any;
+	expect(draw(renderSwarmResult("swarm_task", result, reloadingTheme))).toContain('"status":"active"');
+});
+
 test("removes terminal escapes, controls, and invisible direction overrides", () => {
 	const hostile = "safe\u001b]8;;https://evil.invalid\u0007link\u001b]8;;\u0007\u202eevil\u0000end";
 	const call = draw(renderSwarmCall("swarm_send", { body: hostile }, theme));
