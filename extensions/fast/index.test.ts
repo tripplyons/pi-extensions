@@ -4,7 +4,7 @@ import type { Provider } from "@earendil-works/pi-ai";
 import { registerOpenAICodexCustomProvider } from "@howaboua/pi-codex-conversion/dist/providers/openai-codex-custom-provider.js";
 import fastExtension from "./index";
 
-function setup() {
+function setup(entries: any[] = []) {
   const handlers = new Map<string, Function>();
   const statuses = new Map<string, string | undefined>();
   const notices: string[] = [];
@@ -21,14 +21,16 @@ function setup() {
       setStatus: (key: string, value: string | undefined) => statuses.set(key, value),
       notify: (message: string) => notices.push(message),
     },
+    sessionManager: { getBranch: () => entries },
   } as unknown as ExtensionCommandContext;
   fastExtension({
 		events: { on: (name: string, handler: Function) => { eventHandlers.set(name, handler); return () => eventHandlers.delete(name); } },
     on: (name: string, handler: Function) => handlers.set(name, handler),
+    appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
     registerCommand: (_name: string, value: { handler: Function }) => { command = value; },
   } as unknown as ExtensionAPI);
   return {
-    ctx, statuses, notices,
+    ctx, entries, statuses, notices,
     toggle: (args = "") => command.handler(args, ctx),
     start: (reason: string) => handlers.get("session_start")!({ reason }, ctx),
 		fast: () => { const query: { enabled?: boolean } = {}; eventHandlers.get("fast:query")!(query); return query.enabled; },
@@ -51,30 +53,67 @@ test("toggle overrides request tier without changing the original request", asyn
   expect(session.statuses.get("fast")).toBeUndefined();
 });
 
-test("session lifecycle clears the override and instances remain isolated", async () => {
-  const session = setup();
-  const other = setup();
+test("reloads, resumes, restarts, and forks restore branch state", async () => {
+  const entries: any[] = [];
+  const session = setup(entries);
   const payload = { model: "gpt-5.4" };
-  for (const reason of ["startup", "reload", "new", "resume", "fork"]) {
-    await session.toggle();
-    expect(session.request(payload).service_tier).toBe("priority");
-    expect(other.request(payload)).toBe(payload);
-    session.start(reason);
-    expect(session.request(payload)).toBe(payload);
-    expect(session.statuses.get("fast")).toBeUndefined();
+  session.start("startup");
+  await session.toggle();
+
+  for (const reason of ["reload", "resume", "startup", "fork"]) {
+    const restored = setup([...entries]);
+    restored.start(reason);
+    expect(restored.request(payload).service_tier).toBe("priority");
+    expect(restored.fast()).toBe(true);
+    expect(restored.statuses.get("fast")).toBe("fast");
   }
+
+  const fresh = setup();
+  fresh.start("new");
+  expect(fresh.request(payload)).toBe(payload);
+  expect(fresh.statuses.get("fast")).toBeUndefined();
+});
+
+test("forced default persists separately and session histories stay isolated", async () => {
+  const entries: any[] = [];
+  const session = setup(entries);
+  await session.toggle();
+  await session.toggle();
+
+  const resumed = setup(entries);
+  resumed.start("resume");
+  expect(resumed.request({ model: "gpt-5.4" }).service_tier).toBe("default");
+  expect(resumed.fast()).toBe(false);
+  expect(resumed.statuses.get("fast")).toBeUndefined();
+
+  const other = setup();
+  other.start("startup");
+  expect(other.request({ model: "gpt-5.4" })).toEqual({ model: "gpt-5.4" });
+});
+
+test("restores the latest valid entry and ignores malformed state", () => {
+  const session = setup([
+    { type: "custom", customType: "fast-state", data: { enabled: true } },
+    { type: "custom", customType: "fast-state", data: { enabled: "yes" } },
+    { type: "custom", customType: "other", data: { enabled: false } },
+  ]);
+  session.start("resume");
+  expect(session.request({}).service_tier).toBe("priority");
 });
 
 test("rejects arguments and leaves other providers alone", async () => {
   const session = setup();
   const payload = { model: "other" };
   await session.toggle("on");
+  expect(session.entries).toHaveLength(0);
   expect(session.request(payload)).toBe(payload);
   await session.toggle();
+  expect(session.entries).toHaveLength(1);
   session.ctx.model = { ...session.ctx.model!, provider: "anthropic" };
   expect(session.request(payload)).toBe(payload);
   await session.toggle();
   expect(session.notices.at(-1)).toContain("requires an OpenAI Codex model");
+  expect(session.entries).toHaveLength(1);
 });
 
 test("pinned Codex provider sends the toggled tier over HTTP", async () => {

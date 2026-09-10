@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+const FAST_STATE_ENTRY = "fast-state";
+
 export default function fastExtension(pi: ExtensionAPI) {
   let fast: boolean | undefined;
 
@@ -7,7 +9,13 @@ export default function fastExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     fast = undefined;
-    ctx.ui.setStatus("fast", undefined);
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== FAST_STATE_ENTRY) continue;
+      const data = entry.data;
+      if (typeof data !== "object" || data === null || typeof (data as { enabled?: unknown }).enabled !== "boolean") continue;
+      fast = (data as { enabled: boolean }).enabled;
+    }
+    ctx.ui.setStatus("fast", fast ? "fast" : undefined);
   });
 
   pi.registerCommand("fast", {
@@ -22,6 +30,7 @@ export default function fastExtension(pi: ExtensionAPI) {
         return;
       }
       fast = !fast;
+      pi.appendEntry(FAST_STATE_ENTRY, { enabled: fast });
       ctx.ui.setStatus("fast", fast ? "fast" : undefined);
       ctx.ui.notify(`Session fast mode ${fast ? "on" : "off"}. Applies to the next request.`, "info");
     },
