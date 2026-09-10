@@ -1,13 +1,23 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { acquireRunOwnership } from "./ownership.ts";
+import { acquireRunOwnership, processExists } from "./ownership.ts";
 import { readRun, runFile, writeJson } from "./state.ts";
 import { defaultConfig, SCHEMA_VERSION, type RunRecord } from "./types.ts";
 
 const macTest = process.platform === "darwin" ? test : test.skip;
+
+test("permission-denied process probes still identify a live process", () => {
+	const error = Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+	const kill = spyOn(process, "kill").mockImplementation(() => { throw error; });
+	try {
+		expect(processExists(123)).toBe(true);
+	} finally {
+		kill.mockRestore();
+	}
+});
 
 macTest("kernel ownership lock rejects a second root and permits clean reacquisition", async () => {
 	const previousHome = process.env.PI_SWARM_HOME;
