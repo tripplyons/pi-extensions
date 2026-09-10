@@ -48,7 +48,10 @@ export const writeJson = (path: string, value: unknown) => {
 	finally { closeSync(directory); }
 };
 export const readRun = (runId: string) => {
-	const run = readJson<RunRecord>(runFile(runId));
+	const stored = readJson<RunRecord>(runFile(runId));
+	const run = stored && stored.config && !("maxWorkerTimeoutMs" in stored.config)
+		? { ...stored, config: { ...stored.config, maxWorkerTimeoutMs: defaultConfig.maxWorkerTimeoutMs } }
+		: stored;
 	if (!validRun(run) || run.runId !== runId) throw new Error(`Invalid swarm run: ${runId}`);
 	return run;
 };

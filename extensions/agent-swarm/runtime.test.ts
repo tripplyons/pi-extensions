@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, repositoryInfo } from "./git.ts";
 import { SwarmRuntime, type WorkerProcesses } from "./runtime.ts";
-import { inboxDir, newId, readJson, readNode, responseFile, tokenFile, workerHome, writeRequest } from "./state.ts";
+import { inboxDir, newId, readJson, readNode, responseFile, tokenFile, updateNode, workerHome, writeRequest } from "./state.ts";
 import { SCHEMA_VERSION, type NodeRecord, type RequestKind, type SwarmResponse } from "./types.ts";
 
 const macTest = process.platform === "darwin" ? test : test.skip;
@@ -119,6 +119,47 @@ macTest("authenticated hierarchy completes, reviews, and integrates only into it
 		await runtime?.close();
 		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
 		rmSync(directory, { recursive: true, force: true });
+		rmSync(state, { recursive: true, force: true });
+	}
+}, 30000);
+
+macTest("per-worker timeout is bounded and survives restart", async () => {
+	const repository = mkdtempSync(join(tmpdir(), "pi-swarm-timeout-repo-"));
+	const state = mkdtempSync(join(tmpdir(), "pi-swarm-timeout-state-"));
+	const previous = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = state;
+	git(repository, ["init", "-b", "main"]);
+	git(repository, ["config", "user.name", "Swarm Test"]);
+	git(repository, ["config", "user.email", "swarm@example.invalid"]);
+	writeFileSync(join(repository, "initial"), "base\n");
+	git(repository, ["add", "initial"]);
+	git(repository, ["commit", "-m", "Initialize fixture"]);
+	const starts: number[] = [];
+	const processes: WorkerProcesses = {
+		async start(run, node) { starts.push(node.timeoutMs ?? run.config.workerTimeoutMs); },
+		async set() {},
+		status() { return null; },
+	};
+	let runtime: SwarmRuntime | undefined;
+	try {
+		runtime = await SwarmRuntime.create({ cwd: repository, sessionId: "timeout-fixture", objective: "Test timeouts" }, processes);
+		const before = runtime.nodes().length;
+		await expect(runtime.act(runtime.root.nodeId, "spawn", { task: "Too long", timeoutMs: runtime.run.config.maxWorkerTimeoutMs + 1 })).rejects.toThrow("timeoutMs");
+		expect(runtime.nodes()).toHaveLength(before);
+		const timeoutMs = 45 * 60_000;
+		const spawnedAt = Date.now();
+		const worker = await runtime.act(runtime.root.nodeId, "spawn", { task: "Long benchmark", timeoutMs }) as NodeRecord;
+		expect(worker.timeoutMs).toBe(timeoutMs);
+		expect(worker.deadlineAt).toBeGreaterThanOrEqual(spawnedAt + timeoutMs);
+		expect(worker.deadlineAt).toBeLessThanOrEqual(Date.now() + timeoutMs);
+		updateNode(runtime.runId, worker.nodeId, (node) => { node.status = "stopped"; });
+		await runtime.act(runtime.root.nodeId, "restart", { nodeId: worker.nodeId });
+		expect(starts).toEqual([timeoutMs, timeoutMs]);
+		expect(readNode(runtime.runId, worker.nodeId).timeoutMs).toBe(timeoutMs);
+	} finally {
+		await runtime?.close();
+		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(repository, { recursive: true, force: true });
 		rmSync(state, { recursive: true, force: true });
 	}
 }, 30000);

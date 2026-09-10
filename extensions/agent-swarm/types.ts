@@ -13,6 +13,7 @@ export interface SwarmConfig {
 	maxActiveNodes: number;
 	startupTimeoutMs: number;
 	workerTimeoutMs: number;
+	maxWorkerTimeoutMs: number;
 	pollIntervalMs: number;
 	maxInlineBytes: number;
 	protectedBranches: string[];
@@ -28,6 +29,7 @@ export const defaultConfig: SwarmConfig = {
 	maxActiveNodes: 8,
 	startupTimeoutMs: 30_000,
 	workerTimeoutMs: 30 * 60_000,
+	maxWorkerTimeoutMs: 2 * 60 * 60_000,
 	pollIntervalMs: 250,
 	maxInlineBytes: 64 * 1024,
 	protectedBranches: ["main", "master"],
@@ -69,6 +71,7 @@ export interface NodeRecord {
 	createdAt: number;
 	updatedAt: number;
 	lastHeartbeatAt?: number;
+	timeoutMs?: number;
 	deadlineAt: number | null;
 	pausedAt: number | null;
 	sessionId: string | null;
@@ -107,6 +110,8 @@ export interface RunRecord {
 	config: SwarmConfig;
 	tmuxSession: string;
 }
+
+export const workerTimeoutFor = (run: RunRecord, node: NodeRecord) => node.timeoutMs ?? run.config.workerTimeoutMs;
 
 export interface SwarmRequest {
 	schemaVersion: number;

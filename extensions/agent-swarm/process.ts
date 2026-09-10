@@ -10,7 +10,7 @@ import { assertMacSandboxAvailable, sandboxProfile, workerEnvironment } from "./
 import { processExists } from "./ownership.ts";
 import { ensureDir, inboxDir, outboxDir, readJson, runDir, stateRoot, tokenFile, updateNode, workerHome, workerTmp, writeJson } from "./state.ts";
 import { sessionExists, tmux, windowExists } from "./tmux.ts";
-import { WORKER_ENV, type NodeRecord } from "./types.ts";
+import { WORKER_ENV, workerTimeoutFor, type NodeRecord } from "./types.ts";
 import type { WorkerProcesses } from "./runtime.ts";
 
 interface ProcessStatus {
@@ -91,7 +91,7 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 				"--extension", conversion, "--extension", extension, "--extension", complain, "--model", node.model, "--thinking", node.thinking ?? "medium",
 				"--session-dir", join(agentDir, "sessions"), "Read swarm_task for your assignment. Work within your role and submit through swarm_complete."];
 			const config = join(control, "launch.json");
-			writeJson(config, { profile, executable: nodeExecutable, args, cwd: node.cwd, environment, timeoutMs: run.config.workerTimeoutMs, statusFile: join(control, "status.json"), commandFile: join(control, "command.json") });
+			writeJson(config, { profile, executable: nodeExecutable, args, cwd: node.cwd, environment, timeoutMs: workerTimeoutFor(run, node), statusFile: join(control, "status.json"), commandFile: join(control, "command.json") });
 			const window = node.nodeId.slice(-12);
 			const command = [nodeExecutable, fileURLToPath(new URL("./supervisor.mjs", import.meta.url)), config].map(shellQuote).join(" ");
 			if (!sessionExists(run.tmuxSession)) tmux(["new-session", "-d", "-s", run.tmuxSession, "-n", window, command]);

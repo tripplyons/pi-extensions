@@ -11,7 +11,7 @@ import { applyRequest, readRequest } from "./requests.ts";
 import { killWindow } from "./tmux.ts";
 import { validateConfig } from "./validation.ts";
 import { descendants, ensureDir, inboxDir, loadConfig, newId, newToken, nodeFile, outboxDir, queuedRequests, readJson, readNode, readRun, runDir, runFile, sessionFile, stateRoot, tokenFile, updateNode, updateRun, workerHome, workerTmp, writeJson, writeResponse } from "./state.ts";
-import { SCHEMA_VERSION, terminalStatuses, type MessageRecord, type NodeRecord, type RequestKind, type Role, type RunRecord, type SwarmConfig } from "./types.ts";
+import { SCHEMA_VERSION, terminalStatuses, workerTimeoutFor, type MessageRecord, type NodeRecord, type RequestKind, type Role, type RunRecord, type SwarmConfig } from "./types.ts";
 
 export interface WorkerProcesses {
 	start(run: RunRecord, node: NodeRecord): Promise<void>;
@@ -147,6 +147,10 @@ export class SwarmRuntime {
 		if (this.run.status !== "active" && !["stop", "cleanup", "heartbeat"].includes(kind)) throw new Error(`Swarm is ${this.run.status}`);
 		if (kind === "spawn") {
 			if (payload.includeDirty !== undefined && typeof payload.includeDirty !== "boolean") throw new Error("includeDirty must be a boolean");
+			const timeoutMs = payload.timeoutMs ?? this.run.config.workerTimeoutMs;
+			if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1000 || (timeoutMs as number) > this.run.config.maxWorkerTimeoutMs) {
+				throw new Error(`timeoutMs must be an integer from 1000 through ${this.run.config.maxWorkerTimeoutMs}`);
+			}
 			const role = payload.role ?? "worker";
 			if (role !== "manager" && role !== "worker" && role !== "reviewer") throw new Error("Invalid child role");
 			assertSpawnLimits(this.run.config, actor, role, this.nodes());
@@ -159,13 +163,14 @@ export class SwarmRuntime {
 				revision = reviewTarget.result.commit;
 			}
 			const node = makeNode(this.runId, newId("node"), role, task, "", actor.nodeId);
+			node.timeoutMs = timeoutMs as number;
 			const worktree = createWorktree(this.run, actor, node.nodeId, payload.includeDirty === true, revision);
 			node.cwd = worktree.path; node.branch = worktree.branch; node.baseCommit = worktree.baseCommit;
 			const root = this.root;
 			node.model = this.run.config.roleModels?.[role] ?? root.model;
 			node.thinking = this.run.config.roleThinking?.[role] ?? root.thinking;
 			node.reviewTargetId = reviewTarget?.nodeId ?? null;
-			node.deadlineAt = Date.now() + this.run.config.workerTimeoutMs;
+			node.deadlineAt = Date.now() + workerTimeoutFor(this.run, node);
 			for (const path of [inboxDir(this.runId, node.nodeId), outboxDir(this.runId, node.nodeId), workerHome(this.runId, node.nodeId), workerTmp(this.runId, node.nodeId), dirname(tokenFile(this.runId, node.nodeId))]) ensureDir(path);
 			writeFileSync(tokenFile(this.runId, node.nodeId), newToken(), { mode: 0o600, flag: "wx" });
 			writeJson(nodeFile(this.runId, node.nodeId), node);
@@ -239,7 +244,11 @@ export class SwarmRuntime {
 			assertSpawnLimits(this.run.config, actor, target!.role, this.nodes());
 			await this.processes.set(target!, "stopped");
 			writeFileSync(tokenFile(this.runId, target!.nodeId), newToken(), { mode: 0o600 });
-			const node = updateNode(this.runId, target!.nodeId, (current) => { current.status = "starting"; current.failure = null; current.deadlineAt = Date.now() + this.run.config.workerTimeoutMs; });
+			const node = updateNode(this.runId, target!.nodeId, (current) => {
+				current.status = "starting";
+				current.failure = null;
+				current.deadlineAt = Date.now() + workerTimeoutFor(this.run, current);
+			});
 			try { await this.processes.start(this.run, node); }
 			catch (error) { updateNode(this.runId, node.nodeId, (current) => { current.status = "failed"; current.failure = String(error); }); throw error; }
 			return node;

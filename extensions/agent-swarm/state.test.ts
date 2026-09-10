@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, newId, nodeFile, readNode, stateRoot, updateNode, writeJson } from "./state.ts";
-import { SCHEMA_VERSION, type NodeRecord } from "./types.ts";
+import { loadConfig, newId, nodeFile, readNode, readRun, runFile, stateRoot, updateNode, writeJson } from "./state.ts";
+import { defaultConfig, SCHEMA_VERSION, type NodeRecord, type RunRecord } from "./types.ts";
 
 test("validates opaque state paths and configuration limits", () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-swarm-state-"));
@@ -37,6 +37,27 @@ test("validates opaque state paths and configuration limits", () => {
 	} finally {
 		if (previousHome === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previousHome;
 		if (previousConfig === undefined) delete process.env.PI_SWARM_CONFIG; else process.env.PI_SWARM_CONFIG = previousConfig;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("normalizes the timeout cap in persisted runs from before per-worker timeouts", () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-swarm-old-run-"));
+	const previousHome = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = root;
+	try {
+		const runId = newId("run");
+		const config = { ...defaultConfig } as Partial<typeof defaultConfig>;
+		delete config.maxWorkerTimeoutMs;
+		const run: RunRecord = {
+			schemaVersion: SCHEMA_VERSION, runId, rootNodeId: newId("node"), rootSessionId: "session", ownerToken: "token", ownerPid: 0,
+			heartbeatAt: 0, cwd: root, gitRoot: root, gitCommonDir: root, createdAt: 1, updatedAt: 1, status: "stopped",
+			config: config as RunRecord["config"], tmuxSession: "session",
+		};
+		writeJson(runFile(runId), run);
+		expect(readRun(runId).config.maxWorkerTimeoutMs).toBe(2 * 60 * 60_000);
+	} finally {
+		if (previousHome === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previousHome;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

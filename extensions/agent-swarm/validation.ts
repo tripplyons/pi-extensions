@@ -20,6 +20,7 @@ export function validNode(value: unknown): value is NodeRecord {
 	if (!["task", "cwd"].every((key) => text(value[key]))) return false;
 	if (!["version", "createdAt", "updatedAt"].every((key) => integer(value[key]))) return false;
 	if (value.lastHeartbeatAt !== undefined && !integer(value.lastHeartbeatAt)) return false;
+	if (value.timeoutMs !== undefined && (!integer(value.timeoutMs) || value.timeoutMs < 1000)) return false;
 	if (value.estimatedCost !== undefined && (typeof value.estimatedCost !== "number" || !Number.isFinite(value.estimatedCost) || value.estimatedCost < 0)) return false;
 	if (!["deadlineAt", "pausedAt", "pid", "cleanedAt"].every((key) => nullableInteger(value[key]))) return false;
 	if (!["sessionId", "branch", "baseCommit", "integrationCommit", "failure", "tmuxSession", "tmuxWindow", "model", "thinking"].every((key) => nullableText(value[key]))) return false;
@@ -50,10 +51,11 @@ export function validRun(value: unknown): value is RunRecord {
 
 export function validateConfig(value: unknown): asserts value is SwarmConfig {
 	if (!record(value)) throw new Error("agent-swarm configuration must be an object");
-	for (const [key, minimum] of [["maxDepth", 1], ["maxActiveChildren", 1], ["maxActiveNodes", 1], ["startupTimeoutMs", 1000], ["workerTimeoutMs", 1000], ["pollIntervalMs", 50], ["maxInlineBytes", 1024]] as const) {
+	for (const [key, minimum] of [["maxDepth", 1], ["maxActiveChildren", 1], ["maxActiveNodes", 1], ["startupTimeoutMs", 1000], ["workerTimeoutMs", 1000], ["maxWorkerTimeoutMs", 1000], ["pollIntervalMs", 50], ["maxInlineBytes", 1024]] as const) {
 		if (!integer(value[key]) || (value[key] as number) < minimum) throw new Error(`agent-swarm ${key} must be an integer of at least ${minimum}`);
 	}
 	if ((value.maxActiveChildren as number) > (value.maxActiveNodes as number)) throw new Error("maxActiveChildren cannot exceed maxActiveNodes");
+	if ((value.workerTimeoutMs as number) > (value.maxWorkerTimeoutMs as number)) throw new Error("workerTimeoutMs cannot exceed maxWorkerTimeoutMs");
 	if (!Array.isArray(value.protectedBranches) || !value.protectedBranches.every((item) => text(item) && item)) throw new Error("protectedBranches must contain non-empty names");
 	if (!Array.isArray(value.allowedRoles) || !value.allowedRoles.every((item) => ["manager", "worker", "reviewer"].includes(item))) throw new Error("allowedRoles contains an unknown role");
 	if (value.fastMode !== undefined && typeof value.fastMode !== "boolean") throw new Error("fastMode must be a boolean");
