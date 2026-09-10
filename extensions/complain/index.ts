@@ -1,12 +1,14 @@
 import { mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
 const complainSchema = Type.Object({
 	message: Type.String({ minLength: 1, description: "Specific environment or tool issue encountered, including what failed and its impact." }),
 });
+const skillsPath = fileURLToPath(new URL("./skills", import.meta.url));
 
 export type ComplainInput = Static<typeof complainSchema>;
 
@@ -21,6 +23,8 @@ export const complaintLogPath = () => {
 
 export default function (pi: ExtensionAPI) {
 	let writes = Promise.resolve();
+
+	pi.on("resources_discover", () => ({ skillPaths: [skillsPath] }));
 
 	pi.registerTool({
 		name: "complain",

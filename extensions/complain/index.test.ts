@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import complainExtension, { complaintLogPath } from "./index";
 
@@ -23,7 +24,11 @@ async function setup(sessionFile: string | null = "/sessions/work.jsonl") {
 	process.env.XDG_STATE_HOME = state;
 	delete process.env.PI_COMPLAIN_LOG;
 	let tool: Parameters<ExtensionAPI["registerTool"]>[0];
-	complainExtension({ registerTool: (registered) => { tool = registered; } } as ExtensionAPI);
+	const handlers = new Map<string, (...args: any[]) => any>();
+	complainExtension({
+		registerTool: (registered) => { tool = registered; },
+		on: (event, handler) => { handlers.set(event, handler); },
+	} as ExtensionAPI);
 	const ctx = {
 		cwd: "/projects/example",
 		model: { provider: "openai-codex", id: "gpt-5.4" },
@@ -37,9 +42,19 @@ async function setup(sessionFile: string | null = "/sessions/work.jsonl") {
 		state,
 		path: complaintLogPath(),
 		description: tool.description,
+		handlers,
 		invoke: (toolCallId: string, message: string) => tool.execute(toolCallId, { message }, new AbortController().signal, undefined, ctx),
 	};
 }
+
+test("loads the complaint resolution skill from the extension", async () => {
+	const extension = await setup();
+	const resources = await extension.handlers.get("resources_discover")?.();
+	const expected = fileURLToPath(new URL("./skills", import.meta.url));
+
+	expect(resources).toEqual({ skillPaths: [expected] });
+	expect(await readFile(join(expected, "complaint-resolution", "SKILL.md"), "utf8")).toContain("Remove only resolved records.");
+});
 
 test("guidance proactively targets repeated material infrastructure failures", async () => {
 	const extension = await setup();

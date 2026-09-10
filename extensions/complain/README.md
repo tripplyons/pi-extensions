@@ -45,3 +45,5 @@ jq -s 'sort_by(.timestamp) | reverse | .[] | {timestamp, message, session, cwd}'
 The extension flushes each appended report to disk before it reports success. It does not send reports anywhere or remove old entries. Complaint messages may contain sensitive data, so protect or rotate the file as needed.
 
 Agent-swarm explicitly loads this extension in spawned managers, workers, and reviewers. It sets `PI_COMPLAIN_LOG` to the coordinator's log path, so their reports survive worker cleanup and appear beside coordinator reports. `PI_COMPLAIN_LOG`, when set by a controller, must be absolute.
+
+The extension also loads the `complaint-resolution` skill. Use it when asked to investigate, resolve, audit, or clean the complaint log. It requires proof before removing a record and preserves unresolved or concurrently appended records.
