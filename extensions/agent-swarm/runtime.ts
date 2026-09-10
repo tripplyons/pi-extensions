@@ -36,6 +36,14 @@ const text = (value: unknown, name: string) => {
 	return value;
 };
 
+const requestedTimeout = (run: RunRecord, value: unknown, fallback: number) => {
+	const timeoutMs = value ?? fallback;
+	if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1000 || (timeoutMs as number) > run.config.maxWorkerTimeoutMs) {
+		throw new Error(`timeoutMs must be an integer from 1000 through ${run.config.maxWorkerTimeoutMs}`);
+	}
+	return timeoutMs as number;
+};
+
 export class SwarmRuntime {
 	private queue: Promise<unknown> = Promise.resolve();
 	private closed = false;
@@ -147,10 +155,7 @@ export class SwarmRuntime {
 		if (this.run.status !== "active" && !["stop", "cleanup", "heartbeat"].includes(kind)) throw new Error(`Swarm is ${this.run.status}`);
 		if (kind === "spawn") {
 			if (payload.includeDirty !== undefined && typeof payload.includeDirty !== "boolean") throw new Error("includeDirty must be a boolean");
-			const timeoutMs = payload.timeoutMs ?? this.run.config.workerTimeoutMs;
-			if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1000 || (timeoutMs as number) > this.run.config.maxWorkerTimeoutMs) {
-				throw new Error(`timeoutMs must be an integer from 1000 through ${this.run.config.maxWorkerTimeoutMs}`);
-			}
+			const timeoutMs = requestedTimeout(this.run, payload.timeoutMs, this.run.config.workerTimeoutMs);
 			const role = payload.role ?? "worker";
 			if (role !== "manager" && role !== "worker" && role !== "reviewer") throw new Error("Invalid child role");
 			assertSpawnLimits(this.run.config, actor, role, this.nodes());
@@ -163,7 +168,7 @@ export class SwarmRuntime {
 				revision = reviewTarget.result.commit;
 			}
 			const node = makeNode(this.runId, newId("node"), role, task, "", actor.nodeId);
-			node.timeoutMs = timeoutMs as number;
+			node.timeoutMs = timeoutMs;
 			const worktree = createWorktree(this.run, actor, node.nodeId, payload.includeDirty === true, revision);
 			node.cwd = worktree.path; node.branch = worktree.branch; node.baseCommit = worktree.baseCommit;
 			const root = this.root;
@@ -205,7 +210,10 @@ export class SwarmRuntime {
 				updateNode(this.runId, actor.nodeId, (node) => { node.result = result; node.status = "awaiting-review"; });
 				this.send(actor, readNode(this.runId, actor.parentId!), body, "result");
 				return result;
-			} finally { await this.processes.set(actor, "running"); }
+			} catch (error) {
+				await this.processes.set(actor, "running");
+				throw error;
+			}
 		}
 		if (kind === "review") {
 			if (payload.feedback !== undefined && typeof payload.feedback !== "string") throw new Error("feedback must be text");
@@ -213,7 +221,7 @@ export class SwarmRuntime {
 			const action = payload.action;
 			if (action !== "accept" && action !== "request-changes" && action !== "reject") throw new Error("Invalid review action");
 			const feedback = typeof payload.feedback === "string" ? payload.feedback : undefined;
-			if (action !== "request-changes") await this.processes.set(target!, "stopped");
+			await this.processes.set(target!, action === "request-changes" ? "running" : "stopped");
 			const reviewed = updateNode(this.runId, target!.nodeId, (node) => {
 				node.review = { action, feedback, updatedAt: Date.now() };
 				node.status = action === "accept" ? "completed" : action === "reject" ? "rejected" : "rework";
@@ -241,13 +249,15 @@ export class SwarmRuntime {
 		}
 		if (kind === "restart") {
 			if (target!.cleanedAt || !["failed", "stopped"].includes(target!.status)) throw new Error("Only retained failed or stopped nodes can restart");
+			const timeoutMs = requestedTimeout(this.run, payload.timeoutMs, workerTimeoutFor(this.run, target!));
 			assertSpawnLimits(this.run.config, actor, target!.role, this.nodes());
 			await this.processes.set(target!, "stopped");
 			writeFileSync(tokenFile(this.runId, target!.nodeId), newToken(), { mode: 0o600 });
 			const node = updateNode(this.runId, target!.nodeId, (current) => {
 				current.status = "starting";
 				current.failure = null;
-				current.deadlineAt = Date.now() + workerTimeoutFor(this.run, current);
+				current.timeoutMs = timeoutMs;
+				current.deadlineAt = Date.now() + timeoutMs;
 			});
 			try { await this.processes.start(this.run, node); }
 			catch (error) { updateNode(this.runId, node.nodeId, (current) => { current.status = "failed"; current.failure = String(error); }); throw error; }

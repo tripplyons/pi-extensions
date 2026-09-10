@@ -50,15 +50,19 @@ macTest("authenticated hierarchy completes, reviews, and integrates only into it
 		await request(worker.nodeId, "send", { nodeId: manager.nodeId, body: "Implementation started" });
 		writeFileSync(join(worker.cwd, "feature"), "implemented\n");
 		await request(worker.nodeId, "complete", { text: "Implemented feature", verification: "Fixture asserts file contents" });
+		expect(statuses.get(worker.nodeId)).toBe("paused");
 		await request(manager.nodeId, "review", { nodeId: worker.nodeId, action: "request-changes", feedback: "Add a second line" });
+		expect(statuses.get(worker.nodeId)).toBe("running");
 		writeFileSync(join(worker.cwd, "feature"), "implemented\nrevised\n");
 		await request(worker.nodeId, "complete", { text: "Revised feature" });
+		expect(statuses.get(worker.nodeId)).toBe("paused");
 		const result = readNode(active.runId, worker.nodeId).result!;
 		expect(result.commit).not.toBe(original);
 		const reviewer = await request(manager.nodeId, "spawn", { role: "reviewer", task: "Inspect the result", reviewTargetId: worker.nodeId }) as NodeRecord;
 		expect(repositoryInfo(reviewer.cwd).head).toBe(result.commit!);
 		await request(reviewer.nodeId, "ready", { sessionId: "reviewer" });
 		await request(reviewer.nodeId, "complete", { text: "Verified" });
+		expect(statuses.get(reviewer.nodeId)).toBe("paused");
 		await request(manager.nodeId, "review", { nodeId: reviewer.nodeId, action: "accept" });
 		await request(manager.nodeId, "review", { nodeId: worker.nodeId, action: "accept" });
 		await expect(active.act(active.root.nodeId, "integrate", { nodeId: manager.nodeId })).rejects.toThrow("accepted direct-child commit");
@@ -156,6 +160,11 @@ macTest("per-worker timeout is bounded and survives restart", async () => {
 		await runtime.act(runtime.root.nodeId, "restart", { nodeId: worker.nodeId });
 		expect(starts).toEqual([timeoutMs, timeoutMs]);
 		expect(readNode(runtime.runId, worker.nodeId).timeoutMs).toBe(timeoutMs);
+		updateNode(runtime.runId, worker.nodeId, (node) => { node.status = "stopped"; delete node.timeoutMs; });
+		const recoveryTimeoutMs = 90 * 60_000;
+		await runtime.act(runtime.root.nodeId, "restart", { nodeId: worker.nodeId, timeoutMs: recoveryTimeoutMs });
+		expect(starts).toEqual([timeoutMs, timeoutMs, recoveryTimeoutMs]);
+		expect(readNode(runtime.runId, worker.nodeId).timeoutMs).toBe(recoveryTimeoutMs);
 	} finally {
 		await runtime?.close();
 		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;

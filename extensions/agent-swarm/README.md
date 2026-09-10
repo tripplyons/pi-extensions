@@ -27,7 +27,7 @@ Stop, pause, and timeout operate on the original worker process group. A descend
 
 Only direct parents issue instructions or review results. Managers integrate only into generated manager branches; the coordinator may integrate only its own accepted direct child into the root checkout. Integration never pushes.
 
-Defaults limit a run to depth 2, four active children per coordinator or manager, eight active nodes, and 30 minutes per worker. Awaiting-review nodes consume capacity. A spawn may request a longer execution allowance with `timeoutMs`, up to the configured two-hour maximum. The selected allowance persists across restart. Configure these values in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/agent-swarm.json` before starting a run:
+Defaults limit a run to depth 2, four active children per coordinator or manager, eight active nodes, and 30 minutes per worker. Awaiting-review nodes consume capacity but stay paused, so review time does not consume their execution allowance. A spawn or restart may request a longer execution allowance with `timeoutMs`, up to the configured two-hour maximum. The selected allowance persists across later restarts. Configure these values in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/agent-swarm.json` before starting a run:
 
 ```json
 {
