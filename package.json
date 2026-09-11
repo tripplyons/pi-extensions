@@ -21,6 +21,7 @@
       "./extensions/goal/index.ts",
       "./extensions/hide-empty-editor/index.ts",
       "./extensions/message-window/index.ts",
+      "./extensions/mixture/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/stash/index.ts",
       "./extensions/startup-screen/index.ts",
