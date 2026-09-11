@@ -26,6 +26,26 @@ test("request reader rejects links, oversized files, and malformed operations", 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("completions and heartbeats survive a concurrent version bump", async () => {
+	const previousHome = process.env.PI_SWARM_HOME;
+	const root = mkdtempSync(join(tmpdir(), "pi-swarm-stale-"));
+	process.env.PI_SWARM_HOME = root;
+	let applied = 0;
+	try {
+		const ahead = { ...node, version: 2 };
+		const heartbeat = await applyRequest({ ...request, requestId: "req_heartbeat", kind: "heartbeat", expectedVersion: 1 }, ahead, request.token, async () => ++applied);
+		expect(heartbeat.ok).toBe(true);
+		const completion = await applyRequest({ ...request, requestId: "req_completion", kind: "complete", expectedVersion: 1 }, ahead, request.token, async () => ++applied);
+		expect(completion.ok).toBe(true);
+		expect(applied).toBe(2);
+		await expect(applyRequest({ ...request, requestId: "req_send", kind: "send", expectedVersion: 1 }, ahead, request.token, () => ++applied)).rejects.toThrow("Stale");
+		expect(applied).toBe(2);
+	} finally {
+		if (previousHome === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previousHome;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("durable replay never repeats a side effect or trusts a replacement capability", async () => {
 	const previousHome = process.env.PI_SWARM_HOME;
 	const root = mkdtempSync(join(tmpdir(), "pi-swarm-journal-"));

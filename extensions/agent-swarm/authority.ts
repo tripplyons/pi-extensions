@@ -13,6 +13,10 @@ export function authenticateRequest(request: SwarmRequest, node: NodeRecord, tok
 	const supplied = Buffer.from(request.token);
 	const expected = Buffer.from(token);
 	if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error("Invalid worker capability");
+	// Heartbeats advance the version themselves, and completions are validated
+	// against current status/review in perform(). Requiring an exact version here
+	// turns a concurrent heartbeat or message into a failed delivery.
+	if (request.kind === "heartbeat" || request.kind === "complete") return;
 	if (request.expectedVersion !== node.version) throw new Error("Stale worker request");
 }
 
