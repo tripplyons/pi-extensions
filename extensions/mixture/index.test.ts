@@ -1,88 +1,120 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { expect, test, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMixtureExtension } from "./index.ts";
-import type { WorkerResult } from "./runner.ts";
+import { emptyUsage, type Run } from "./state.ts";
 
 let savedAgentDir: string | undefined;
+let savedStateDir: string | undefined;
+let directory: string;
+const shutdowns: (() => void)[] = [];
 beforeEach(() => {
 	savedAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "mixture-index-"));
+	savedStateDir = process.env.PI_MIXTURE_HOME;
+	directory = mkdtempSync(join(tmpdir(), "mixture-index-"));
+	process.env.PI_CODING_AGENT_DIR = directory;
+	process.env.PI_MIXTURE_HOME = join(directory, "state");
 });
 afterEach(() => {
+	for (const stop of shutdowns.splice(0)) stop();
+	rmSync(directory, { recursive: true, force: true });
 	if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+	if (savedStateDir === undefined) delete process.env.PI_MIXTURE_HOME;
+	else process.env.PI_MIXTURE_HOME = savedStateDir;
 });
 
-const worker = (model: string, output: string): WorkerResult => ({
-	model,
-	status: "ok",
-	output,
-	usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.1, turns: 1 },
-	branch: `pi-mixture/run/${model}`,
-	worktree: "/tmp/wt",
-});
-
-const harness = (run: any) => {
+function harness(entries: any[] = []) {
+	const run: Run = {
+		schemaVersion: 1, id: "mix_test", ownerSession: "root", createdAt: 1, updatedAt: 1, supervisorPid: 0,
+		options: { task: "test", models: ["model"], timeoutMs: 1000, thinking: "medium", cwd: "/repo" },
+		workers: [{ id: "slot-0", model: "model", cwd: "/retained", attempts: [] }], commands: [],
+	};
 	const tools = new Map<string, any>();
 	const commands = new Map<string, any>();
 	const handlers = new Map<string, any>();
 	const messages: any[] = [];
+	const calls: any[] = [];
+	const notifications: string[] = [];
+	const ctx: any = { cwd: "/repo", sessionManager: { getSessionId: () => "root", getEntries: () => entries },
+		ui: { notify: (text: string) => notifications.push(text) } };
 	const pi: any = {
-		registerTool: (tool: any) => { tools.set(tool.name, tool); },
-		registerCommand: (name: string, command: any) => { commands.set(name, command); },
+		registerTool: (tool: any) => tools.set(tool.name, tool),
+		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (event: string, handler: any) => { handlers.set(event, handler); return () => {}; },
-		sendMessage: (message: any, options: any) => { messages.push({ message, options }); },
-		getThinkingLevel: () => "medium",
-		events: { emit() {}, on() { return () => {}; } },
-		getAllTools: () => [],
-		getActiveTools: () => [],
+		sendMessage: (message: any, options: any) => {
+			messages.push({ message, options });
+			entries.push({ type: "custom_message", ...message });
+		},
+		getThinkingLevel: () => "high",
+		events: { emit() {}, on() { return () => {}; } }, getAllTools: () => [], getActiveTools: () => [],
 	};
-	createMixtureExtension(pi, run);
-	return { tools, commands, handlers, messages };
-};
-
-describe("mixture extension", () => {
-	test("tool returns rendered outputs for the main thread", async () => {
-		const calls: any[] = [];
-		const { tools } = harness(async (options: any) => {
-			calls.push(options);
-			return [worker("openrouter/a", "answer A"), worker("openrouter/b", "answer B")];
-		});
-		const result = await tools.get("mixture_run").execute("id", { task: "Do it" }, null, null, { cwd: "/tmp", thinkingLevel: "high" });
-		expect(calls[0].task).toBe("Do it");
-		expect(calls[0].thinking).toBe("high");
-		expect(calls[0].cwd).toBe("/tmp");
-		expect(result.content[0].text).toContain("answer A");
-		expect(result.content[0].text).toContain("answer B");
-		expect(result.content[0].text).toContain("combine the best parts");
-		expect(result.details.output.succeeded).toBe(2);
+	createMixtureExtension(pi, {
+		reconnectRuns: () => {},
+		startRun: (options, owner) => { calls.push({ options, owner }); return run; },
+		readRun: () => run,
+		sessionRuns: (session) => session === run.ownerSession ? [run] : [],
+		commandRun: (...args) => { calls.push(args); return { runId: run.id, requestId: "cmd_test", status: "pending", message: "queued" }; },
 	});
+	shutdowns.push(() => handlers.get("session_shutdown")());
+	const execute = (name: string, params: unknown) => tools.get(name).execute("id", params, undefined, undefined, ctx);
+	return { run, calls, messages, handlers, commands, notifications, ctx, execute };
+}
 
-	test("tool rejects an empty task before spawning", async () => {
-		let spawned = false;
-		const { tools } = harness(async () => { spawned = true; return []; });
-		await expect(tools.get("mixture_run").execute("id", { task: "  " }, null, null, { cwd: "/tmp" })).rejects.toThrow("task is required");
-		expect(spawned).toBe(false);
-	});
+test("start returns queued identity without waiting for model output", async () => {
+	const h = harness();
+	const result = await h.execute("mixture_run", { task: " Do it ", timeoutMs: 500 });
+	expect(h.calls[0].owner).toBe("root");
+	expect(h.calls[0].options).toMatchObject({ task: "Do it", thinking: "high", cwd: "/repo", timeoutMs: 500 });
+	expect(JSON.parse(result.content[0].text).workers[0].status).toBe("queued");
+	expect(result.details.stateFile).toEndWith("mix_test/run.json");
+});
 
-	test("/mixture sends the result as a steering message", async () => {
-		const { commands, messages } = harness(async () => [worker("openrouter/a", "answer A")]);
-		const notified: string[] = [];
-		await commands.get("mixture").handler("Do it", { cwd: "/tmp", ui: { notify: (text: string) => { notified.push(text); } } });
-		expect(messages).toHaveLength(1);
-		expect(messages[0].message.content).toContain("answer A");
-		expect(messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
-	});
+test("invalid calls do not reach the client", async () => {
+	const h = harness();
+	await expect(h.execute("mixture_run", { task: " " })).rejects.toThrow("task is required");
+	await expect(h.execute("mixture_process", { action: "stop" })).rejects.toThrow("runId is required");
+	await expect(h.execute("mixture_process", { action: "send", runId: "mix_test" })).rejects.toThrow("workerId is required");
+	await expect(h.execute("mixture_process", { action: "send", runId: "mix_test", workerId: "slot-0" })).rejects.toThrow("message is required");
+	expect(h.calls).toHaveLength(0);
+});
 
-	test("/mixture without a task notifies usage", async () => {
-		let spawned = false;
-		const { commands, messages } = harness(async () => { spawned = true; return []; });
-		const notified: string[] = [];
-		await commands.get("mixture").handler("  ", { cwd: "/tmp", ui: { notify: (text: string) => { notified.push(text); } } });
-		expect(spawned).toBe(false);
-		expect(messages).toHaveLength(0);
-		expect(notified[0]).toContain("Usage: /mixture <task>");
-	});
+test("root forwards steering, stop, restart and explicit resume", async () => {
+	const h = harness();
+	for (const action of ["send", "stop", "restart", "resume"]) {
+		const result = await h.execute("mixture_process", { action, runId: "mix_test", workerId: "slot-0", message: "use red" });
+		expect(JSON.parse(result.content[0].text).requestId).toBe("cmd_test");
+		expect(h.calls.at(-1)).toEqual(["mix_test", "root", action, "slot-0", "use red"]);
+	}
+	expect(JSON.parse((await h.execute("mixture_process", { action: "list" })).content[0].text)[0].id).toBe("mix_test");
+	const listing = await h.execute("mixture_process", { action: "list" });
+	expect(JSON.parse(readFileSync(listing.details.stateFile, "utf8"))[0].id).toBe("mix_test");
+	expect(JSON.parse((await h.execute("mixture_process", { action: "inspect", runId: "mix_test" })).content[0].text).workers[0].cwd).toBe("/retained");
+});
+
+test("reconnect delivers retained completions once and shutdown does not stop workers", () => {
+	const entries: any[] = [];
+	const h = harness(entries);
+	h.run.workers[0].attempts.push({ attempt: 1, status: "failed", startedAt: 1, finishedAt: 2,
+		output: "partial answer", error: "timeout upstream", usage: emptyUsage(), logFile: "/log", sessionFile: "/session" });
+	h.handlers.get("session_start")({}, h.ctx);
+	expect(h.messages).toHaveLength(1);
+	expect(h.messages[0].message.content).toContain("partial answer");
+	expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+	h.handlers.get("session_shutdown")();
+	const reopened = harness(entries);
+	reopened.run.workers = h.run.workers;
+	reopened.handlers.get("session_start")({}, reopened.ctx);
+	expect(reopened.messages).toHaveLength(0);
+	expect(h.calls).toHaveLength(0);
+});
+
+test("slash command starts in background and reports identity", async () => {
+	const h = harness();
+	await h.commands.get("mixture").handler("Do it", h.ctx);
+	expect(h.notifications).toEqual(["Started mix_test"]);
+	expect(h.messages).toHaveLength(0);
+	await h.commands.get("mixture").handler(" ", h.ctx);
+	expect(h.notifications.at(-1)).toContain("Usage:");
 });

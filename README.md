@@ -44,7 +44,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| mixture | Fans one task out to 3 models in parallel worktrees; the main thread picks or combines. |
+| mixture | Background model workers in retained worktrees, with inspection, steering, stop/restart and reconnect notifications. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and keeps startup resource details focused. |

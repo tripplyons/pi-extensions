@@ -1,81 +1,124 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { adaptToolForCodeMode, registerCodeModeExtensionTools } from "@howaboua/pi-codex-conversion/code-mode";
-import { formatMixture, renderMixture, type MixtureOutput } from "./aggregate.ts";
 import { loadConfig } from "./config.ts";
-import { runMixture } from "./runner.ts";
+import { commandRun, reconnectRuns, sessionRuns, startRun } from "./client.ts";
+import { inspectRun, renderInspection, summarizeRun } from "./inspect.ts";
+import { readRun, runFile, terminal, writeJson } from "./state.ts";
+import { stateHome } from "./runner.ts";
 
-const MixtureRunParams = Type.Object({
-	task: Type.String({ description: "Task to delegate to each configured model" }),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Per-worker timeout in milliseconds; defaults to timeoutMs in mixture.json" })),
-	cwd: Type.Optional(Type.String({ description: "Working directory for the workers; defaults to the current directory" })),
+const RunParams = Type.Object({
+	task: Type.String({ description: "Task for each configured model" }),
+	timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+	cwd: Type.Optional(Type.String()),
+});
+const ProcessParams = Type.Object({
+	action: StringEnum(["list", "inspect", "send", "stop", "restart", "resume"]),
+	runId: Type.Optional(Type.String()),
+	workerId: Type.Optional(Type.String({ description: "Worker slot, for example slot-0" })),
+	message: Type.Optional(Type.String({ description: "Steering message" })),
 });
 
-interface MixtureCall {
-	task: string;
-	timeoutMs?: number;
-	cwd?: string;
-}
-
-interface MixtureContext {
-	thinkingLevel?: string;
-	cwd: string;
-}
-
-export function createMixtureExtension(pi: ExtensionAPI, run = runMixture) {
-	let codeRegistration: ReturnType<typeof registerCodeModeExtensionTools> | undefined;
-
-	const executeTask = async (call: MixtureCall, ctx: MixtureContext): Promise<MixtureOutput> => {
-		const task = call.task.trim();
-		if (!task) throw new Error("task is required");
+export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, commandRun, sessionRuns, readRun, reconnectRuns }) {
+	let timer: ReturnType<typeof setInterval> | undefined;
+	const delivered = new Set<string>();
+	const result = (value: unknown, path: string) => ({
+		content: [{ type: "text" as const, text: renderInspection(value, path) }],
+		details: { stateFile: path },
+	});
+	const start = (params: { task: string; cwd?: string; timeoutMs?: number }, ctx: ExtensionContext) => {
+		if (!params.task.trim()) throw new Error("task is required");
 		const config = loadConfig();
-		const results = await run({
-			task,
-			models: config.models,
-			timeoutMs: call.timeoutMs ?? config.timeoutMs,
-			thinking: ctx.thinkingLevel ?? "medium",
-			cwd: call.cwd ?? ctx.cwd,
-		});
-		return formatMixture(task, results);
+		return client.startRun({ task: params.task.trim(), models: config.models,
+			timeoutMs: params.timeoutMs ?? config.timeoutMs, cwd: params.cwd ?? ctx.cwd,
+			thinking: pi.getThinkingLevel(),
+		}, ctx.sessionManager.getSessionId());
 	};
-
-	const mixtureRun = {
-		name: "mixture_run",
-		label: "Mixture Run",
-		description: "Delegate the same task to each model in mixture.json in parallel worktrees and return every labeled output so the main thread can pick the best answer or combine the best parts.",
-		parameters: MixtureRunParams,
-		async execute(_toolCallId: string, params: MixtureCall, _signal: unknown, _onUpdate: unknown, ctx: MixtureContext) {
-			const output = await executeTask(params, ctx);
-			return {
-				content: [{ type: "text" as const, text: renderMixture(output) }],
-				details: { output },
-			};
+	const runTool = {
+		name: "mixture_run", label: "Mixture Run",
+		description: "Start parallel background model workers in retained worktrees. Returns a run ID immediately. Completion arrives automatically. Use mixture_process to inspect, steer, stop or restart.",
+		parameters: RunParams,
+		async execute(_id: string, params: typeof RunParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
+			const run = start(params, ctx);
+			return result(summarizeRun(run), runFile(run.id));
 		},
 	};
-
-	pi.registerTool(mixtureRun as any);
-	codeRegistration = registerCodeModeExtensionTools(pi, () => [
-		adaptToolForCodeMode(mixtureRun as any, { usage: 'await tools.mixture_run({ task: "Implement the change" })' }),
-	]);
-
-	pi.registerCommand("mixture", {
-		description: "Run the same task on every mixture.json model and combine the best parts",
-		handler: async (args, ctx) => {
-			if (!args.trim()) {
-				ctx.ui.notify("Usage: /mixture <task>", "info");
-				return;
+	const processTool = {
+		name: "mixture_process", label: "Mixture Process",
+		description: "Manage durable mixture runs. List this session's runs; inspect retained outputs, usage, attempts and command acknowledgements. Send steers a running worker. Stop accepts an optional worker. Restart requires a worker. Resume explicitly transfers ownership to this session. Responses are bounded; full state stays on disk.",
+		parameters: ProcessParams,
+		async execute(_id: string, params: typeof ProcessParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
+			const session = ctx.sessionManager.getSessionId();
+			if (params.action === "list") {
+				const runs = client.sessionRuns(session).map(summarizeRun);
+				const path = join(stateHome(), "listings", `${encodeURIComponent(session)}.json`);
+				writeJson(path, runs);
+				return result(runs, path);
 			}
-			const output = await executeTask({ task: args }, { thinkingLevel: pi.getThinkingLevel(), cwd: ctx.cwd });
-			pi.sendMessage({
-				content: renderMixture(output),
-				display: true,
-				details: { output },
-			}, { deliverAs: "steer", triggerTurn: true });
+			if (!params.runId) throw new Error("runId is required");
+			const path = runFile(params.runId);
+			if (params.action === "inspect") return result(inspectRun(client.readRun(params.runId), params.workerId), path);
+			if (["send", "restart"].includes(params.action) && !params.workerId) throw new Error("workerId is required");
+			if (params.action === "send" && !params.message?.trim()) throw new Error("message is required");
+			return result(client.commandRun(params.runId, session, params.action, params.workerId, params.message), path);
+		},
+	};
+	pi.registerTool(runTool);
+	pi.registerTool(processTool);
+	const registration = registerCodeModeExtensionTools(pi, () => [
+		adaptToolForCodeMode(runTool, { usage: 'await tools.mixture_run({ task: "Implement the change" })' }),
+		adaptToolForCodeMode(processTool, { usage: 'await tools.mixture_process({ action: "list" })' }),
+	]);
+	pi.registerCommand("mixture", {
+		description: "Start a background mixture run",
+		handler: async (args, ctx) => {
+			if (!args.trim()) { ctx.ui.notify("Usage: /mixture <task>", "info"); return; }
+			const run = start({ task: args }, ctx);
+			ctx.ui.notify(`Started ${run.id}`, "info");
 		},
 	});
-
+	pi.on("session_start", (_event, ctx) => {
+		if (timer) clearInterval(timer);
+		client.reconnectRuns(ctx.sessionManager.getSessionId());
+		delivered.clear();
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type === "custom_message" && entry.customType === "mixture-completion") {
+				const details = entry.details as { notificationId?: string } | undefined;
+				if (details?.notificationId) delivered.add(details.notificationId);
+			}
+		}
+		const scan = () => {
+			for (const run of client.sessionRuns(ctx.sessionManager.getSessionId())) {
+				for (const worker of run.workers) for (const attempt of worker.attempts) {
+					const notificationId = `${run.id}/${worker.id}/${attempt.attempt}`;
+					if (!terminal(attempt.status) || delivered.has(notificationId)) continue;
+					pi.sendMessage({ customType: "mixture-completion", display: true,
+						content: renderInspection({ runId: run.id, workerId: worker.id, model: worker.model,
+							cwd: worker.cwd, branch: worker.branch, changes: worker.changes, ...attempt }, runFile(run.id)),
+						details: { notificationId },
+					}, { deliverAs: "steer", triggerTurn: true });
+					delivered.add(notificationId);
+				}
+			}
+		};
+		let lastError = "";
+		const check = () => {
+			try { scan(); lastError = ""; }
+			catch (error) {
+				const message = `Mixture completion check failed: ${String(error)}`;
+				if (message !== lastError) ctx.ui.notify(message, "error");
+				lastError = message;
+			}
+		};
+		check();
+		timer = setInterval(check, 1000);
+		timer.unref();
+	});
 	pi.on("session_shutdown", () => {
-		codeRegistration?.unregister();
+		if (timer) clearInterval(timer);
+		registration.unregister();
 	});
 }
 
