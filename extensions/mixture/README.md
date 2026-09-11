@@ -26,6 +26,10 @@ worker changes into the root checkout.
 
 ## Manage runs
 
+TUI tool cards show the action, run ID and worker statuses instead of raw JSON.
+Expand results for longer output excerpts, usage and the full-state file path.
+Completion cards use the same layout. Model-facing results remain structured JSON.
+
 - `list` lists runs owned by this session.
 - `inspect` takes `runId` and optionally `workerId`. It returns attempt history,
   outputs, errors, usage, command acknowledgements and retained paths.

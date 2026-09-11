@@ -40,6 +40,7 @@ function harness(entries: any[] = []) {
 	const ctx: any = { cwd: "/repo", sessionManager: { getSessionId: () => "root", getEntries: () => entries },
 		ui: { notify: (text: string) => notifications.push(text) } };
 	const pi: any = {
+		registerMessageRenderer() {},
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		on: (event: string, handler: any) => { handlers.set(event, handler); return () => {}; },

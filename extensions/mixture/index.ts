@@ -8,6 +8,7 @@ import { commandRun, reconnectRuns, sessionRuns, startRun } from "./client.ts";
 import { inspectRun, renderInspection, summarizeRun } from "./inspect.ts";
 import { readRun, runFile, terminal, writeJson } from "./state.ts";
 import { stateHome } from "./runner.ts";
+import { mixturePreview, renderMixtureCall, renderMixtureResult } from "./tool-render.ts";
 
 const RunParams = Type.Object({
 	task: Type.String({ description: "Task for each configured model" }),
@@ -26,7 +27,7 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 	const delivered = new Set<string>();
 	const result = (value: unknown, path: string) => ({
 		content: [{ type: "text" as const, text: renderInspection(value, path) }],
-		details: { stateFile: path },
+		details: { stateFile: path, preview: mixturePreview(value) },
 	});
 	const start = (params: { task: string; cwd?: string; timeoutMs?: number }, ctx: ExtensionContext) => {
 		if (!params.task.trim()) throw new Error("task is required");
@@ -40,6 +41,8 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 		name: "mixture_run", label: "Mixture Run",
 		description: "Start parallel background model workers in retained worktrees. Returns a run ID immediately. Completion arrives automatically. Use mixture_process to inspect, steer, stop or restart.",
 		parameters: RunParams,
+		renderCall: (args: any, theme: any) => renderMixtureCall("mixture_run", args, theme),
+		renderResult: renderMixtureResult,
 		async execute(_id: string, params: typeof RunParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
 			const run = start(params, ctx);
 			return result(summarizeRun(run), runFile(run.id));
@@ -49,6 +52,8 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 		name: "mixture_process", label: "Mixture Process",
 		description: "Manage durable mixture runs. List this session's runs; inspect retained outputs, usage, attempts and command acknowledgements. Send steers a running worker. Stop accepts an optional worker. Restart requires a worker. Resume explicitly transfers ownership to this session. Responses are bounded; full state stays on disk.",
 		parameters: ProcessParams,
+		renderCall: (args: any, theme: any) => renderMixtureCall("mixture_process", args, theme),
+		renderResult: renderMixtureResult,
 		async execute(_id: string, params: typeof ProcessParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
 			const session = ctx.sessionManager.getSessionId();
 			if (params.action === "list") {
@@ -67,6 +72,7 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 	};
 	pi.registerTool(runTool);
 	pi.registerTool(processTool);
+	pi.registerMessageRenderer("mixture-completion", (message, options, theme) => renderMixtureResult(message, options, theme));
 	const registration = registerCodeModeExtensionTools(pi, () => [
 		adaptToolForCodeMode(runTool, { usage: 'await tools.mixture_run({ task: "Implement the change" })' }),
 		adaptToolForCodeMode(processTool, { usage: 'await tools.mixture_process({ action: "list" })' }),
@@ -97,7 +103,7 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 					pi.sendMessage({ customType: "mixture-completion", display: true,
 						content: renderInspection({ runId: run.id, workerId: worker.id, model: worker.model,
 							cwd: worker.cwd, branch: worker.branch, changes: worker.changes, ...attempt }, runFile(run.id)),
-						details: { notificationId },
+						details: { notificationId, stateFile: runFile(run.id), preview: mixturePreview({ runId: run.id, workerId: worker.id, model: worker.model, changes: worker.changes, ...attempt }) },
 					}, { deliverAs: "steer", triggerTurn: true });
 					delivered.add(notificationId);
 				}
