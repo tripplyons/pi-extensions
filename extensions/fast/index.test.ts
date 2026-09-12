@@ -9,6 +9,7 @@ function setup(entries: any[] = []) {
   const statuses = new Map<string, string | undefined>();
   const notices: string[] = [];
   let command: { handler: Function };
+  const shortcuts = new Map<string, { handler: Function }>();
 	const eventHandlers = new Map<string, Function>();
   const ctx = {
     model: {
@@ -28,10 +29,12 @@ function setup(entries: any[] = []) {
     on: (name: string, handler: Function) => handlers.set(name, handler),
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
     registerCommand: (_name: string, value: { handler: Function }) => { command = value; },
+    registerShortcut: (key: string, value: { handler: Function }) => shortcuts.set(key, value),
   } as unknown as ExtensionAPI);
   return {
     ctx, entries, statuses, notices,
     toggle: (args = "") => command.handler(args, ctx),
+    shortcut: () => shortcuts.get("ctrl+f")!.handler(ctx),
     start: (reason: string) => handlers.get("session_start")!({ reason }, ctx),
 		fast: () => { const query: { enabled?: boolean } = {}; eventHandlers.get("fast:query")!(query); return query.enabled; },
     request: (payload: unknown) => handlers.get("before_provider_request")!({ payload }, ctx) ?? payload,
@@ -72,6 +75,21 @@ test("reloads, resumes, restarts, and forks restore branch state", async () => {
   fresh.start("new");
   expect(fresh.request(payload)).toBe(payload);
   expect(fresh.statuses.get("fast")).toBeUndefined();
+});
+
+test("Ctrl+F shares command state and provider checks", async () => {
+  const session = setup();
+  await session.shortcut();
+  expect(session.request({}).service_tier).toBe("priority");
+  expect(session.statuses.get("fast")).toBe("fast");
+  await session.toggle();
+  expect(session.request({}).service_tier).toBe("default");
+  await session.shortcut();
+  expect(session.entries.at(-1).data).toEqual({ enabled: true });
+  session.ctx.model = { ...session.ctx.model!, provider: "anthropic" };
+  await session.shortcut();
+  expect(session.entries).toHaveLength(3);
+  expect(session.notices.at(-1)).toContain("requires an OpenAI Codex model");
 });
 
 test("forced default persists separately and session histories stay isolated", async () => {
@@ -139,7 +157,7 @@ test("pinned Codex provider sends the toggled tier over HTTP", async () => {
     const model = { ...session.ctx.model!, baseUrl: `http://127.0.0.1:${server.port}` };
     const token = `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test" } })).toString("base64url")}.test`;
     for (let index = 0; index < 3; index++) {
-      if (index > 0) await session.toggle();
+      if (index > 0) await session.shortcut();
       const stream = provider!.streamSimple(model, {
         messages: [{ role: "user", content: "hi", timestamp: 0 }],
       }, {

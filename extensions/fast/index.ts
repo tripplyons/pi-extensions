@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const FAST_STATE_ENTRY = "fast-state";
 
@@ -18,6 +18,22 @@ export default function fastExtension(pi: ExtensionAPI) {
     ctx.ui.setStatus("fast", fast ? "fast" : undefined);
   });
 
+  const toggle = async (ctx: ExtensionContext) => {
+    if (ctx.model?.provider !== "openai-codex") {
+      ctx.ui.notify("/fast requires an OpenAI Codex model.", "warning");
+      return;
+    }
+    fast = !fast;
+    pi.appendEntry(FAST_STATE_ENTRY, { enabled: fast });
+    ctx.ui.setStatus("fast", fast ? "fast" : undefined);
+    ctx.ui.notify(`Session fast mode ${fast ? "on" : "off"}. Applies to the next request.`, "info");
+  };
+
+  pi.registerShortcut("ctrl+f", {
+    description: "Toggle session fast mode",
+    handler: toggle,
+  });
+
   pi.registerCommand("fast", {
     description: "Toggle Codex priority requests for this session only",
     handler: async (args, ctx) => {
@@ -25,14 +41,7 @@ export default function fastExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /fast", "warning");
         return;
       }
-      if (ctx.model?.provider !== "openai-codex") {
-        ctx.ui.notify("/fast requires an OpenAI Codex model.", "warning");
-        return;
-      }
-      fast = !fast;
-      pi.appendEntry(FAST_STATE_ENTRY, { enabled: fast });
-      ctx.ui.setStatus("fast", fast ? "fast" : undefined);
-      ctx.ui.notify(`Session fast mode ${fast ? "on" : "off"}. Applies to the next request.`, "info");
+      await toggle(ctx);
     },
   });
 

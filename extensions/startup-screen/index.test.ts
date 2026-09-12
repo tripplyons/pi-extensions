@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import startupScreenExtension, {
 	displayDirectory,
 	removeHiddenSection,
@@ -27,6 +28,34 @@ describe("startup header", () => {
 });
 
 describe("resource filtering", () => {
+	test("filters collapsed and expanded lists by scope and drops empty sections", () => {
+		class Section extends Text {
+			constructor(public getCollapsedText: () => string, public getExpandedText: () => string) {
+				super(getCollapsedText(), 0, 0);
+			}
+			setExpanded() { this.setText(this.getExpandedText()); }
+		}
+		const root = new Container();
+		const context = new Section(() => "[Context]\n  AGENTS.md, global", () =>
+			`[Context]\n  ${displayDirectory(getAgentDir())}/AGENTS.md\n  /tmp/project/AGENTS.md`);
+		const skills = new Section(() => "[Skills]\n  local, global", () =>
+			"[Skills]\n  project\n    /tmp/project/.agents/skills/local/SKILL.md\n    npm:project-skills\n      package-skill/SKILL.md\n  user\n    global\n  path\n    temporary");
+		const extensions = new Section(() => "[Extensions]\n  global", () => "[Extensions]\n  user\n    npm:global");
+		for (const section of [context, skills, extensions]) root.addChild(section);
+		while (removeHiddenSection(root)) {}
+		for (const expanded of [false, true]) {
+			if (expanded) { context.setExpanded(); skills.setExpanded(); }
+			const output = root.render(200).join("\n");
+			expect(output).toContain("/tmp/project/AGENTS.md");
+			expect(output).toContain("npm:project-skills");
+			expect(output).not.toContain("global");
+			expect(output).not.toContain("temporary");
+			expect(output).not.toContain("[Extensions]");
+			expect(output).not.toContain(displayDirectory(getAgentDir()));
+		}
+		expect(removeHiddenSection(root)).toBe(false);
+	});
+
 	test("removes Prompts and Themes while preserving requested sections and errors", () => {
 		let invalidations = 0;
 		const leaf = (text: string) => ({ invalidate() {}, render: () => [text] });

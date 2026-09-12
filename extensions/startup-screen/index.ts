@@ -1,10 +1,14 @@
 import { homedir } from "node:os";
 import { relative } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 interface RenderableNode {
 	children?: RenderableNode[];
+	getExpandedText?: () => string;
+	getCollapsedText?: () => string;
+	setText?: (text: string) => void;
 	invalidate(): void;
 	render(width: number): string[];
 }
@@ -24,6 +28,24 @@ const LOGO = [
 const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const FILTER_DELAYS_MS = [0, 50, 250, 1_000] as const;
 const HIDDEN_SECTIONS = new Set(["[Prompts]", "[Themes]"]);
+const PROJECT_SECTIONS = new Set(["[Context]", "[Skills]", "[Extensions]"]);
+
+function projectSection(text: string, heading: string): string {
+	const [title, ...lines] = text.split("\n");
+	let project = false;
+	const kept = lines.filter((line) => {
+		const plain = line.replace(ANSI_ESCAPE, "");
+		if (heading === "[Context]") {
+			const path = plain.trim();
+			return ![displayDirectory(getAgentDir()), "~/.agents", "~/AGENTS.md", "~/CLAUDE.md"].some(
+				(global) => path === global || path.startsWith(`${global}/`),
+			);
+		}
+		if (/^  \S/.test(plain)) project = plain.trim() === "project";
+		return project;
+	});
+	return kept.length ? [title, ...kept].join("\n") : "";
+}
 
 function centered(text: string, width: number): string {
 	const padding = Math.max(0, Math.floor((width - visibleWidth(text)) / 2));
@@ -55,7 +77,20 @@ export function removeHiddenSection(component: RenderableNode): boolean {
 	for (let index = 0; index < component.children.length; index += 1) {
 		const child = component.children[index]!;
 		const heading = renderedText(child).split("\n").find((line) => line.trim())?.trim();
-		if (heading && HIDDEN_SECTIONS.has(heading)) {
+		let empty = false;
+		if (heading && PROJECT_SECTIONS.has(heading) && child.getExpandedText && child.setText) {
+			const expanded = child.getExpandedText();
+			const filtered = projectSection(expanded, heading);
+			empty = !filtered;
+			if (filtered && (filtered !== expanded || child.getCollapsedText?.() !== filtered)) {
+				child.getExpandedText = () => filtered;
+				child.getCollapsedText = () => filtered;
+				child.setText(filtered);
+				component.invalidate();
+				return true;
+			}
+		}
+		if (empty || (heading && HIDDEN_SECTIONS.has(heading))) {
 			const following = component.children[index + 1];
 			const removeCount = following && renderedText(following).trim() === "" ? 2 : 1;
 			component.children.splice(index, removeCount);
