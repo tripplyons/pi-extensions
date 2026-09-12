@@ -85,6 +85,8 @@ Large task, message, result, feedback, and verification strings use private requ
 
 State lives under `PI_SWARM_HOME`, or `${XDG_STATE_HOME:-~/.local/state}/pi/agent-swarm`. It must be outside the repository. Each run has root-owned records and per-node private mailboxes, homes, temporary files, and linked worktrees.
 
+Workers keep absolute directories from the coordinator's `PATH`, after the resolved Node, Git, and tmux directories. Empty and relative entries are omitted because workers have a different working directory. Repository dependencies are not copied into new Git worktrees; install them there using the repository's documented setup before running its tests. Reviewers cannot install into their read-only worktrees. Run tests that launch nested sandboxes or bind additional Unix sockets from the coordinator checkout, not from a worker: those operations are outside the worker sandbox policy.
+
 bg-bash uses a private `bg.sock` under each worker's temporary directory. The sandbox permits that socket and PTY operations, not access to the host tmux socket. Python bytecode and tooling caches stay under worker temporary storage. Shell jobs can outlive worker shutdown; process-group stop does not contain detached tmux descendants.
 
 The root takes a kernel-backed exclusive lock. Reopening its session reconnects the run. `/swarm:resume <runId>` reconnects from another session. Workers retain queued requests while the controller is absent. Completed requests replay their stored response. An interrupted side effect receives an indeterminate-operation error instead of running again. Inspect state before issuing a new operation.

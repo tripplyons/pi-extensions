@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { complaintLogPath } from "../complain/index.ts";
@@ -25,6 +25,12 @@ const executable = (name: string) => {
 	return realpathSync(result.stdout.trim());
 };
 export const inheritedFastEnvironment = (enabled: boolean | undefined) => enabled ? "1" : "0";
+
+export const workerPath = (executables: string[], inheritedPath = process.env.PATH ?? "") => [...new Set([
+	...executables.map(dirname),
+	...inheritedPath.split(":").filter(isAbsolute),
+	"/usr/bin", "/bin", "/usr/sbin", "/sbin",
+])].join(":");
 
 export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 	const status = (node: NodeRecord) => readJson<ProcessStatus>(join(controlDirectory(node), "status.json"));
@@ -81,7 +87,7 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 			writeFileSync(profile, sandboxProfile(paths), { mode: 0o600 });
 			const environment = workerEnvironment({
 				HOME: privateHome, TMPDIR: paths.workerTmp, PI_CODING_AGENT_DIR: agentDir,
-				PATH: `${dirname(nodeExecutable)}:${dirname(gitExecutable)}:${dirname(tmuxExecutable)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+				PATH: workerPath([nodeExecutable, gitExecutable, tmuxExecutable]),
 				[WORKER_ENV]: "1", PI_SWARM_HOME: stateRoot(), PI_SWARM_RUN: run.runId, PI_SWARM_NODE: node.nodeId,
 				PI_COMPLAIN_LOG: complaintLogPath(),
 				PI_SWARM_FAST: inheritedFastEnvironment(run.config.fastMode),
