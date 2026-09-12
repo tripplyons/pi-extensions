@@ -93,6 +93,8 @@ Closing the root releases ownership but does not kill workers. Supervisors conti
 
 After updating the completion protocol, reload the coordinator and restart retained workers at a safe checkpoint to load the new worker hooks. Existing processes do not hot-reload their extension code. Older stored submissions remain readable.
 
+Keep other nodes' worktrees unchanged when verifying their results. Coordinator commands do not inherit worker cache settings: importing Python source from a child's worktree can create `__pycache__` there and block integration or cleanup. Use `python -B` or `PYTHONDONTWRITEBYTECODE=1` for those imports. Run checks that create other files in your own worktree after integration or in a disposable copy. If cleanup reports a dirty worktree, inspect `git status --short --untracked-files=all` there and preserve unknown changes; do not delete them just to pass cleanup.
+
 Cleanup refuses dirty worktrees. Clear refuses to detach active children: kill them first. It then checks every retained worktree before cleanup and again before removal. Generated branches remain for human recovery. A cleared-run marker preserves the lock inode and prevents reconnection to deleted run data.
 
 The macOS policy explicitly denies sibling process inspection, including raw process-argument syscalls. DNS uses the system mDNSResponder socket; arbitrary host Unix sockets are denied. File write denials cover the current checkout and known credential locations, not all valuable host files. These restrictions do not provide CPU, disk, or inference-spending quotas. The extension and coordinator still run with the user's permissions.

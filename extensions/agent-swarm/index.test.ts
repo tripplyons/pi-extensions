@@ -107,6 +107,9 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		expect(first.systemPrompt).toContain("submit changes with swarm_complete");
 		expect(first.systemPrompt).toContain("managers integrate accepted children with swarm_integrate");
 		expect(first.systemPrompt).toContain("controller alone owns Git locks");
+		expect(first.systemPrompt).toContain("Keep other nodes' worktrees unchanged during verification, including generated caches");
+		expect(first.systemPrompt).toContain("python -B or PYTHONDONTWRITEBYTECODE=1");
+		expect(first.systemPrompt).toContain("Never delete unknown changes to make cleanup pass");
 		expect(first.systemPrompt).toContain("Authorized coordinators and managers may create managed children with swarm_spawn");
 		expect(first.systemPrompt).toContain("Workers and reviewers cannot spawn children");
 		expect(first.systemPrompt).toContain("Never use unmanaged subagent or mixture tools while attached");
