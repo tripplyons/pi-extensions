@@ -10,9 +10,11 @@ test("published Code runtime executes shell and patch in an isolated Pi session"
   const dir = await mkdtemp(join(tmpdir(), "pi-code-runtime-"));
   const agentDir = join(dir, "agent");
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousMixtureHome = process.env.PI_MIXTURE_HOME;
   let session;
   try {
     process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_MIXTURE_HOME = join(dir, "mixture");
     await mkdir(agentDir);
     await writeFile(join(agentDir, "pi-codex-conversion.json"), JSON.stringify({
       executionMode: "code",
@@ -29,7 +31,7 @@ test("published Code runtime executes shell and patch in an isolated Pi session"
     const resourceLoader = new DefaultResourceLoader({
       cwd: dir, agentDir, settingsManager,
       extensionFactories: [(pi) => { inspectionPi = pi; }],
-      additionalExtensionPaths: ["./index.ts", "../subagent/index.ts", "../tripp-autoresearch/index.ts"].map((path) => fileURLToPath(new URL(path, import.meta.url))),
+      additionalExtensionPaths: ["./index.ts", "../subagent/index.ts", "../tripp-autoresearch/index.ts", "../mixture/index.ts"].map((path) => fileURLToPath(new URL(path, import.meta.url))),
       noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     });
     await resourceLoader.reload();
@@ -70,6 +72,20 @@ test("published Code runtime executes shell and patch in an isolated Pi session"
     const nested = await exec.execute("local-tool", { code: 'text(await tools.subagent_process({ action: "list" })); text(Object.keys(tools));' }, new AbortController().signal);
     expect(nested.details).not.toHaveProperty("scriptError");
     expect(JSON.stringify(nested.content)).toContain("No subagent jobs");
+    expect(JSON.stringify(nested.content)).not.toContain("mixture_run");
+    expect(JSON.stringify(nested.content)).not.toContain("mixture_process");
+    const mixture = resourceLoader.getExtensions().extensions.find(extension => extension.commands.has("mixture"))!.commands.get("mixture")!;
+    const commandContext = session.extensionRunner.createCommandContext();
+    await mixture.handler("", commandContext);
+    const enabled = await exec.execute("mixture-enabled", { code: 'text(Object.keys(tools)); text(await tools.mixture_process({ action: "list" }));' }, new AbortController().signal);
+    expect(enabled.details).not.toHaveProperty("scriptError");
+    expect(JSON.stringify(enabled.content)).toContain("mixture_run");
+    expect(JSON.stringify(enabled.content)).toContain("mixture_process");
+    await mixture.handler("", commandContext);
+    const disabled = await exec.execute("mixture-disabled", { code: 'text(Object.keys(tools));' }, new AbortController().signal);
+    expect(disabled.details).not.toHaveProperty("scriptError");
+    expect(JSON.stringify(disabled.content)).not.toContain("mixture_run");
+    expect(JSON.stringify(disabled.content)).not.toContain("mixture_process");
     expect(session.getActiveToolNames()).not.toContain("run_experiment");
     const experiment = await exec.execute("experiment", { code: 'text(await tools.run_experiment({ command: "printf experiment-code-ok" }));' }, new AbortController().signal);
     expect(experiment.details).not.toHaveProperty("scriptError");
@@ -84,6 +100,8 @@ test("published Code runtime executes shell and patch in an isolated Pi session"
       }
     }
   } finally {
+    if (previousMixtureHome === undefined) delete process.env.PI_MIXTURE_HOME;
+    else process.env.PI_MIXTURE_HOME = previousMixtureHome;
     if (session) {
       await session.extensionRunner.emit({ type: "session_shutdown" });
       session.dispose();

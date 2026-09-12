@@ -34,6 +34,7 @@ test.skipIf(process.env.PI_MIXTURE_E2E !== "1")("real Pi root persists completio
 		child.stderr.on("data", (chunk) => { output += chunk; });
 		try {
 			child.stdin.write(JSON.stringify({ id: "ready", type: "get_state" }) + "\n");
+			child.stdin.write(JSON.stringify({ id: "enable-mixture", type: "prompt", message: "/mixture" }) + "\n");
 			const deadline = Date.now() + 30000;
 			while (reconnect ? !output.includes('"id":"ready"') : !entries().some((entry) => entry.type === "message" && entry.message.role === "assistant")) {
 				if (Date.now() > deadline) throw new Error(`Root did not become ready: ${output}`);

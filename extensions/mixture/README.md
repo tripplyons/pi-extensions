@@ -10,6 +10,12 @@ Worker launch outside macOS is refused, same as `agent-swarm`.
 
 ## Use
 
+Mixture is disabled on startup, reload, and session changes. Run `/mixture`
+to enable its tools and completion notifications for the current session.
+Run it again to disable them. The command does not accept a task or launch workers.
+
+After enabling, ask the agent to run a task, or call its Code tools:
+
 ```js
 text(await tools.mixture_run({ task: "Implement retries for the webhook client with tests" }));
 // The response contains a run ID, such as mix_abc123.
@@ -17,9 +23,7 @@ text(await tools.mixture_process({ action: "inspect", runId: "mix_abc123" }));
 text(await tools.mixture_process({ action: "send", runId: "mix_abc123", workerId: "slot-0", message: "Include a test for HTTP 429" }));
 ```
 
-Or interactively: `/mixture Implement retries for the webhook client with tests`
-
-Both entry points return after launching the supervisor, without waiting for
+`mixture_run` returns after launching the supervisor, without waiting for
 model output. Completion messages wake the root for synthesis. Review each
 worktree and apply selected edits yourself. Mixture never merges or commits
 worker changes into the root checkout.
@@ -46,8 +50,12 @@ Control calls return a queued request ID. Inspect the run for its accepted or
 rejected acknowledgement. Do not repeat a queued request. Inspection responses
 are bounded; the response points to the full `run.json` when truncated.
 
+Disabling mixture does not stop existing workers. Re-enable it to manage them
+and receive pending completion notifications. Stop workers with `mixture_process`
+before disabling if you want them to stop.
+
 The detached supervisor survives root shutdown. Reopening the same Pi session
-restores completion notifications. A different session must explicitly resume
+and enabling mixture restores completion notifications. A different session must explicitly resume
 the run. Worker timeouts continue while the root is disconnected.
 
 Reconnecting also wakes unfinished runs whose supervisor is no longer alive.

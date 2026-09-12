@@ -23,6 +23,7 @@ const ProcessParams = Type.Object({
 });
 
 export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, commandRun, sessionRuns, readRun, reconnectRuns }) {
+	let enabled = false;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	const delivered = new Set<string>();
 	const result = (value: unknown, path: string) => ({
@@ -30,6 +31,7 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 		details: { stateFile: path, preview: mixturePreview(value) },
 	});
 	const start = (params: { task: string; cwd?: string; timeoutMs?: number }, ctx: ExtensionContext) => {
+		if (!enabled) throw new Error("Mixture is disabled. Run /mixture to enable it.");
 		if (!params.task.trim()) throw new Error("task is required");
 		const config = loadConfig();
 		return client.startRun({ task: params.task.trim(), models: config.models,
@@ -55,6 +57,7 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 		renderCall: (args: any, theme: any) => renderMixtureCall("mixture_process", args, theme),
 		renderResult: renderMixtureResult,
 		async execute(_id: string, params: typeof ProcessParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
+			if (!enabled) throw new Error("Mixture is disabled. Run /mixture to enable it.");
 			const session = ctx.sessionManager.getSessionId();
 			if (params.action === "list") {
 				const runs = client.sessionRuns(session).map(summarizeRun);
@@ -76,17 +79,8 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 	const registration = registerCodeModeExtensionTools(pi, () => [
 		adaptToolForCodeMode(runTool, { usage: 'await tools.mixture_run({ task: "Implement the change" })' }),
 		adaptToolForCodeMode(processTool, { usage: 'await tools.mixture_process({ action: "list" })' }),
-	]);
-	pi.registerCommand("mixture", {
-		description: "Start a background mixture run",
-		handler: async (args, ctx) => {
-			if (!args.trim()) { ctx.ui.notify("Usage: /mixture <task>", "info"); return; }
-			const run = start({ task: args }, ctx);
-			ctx.ui.notify(`Started ${run.id}`, "info");
-		},
-	});
-	pi.on("session_start", (_event, ctx) => {
-		if (timer) clearInterval(timer);
+	], { isActive: () => enabled });
+	const monitor = (ctx: ExtensionContext) => {
 		client.reconnectRuns(ctx.sessionManager.getSessionId());
 		delivered.clear();
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -121,8 +115,33 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 		check();
 		timer = setInterval(check, 1000);
 		timer.unref();
+	};
+	const setEnabled = (value: boolean, ctx: ExtensionContext) => {
+		enabled = value;
+		if (timer) clearInterval(timer);
+		timer = undefined;
+		const active = new Set(pi.getActiveTools());
+		for (const tool of [runTool, processTool]) {
+			enabled ? active.add(tool.name) : active.delete(tool.name);
+		}
+		pi.setActiveTools([...active]);
+		registration.refresh();
+		if (enabled) monitor(ctx);
+	};
+	pi.registerCommand("mixture", {
+		description: "Toggle mixture tools and completion notifications for this session",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /mixture. Toggle it on, then ask the agent to run a mixture task.", "info");
+				return;
+			}
+			setEnabled(!enabled, ctx);
+			ctx.ui.notify(enabled ? "Mixture enabled" : "Mixture disabled. Existing workers keep running.", "info");
+		},
 	});
+	pi.on("session_start", (_event, ctx) => setEnabled(false, ctx));
 	pi.on("session_shutdown", () => {
+		enabled = false;
 		if (timer) clearInterval(timer);
 		registration.unregister();
 	});
