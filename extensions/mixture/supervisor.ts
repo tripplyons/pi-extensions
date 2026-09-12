@@ -60,7 +60,8 @@ export function supervise(id: string) {
 		active.set(worker.id, launchWorker({
 			command: "/usr/bin/sandbox-exec",
 			args: ["-f", prepared.profile, prepared.invocation.command, "--mode", "rpc", "--session", sessionFile,
-				"--no-extensions", "--extension", conversion, "--thinking", run.options.thinking, "--model", worker.model],
+				"--no-extensions", "--extension", conversion, "--extension", prepared.invocation.bgBash,
+				"--thinking", run.options.thinking, "--model", worker.model],
 			cwd: worker.cwd, env: prepared.environment, task: run.options.task, timeoutMs: run.options.timeoutMs,
 		}, attempt, save, () => {
 			active.delete(worker.id);

@@ -119,6 +119,7 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 		"--no-session",
 		"--no-extensions",
 		"--extension", fileURLToPath(new URL("../pi-codex-conversion/index.ts", import.meta.url)),
+		"--extension", fileURLToPath(new URL("../bg-bash/index.ts", import.meta.url)),
 		"--thinking", options.thinking,
 	];
 	if (options.model) args.push("--model", options.model);

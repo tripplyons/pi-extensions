@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
 
 import autoresearchExtension, {
   shouldAutoActivateAutoresearch,
@@ -88,7 +87,6 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
 
   return {
     tools,
-    codeTools: () => getCodeModeExtensionToolSnapshot(pi, ctx, true).tools,
     appendedEntries,
     commands,
     handlers,
@@ -611,19 +609,19 @@ test("upstream owns compaction while active autoresearch rehydrates from disk af
   }
 });
 
-test("Code tools follow autoresearch activation and shutdown", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-code-"));
+test("native tools follow autoresearch activation and pause", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-native-"));
   const harness = createHarness({ cwd });
   try {
     await harness.handlers.get("session_start")({}, harness.ctx);
-    assert.deepEqual(harness.codeTools(), []);
+    assert.deepEqual(harness.activeTools(), []);
     await writeSameCwdLog(cwd);
     await harness.handlers.get("session_start")({}, harness.ctx);
-    assert.deepEqual(harness.codeTools().map((tool) => tool.name).sort(), AUTORESEARCH_TOOLS);
+    assert.deepEqual(harness.activeTools().sort(), AUTORESEARCH_TOOLS);
     await harness.commands.get("autoresearch").handler("pause", harness.ctx);
-    assert.deepEqual(harness.codeTools(), []);
+    assert.deepEqual(harness.activeTools(), []);
     await harness.handlers.get("session_shutdown")({}, harness.ctx);
-    assert.deepEqual(harness.codeTools(), []);
+    assert.deepEqual(harness.activeTools(), []);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

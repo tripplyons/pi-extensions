@@ -1,62 +1,58 @@
-# Codex Code mode
+# Codex without tool overrides
 
-This directory loads `@howaboua/pi-codex-conversion@3.0.33` without a local fork. Upstream owns shell sessions, patches, tool rendering, context management, fast mode, and usage reporting.
+This directory loads pinned `@howaboua/pi-codex-conversion@3.0.33` without a local fork. Use its supported voice-only mode to leave Pi's tools intact. Normal execution mode alone does not disable upstream tool replacements.
 
 ## Configuration
 
-Merge these fields into `~/.pi/agent/pi-codex-conversion.json`, or the corresponding file under `PI_CODING_AGENT_DIR`:
+Merge these fields into `pi-codex-conversion.json` under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}`:
 
 ```json
 {
-  "executionMode": "code",
-  "voiceFeaturesOnly": false,
+  "executionMode": "normal",
+  "voiceFeaturesOnly": true,
+  "tools": {
+    "applyPatchOnly": false,
+    "viewImageOnly": false,
+    "autoReasoning": false
+  },
   "compaction": {
-    "contextManagement": "remote",
-    "hybridCompaction": true,
-    "responsesCompaction": true
+    "contextManagement": "off",
+    "hybridCompaction": false,
+    "responsesCompaction": false
   }
 }
 ```
 
-Preserve your other settings, including provider scope. The sibling dotfiles settings hook owns this merge. It does not require committing runtime configuration here.
+Keep native Pi compaction enabled in `settings.json`, with `reserveTokens: 60000`. Preserve unrelated preferences, voice settings, and provider scope. The dotfiles settings hook owns this merge; do not store runtime settings in this repository.
 
-- Code mode exposes `exec` and `wait`. Local subagent and autoresearch tools are available inside `exec` through `tools`.
-- Direct context lifecycle tools, including `new_context`, remain upstream-owned.
-- Remote history and notes require the Codex transport and authentication. They are encrypted service state, not local plaintext files.
-- Trusted project `.pi/pi-codex-conversion.json` files can override global configuration. Check them if Code or Remote is missing. This package does not rewrite project overrides.
-- Structured and Notebook modes are not supported by this collection. Select Code in upstream settings before use.
+Trusted project `.pi/pi-codex-conversion.json` files can override the global policy. Check effective settings if upstream tools reappear. This package does not rewrite project overrides.
 
-## Additional upstream packages
+## Tools and child sessions
 
-Install these separately, not through local wrappers. They dynamically import conversion from their own npm tree, so also run `npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.33`. Do not register that shared dependency with Pi. Only this checkout's loader activates conversion.
+- Pi supplies `read`, `write`, and `edit`.
+- Local bg-bash supplies `bash`, `bg_process`, and interruptible `sleep`.
+- Local ask-user supplies `ask_user`; do not register npm `@howaboua/pi-ask` alongside it.
+- Code `exec`/`wait`, upstream file replacements, and Remote context management are disabled under this policy.
+- Subagents explicitly load conversion and bg-bash and inherit managed settings. Swarm and mixture workers receive private native settings and private shell state.
+- Autoresearch retains its native activation rules. Pi owns compaction.
 
-| Package | Code API |
-| --- | --- |
-| `@howaboua/pi-codex-web-run@0.0.2` | `tools.web__run(...)` |
-| `@howaboua/pi-codex-imagegen@0.0.4` | `tools.image_gen__imagegen(...)` |
-| `@howaboua/pi-ask@0.0.9` | `tools.ask({ prompts: [...] })` |
+## Optional upstream addons
 
-Use upstream schemas for each call. Ask requires an interactive TUI or RPC client. Web and image generation require Codex login. Keep generated `.pi/openai-codex-images/` output untracked.
+Keep `@howaboua/pi-codex-web-run@0.0.2` and `@howaboua/pi-codex-imagegen@0.0.4` installed separately. Their native tools do not require Code mode. They require Codex authentication for service requests.
 
-## Retained workflows
+These addons dynamically import conversion from their npm tree. Keep the pinned conversion dependency there without registering a second conversion extension. Only this checkout's loader should activate it.
 
-- Subagents receive full Code tools, inherit the parent model and thinking level, and load only this conversion extension. There are no `write` or `tools` restrictions. Children can modify files and run shell commands. Completion arrives automatically.
-- Autoresearch tools follow its actual activation state, including inside `exec`. Upstream supplies compaction. Recovery reads `.auto/prompt.md`, `.auto/log.jsonl`, ideas, and Git history. An upstream continuation consumes any pending local recovery rather than launching a duplicate turn.
-- `/btw` blocks tool calls in its copied session. `/btw:tools` allows the child's configured Code tools rather than copying the parent's outer tool-name projection.
-- The footer displays upstream statuses. `/nvim` exports the local session, not decrypted Remote history.
+## Manual migration
 
-## Migration
+1. Review the isolated extension and dotfiles changes before deploying them.
+2. Apply the managed configuration explicitly. Remove npm pi-ask registration and duplicate conversion registrations.
+3. Ensure tmux and zsh are installed. Restart Pi and start a fresh session.
+4. Check the active tool list, including native file tools, bg-bash tools, and local `ask_user`.
 
-- Start a fresh session after applying configuration and restarting Pi. Do not expect old selective-compression checkpoints to work with Remote history.
-- Remove separate canonical or Lite conversion registrations and old copies of removed extensions. The manifest explicitly loads 13 entry points.
-- Local swarm, goals, review, fusion, background bash, selective compression, and custom Codex compaction are removed. There is no replacement `sleep` tool.
-- Existing tmux jobs and external state are not deleted or migrated. Upstream shell sessions do not adopt old background jobs.
-- Pi itself handles `AGENTS.md`. Upstream ask and web tools replace the removed local question and web extensions.
+Source edits do not update an already-running Pi session. Existing external state and shell jobs are not deleted. Detached tmux jobs can outlive worker process-group termination.
 
 ## Verification
 
-`npm test` includes real Pi package discovery and an isolated Code runtime test. The runtime executes shell, apply_patch, subagent_process, and an autoresearch experiment without a model request. It also checks that Remote does not fall back to local history when authentication or network access fails.
-
-To include the three addons, set `PI_CODE_ADDON_DIR` to an npm prefix containing them and the pinned conversion dependency, then run `npm test`. The tests check all 16 entry points, addon Code names, and ask's blocking policy. They do not generate images, spend model tokens, or verify authenticated Remote service behavior.
+Run focused tests, then `npm test` and `git diff --check`. Runtime tests must use temporary agent directories rather than live configuration. Test addon registration without authenticated requests; that does not prove live web or image service behavior.
 
 Upstream source: https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/main/packages/pi-codex-conversion

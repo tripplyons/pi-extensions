@@ -70,6 +70,7 @@ export const sandboxProfile = (paths: SandboxPaths) => {
 		...["kern.ostype", "kern.osrelease", "kern.osversion", "kern.osproductversion", "kern.version", "kern.hostname", "kern.argmax", "kern.boottime", "kern.maxfilesperproc", "machdep.cpu.brand_string"].map((name) => `(allow sysctl-read (sysctl-name ${quoteScheme(name)}))`),
 		"(allow mach-lookup)",
 		"(allow network-outbound (remote tcp) (remote udp))",
+		`(allow network-bind network-inbound network-outbound (literal ${quoteScheme(join(temporary, "bg.sock"))}))`,
 		'(allow network-outbound (literal "/private/var/run/mDNSResponder"))',
 		"(allow file-read*)",
 		"(allow file-write*)",
@@ -79,7 +80,9 @@ export const sandboxProfile = (paths: SandboxPaths) => {
 		...[paths.coordinatorWorktree, paths.gitCommonDir, ...systemWriteDenials, ...credentialWriteDenials(paths.hostHome, paths.sourceAgentDir)]
 			.map(canonicalDeniedPath)
 			.map((path) => `(deny file-write* (subpath ${quoteScheme(path)}))`),
-		`(deny file-write* (require-all (subpath ${quoteScheme("/dev")}) (require-not (literal ${quoteScheme("/dev/null")}))))`,
+		'(allow pseudo-tty)',
+		'(allow file-ioctl (literal "/dev/ptmx") (regex #"^/dev/[pt]tys[0-9]+$"))',
+		'(deny file-write* (require-all (subpath "/dev") (require-not (literal "/dev/null")) (require-not (literal "/dev/ptmx")) (require-not (regex #"^/dev/[pt]tys[0-9]+$"))))',
 		`(deny file-write* (literal ${quoteScheme(join(worktree, ".git"))}))`,
 		...privateRoots.map((path) => `(deny file-write-unlink (literal ${quoteScheme(path)}))`),
 	].join("\n") + "\n";
@@ -99,6 +102,7 @@ export const workerEnvironment = (values: Record<string, string>) => {
 	// Tooling commonly defaults these paths to the current project. That fails for
 	// reviewers, whose source snapshot is intentionally read-only.
 	if (values.TMPDIR) {
+		environment.PI_BG_BASH_TMUX_SOCKET = join(values.TMPDIR, "bg.sock");
 		environment.XDG_CACHE_HOME ??= join(values.TMPDIR, "cache");
 		environment.PYTHONPYCACHEPREFIX ??= join(values.TMPDIR, "python-bytecode");
 		environment.UV_CACHE_DIR ??= join(values.TMPDIR, "uv-cache");

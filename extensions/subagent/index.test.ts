@@ -1,7 +1,9 @@
 import { describe, expect, jest, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { publishSwarmAttachment, SWARM_ATTACHMENT_CHANGED_EVENT, SWARM_ATTACHMENT_QUERY_EVENT } from "../agent-swarm/events.ts";
 
 const { createSubagentExtension } = await import("./index.ts");
@@ -77,9 +79,34 @@ const assistantEvent = (text: string, extra: object = {}) => `${JSON.stringify({
 })}\n`;
 
 describe("asynchronous subagent", () => {
+	test("child completion wakes a pending bg-bash sleep", async () => {
+		const previousCache = process.env.XDG_CACHE_HOME;
+		const cache = mkdtempSync(join(tmpdir(), "subagent-wake-"));
+		process.env.XDG_CACHE_HOME = cache;
+		const { default: bg } = await import("../bg-bash/index.ts");
+		const harness = createHarness();
+		const abort = new AbortController();
+		try {
+			bg({ ...harness.pi, registerCommand() {} } as any);
+			await harness.handlers.get("session_start")?.({}, harness.ctx);
+			await harness.tools.get("subagent").execute("start", { task: "fixture" }, undefined, undefined, harness.ctx);
+			const sleeping = harness.tools.get("sleep").execute("sleep", { seconds: 10 }, abort.signal);
+			harness.children[0].stdout.write(assistantEvent("done"));
+			harness.children[0].emit("close", 0);
+			const result = await sleeping;
+			expect(result.details.asyncJob.source).toBe("subagent");
+			expect(result.details.asyncJob.status).toBe("exited");
+			expect(result.details.sleptSeconds).toBeLessThan(2);
+		} finally {
+			abort.abort();
+			await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+			if (previousCache === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = previousCache;
+			rmSync(cache, { recursive: true, force: true });
+		}
+	});
+
 	test("initial attachment hides creation and session start repairs stale direct visibility", async () => {
 		const harness = createHarness({ initiallyAttached: true });
-		expect(getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.map((tool) => tool.name)).toEqual(["subagent_process"]);
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
 		expect(harness.activeTools()).not.toContain("subagent");
 		harness.pi.setActiveTools(["subagent", "subagent_process"]);
@@ -90,12 +117,12 @@ describe("asynchronous subagent", () => {
 		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
 	});
 
-	test("late attachment publisher gates a previously captured Code tool", async () => {
+	test("late attachment publisher gates a previously captured native tool", async () => {
 		const harness = createHarness();
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
-		const stale = getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.find((tool) => tool.name === "subagent")!;
+		const stale = harness.tools.get("subagent");
 		const attachment = publishSwarmAttachment(harness.pi as any, true);
-		await expect(stale.invoke({ task: "bypass" }, { extensionContext: harness.ctx } as any, new AbortController().signal)).rejects.toThrow("disabled");
+		await expect(stale.execute("stale", { task: "bypass" }, undefined, undefined, harness.ctx)).rejects.toThrow("disabled");
 		expect(harness.invocations).toHaveLength(0);
 		attachment.set(true);
 		expect(harness.activeTools()).not.toContain("subagent");
@@ -113,21 +140,14 @@ describe("asynchronous subagent", () => {
 		expect(harness.activeTools()).toEqual(["subagent_process"]);
 		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
 	});
-	test("exposes both tools through the published Code adapter and unregisters on shutdown", async () => {
+	test("registers native tools and cleans up children on shutdown", async () => {
 		const harness = createHarness();
-		const snapshot = () => getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true);
-		const registered = snapshot();
-		expect(registered.tools.map((tool) => tool.name)).toEqual(["subagent", "subagent_process"]);
-		let captured: any;
-		const result = await registered.tools[0].invoke({ task: "Code child" }, {
-			extensionContext: harness.ctx,
-			captureResult: (value: any) => { captured = value; },
-		} as any, new AbortController().signal);
-		expect(result).toContain("Started sub_1");
-		expect(captured.details.job.cwd).toBe(harness.ctx.cwd);
-		expect(harness.invocations[0].args).toContain("--extension");
+		expect([...harness.tools.keys()]).toEqual(["subagent", "subagent_process"]);
+		const result = await harness.tools.get("subagent").execute("start", { task: "Native child" }, undefined, undefined, harness.ctx);
+		expect(result.content[0].text).toContain("Started sub_1");
+		expect(result.details.job.cwd).toBe(harness.ctx.cwd);
+		expect(harness.invocations[0].args).toContain(new URL("../bg-bash/index.ts", import.meta.url).pathname);
 		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
-		expect(snapshot().tools).toEqual([]);
 		expect(harness.children[0].killedWith).toContain("SIGTERM");
 	});
 
@@ -140,14 +160,12 @@ describe("asynchronous subagent", () => {
 
 		expect(harness.activeTools()).not.toContain("subagent");
 		expect(harness.activeTools()).toContain("subagent_process");
-		expect(getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.map((tool) => tool.name)).toEqual(["subagent_process"]);
 		await expect(harness.tools.get("subagent").execute("stale", { task: "bypass" }, undefined, undefined, harness.ctx)).rejects.toThrow("disabled");
 		expect(harness.invocations).toHaveLength(0);
 
 		attached = false;
 		harness.emitEvent(SWARM_ATTACHMENT_CHANGED_EVENT, { attached });
 		expect(harness.activeTools()).toContain("subagent");
-		expect(getCodeModeExtensionToolSnapshot(harness.pi as any, harness.ctx as any, true).tools.map((tool) => tool.name)).toEqual(["subagent", "subagent_process"]);
 	});
 
 	test("returns immediately with inherited model and auto-delivers completion", async () => {

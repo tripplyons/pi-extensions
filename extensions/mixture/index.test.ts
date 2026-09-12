@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
 import { createMixtureExtension } from "./index.ts";
 import { emptyUsage, type Run } from "./state.ts";
 
@@ -39,7 +38,7 @@ function harness(entries: any[] = []) {
 	const messages: any[] = [];
 	const calls: any[] = [];
 	const notifications: string[] = [];
-	let active = ["exec", "unrelated", "mixture_run", "mixture_process"];
+	let active = ["read", "unrelated", "mixture_run", "mixture_process"];
 	let reconnects = 0;
 	const events = new EventEmitter();
 	const ctx: any = { cwd: "/repo", sessionManager: { getSessionId: () => "root", getEntries: () => entries },
@@ -73,7 +72,7 @@ function harness(entries: any[] = []) {
 	handlers.get("session_start")({}, ctx);
 	return { run, calls, messages, handlers, commands, notifications, ctx, execute,
 		toggle: () => commands.get("mixture").handler("", ctx),
-		codeTools: () => getCodeModeExtensionToolSnapshot(pi, ctx, true).tools.map(tool => tool.name),
+		mixtureTools: () => active.filter(name => name.startsWith("mixture_")),
 		get active() { return active; }, get reconnects() { return reconnects; },
 	};
 }
@@ -132,20 +131,20 @@ test("reconnect delivers retained completions only after enabling, once", async 
 	expect(h.calls).toHaveLength(0);
 });
 
-test("slash command toggles both tool sets without launching work", async () => {
+test("slash command toggles native tools without launching work", async () => {
 	const h = harness();
-	expect(h.active).toEqual(["exec", "unrelated"]);
-	expect(h.codeTools()).toEqual([]);
+	expect(h.active).toEqual(["read", "unrelated"]);
+	expect(h.mixtureTools()).toEqual([]);
 	expect(h.reconnects).toBe(0);
 	await expect(h.execute("mixture_run", { task: "Do it" })).rejects.toThrow("disabled");
 	await expect(h.execute("mixture_process", { action: "list" })).rejects.toThrow("disabled");
 	await h.toggle();
-	expect(h.active).toEqual(["exec", "unrelated", "mixture_run", "mixture_process"]);
-	expect(h.codeTools()).toEqual(["mixture_run", "mixture_process"]);
+	expect(h.active).toEqual(["read", "unrelated", "mixture_run", "mixture_process"]);
+	expect(h.mixtureTools()).toEqual(["mixture_run", "mixture_process"]);
 	expect(h.notifications).toEqual(["Mixture enabled"]);
 	await h.toggle();
-	expect(h.active).toEqual(["exec", "unrelated"]);
-	expect(h.codeTools()).toEqual([]);
+	expect(h.active).toEqual(["read", "unrelated"]);
+	expect(h.mixtureTools()).toEqual([]);
 	await expect(h.execute("mixture_process", { action: "stop", runId: "mix_test" })).rejects.toThrow("disabled");
 	expect(h.calls).toHaveLength(0);
 	expect(h.messages).toHaveLength(0);
@@ -156,14 +155,14 @@ test("task arguments do not launch work or toggle enablement", async () => {
 	await h.commands.get("mixture").handler("Do it", h.ctx);
 	expect(h.notifications.at(-1)).toContain("Usage:");
 	expect(h.calls).toHaveLength(0);
-	expect(h.codeTools()).toEqual([]);
+	expect(h.mixtureTools()).toEqual([]);
 });
 
 test("session startup resets enablement and pending completions wait while disabled", async () => {
 	const h = harness();
 	await h.toggle();
 	h.handlers.get("session_start")({}, h.ctx);
-	expect(h.codeTools()).toEqual([]);
+	expect(h.mixtureTools()).toEqual([]);
 	h.run.workers[0].attempts.push({ attempt: 1, status: "ok", startedAt: 1, finishedAt: 2,
 		output: "done", usage: emptyUsage(), logFile: "/log", sessionFile: "/session" });
 	await Bun.sleep(1100);

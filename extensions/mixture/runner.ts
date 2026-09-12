@@ -45,8 +45,16 @@ const setupPrivateAgentDir = (dir: string, models: string[]) => {
 		if (credentials?.[provider]) subset[provider] = credentials[provider];
 	}
 	if (Object.keys(subset).length) writeFileSync(join(dir, "auth.json"), JSON.stringify(subset), { mode: 0o600 });
-	writeFileSync(join(dir, "settings.json"), JSON.stringify({ packages: [], extensions: [], skills: [] }));
-	writeFileSync(join(dir, "pi-codex-conversion.json"), JSON.stringify({ executionMode: "code", scope: { allProviders: "on" } }));
+	writeFileSync(join(dir, "settings.json"), JSON.stringify({
+		packages: [], extensions: [], skills: [],
+		compaction: { enabled: true, reserveTokens: 60000 },
+	}));
+	writeFileSync(join(dir, "pi-codex-conversion.json"), JSON.stringify({
+		executionMode: "normal", voiceFeaturesOnly: true,
+		tools: { applyPatchOnly: false, viewImageOnly: false, autoReasoning: false },
+		compaction: { contextManagement: "off", hybridCompaction: false, responsesCompaction: false },
+		scope: { allProviders: "on" },
+	}));
 };
 
 export const prepareWorker = (
@@ -79,19 +87,24 @@ export const prepareWorker = (
 		hostHome: homedir(),
 		sourceAgentDir: sourceAgent,
 	});
-	const invocation = { command: piCommand(), conversion: realpathSync(fileURLToPath(import.meta.resolve("@howaboua/pi-codex-conversion"))) };
+	const invocation = {
+		command: piCommand(),
+		conversion: fileURLToPath(new URL("../pi-codex-conversion/index.ts", import.meta.url)),
+		bgBash: fileURLToPath(new URL("../bg-bash/index.ts", import.meta.url)),
+	};
 	// Preserve provider credentials and shell configuration inside the filesystem sandbox.
 	const environment: NodeJS.ProcessEnv = {
 		...process.env,
 		HOME: workerHome,
 		TMPDIR: workerTmp,
+		PI_BG_BASH_TMUX_SOCKET: join(workerTmp, "bg.sock"),
 		PI_CODING_AGENT_DIR: agentDir,
 		PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
 	};
-	environment.XDG_CACHE_HOME ??= join(workerTmp, "cache");
-	environment.PYTHONPYCACHEPREFIX ??= join(workerTmp, "python-bytecode");
-	environment.UV_CACHE_DIR ??= join(workerTmp, "uv-cache");
-	environment.UV_PROJECT_ENVIRONMENT ??= join(workerTmp, "uv-venv");
+	environment.XDG_CACHE_HOME = join(workerTmp, "cache");
+	environment.PYTHONPYCACHEPREFIX = join(workerTmp, "python-bytecode");
+	environment.UV_CACHE_DIR = join(workerTmp, "uv-cache");
+	environment.UV_PROJECT_ENVIRONMENT = join(workerTmp, "uv-venv");
 	setupPrivateAgentDir(agentDir, [model]);
 	return { profile, invocation, environment };
 };

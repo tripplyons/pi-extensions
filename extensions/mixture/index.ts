@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { adaptToolForCodeMode, registerCodeModeExtensionTools } from "@howaboua/pi-codex-conversion/code-mode";
+import { ASYNC_JOB_COMPLETED_EVENT, type AsyncJobCompletedEvent } from "../subagent/events.ts";
 import { loadConfig } from "./config.ts";
 import { commandRun, reconnectRuns, sessionRuns, startRun } from "./client.ts";
 import { inspectRun, renderInspection, summarizeRun } from "./inspect.ts";
@@ -76,10 +76,6 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 	pi.registerTool(runTool);
 	pi.registerTool(processTool);
 	pi.registerMessageRenderer("mixture-completion", (message, options, theme) => renderMixtureResult(message, options, theme));
-	const registration = registerCodeModeExtensionTools(pi, () => [
-		adaptToolForCodeMode(runTool, { usage: 'await tools.mixture_run({ task: "Implement the change" })' }),
-		adaptToolForCodeMode(processTool, { usage: 'await tools.mixture_process({ action: "list" })' }),
-	], { isActive: () => enabled });
 	const monitor = (ctx: ExtensionContext) => {
 		client.reconnectRuns(ctx.sessionManager.getSessionId());
 		delivered.clear();
@@ -100,6 +96,10 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 						details: { notificationId, stateFile: runFile(run.id), preview: mixturePreview({ runId: run.id, workerId: worker.id, model: worker.model, changes: worker.changes, ...attempt }) },
 					}, { deliverAs: "steer", triggerTurn: true });
 					delivered.add(notificationId);
+					pi.events.emit(ASYNC_JOB_COMPLETED_EVENT, {
+						source: "mixture", id: notificationId,
+						status: attempt.status === "ok" ? "exited" : "failed",
+					} satisfies AsyncJobCompletedEvent);
 				}
 			}
 		};
@@ -125,7 +125,6 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 			enabled ? active.add(tool.name) : active.delete(tool.name);
 		}
 		pi.setActiveTools([...active]);
-		registration.refresh();
 		if (enabled) monitor(ctx);
 	};
 	pi.registerCommand("mixture", {
@@ -143,7 +142,6 @@ export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, co
 	pi.on("session_shutdown", () => {
 		enabled = false;
 		if (timer) clearInterval(timer);
-		registration.unregister();
 	});
 }
 

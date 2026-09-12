@@ -8,19 +8,21 @@ Each worker runs `pi --mode rpc` with its own `--model` inside its own linked
 Git worktree under the macOS `sandbox-exec` profile reused from `agent-swarm`.
 Worker launch outside macOS is refused, same as `agent-swarm`.
 
+Workers use native Pi file tools and bg-bash with Codex tool overrides disabled. Each has a private tmux socket and caches under its temporary directory. Completion events wake pending bg-bash sleep calls while mixture is enabled.
+
 ## Use
 
 Mixture is disabled on startup, reload, and session changes. Run `/mixture`
 to enable its tools and completion notifications for the current session.
 Run it again to disable them. The command does not accept a task or launch workers.
 
-After enabling, ask the agent to run a task, or call its Code tools:
+After enabling, ask the agent to run a task, or call its native tools:
 
 ```js
-text(await tools.mixture_run({ task: "Implement retries for the webhook client with tests" }));
+mixture_run({ task: "Implement retries for the webhook client with tests" });
 // The response contains a run ID, such as mix_abc123.
-text(await tools.mixture_process({ action: "inspect", runId: "mix_abc123" }));
-text(await tools.mixture_process({ action: "send", runId: "mix_abc123", workerId: "slot-0", message: "Include a test for HTTP 429" }));
+mixture_process({ action: "inspect", runId: "mix_abc123" });
+mixture_process({ action: "send", runId: "mix_abc123", workerId: "slot-0", message: "Include a test for HTTP 429" });
 ```
 
 `mixture_run` returns after launching the supervisor, without waiting for

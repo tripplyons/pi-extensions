@@ -1,10 +1,8 @@
-import { copyFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { HOST_RELEASE, codeModeHostBinaryName } from "@howaboua/pi-codex-conversion/dist/tools/code-mode/host-assets.js";
-import { installCodeModeHost } from "@howaboua/pi-codex-conversion/dist/tools/code-mode/install-host.js";
 import { complaintLogPath } from "../complain/index.ts";
 import { assertMacSandboxAvailable, sandboxProfile, workerEnvironment } from "./isolation.ts";
 import { processExists } from "./ownership.ts";
@@ -48,7 +46,9 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 				gitExecutable = realpathSync(selected.stdout.trim());
 			}
 			const pi = executable("pi");
-			const conversion = realpathSync(fileURLToPath(import.meta.resolve("@howaboua/pi-codex-conversion")));
+			const tmuxExecutable = executable("tmux");
+			const conversion = fileURLToPath(new URL("../pi-codex-conversion/index.ts", import.meta.url));
+			const bgBash = fileURLToPath(new URL("../bg-bash/index.ts", import.meta.url));
 			const extension = realpathSync(entryPoint);
 			const complain = realpathSync(fileURLToPath(new URL("../complain/index.ts", import.meta.url)));
 			const privateHome = workerHome(run.runId, node.nodeId);
@@ -59,13 +59,13 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 			const credentials = readJson<Record<string, unknown>>(join(sourceAgent, "auth.json"));
 			if (!credentials?.[provider]) throw new Error(`No stored ${provider} credential available for the private worker home`);
 			writeJson(join(agentDir, "auth.json"), { [provider]: credentials[provider] });
-			writeJson(join(agentDir, "settings.json"), { packages: [], extensions: [], skills: [], autoCompaction: { enabled: true } });
-			writeJson(join(agentDir, "pi-codex-conversion.json"), { executionMode: "code", scope: { allProviders: "on" } });
-			const hostName = codeModeHostBinaryName(process.platform);
-			const cache = join(stateRoot(), "runtime", HOST_RELEASE, `${process.platform}-${process.arch}`, hostName);
-			await installCodeModeHost({ destination: cache, platform: process.platform, arch: process.arch });
-			const privateHost = join(agentDir, "cache", "pi-codex-conversion", "code-mode", HOST_RELEASE, `${process.platform}-${process.arch}`, hostName);
-			ensureDir(dirname(privateHost)); copyFileSync(cache, privateHost);
+			writeJson(join(agentDir, "settings.json"), { packages: [], extensions: [], skills: [], compaction: { enabled: true, reserveTokens: 60000 } });
+			writeJson(join(agentDir, "pi-codex-conversion.json"), {
+				executionMode: "normal", voiceFeaturesOnly: true,
+				tools: { applyPatchOnly: false, viewImageOnly: false, autoReasoning: false },
+				compaction: { contextManagement: "off", hybridCompaction: false, responsesCompaction: false },
+				scope: { allProviders: "on" },
+			});
 			const control = controlDirectory(node);
 			ensureDir(control);
 			rmSync(join(control, "status.json"), { force: true });
@@ -81,14 +81,14 @@ export function createWorkerProcesses(entryPoint: string): WorkerProcesses {
 			writeFileSync(profile, sandboxProfile(paths), { mode: 0o600 });
 			const environment = workerEnvironment({
 				HOME: privateHome, TMPDIR: paths.workerTmp, PI_CODING_AGENT_DIR: agentDir,
-				PATH: `${dirname(nodeExecutable)}:${dirname(gitExecutable)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+				PATH: `${dirname(nodeExecutable)}:${dirname(gitExecutable)}:${dirname(tmuxExecutable)}:/usr/bin:/bin:/usr/sbin:/sbin`,
 				[WORKER_ENV]: "1", PI_SWARM_HOME: stateRoot(), PI_SWARM_RUN: run.runId, PI_SWARM_NODE: node.nodeId,
 				PI_COMPLAIN_LOG: complaintLogPath(),
 				PI_SWARM_FAST: inheritedFastEnvironment(run.config.fastMode),
 				PI_SWARM_TOKEN: readFileSync(tokenFile(run.runId, node.nodeId), "utf8"),
 			});
 			const args = [pi, "--mode", "json", "--print", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve",
-				"--extension", conversion, "--extension", extension, "--extension", complain, "--model", node.model, "--thinking", node.thinking ?? "medium",
+				"--extension", conversion, "--extension", bgBash, "--extension", extension, "--extension", complain, "--model", node.model, "--thinking", node.thinking ?? "medium",
 				"--session-dir", join(agentDir, "sessions"), "Read swarm_task for your assignment. Work within your role and submit through swarm_complete."];
 			const config = join(control, "launch.json");
 			writeJson(config, { profile, executable: nodeExecutable, args, cwd: node.cwd, environment, timeoutMs: workerTimeoutFor(run, node), statusFile: join(control, "status.json"), commandFile: join(control, "command.json") });

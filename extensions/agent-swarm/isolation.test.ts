@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -22,6 +22,7 @@ test("worker environment drops unrelated host credentials", () => {
 
 test("worker caches, Python bytecode, and uv environments default under worker tmp", () => {
 	const environment = workerEnvironment({ TMPDIR: "/worker/tmp" });
+	expect(environment.PI_BG_BASH_TMUX_SOCKET).toBe("/worker/tmp/bg.sock");
 	expect(environment.XDG_CACHE_HOME).toBe("/worker/tmp/cache");
 	expect(environment.PYTHONPYCACHEPREFIX).toBe("/worker/tmp/python-bytecode");
 	expect(environment.UV_CACHE_DIR).toBe("/worker/tmp/uv-cache");
@@ -32,6 +33,48 @@ test("worker caches, Python bytecode, and uv environments default under worker t
 });
 
 const macTest = process.platform === "darwin" ? test : test.skip;
+macTest("sandboxed bg-bash isolates Python caches and denies protected writes", () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-private-tmux-")));
+	const [worktree, workerHome, workerTmp, outbox, inbox] = ["worktree", "home", "tmp", "outbox", "inbox"].map((name) => join(root, name));
+	for (const directory of [worktree, workerHome, workerTmp, outbox, inbox]) mkdirSync(directory);
+	const profile = join(root, "profile.sb");
+	const policy = writePolicy(root);
+	writeFileSync(profile, sandboxProfile({ worktree, workerHome, workerTmp, outbox, inbox, ...policy }));
+	const tmux = spawnSync("which", ["tmux"], { encoding: "utf8" }).stdout.trim();
+	try {
+		const result = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, tmux, "-S", "bg.sock", "new-session", "-d", "-s", "private", "sleep 10"], {
+			cwd: workerTmp, encoding: "utf8", env: workerEnvironment({ HOME: workerHome, TMPDIR: workerTmp }), timeout: 3000,
+		});
+		expect({ status: result.status, error: result.stderr }).toEqual({ status: 0, error: "" });
+		const script = join(workerTmp, "exercise.ts");
+		writeFileSync(join(worktree, "owned_module.py"), "value = 42\n");
+		const denied = [join(policy.coordinatorWorktree, "forbidden"), join(policy.gitCommonDir, "forbidden"), join(worktree, ".git")];
+		const command = "python3 -c 'import owned_module; print(owned_module.value)'" + denied.map((path) => `; if printf bad > ${JSON.stringify(path)} 2>/dev/null; then exit 99; fi`).join("");
+		writeFileSync(script, `
+import extension from ${JSON.stringify(new URL("../bg-bash/index.ts", import.meta.url).pathname)};
+const tools = new Map(); const handlers = new Map();
+extension({ on(n, f) { handlers.set(n, f); }, registerTool(t) { tools.set(t.name, t); }, registerCommand() {}, events: { on() { return () => {}; } } });
+await handlers.get("session_start")({}, { sessionManager: { getSessionId: () => "sandbox" } });
+try {
+ const result = await tools.get("bash").execute("python", { command: ${JSON.stringify(command)} }, undefined, undefined, { cwd: ${JSON.stringify(worktree)} });
+ console.log(JSON.stringify(result));
+} finally { await handlers.get("session_shutdown")(); }
+`);
+		const shell = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, process.execPath, script], {
+			cwd: worktree, encoding: "utf8", env: workerEnvironment({ HOME: workerHome, TMPDIR: workerTmp }), timeout: 10000,
+		});
+		expect({ status: shell.status, error: shell.stderr }).toEqual({ status: 0, error: "" });
+		expect(JSON.parse(shell.stdout).content[0].text).toContain("42");
+		for (const path of denied) expect(existsSync(path)).toBe(false);
+		expect(existsSync(join(worktree, "__pycache__"))).toBe(false);
+		const bytecode = readdirSync(join(workerTmp, "python-bytecode"), { recursive: true });
+		expect(bytecode.some((path) => String(path).includes("owned_module") && String(path).endsWith(".pyc"))).toBe(true);
+	} finally {
+		spawnSync(tmux, ["-S", "bg.sock", "kill-server"], { cwd: workerTmp });
+		rmSync(root, { recursive: true, force: true });
+	}
+}, 15000);
+
 const writePolicy = (root: string) => {
 	const coordinatorWorktree = join(root, "coordinator");
 	const gitCommonDir = join(root, "git-common");

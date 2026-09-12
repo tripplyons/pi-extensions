@@ -21,7 +21,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { adaptToolForCodeMode, registerCodeModeExtensionTools } from "@howaboua/pi-codex-conversion/code-mode";
 import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
@@ -1094,10 +1093,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   // Registering through this gates the tool, so a new one can't slip in ungated.
   const gatedTools: Parameters<typeof pi.registerTool>[0][] = [];
-  const codeTools = registerCodeModeExtensionTools(pi, () => gatedTools.map((tool) =>
-    adaptToolForCodeMode(tool, { usage: `await tools.${tool.name}(input)` }),
-  ), { isActive: (ctx) => ctx !== undefined && getRuntime(ctx).autoresearchMode });
-  pi.on("session_shutdown", () => codeTools.unregister());
   const registerGatedTool = (tool: Parameters<typeof pi.registerTool>[0]): void => {
     gatedTools.push(tool);
     pi.registerTool(tool);
@@ -1111,7 +1106,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       enabled ? activeTools.add(tool.name) : activeTools.delete(tool.name);
     }
     pi.setActiveTools([...activeTools]);
-    codeTools.refresh();
   };
 
   const recordAutoresearchActivation = (workDir: string, active: boolean): void => {

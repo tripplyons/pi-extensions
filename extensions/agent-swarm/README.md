@@ -1,6 +1,6 @@
 # Agent swarm
 
-`agent-swarm` runs a durable hierarchy of Pi workers in tmux. It requires Codex Code mode, macOS `sandbox-exec`, tmux, Git, Node, and a stored Pi credential for the selected model's provider. Other platforms refuse worker launch.
+`agent-swarm` runs a durable hierarchy of Pi workers in tmux. It requires macOS `sandbox-exec`, tmux, Git, Node, and a stored Pi credential for the selected model's provider. Workers use native Pi file tools and bg-bash, with Codex tool overrides disabled. Other platforms refuse worker launch.
 
 Workers snapshot the coordinator session's current `/fast` setting when they are spawned and use the same Codex service tier without changing the active swarm system prompt.
 
@@ -61,14 +61,13 @@ New workers at every depth inherit the coordinator session's current model, thin
 - `/swarm:clear` refuses while children are active. Run `/swarm:kill` first, then clear removes clean worktrees, worker credentials, sessions, and mailboxes. It retains generated branches, durable node records with final cost snapshots, and a cleared-run marker with the ownership lock inode.
 - `/swarm:help` summarizes commands and limits.
 
-## Code tools
+## Tools
 
 ```js
-const manager = await tools.swarm_spawn({
+swarm_spawn({
   role: "manager",
   task: "Implement the parser change. Delegate implementation and review, then combine accepted work."
 });
-text(manager);
 ```
 
 - `swarm_task` reads the durable task and inbox. Its first successful read returns the complete view; subsequent reads in that extension session return only changed run, node, and message state. Pass `full: true` to return a complete view and reset the delta baseline, `requestId` to inspect a pending operation, or `acknowledge` with message IDs after reading them.
@@ -85,6 +84,8 @@ Large task, message, result, feedback, and verification strings use private requ
 ## Recovery and storage
 
 State lives under `PI_SWARM_HOME`, or `${XDG_STATE_HOME:-~/.local/state}/pi/agent-swarm`. It must be outside the repository. Each run has root-owned records and per-node private mailboxes, homes, temporary files, and linked worktrees.
+
+bg-bash uses a private `bg.sock` under each worker's temporary directory. The sandbox permits that socket and PTY operations, not access to the host tmux socket. Python bytecode and tooling caches stay under worker temporary storage. Shell jobs can outlive worker shutdown; process-group stop does not contain detached tmux descendants.
 
 The root takes a kernel-backed exclusive lock. Reopening its session reconnects the run. `/swarm:resume <runId>` reconnects from another session. Workers retain queued requests while the controller is absent. Completed requests replay their stored response. An interrupted side effect receives an indeterminate-operation error instead of running again. Inspect state before issuing a new operation.
 

@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCodeModeExtensionToolSnapshot } from "@howaboua/pi-codex-conversion/dist/code-mode-extension-tools.js";
 import extension from "./index.ts";
 import { isSwarmAttached } from "./events.ts";
 import { makeNode, SwarmRuntime } from "./runtime.ts";
@@ -108,6 +107,10 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		expect(first.systemPrompt).toContain("submit changes with swarm_complete");
 		expect(first.systemPrompt).toContain("managers integrate accepted children with swarm_integrate");
 		expect(first.systemPrompt).toContain("controller alone owns Git locks");
+		expect(first.systemPrompt).toContain("Authorized coordinators and managers may create managed children with swarm_spawn");
+		expect(first.systemPrompt).toContain("Workers and reviewers cannot spawn children");
+		expect(first.systemPrompt).toContain("Never use unmanaged subagent or mixture tools while attached");
+		expect(first.systemPrompt).not.toContain("Never create subagents");
 		expect(first.systemPrompt).toContain("Never run Git mutations");
 		expect(first.systemPrompt).toContain("delivered through managed messages and wake-ups");
 		expect(first.systemPrompt).toContain("end the turn");
@@ -184,18 +187,15 @@ test("swarm_task returns a full view followed by versioned deltas and can refres
 	}
 });
 
-test("every registered swarm operation is callable through Code mode and unregisters on shutdown", async () => {
+test("every registered native swarm operation rejects calls without an attachment", async () => {
 	const { pi, handlers, tools } = harness();
 	await extension(pi as any);
-	const snapshot = () => getCodeModeExtensionToolSnapshot(pi as any, {} as any, true);
-	expect(snapshot().tools.map((tool) => tool.name).sort()).toEqual([...tools.keys()].sort());
-	for (const tool of snapshot().tools) {
+	for (const tool of tools.values()) {
 		const parameters = tools.get(tool.name).parameters;
 		const input = Object.fromEntries((parameters.required ?? []).map((key: string) => [key, key === "action" ? "accept" : "test"]));
-		await expect(tool.invoke(input, { extensionContext: {} } as any, new AbortController().signal)).rejects.toThrow("No swarm attached");
+		await expect(tool.execute("unattached", input, new AbortController().signal, undefined, {})).rejects.toThrow("No swarm attached");
 	}
 	await handlers.get("session_shutdown")!({}, { ui: { setStatus() {} } });
-	expect(snapshot().tools).toEqual([]);
 });
 
 test("monitor waits for idle, deduplicates wakes, and restores its generation after history compaction and reload", async () => {
@@ -213,15 +213,19 @@ test("monitor waits for idle, deduplicates wakes, and restores its generation af
 	let pending = false;
 	const ctx = { model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "monitor", getBranch: () => entries }, ui: { notify() {}, setStatus() {} }, isIdle: () => idle, hasPendingMessages: () => pending };
 	let active = harness(entries);
+	const activity: unknown[] = [];
+	active.bus.on("tripp:agent-swarm-activity", (event) => activity.push(event));
 	try {
 		writeJson(sessionFile("monitor"), { runId: root.runId });
 		await extension(active.pi as any);
 		await active.handlers.get("session_start")!({}, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 350));
 		expect(active.messages).toHaveLength(0);
+		expect(activity).toHaveLength(1);
 		idle = true; pending = true;
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		expect(active.messages).toHaveLength(0);
+		expect(activity).toHaveLength(1);
 		pending = false;
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		expect(active.messages).toHaveLength(1);

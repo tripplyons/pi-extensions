@@ -3,7 +3,6 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, type ThinkingLevel } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { adaptToolForCodeMode, registerCodeModeExtensionTools } from "@howaboua/pi-codex-conversion/code-mode";
 import { ASYNC_JOB_COMPLETED_EVENT, type AsyncJobCompletedEvent } from "./events.ts";
 import {
 	startAgentRun,
@@ -237,7 +236,6 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 	let subagentVisible = true;
 	let restoreDirectSubagent = false;
 	let sessionStarted = false;
-	let codeRegistration: ReturnType<typeof registerCodeModeExtensionTools> | undefined;
 	const syncSwarmGate = () => {
 		const visible = !isSwarmAttached(pi);
 		const changed = visible !== subagentVisible;
@@ -249,7 +247,6 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 		if (!visible && active) pi.setActiveTools(activeTools.filter((name) => name !== "subagent"));
 		if (visible && changed && restoreDirectSubagent && !active) pi.setActiveTools([...activeTools, "subagent"]);
 		if (visible && changed) restoreDirectSubagent = false;
-		if (changed) codeRegistration?.refresh();
 	};
 	const stopSwarmGate = pi.events.on(SWARM_ATTACHMENT_CHANGED_EVENT, () => {
 		if (sessionStarted) syncSwarmGate();
@@ -273,7 +270,7 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 	const subagent = defineTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Start an asynchronous, session-scoped Pi subagent with isolated context. Returns a job id immediately. The child inherits the parent model and thinking level, loads Codex conversion with full Code tools, and runs without session persistence. It can edit files and run shell commands. Completion is delivered automatically.",
+		description: "Start an asynchronous, session-scoped Pi subagent with isolated context. Returns a job id immediately. The child inherits the parent model and thinking level, loads native file tools and bg-bash under the managed conversion settings, and runs without session persistence. It can edit files and run shell commands. Completion is delivered automatically.",
 		promptSnippet: "Start an isolated asynchronous Pi subagent and receive its result automatically",
 		promptGuidelines: [
 			"Use subagent for independent research or delegated work that benefits from an isolated context window.",
@@ -348,14 +345,9 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 
 	pi.registerTool(subagent);
 	pi.registerTool(subagentProcess);
-	codeRegistration = registerCodeModeExtensionTools(pi, () => [
-		...(!isSwarmAttached(pi) ? [adaptToolForCodeMode(subagent, { usage: 'await tools.subagent({ task: "Research the issue" })' })] : []),
-		adaptToolForCodeMode(subagentProcess, { usage: 'await tools.subagent_process({ action: "list" })' }),
-	]);
 	pi.on("session_shutdown", () => {
 		sessionStarted = false;
 		stopSwarmGate();
-		codeRegistration?.unregister();
 	});
 }
 

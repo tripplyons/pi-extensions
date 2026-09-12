@@ -12,8 +12,10 @@
     "extensions": [
       "./extensions/pi-codex-conversion/index.ts",
       "./extensions/agent-swarm/index.ts",
+      "./extensions/ask-user/index.ts",
       "./extensions/auto-rename/index.ts",
       "./extensions/autocomplete/index.ts",
+      "./extensions/bg-bash/index.ts",
       "./extensions/btw/index.ts",
       "./extensions/clean-footer/index.ts",
       "./extensions/complain/index.ts",

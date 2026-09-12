@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOST_RELEASE, codeModeHostBinaryName } from "@howaboua/pi-codex-conversion/dist/tools/code-mode/host-assets.js";
 import { git } from "./git.ts";
 import { createWorkerProcesses, inheritedFastEnvironment } from "./process.ts";
 import { SwarmRuntime } from "./runtime.ts";
-import { ensureDir, readNode, workerHome } from "./state.ts";
+import { readNode, workerHome } from "./state.ts";
 import { captureWindow, tmux } from "./tmux.ts";
 import type { NodeRecord } from "./types.ts";
 
@@ -16,9 +15,9 @@ test("worker launch environment preserves enabled and disabled fast mode", () =>
 	expect(inheritedFastEnvironment(false)).toBe("0");
 });
 
-const liveTest = process.platform === "darwin" && process.env.PI_SWARM_TEST_MODEL && process.env.PI_SWARM_TEST_CODE_HOST ? test : test.skip;
+const liveTest = process.platform === "darwin" && process.env.PI_SWARM_TEST_MODEL ? test : test.skip;
 
-for (const role of ["worker", "manager"] as const) liveTest(`real tmux ${role} authenticates, runs Code tools, and submits a controlled commit`, async () => {
+for (const role of ["worker", "manager"] as const) liveTest(`real tmux ${role} authenticates, runs native tools, and submits a controlled commit`, async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-live-repo-"));
 	const state = mkdtempSync(join(tmpdir(), "pi-swarm-live-state-"));
 	const previous = process.env.PI_SWARM_HOME;
@@ -31,12 +30,9 @@ for (const role of ["worker", "manager"] as const) liveTest(`real tmux ${role} a
 		writeFileSync(join(directory, "initial"), "base\n");
 		git(directory, ["add", "initial"]);
 		git(directory, ["commit", "-m", "Initialize fixture"]);
-		const cache = join(state, "runtime", HOST_RELEASE, `${process.platform}-${process.arch}`, codeModeHostBinaryName(process.platform));
-		ensureDir(dirname(cache));
-		copyFileSync(process.env.PI_SWARM_TEST_CODE_HOST!, cache);
 		runtime = await SwarmRuntime.create({ cwd: directory, sessionId: "live-fixture", objective: "Verify one real worker", model: process.env.PI_SWARM_TEST_MODEL, thinking: "low" }, createWorkerProcesses(fileURLToPath(new URL("./index.ts", import.meta.url))));
 		const task = role === "worker"
-			? "Use tools.exec_command to write exactly verified followed by a newline to a file named proof. Then call tools.swarm_complete with text 'Verified live worker' and verification describing the file. Do not commit with git, spawn agents, or change other files."
+			? "Use bash to write exactly verified followed by a newline to a file named proof. Then call swarm_complete with text 'Verified live worker' and verification describing the file. Do not commit with git, spawn agents, or change other files."
 			: "Verify the nested swarm workflow. Spawn one worker tasked to write exactly verified followed by a newline to a file named proof, then submit with swarm_complete. Wait for its result. Spawn a reviewer targeting that worker's result commit. The reviewer must inspect proof and submit findings with swarm_complete. Accept both results with swarm_review, integrate the implementation worker with swarm_integrate, verify proof in your own worktree, then submit your combined result with swarm_complete. Do not run git mutations yourself. Read swarm_task for updated messages and node states. You can end a turn while waiting; the inbox will wake you.";
 		const worker = await runtime.act(runtime.root.nodeId, "spawn", { role, task }) as NodeRecord;
 		const deadline = Date.now() + 180000;
@@ -56,8 +52,9 @@ for (const role of ["worker", "manager"] as const) liveTest(`real tmux ${role} a
 		const calls = readdirSync(sessionDirectory, { recursive: true }).filter((path) => String(path).endsWith(".jsonl")).flatMap((path) =>
 			readFileSync(join(sessionDirectory, String(path)), "utf8").trim().split("\n").map((line) => JSON.parse(line)).flatMap((entry) =>
 				Array.isArray(entry.message?.content) ? entry.message.content.filter((item: any) => item.type === "toolCall").map((item: any) => item.name) : []));
-		expect(calls).toContain("exec");
-		expect(calls.some((name: string) => name.startsWith("swarm_"))).toBe(false);
+		expect(calls).not.toContain("exec");
+		expect(calls).toContain("swarm_complete");
+		expect(calls).not.toContain("wait");
 		if (role === "manager") expect(runtime.nodes().map((node) => node.role).sort()).toEqual(["coordinator", "manager", "reviewer", "worker"]);
 		if (role === "worker") {
 			await runtime.act(runtime.root.nodeId, "review", { nodeId: worker.nodeId, action: "request-changes", feedback: "Replace proof with exactly revised followed by a newline. Submit again with swarm_complete after verifying the contents." });
