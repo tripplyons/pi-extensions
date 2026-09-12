@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import startupScreenExtension, {
 	displayDirectory,
@@ -28,6 +28,47 @@ describe("startup header", () => {
 });
 
 describe("resource filtering", () => {
+	test("keeps the chat attached when only hidden resource sections remain", () => {
+		const root = new Container();
+		const document = new Container();
+		const resources = new Container();
+		const chat = new Container();
+		const section = new Text("[Themes]\n  global", 0, 0);
+		Object.assign(section, {
+			getExpandedText: () => "[Themes]\n  global",
+			getCollapsedText: () => "[Themes]\n  global",
+		});
+		resources.addChild(section);
+		resources.addChild(new Spacer(1));
+		document.addChild(new Text("PI", 0, 0));
+		document.addChild(resources);
+		document.addChild(chat);
+		root.addChild(document);
+
+		while (removeHiddenSection(root)) {}
+		expect(document.children).toContain(resources);
+		expect(document.children).toContain(chat);
+		expect(resources.children).toEqual([]);
+		chat.addChild(new Text("User prompt\nAssistant reply\nTool output", 0, 0));
+		while (removeHiddenSection(root)) {}
+		expect(root.render(80).join("\n")).toContain("Assistant reply");
+		expect(root.render(80).join("\n")).toContain("Tool output");
+	});
+
+	test("preserves blank live components and ordinary text matching a heading", () => {
+		const root = new Container();
+		const section = new Text("[Prompts]", 0, 0);
+		Object.assign(section, { getExpandedText: () => "[Prompts]" });
+		const live = new Text("", 0, 0);
+		root.addChild(section);
+		root.addChild(live);
+		root.addChild(new Text("[Themes]\nThis is conversation text", 0, 0));
+		while (removeHiddenSection(root)) {}
+		live.setText("Streaming output");
+		expect(root.render(80).join("\n")).toContain("Streaming output");
+		expect(root.render(80).join("\n")).toContain("This is conversation text");
+	});
+
 	test("filters collapsed and expanded lists by scope and drops empty sections", () => {
 		class Section extends Text {
 			constructor(public getCollapsedText: () => string, public getExpandedText: () => string) {
@@ -58,10 +99,13 @@ describe("resource filtering", () => {
 
 	test("removes Prompts and Themes while preserving requested sections and errors", () => {
 		let invalidations = 0;
-		const leaf = (text: string) => ({ invalidate() {}, render: () => [text] });
+		const leaf = (text: string) => ({
+			getExpandedText: text === "[Prompts]" || text === "[Themes]" ? () => text : undefined,
+			setText() {}, invalidate() {}, render: () => [text],
+		});
 		const root = {
 			children: [
-				leaf("[Context]"), leaf("[Skills]"), leaf("[Prompts]"), leaf("[Themes]"), leaf(""),
+				leaf("[Context]"), leaf("[Skills]"), leaf("[Prompts]"), leaf("[Themes]"), new Spacer(1),
 				leaf("[Extensions]"), leaf("Extension errors:\nfailed.ts"),
 			],
 			invalidate: () => invalidations++,

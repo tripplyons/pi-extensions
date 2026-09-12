@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { relative } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Spacer, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 interface RenderableNode {
 	children?: RenderableNode[];
@@ -63,20 +63,15 @@ export function renderHeader(theme: Theme, cwd: string, width: number): string[]
 	return ["", ...logo, subtitle, ""];
 }
 
-function renderedText(component: RenderableNode): string {
-	try {
-		return component.render(200).join("\n").replace(ANSI_ESCAPE, "");
-	} catch {
-		return "";
-	}
-}
-
 export function removeHiddenSection(component: RenderableNode): boolean {
 	if (!Array.isArray(component.children)) return false;
 
 	for (let index = 0; index < component.children.length; index += 1) {
 		const child = component.children[index]!;
-		const heading = renderedText(child).split("\n").find((line) => line.trim())?.trim();
+		// Match resource sections themselves, never a container's combined output.
+		const heading = child.getExpandedText && child.setText
+			? child.getExpandedText().replace(ANSI_ESCAPE, "").split("\n").find((line) => line.trim())?.trim()
+			: undefined;
 		let empty = false;
 		if (heading && PROJECT_SECTIONS.has(heading) && child.getExpandedText && child.setText) {
 			const expanded = child.getExpandedText();
@@ -92,7 +87,7 @@ export function removeHiddenSection(component: RenderableNode): boolean {
 		}
 		if (empty || (heading && HIDDEN_SECTIONS.has(heading))) {
 			const following = component.children[index + 1];
-			const removeCount = following && renderedText(following).trim() === "" ? 2 : 1;
+			const removeCount = following instanceof Spacer ? 2 : 1;
 			component.children.splice(index, removeCount);
 			component.invalidate();
 			return true;
