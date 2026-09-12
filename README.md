@@ -9,11 +9,11 @@ git clone https://github.com/tripplyons/pi-extensions.git
 cd pi-extensions
 git switch pi-codex-conversion
 npm ci --omit=dev
-npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.30
+npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.33
 pi install "$PWD"
 pi install npm:@howaboua/pi-codex-web-run@0.0.2
-pi install npm:@howaboua/pi-codex-imagegen@0.0.3
-pi install npm:@howaboua/pi-ask@0.0.8
+pi install npm:@howaboua/pi-codex-imagegen@0.0.4
+pi install npm:@howaboua/pi-ask@0.0.9
 ```
 
 The dependency in Pi's user-wide npm directory lets the addons import conversion. It is not registered separately with Pi. The three upstream additions bring the selected setup to 22 extensions. Do not also install canonical or Lite Codex conversion, or copies of these extensions under `~/.pi/agent/extensions/`.

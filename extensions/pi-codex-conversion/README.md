@@ -1,6 +1,6 @@
 # Codex Code mode
 
-This directory loads `@howaboua/pi-codex-conversion@3.0.30` without a local fork. Upstream owns shell sessions, patches, tool rendering, context management, fast mode, and usage reporting.
+This directory loads `@howaboua/pi-codex-conversion@3.0.33` without a local fork. Upstream owns shell sessions, patches, tool rendering, context management, fast mode, and usage reporting.
 
 ## Configuration
 
@@ -28,13 +28,13 @@ Preserve your other settings, including provider scope. The sibling dotfiles set
 
 ## Additional upstream packages
 
-Install these separately, not through local wrappers. They dynamically import conversion from their own npm tree, so also run `npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.30`. Do not register that shared dependency with Pi. Only this checkout's loader activates conversion.
+Install these separately, not through local wrappers. They dynamically import conversion from their own npm tree, so also run `npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.33`. Do not register that shared dependency with Pi. Only this checkout's loader activates conversion.
 
 | Package | Code API |
 | --- | --- |
 | `@howaboua/pi-codex-web-run@0.0.2` | `tools.web__run(...)` |
-| `@howaboua/pi-codex-imagegen@0.0.3` | `tools.image_gen__imagegen(...)` |
-| `@howaboua/pi-ask@0.0.8` | `tools.ask({ prompts: [...] })` |
+| `@howaboua/pi-codex-imagegen@0.0.4` | `tools.image_gen__imagegen(...)` |
+| `@howaboua/pi-ask@0.0.9` | `tools.ask({ prompts: [...] })` |
 
 Use upstream schemas for each call. Ask requires an interactive TUI or RPC client. Web and image generation require Codex login. Keep generated `.pi/openai-codex-images/` output untracked.
 

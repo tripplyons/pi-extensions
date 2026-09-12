@@ -34,7 +34,7 @@
     ]
   },
   "dependencies": {
-    "@howaboua/pi-codex-conversion": "3.0.30"
+    "@howaboua/pi-codex-conversion": "3.0.33"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
