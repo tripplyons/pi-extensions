@@ -93,6 +93,19 @@ test("Ctrl+F shares command state and provider checks", async () => {
   expect(session.notices.at(-1)).toContain("requires an OpenAI Codex model");
 });
 
+test("Mixture sessions can toggle fast mode without rewriting the composite request", async () => {
+  const session = setup();
+  session.ctx.model = { ...session.ctx.model!, provider: "mixture", id: "luna", api: "mixture" };
+  const payload = { model: "luna" };
+  await session.toggle();
+  expect(session.fast()).toBe(true);
+  expect(session.entries.at(-1).data).toEqual({ enabled: true });
+  expect(session.request(payload)).toBe(payload);
+  await session.shortcut();
+  expect(session.fast()).toBe(false);
+  expect(session.entries.at(-1).data).toEqual({ enabled: false });
+});
+
 test("forced default persists separately and session histories stay isolated", async () => {
   const entries: any[] = [];
   const session = setup(entries);

@@ -22,8 +22,8 @@ export default function fastExtension(pi: ExtensionAPI) {
   });
 
   const toggle = async (ctx: ExtensionContext) => {
-    if (ctx.model?.provider !== "openai-codex") {
-      ctx.ui.notify("/fast requires an OpenAI Codex model.", "warning");
+    if (ctx.model?.provider !== "openai-codex" && ctx.model?.provider !== "mixture") {
+      ctx.ui.notify("/fast requires an OpenAI Codex model, directly or through Mixture.", "warning");
       return;
     }
     fast = !fast;

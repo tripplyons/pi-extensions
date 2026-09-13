@@ -1,6 +1,6 @@
 # Session fast mode
 
-- `/fast` or Ctrl+F enables Codex priority requests. Toggle again to force standard requests.
+- `/fast` or Ctrl+F enables Codex priority requests while a direct Codex or Mixture model is selected. Toggle again to force standard requests.
 - Ctrl+F replaces the editor's forward-character shortcut. Right arrow still moves the cursor.
 - The footer shows `fast` while the override is enabled and clears when it is disabled.
 - The override applies to subsequent chat requests using `openai-codex` and to
