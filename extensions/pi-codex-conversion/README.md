@@ -33,7 +33,7 @@ Trusted project `.pi/pi-codex-conversion.json` files can override the global pol
 - Local bg-bash supplies `bash`, `bg_process`, and interruptible `sleep`.
 - Local ask-user supplies `ask_user`; do not register npm `@howaboua/pi-ask` alongside it.
 - Code `exec`/`wait`, upstream file replacements, and Remote context management are disabled under this policy.
-- Subagents explicitly load conversion and bg-bash and inherit managed settings. Swarm and mixture workers receive private native settings and private shell state.
+- Subagents explicitly load conversion and bg-bash and inherit managed settings. Swarm workers receive private native settings and private shell state. Mixture uses the current session's effective providers and native tool loop.
 - Autoresearch retains its native activation rules. Pi owns compaction.
 
 ## Optional upstream addons

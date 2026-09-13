@@ -15,8 +15,8 @@ export const isSwarmAttached = (pi: ExtensionAPI) => {
 
 export function publishSwarmAttachment(pi: ExtensionAPI, initiallyAttached = false) {
 	let attached = initiallyAttached;
-	const unsubscribe = pi.events.on(SWARM_ATTACHMENT_QUERY_EVENT, (query: AttachmentQuery) => {
-		if (attached) query.attached = true;
+	const unsubscribe = pi.events.on(SWARM_ATTACHMENT_QUERY_EVENT, data => {
+		if (attached && data && typeof data === "object" && "attached" in data) (data as AttachmentQuery).attached = true;
 	});
 	const notify = () => pi.events.emit(SWARM_ATTACHMENT_CHANGED_EVENT, { attached });
 	notify();

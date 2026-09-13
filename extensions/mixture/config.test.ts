@@ -1,46 +1,53 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_MODELS, DEFAULT_TIMEOUT_MS, configPath, loadConfig } from "./config.ts";
+import { configPath, defaultConfig, loadConfig, parseConfig, saveConfig, splitModel } from "./config.ts";
 
-const tempDir = () => mkdtempSync(join(tmpdir(), "mixture-config-"));
+const directories: string[] = [];
+const temporary = () => { const dir = mkdtempSync(join(tmpdir(), "mixture-config-")); directories.push(dir); return dir; };
+afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-describe("mixture config", () => {
-	test("writes defaults when the file is missing", () => {
-		const dir = tempDir();
-		const config = loadConfig(dir);
-		expect(config.models).toEqual([...DEFAULT_MODELS]);
-		expect(config.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
-		const written = JSON.parse(readFileSync(configPath(dir), "utf8"));
-		expect(written.models).toEqual([...DEFAULT_MODELS]);
-		expect(written.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
-	});
-
-	test("keeps configured models and timeout", () => {
-		const dir = tempDir();
-		writeFileSync(configPath(dir), JSON.stringify({ models: ["openrouter/foo/bar"], timeoutMs: 1234 }));
-		expect(loadConfig(dir)).toEqual({ models: ["openrouter/foo/bar"], timeoutMs: 1234 });
-	});
-
-	test("fills missing models with defaults and writes them back", () => {
-		const dir = tempDir();
-		writeFileSync(configPath(dir), JSON.stringify({ timeoutMs: 5000 }));
-		expect(loadConfig(dir)).toEqual({ models: [...DEFAULT_MODELS], timeoutMs: 5000 });
-		expect(JSON.parse(readFileSync(configPath(dir), "utf8")).models).toEqual([...DEFAULT_MODELS]);
-	});
-
-	test("rejects invalid JSON naming the path", () => {
-		const dir = tempDir();
-		writeFileSync(configPath(dir), "{nope");
+test("missing config uses the selected roster without writing", () => {
+	const dir = temporary();
+	const config = loadConfig(dir);
+	expect(config).toEqual(defaultConfig());
+	expect(config.presets.default.reviewers).toHaveLength(2);
+	expect(existsSync(configPath(dir))).toBe(false);
+	config.presets.default.reviewers.length = 0;
+	expect(defaultConfig().presets.default.reviewers).toHaveLength(2);
+});
+test("strict versioned config rejects old schema, recursion, unsafe names, and limits", () => {
+	for (const change of [
+		() => ({ models: ["x/y"] }),
+		() => [],
+		() => ({ ...defaultConfig(), credentials: "no" }),
+		() => ({ ...defaultConfig(), presets: {} }),
+		() => ({ ...defaultConfig(), presets: { "../bad": defaultConfig().presets.default } }),
+		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, lead: "mixture/default" } } }),
+		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, limits: { requestTimeoutMs: 0 } } } }),
+	]) expect(() => parseConfig(change())).toThrow();
+	expect(splitModel("openrouter/deepseek/model")).toEqual(["openrouter", "deepseek/model"]);
+	expect(() => splitModel("provider/")).toThrow();
+	expect(() => splitModel("no-provider")).toThrow();
+});
+test("malformed and old files fail with the path and are preserved", () => {
+	const dir = temporary();
+	for (const text of ["{bad", '{"models":["x/y"]}']) {
+		writeFileSync(configPath(dir), text);
 		expect(() => loadConfig(dir)).toThrow(configPath(dir));
-	});
-
-	test("rejects bad shapes", () => {
-		for (const body of [`[]`, `{"models": []}`, `{"models": ["no-provider"]}`, `{"timeoutMs": -1}`]) {
-			const dir = tempDir();
-			writeFileSync(configPath(dir), body);
-			expect(() => loadConfig(dir)).toThrow(configPath(dir));
-		}
-	});
+		expect(readFileSync(configPath(dir), "utf8")).toBe(text);
+	}
+});
+test("saves atomically, fills optional limits, and detects concurrent changes", () => {
+	const dir = temporary();
+	const config = defaultConfig();
+	saveConfig(config, dir, null);
+	expect(loadConfig(dir)).toEqual(config);
+	const before = readFileSync(configPath(dir), "utf8");
+	writeFileSync(configPath(dir), before + "\n");
+	expect(() => saveConfig(config, dir, before)).toThrow("changed while editing");
+	const sparse = JSON.parse(before);
+	delete sparse.presets.default.limits;
+	expect(parseConfig(sparse)).toEqual(config);
 });

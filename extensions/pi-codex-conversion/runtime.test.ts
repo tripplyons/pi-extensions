@@ -10,13 +10,11 @@ test("native runtime preserves file tools and executes bg-bash in an isolated Pi
   const dir = await mkdtemp(join(tmpdir(), "pi-code-runtime-"));
   const agentDir = join(dir, "agent");
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const previousMixtureHome = process.env.PI_MIXTURE_HOME;
   const previousCache = process.env.XDG_CACHE_HOME;
   const previousSocket = process.env.PI_BG_BASH_TMUX_SOCKET;
   let session;
   try {
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    process.env.PI_MIXTURE_HOME = join(dir, "mixture");
     process.env.XDG_CACHE_HOME = join(dir, "cache");
     process.env.PI_BG_BASH_TMUX_SOCKET = join(dir, "bg.sock");
     await mkdir(agentDir);
@@ -64,20 +62,15 @@ test("native runtime preserves file tools and executes bg-bash in an isolated Pi
     expect(JSON.stringify((await call("subagent_process", { action: "list" })).content)).toContain("No subagent jobs");
     const mixture = resourceLoader.getExtensions().extensions.find(extension => extension.commands.has("mixture"))!.commands.get("mixture")!;
     const commandContext = session.extensionRunner.createCommandContext();
-    expect(session.getActiveToolNames()).not.toContain("mixture_run");
-    await mixture.handler("", commandContext);
-    expect(session.getActiveToolNames()).toContain("mixture_run");
-    expect(session.getActiveToolNames()).toContain("mixture_process");
-    await mixture.handler("", commandContext);
-    expect(session.getActiveToolNames()).not.toContain("mixture_run");
-    expect(session.getActiveToolNames()).not.toContain("mixture_process");
+    const toolsBeforeStatus = session.getActiveToolNames();
+    await mixture.handler("status", commandContext);
+    expect(session.getActiveToolNames()).toEqual(toolsBeforeStatus);
+    for (const name of ["mixture_control", "mixture_run", "mixture_process"]) expect(session.getActiveToolNames()).not.toContain(name);
     expect(session.getActiveToolNames()).toContain("run_experiment");
     expect(JSON.stringify((await call("run_experiment", { command: "printf native-experiment-ok" })).content)).toContain("native-experiment-ok");
     if (addons.length) for (const name of ["web_run", "imagegen"]) expect(session.getActiveToolNames()).toContain(name);
 
   } finally {
-    if (previousMixtureHome === undefined) delete process.env.PI_MIXTURE_HOME;
-    else process.env.PI_MIXTURE_HOME = previousMixtureHome;
     if (session) {
       await session.extensionRunner.emit({ type: "session_shutdown" });
       session.dispose();

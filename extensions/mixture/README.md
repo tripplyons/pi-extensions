@@ -1,133 +1,180 @@
 # Mixture
 
-`mixture` starts one background worker per configured model. The root session
-can inspect, steer, stop and restart workers while doing other work. Completed
-attempts send their labeled output and usage back to the root.
+Mixture is a native Pi model with a lead, a writer and independent read-only
+reviewers. Select `mixture/default` through `/model`. Requires Pi 0.85.1 or newer.
+Selecting an ordinary model does not start collaborators.
 
-Each worker runs `pi --mode rpc` with its own `--model` inside its own linked
-Git worktree under the macOS `sandbox-exec` profile reused from `agent-swarm`.
-Worker launch outside macOS is refused, same as `agent-swarm`.
+The lead plans, delegates, assesses reports and answers the user. The writer
+normally edits and tests in your current checkout, including uncommitted and
+untracked files. No Git repository, worktree or editing subprocess is required.
+The lead can explicitly take over after a safe writer handoff.
 
-Workers use native Pi file tools and bg-bash with Codex tool overrides disabled. Each has a private tmux socket and caches under its temporary directory. Completion events wake pending bg-bash sleep calls while mixture is enabled.
+## Configuration
 
-## Use
+`/mixture configure [preset]` selects available models and thinking levels, lets
+you edit the complete proposal, and saves only after confirmation. Type in a TUI
+model picker to filter by provider/model rather than scrolling the whole catalog.
+It requires an idle interactive session and reconciled background jobs. Cancelling changes
+nothing. Concurrent file edits abort the save rather than overwrite them.
+Select another model before removing the active preset.
 
-Mixture is disabled on startup, reload, and session changes. Run `/mixture`
-to enable its tools and completion notifications for the current session.
-Run it again to disable them. The command does not accept a task or launch workers.
-
-After enabling, ask the agent to run a task, or call its native tools:
-
-```js
-mixture_run({ task: "Implement retries for the webhook client with tests" });
-// The response contains a run ID, such as mix_abc123.
-mixture_process({ action: "inspect", runId: "mix_abc123" });
-mixture_process({ action: "send", runId: "mix_abc123", workerId: "slot-0", message: "Include a test for HTTP 429" });
-```
-
-`mixture_run` returns after launching the supervisor, without waiting for
-model output. Completion messages wake the root for synthesis. Review each
-worktree and apply selected edits yourself. Mixture never merges or commits
-worker changes into the root checkout.
-
-## Manage runs
-
-TUI tool cards show the action, run ID and worker statuses instead of raw JSON.
-Expand results for longer output excerpts, usage and the full-state file path.
-Completion cards use the same layout. Model-facing results remain structured JSON.
-
-- `list` lists runs owned by this session.
-- `inspect` takes `runId` and optionally `workerId`. It returns attempt history,
-  outputs, errors, usage, command acknowledgements and retained paths.
-- `send` requires `runId`, `workerId` and a nonempty `message`. It steers a
-  running worker. A worker already settling its final result rejects steering.
-- `stop` takes `runId`. Add `workerId` to stop only that worker.
-- `restart` requires `runId` and `workerId`. It starts a fresh model session in
-  the same retained worktree. Earlier output, logs and usage remain available.
-- `resume` takes `runId` and explicitly transfers control to the current root
-  session. The previous session can still inspect it, but cannot change it
-  without another explicit transfer.
-
-Control calls return a queued request ID. Inspect the run for its accepted or
-rejected acknowledgement. Do not repeat a queued request. Inspection responses
-are bounded; the response points to the full `run.json` when truncated.
-
-Disabling mixture does not stop existing workers. Re-enable it to manage them
-and receive pending completion notifications. Stop workers with `mixture_process`
-before disabling if you want them to stop.
-
-The detached supervisor survives root shutdown. Reopening the same Pi session
-and enabling mixture restores completion notifications. A different session must explicitly resume
-the run. Worker timeouts continue while the root is disconnected.
-
-Reconnecting also wakes unfinished runs whose supervisor is no longer alive.
-An interrupted attempt becomes failed, with its last recorded output and usage
-preserved. Unacknowledged steering is marked delivery-unknown, never replayed
-automatically. Inspect its worker session before resending it. Restart refuses
-to run while the previous recorded worker PID still exists. A supervisor crash
-does not preserve its RPC pipes or timeout timer; inspect and stop orphaned
-processes before restarting. Root shutdown alone does not cause this condition.
-
-Preparation failures retain an error log but have an empty session path because
-Pi never started. Runtime startup diagnostics are in `supervisor.log` and each
-attempt's RPC stderr log.
-
-State lives under `${PI_MIXTURE_HOME:-${XDG_STATE_HOME:-~/.local/state}/pi/mixture}`,
-outside this repository. Each run retains `run.json`, its command mailbox,
-supervisor log, worktrees and per-attempt RPC logs and session files. State can
-contain task text, outputs and credentials in private worker agent directories.
-Do not publish it.
-
-## Config
-
-`mixture_run` reads `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`. A missing
-file (or one without `models`) gets the defaults written back automatically:
+Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
 
 ```json
 {
-  "models": [
-    "openrouter/z-ai/glm-5.3-flash",
-    "openrouter/deepseek/deepseek-v4.1-flash",
-    "openrouter/meta/muse-spark-1.3-contributor"
-  ],
-  "timeoutMs": 600000
+  "version": 2,
+  "presets": {
+    "default": {
+      "lead": "openai-codex/gpt-6-astra",
+      "writer": {
+        "model": "openrouter/deepseek/deepseek-v4.1-flash",
+        "thinking": "high"
+      },
+      "reviewers": [
+        { "model": "openrouter/z-ai/glm-5.3-flash", "thinking": "low" },
+        { "model": "openrouter/meta/muse-spark-1.3-contributor", "thinking": "low" }
+      ]
+    }
+  }
 }
 ```
 
-`models` is the full worker roster. `timeoutMs` bounds each worker call and can
-be overridden per call. Malformed config fails with the path and reason.
+- A missing file uses these defaults in memory; startup does not write it.
+- Preset names become model IDs: `mixture/<preset>`.
+- Set `reviewers` to `[]` to disable independent review. Up to four are allowed.
+- Each writer/reviewer can have optional `guidance`. Repository instructions
+  already supplied to Pi are included; no additional project config is loaded.
+- Lead thinking follows Pi's normal selector. Writer/reviewer levels are
+  validated separately. Recursive `mixture/*` role models are rejected.
+- Credentials stay in Pi. Each request resolves its own effective provider,
+  authentication, headers and endpoint, including provider overrides.
+- Role models must be present in Pi's catalog or model configuration. Discovery
+  does not fetch missing metadata or make inference calls. Missing models and
+  unsupported thinking levels produce diagnostics, not substitute models.
+- Malformed and legacy files are preserved and reported with their path.
+  There is no automatic migration. Explicitly configure a new version-2 file.
 
-## Notes
+## Execution and review
 
-- A Git repository with a commit is required. Workers start from `HEAD`, not
-  the root checkout's uncommitted edits.
-- All worktrees and `pi-mixture/<run>/<slot>` branches are retained, including
-  clean ones. Uncommitted and untracked files belong to the worktree, not the
-  branch. Inspection reports `git status --short` after each attempt.
-- Stop workers before manual cleanup. Remove their worktrees with `git worktree
-  remove`, delete their branches if unwanted, then remove the run directory.
-- Auth: stored per-provider credentials are copied into each worker's private
-  agent dir when present. Otherwise key-like environment values
-  (`*_API_KEY`, `*_API_TOKEN`, `*_TOKEN`, e.g. `OPENROUTER_API_KEY`) pass
-  through, same as a direct subagent child.
-- macOS only. Worker launch elsewhere is refused, same as `agent-swarm`.
-- All workers share one thinking level, inherited from the calling session.
-  The 3 defaults all support `high`; `low` and `medium` do not resolve on
-  every default model, so keep the session at `high` for mixture runs.
-- 3 parallel calls cost roughly 3x one call. The result reports per-model usage.
-- A worker that times out or fails does not block the others. Its partial
-  output and recorded usage remain available alongside the error.
+Lead and writer calls use the normal Pi tool loop, including validation,
+permission hooks, visible tool output and recorded results. `mixture_control`
+coordinates delegation, reports and takeover; it is active only in Mixture.
+Controls cannot share a batch with other tools. Unknown effectful tools require
+the writer lease. Nested editing-agent launches and execution while attached to
+a managed swarm are blocked.
 
-## Verification
+Reviewers have separate histories and only Pi's native `read`, `grep`, `find`
+and `ls`, plus a structured reporting operation. Their private reads use those
+read-only implementations, not the outer editing-tool loop. Reviewers cannot
+run shell commands or call arbitrary extension tools. This is not an OS sandbox.
 
-```sh
-bun test extensions/mixture
-PI_MIXTURE_E2E=1 bun test extensions/mixture/e2e.test.ts extensions/mixture/reconnect.test.ts
-npm test
-git diff --check
-```
+Reviewers receive delegation constraints and completed execution deltas. They
+run concurrently, but each reviewer serializes its own requests. Findings carry
+model identity, severity, evidence and the execution revision. Reads can race a
+writer; concerns and blockers are reconfirmed at a completed boundary before
+asking the lead to act. Review is advice, not a vote or user authority.
 
-The opt-in tests make paid model calls. They verify steering, process stop,
-ownership transfer, restart, usage and retained files, then launch a real Pi
-root to verify completion delivery and session reconnect. They print retained
-artifact paths for inspection.
+A serious confirmed finding pauses new writer steps for lead assessment. The
+lead may request a correction, dismiss advice with reasons, or take over.
+A candidate final answer is withheld until bounded final review completes.
+Failed or incomplete review is disclosed, never counted as clean. Remaining
+serious findings are disclosed when correction rounds are exhausted.
+
+Images remain available to roles that support them. Text-only roles receive an
+explicit omitted-image warning; their review must not be treated as visual
+verification. Composite input metadata reflects the whole roster conservatively.
+
+## Background jobs and cancellation
+
+A tracked running shell job retains its role's writer lease. Handoff, takeover
+and final completion wait for current-session jobs to finish or be explicitly
+stopped. Blocked transitions identify job IDs. A paused writer cannot make more
+model calls; the lead may inspect or stop its tracked job before taking over.
+
+A missing or failed bg-bash ownership query fails closed when that integration
+has been used. Restore bg-bash to reconcile retained jobs if it was disabled.
+Without bg-bash, only synchronous shell execution supports managed handoff.
+Mixture does not infer that an unknown background tool has finished.
+
+Cancellation and model/session changes abort inference, not surviving shell
+jobs. Mixture warns about those jobs; it does not kill them to force a handoff.
+The guarantee covers Mixture-controlled roles and tracked jobs, not human edits,
+other Pi sessions or unmanaged detached descendants. Instructions prohibit
+intentionally detaching a writing process.
+
+## Limits
+
+Each preset accepts a `limits` object. Omitted fields use these defaults:
+
+| Field | Default | Scope |
+| --- | ---: | --- |
+| `requestTimeoutMs` | 120000 | Each underlying request, including auth |
+| `writerTurns` | 32 | Responses per delegation, including context recovery |
+| `delegations` | 8 | Per accepted user request |
+| `reviewerBatchTurns` | 4 | Requests per reviewer batch |
+| `reviewerRequests` | 24 | Per reviewer per accepted user request |
+| `catchUpMs` | 30000 | Checkpoint review deadline |
+| `finalCorrections` | 2 | Final-answer reassessments per user request |
+| `leadMaxTokens` | 16384 | Lead output ceiling |
+| `writerMaxTokens` | 8192 | Writer output ceiling |
+| `reviewerMaxTokens` | 4096 | Reviewer output ceiling |
+| `maxCostUsd` | unset | Estimated admission cap for the role-state lifetime |
+
+Output limits are clamped to each provider's model limit. Steering does not reset
+request limits. In-flight estimated costs are reserved before admitting another
+request, including concurrent reviewers. Estimates use configured model prices;
+they are not guaranteed billing ceilings. A limit stops that loop with an
+explicit reason. Provider retries default to zero.
+
+## Sessions, context and usage
+
+Versioned custom entries in the current Pi session hold role histories, findings,
+counters, usage receipts and writer ownership. They are not injected into the
+main model context. Ephemeral sessions remain ephemeral. No global daemon,
+private credential copy or separate run directory is created.
+
+Reload/resume restores the active branch's valid checkpoint. Model/preset changes,
+new sessions, forks, tree navigation and compaction invalidate stale work.
+Restoration returns decisions to the lead and requires inspecting current files.
+It does not roll files back or replay an interrupted write. A missing tool result
+is recorded as interrupted: the operation may already have changed files.
+
+Each role compacts its own context with the same model, preserving task facts,
+unresolved advice, images and recent complete tool batches. Recognized context
+overflow gets one bounded recovery attempt. Failed summaries preserve the last
+valid history. Pi's own compaction and other helper requests use the lead alone,
+without starting collaborators.
+
+Usage receipts preserve underlying model identities and charge completed calls
+once, including summaries, failed calls that report usage and rejected final
+candidates. Nested calls are carried by native control-tool results; cancellation
+can carry unreported usage on an aborted/error assistant receipt. These do not
+inflate the main context-pressure estimate. Clean-footer includes tool-result,
+compaction and branch-summary costs.
+
+An abruptly terminated request may have unknown provider usage. Persisted but
+not yet delivered receipts remain pending until the next accounting boundary.
+Neither missing usage nor zero configured model prices prove that a call was free.
+
+## Inspection
+
+- `/mixture` or `/mixture status`: roster, ownership, review state and usage.
+- `/mixture inspect`: scrollable details in the TUI; textual status outside it.
+- Expand coordination tool cards for findings and per-role usage.
+- The compact status uses Pi's status API and works alongside clean-footer.
+
+The legacy background tools, supervisors and worktree interfaces are removed.
+Existing external artifacts are left alone; no old processes are stopped or
+user files deleted by this extension.
+
+## References
+
+- [pi-moa](https://pi.dev/packages/pi-moa): named model configuration and labeled
+  contributions. Mixture uses native model selection rather than its command pipeline.
+- [pi-omplike-advisor](https://github.com/pasky/pi-omplike-advisor): persistent
+  read-only reviewers, incremental updates, severity and reconfirmation.
+- [Cognition local Fusion](https://cognition.com/blog/local-fusion): separate lead
+  and sidekick contexts with briefs, reports and lead-owned decisions.
+
+These informed the design; their runtime code is not bundled. Mixture makes no
+claim to reproduce their benchmark results or savings.

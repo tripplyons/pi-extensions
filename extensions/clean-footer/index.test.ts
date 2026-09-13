@@ -89,6 +89,18 @@ describe("clean footer working indicator", () => {
 });
 
 describe("clean footer extension statuses", () => {
+	test("keeps Mixture identity and progress visible on narrow terminals", async () => {
+		const harness = createHarness();
+		Object.assign(harness.ctx.model, { provider: "mixture", id: "default" });
+		harness.statuses.set("mixture", "mix writer r3 · review 2 · $0.004");
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		const lines = harness.footer().render(60);
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("mixture/default");
+		expect(lines[1]).toContain("writer r3 · review 2");
+		expect(lines.every((line: string) => visibleWidth(line) <= 60)).toBe(true);
+		expect(harness.footer().render(200)).toHaveLength(1);
+	});
 	test("shows local mode when enabled", async () => {
 		const harness = createHarness();
 		harness.statuses.set("local", "local on");
@@ -109,6 +121,22 @@ describe("clean footer extension statuses", () => {
 		harness.statuses.delete("other-package");
 		expect(harness.footer().render(200)[0]).not.toContain("waiting for input");
 		expect(visibleWidth(harness.footer().render(30)[0])).toBeLessThanOrEqual(30);
+	});
+
+	test("includes nested tool, compaction and branch-summary usage without changing context pressure", async () => {
+		const harness = createHarness();
+		harness.entries.push(
+			{ type: "message", message: { role: "assistant", usage: { cost: { total: 1 } } } },
+			{ type: "message", message: { role: "toolResult", usage: { cost: { total: 0.25 } } } },
+			{ type: "message", message: { role: "toolResult" } },
+			{ type: "compaction", usage: { cost: { total: 0.1 } } },
+			{ type: "branch_summary", usage: { cost: { total: 0.05 } } },
+			{ type: "custom", data: { usage: { cost: { total: 999 } } } },
+		);
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		const rendered = harness.footer().render(200)[0];
+		expect(rendered).toContain("$1.40");
+		expect(rendered).toContain("39.5%/200k");
 	});
 
 	test("keeps the cost total from decreasing after context changes", async () => {

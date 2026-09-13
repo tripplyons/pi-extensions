@@ -1,63 +1,79 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { commandRun } from "./client.ts";
-import { readRun, currentAttempt, terminal, runFile } from "./state.ts";
+import { tmpdir } from "node:os";
+import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { defaultConfig } from "./config.ts";
+import { createMixtureExtension } from "./index.ts";
+import { CHECKPOINT, parseCheckpoint } from "./checkpoint.ts";
+import { modelDefinition, validatePreset } from "./provider.ts";
 
-test.skipIf(process.env.PI_MIXTURE_E2E !== "1")("live background steering, stop, ownership resume, restart and retained artifacts", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "mixture-e2e-"));
-	execFileSync("git", ["init", "-q", cwd]);
-	execFileSync("git", ["-C", cwd, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "--allow-empty", "-m", "init"]);
-	const options = {
-		task: "First run a shell sleep for 5 seconds. Then create answer.txt containing exactly 391 followed by a newline. Reply with 391. Do not commit.",
-		models: ["openrouter/z-ai/glm-5.3-flash", "openrouter/z-ai/glm-5.3-flash"], timeoutMs: 90000, thinking: "high", cwd,
-	};
-	// The launching process exits before this test manages its surviving workers.
-	const script = `import { startRun } from ${JSON.stringify(new URL("./client.ts", import.meta.url).href)};
-console.log(JSON.stringify(startRun(${JSON.stringify(options)}, "e2e-root")));`;
-	const run = JSON.parse(execFileSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 10000 }));
-	console.log(`Live mixture state: ${runFile(run.id)}`);
-	const attempt = () => currentAttempt(readRun(run.id).workers[0]);
-	const until = async (check: () => boolean) => {
-		const deadline = Date.now() + 95000;
-		while (!check()) {
-			if (Date.now() > deadline) throw new Error(`Timed out; inspect ${runFile(run.id)}`);
-			await Bun.sleep(100);
-		}
-	};
-	const command = async (owner: string, action: "send" | "stop" | "restart" | "resume", workerId?: string, message?: string) => {
-		const request = commandRun(run.id, owner, action, workerId, message);
-		await until(() => readRun(run.id).commands.some((item) => item.id === request.requestId && item.status !== "pending"));
-		expect(readRun(run.id).commands.find((item) => item.id === request.requestId)?.status).toBe("accepted");
-	};
+const live = process.env.PI_MIXTURE_E2E === "1";
+(live ? test : test.skip)("live approved roster edits, verifies and independently reviews a disposable file", async () => {
+	// Resolve the existing auth store before changing the temporary agent directory.
+	// No credentials are copied or printed; refresh remains with Pi's auth runtime.
+	const runtime = await ModelRuntime.create({ allowModelNetwork: false });
+	const registry = new ModelRegistry(runtime);
+	const config = defaultConfig();
+	const preset = config.presets.default;
+	Object.assign(preset.limits, { writerTurns: 8, delegations: 4, reviewerRequests: 24, reviewerBatchTurns: 4,
+		catchUpMs: 45_000, requestTimeoutMs: 90_000, leadMaxTokens: 2048, writerMaxTokens: 4096, reviewerMaxTokens: 2048, maxCostUsd: 2 });
+	validatePreset(preset, registry.find.bind(registry));
+	const dir = mkdtempSync(join(tmpdir(), "mixture-live-"));
+	const agentDir = join(dir, "agent"); const cwd = join(dir, "work");
+	mkdirSync(agentDir); mkdirSync(cwd);
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+	const errors: unknown[] = [];
+	console.log(`Live smoke artifacts: ${dir}`);
 	try {
-		expect(run.workers[0].attempts).toHaveLength(0);
-		await until(() => attempt()?.status === "running");
-		await until(() => readRun(run.id).workers.every((worker) => currentAttempt(worker)?.status === "running"));
-		expect(new Set(readRun(run.id).workers.map((worker) => currentAttempt(worker).pid)).size).toBe(2);
-		await command("e2e-root", "send", "slot-0", "Keep the answer file uncommitted.");
-		const pid = attempt().pid!;
-		await command("e2e-root", "stop");
-		await until(() => attempt().status === "stopped");
-		await until(() => readRun(run.id).workers.every((worker) => currentAttempt(worker).status === "stopped"));
-		expect(() => process.kill(pid, 0)).toThrow();
-		await command("e2e-reconnected", "resume");
-		expect(readRun(run.id).ownerSession).toBe("e2e-reconnected");
-		await command("e2e-reconnected", "restart", "slot-0");
-		await until(() => attempt().attempt === 2 && terminal(attempt().status));
-		const worker = readRun(run.id).workers[0];
-		expect(worker.attempts.map((item) => item.status)).toEqual(["stopped", "ok"]);
-		expect(attempt().output).toContain("391");
-		expect(attempt().usage.input + attempt().usage.output).toBeGreaterThan(0);
-		expect(existsSync(attempt().sessionFile)).toBe(true);
-		expect(readFileSync(attempt().logFile, "utf8")).toContain("agent_settled");
-		expect(readFileSync(join(worker.cwd, "answer.txt"), "utf8")).toBe("391\n");
-		expect(worker.changes).toContain("?? answer.txt");
-		expect(existsSync(join(cwd, "answer.txt"))).toBe(false);
-		expect(execFileSync("git", ["-C", cwd, "branch", "--list", worker.branch!], { encoding: "utf8" })).toContain(worker.branch!);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		writeFileSync(join(agentDir, "mixture.json"), JSON.stringify(config));
+		writeFileSync(join(cwd, "fixture.txt"), "before\n");
+		writeFileSync(join(cwd, "unrelated.txt"), "preserve this user content\n");
+		const settings = SettingsManager.inMemory({ packages: [], compaction: { enabled: false }, retry: { enabled: false } });
+		const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noExtensions: true, noSkills: true,
+			noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [(pi: ExtensionAPI) => createMixtureExtension(pi, registry)] });
+		await loader.reload();
+		expect(loader.getExtensions().errors).toEqual([]);
+		({ session } = await createAgentSession({ cwd, agentDir, resourceLoader: loader, settingsManager: settings,
+			sessionManager: SessionManager.create(cwd, join(dir, "sessions")), modelRuntime: runtime,
+			model: modelDefinition("default", preset, registry.find.bind(registry)), thinkingLevel: "low" }));
+		await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
+		const timeout = setTimeout(() => { void session?.abort(); }, 300_000);
+		try {
+			await session.prompt("Use the writer to replace the single line before with after in fixture.txt. Preserve unrelated.txt. Verify the exact contents with read and a short shell assertion. Keep all outputs short. Independent reviewers should inspect the completed edit; the unchanged initial file is not a defect before execution. End with a brief verified result.");
+		} finally { clearTimeout(timeout); }
+		const entries = session.sessionManager.getEntries();
+		const entry = entries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT);
+		expect(entry?.type).toBe("custom");
+		const state = parseCheckpoint((entry as any).data).state;
+		const stats = session.getSessionStats();
+		const summary = {
+			path: dir, models: { lead: preset.lead, writer: preset.writer.model, reviewers: preset.reviewers.map(role => role.model) },
+			roles: [state.lead, state.writer, ...state.reviewers].map(role => ({ calls: role.calls, usage: role.usage })),
+			reviewers: state.reviewers.map(role => ({ status: role.status, revision: role.revision, warning: role.warning, findings: role.findings })),
+			cost: stats.cost, tokens: stats.tokens, final: session.messages.at(-1), errors,
+		};
+		writeFileSync(join(dir, "result.json"), JSON.stringify(summary, null, 2));
+		console.log(JSON.stringify({ path: dir, calls: summary.roles.map(role => role.calls), cost: stats.cost, tokens: stats.tokens.total, reviewers: summary.reviewers.map(role => ({ status: role.status, warning: role.warning })) }));
+		expect(errors).toEqual([]);
+		expect(readFileSync(join(cwd, "fixture.txt"), "utf8")).toBe("after\n");
+		expect(readFileSync(join(cwd, "unrelated.txt"), "utf8")).toBe("preserve this user content\n");
+		expect(state.writer.calls).toBeGreaterThan(0);
+		expect(state.lead.calls).toBeGreaterThan(0);
+		for (const reviewer of state.reviewers) {
+			expect(reviewer.calls).toBeGreaterThan(0);
+			expect(reviewer.warning).toBeUndefined();
+			expect(reviewer.revision).toBe(state.revision);
+			expect(reviewer.findings.filter(finding => finding.severity !== "nit")).toEqual([]);
+		}
+		expect(session.messages.some(message => message.role === "toolResult" && message.toolName === "bash" && !message.isError)).toBe(true);
+		expect((session.messages.at(-1) as AssistantMessage).stopReason).toBe("stop");
 	} finally {
-		if (attempt() && !terminal(attempt().status)) commandRun(run.id, readRun(run.id).ownerSession, "stop");
+		if (session) { await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); }
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+		// Retain only the test's fixture/config/session evidence for the plan audit.
 	}
-}, 180000);
+}, 330_000);

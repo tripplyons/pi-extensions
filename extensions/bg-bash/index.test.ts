@@ -2,6 +2,7 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { queryBackgroundJobs } from "./events.ts";
 
 class MockBox {
 	children: any[] = [];
@@ -81,7 +82,13 @@ const cacheRoot = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), 
 const createHarness = (sessionId: string) => {
 	const handlers = new Map<string, Function>();
 	const tools = new Map<string, any>();
+	const listeners = new Map<string, Function>();
+	const events = {
+		on(name: string, handler: Function) { listeners.set(name, handler); return () => listeners.delete(name); },
+		emit(name: string, value: unknown) { listeners.get(name)?.(value); },
+	};
 	bgBashExtension({
+		events,
 		on(event: string, handler: Function) { handlers.set(event, handler); },
 		registerCommand() {},
 		registerTool(tool: any) { tools.set(tool.name, tool); },
@@ -90,6 +97,7 @@ const createHarness = (sessionId: string) => {
 	handlers.get("session_start")?.({}, ctx);
 	return {
 		tools,
+		query: (owner = sessionId) => queryBackgroundJobs({ events } as any, owner),
 		shutdown: () => handlers.get("session_shutdown")?.({}, ctx),
 	};
 };
@@ -120,6 +128,25 @@ const createStoredJob = (options: {
 	if (options.status !== undefined) writeFileSync(join(jobDir, "status"), `${options.status}\n`);
 	return jobDir;
 };
+
+test("typed job query reports current ownership and unregisters on shutdown", async () => {
+	const h = createHarness("mixture-query-owner");
+	let id: string | undefined;
+	try {
+		const started = await h.tools.get("bash").execute("query-start", { command: "sleep 30", timeout: 0.1 }, undefined, undefined, { cwd: process.cwd() });
+		id = started.details.job.id;
+		expect(h.query()).toMatchObject({ available: true, sessionId: "mixture-query-owner" });
+		expect(h.query().jobs.find(job => job.id === id)).toMatchObject({ status: "running", ownerSessionId: "mixture-query-owner" });
+		expect(h.query("other-owner").jobs).toEqual([]);
+		await h.tools.get("bg_process").execute("query-kill", { action: "kill", id });
+		expect(h.query().jobs.find(job => job.id === id)?.status).not.toBe("running");
+	} finally {
+		if (id) await h.tools.get("bg_process").execute("query-cleanup", { action: "kill", id });
+		await h.shutdown();
+		if (id) rmSync(join(cacheRoot, id), { recursive: true, force: true });
+	}
+	expect(h.query().available).toBe(false);
+});
 
 describe("bg_process rendering", () => {
 	test("shows every subcommand and its parameters", async () => {

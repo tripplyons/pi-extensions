@@ -9,6 +9,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { withStatusCard } from "../tool-status-style/style.ts";
 import { ASYNC_JOB_COMPLETED_EVENT, isAsyncJobCompletedEvent, type AsyncJobCompletedEvent } from "../subagent/events.ts";
+import { BG_JOB_QUERY_EVENT, isBackgroundJobQuery } from "./events.ts";
 
 const DEFAULT_GRACE_SECONDS = 5;
 const MAX_BASH_TIMEOUT_SECONDS = 300;
@@ -732,6 +733,12 @@ const resultDetails = (action: ProcessDetails["action"], scope: JobScope, messag
 
 export default function bgBashExtension(pi: ExtensionAPI) {
 	const manager = new BackgroundBashManager();
+	const unsubscribeJobQuery = pi.events?.on(BG_JOB_QUERY_EVENT, (query) => {
+		if (!isBackgroundJobQuery(query)) return;
+		query.available = true;
+		try { query.jobs = manager.list("current").filter(job => job.ownerSessionId === query.sessionId); }
+		catch (error) { query.error = error instanceof Error ? error.message : String(error); }
+	}) ?? (() => {});
 	const pendingSleeps = new Set<AbortController>();
 	const asyncCompletionWaiters = new Set<(event: AsyncJobCompletedEvent) => void>();
 	const externalWakeWaiters = new Set<(wake: ExternalWake) => void>();
@@ -835,6 +842,7 @@ export default function bgBashExtension(pi: ExtensionAPI) {
 		for (const sleep of pendingSleeps) sleep.abort();
 		unsubscribeAsyncCompletion();
 		unsubscribeSwarmActivity();
+		unsubscribeJobQuery();
 		asyncCompletionWaiters.clear();
 		externalWakeWaiters.clear();
 		manager.shutdown();
@@ -875,7 +883,7 @@ export default function bgBashExtension(pi: ExtensionAPI) {
 	pi.registerTool(withStatusCard({
 		name: "sleep",
 		label: "Sleep",
-		description: `Pause execution for a requested number of seconds, up to ${MAX_SLEEP_SECONDS} seconds. Sleep wakes early for current-session background job, subagent, or mixture completion, user steering, and agent-swarm activity. Use this when waiting for asynchronous work.`,
+		description: `Pause execution for a requested number of seconds, up to ${MAX_SLEEP_SECONDS} seconds. Sleep wakes early for current-session background job or subagent completion, user steering, and agent-swarm activity. Use this when waiting for asynchronous work.`,
 		promptSnippet: `Pause for a requested number of seconds, capped at ${MAX_SLEEP_SECONDS}s; wakes early for current-session background jobs, steering, or agent-swarm activity`,
 		promptGuidelines: [
 			`Use sleep when you need to wait before checking asynchronous work, but never request more than ${MAX_SLEEP_SECONDS} seconds.`,

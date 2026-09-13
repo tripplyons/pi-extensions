@@ -21,7 +21,7 @@ Disable Code mode and Codex tool overrides before starting a fresh session. See 
 
 ## Dependencies
 
-- Pi 0.84.4 or newer, Node.js 22.19 or newer, npm, and Git.
+- Pi 0.85.1 or newer, Node.js 22.19 or newer, npm, and Git.
 - OpenAI Codex authentication in Pi for web search and image generation.
 - tmux and zsh for bg-bash.
 - Neovim for `/nvim`.
@@ -46,7 +46,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| mixture | Off by default; `/mixture` toggles background model tools and completion notifications. |
+| [mixture](extensions/mixture/README.md) | A selectable model with a lead, cheap writer, and independent read-only reviewers in the current checkout. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |

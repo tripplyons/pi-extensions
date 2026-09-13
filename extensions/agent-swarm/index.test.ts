@@ -112,7 +112,7 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		expect(first.systemPrompt).toContain("Never delete unknown changes to make cleanup pass");
 		expect(first.systemPrompt).toContain("Authorized coordinators and managers may create managed children with swarm_spawn");
 		expect(first.systemPrompt).toContain("Workers and reviewers cannot spawn children");
-		expect(first.systemPrompt).toContain("Never use unmanaged subagent or mixture tools while attached");
+		expect(first.systemPrompt).toContain("Never use unmanaged subagent tools or the Mixture model while attached");
 		expect(first.systemPrompt).not.toContain("Never create subagents");
 		expect(first.systemPrompt).toContain("Never run Git mutations");
 		expect(first.systemPrompt).toContain("delivered through managed messages and wake-ups");

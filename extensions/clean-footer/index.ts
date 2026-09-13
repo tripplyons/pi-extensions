@@ -1,7 +1,6 @@
 import { basename } from "node:path";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const SEPARATOR = " | ";
@@ -17,6 +16,17 @@ const formatTokens = (count: number) => {
 };
 
 const plainStatus = (status: string | undefined) => status?.replace(ANSI_ESCAPE, "").trim() ?? "";
+
+export function sessionCost(entries: readonly SessionEntry[]): number {
+	let cost = 0;
+	for (const entry of entries) {
+		const usage = entry.type === "compaction" || entry.type === "branch_summary" ? entry.usage
+			: entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult") ? entry.message.usage : undefined;
+		const value = usage?.cost.total;
+		if (value !== undefined && Number.isFinite(value)) cost += Math.max(0, value);
+	}
+	return cost;
+}
 
 export default function cleanFooterExtension(pi: ExtensionAPI) {
 	let working = false;
@@ -49,31 +59,31 @@ export default function cleanFooterExtension(pi: ExtensionAPI) {
 						: percent.toFixed(1);
 					const contextUsage = `${contextPercent === "?" ? "?" : `${contextPercent}%`}/${formatTokens(contextWindow)}`;
 
-					let cost = 0;
-					for (const entry of ctx.sessionManager.getEntries()) {
-						if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-						const entryCost = (entry.message as AssistantMessage).usage.cost.total;
-						if (Number.isFinite(entryCost)) cost += Math.max(0, entryCost);
-					}
-					maxCost = Math.max(maxCost, cost);
+					maxCost = Math.max(maxCost, sessionCost(ctx.sessionManager.getEntries()));
 
 					const folder = basename(ctx.cwd) || ctx.cwd;
 					const workingStatus = working ? `${theme.fg("accent", theme.bold(WORKING_MARKER))} ` : "";
 					const folderStatus = workingStatus + theme.fg("accent", theme.bold(folder));
 					const parts = [
 						folderStatus,
-						theme.fg("muted", ctx.model?.id ?? "no-model"),
+						theme.fg("muted", ctx.model?.provider === "mixture" ? `mixture/${ctx.model.id}` : ctx.model?.id ?? "no-model"),
 						theme.fg("muted", pi.getThinkingLevel()),
 						theme.fg("muted", contextUsage),
 						theme.fg("muted", `$${maxCost.toFixed(2)}`),
 					];
+					const statusParts: string[] = [];
 					for (const [key, value] of statuses) {
 						if (key === HIDDEN_STATUS_KEY) continue;
 						const status = plainStatus(value);
-						if (status) parts.push(theme.fg("muted", status));
+						if (status) statusParts.push(theme.fg("muted", status));
 					}
 
-					return [truncateToWidth(parts.join(theme.fg("dim", SEPARATOR)), width)];
+					const separator = theme.fg("dim", SEPARATOR);
+					const combined = [...parts, ...statusParts].join(separator);
+					if (ctx.model?.provider === "mixture" && statusParts.length && visibleWidth(combined) > width) {
+						return [truncateToWidth(parts.join(separator), width), truncateToWidth(statusParts.join(separator), width)];
+					}
+					return [truncateToWidth(combined, width)];
 				},
 			};
 		});

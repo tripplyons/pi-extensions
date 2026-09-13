@@ -1,148 +1,191 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
-import { ASYNC_JOB_COMPLETED_EVENT, type AsyncJobCompletedEvent } from "../subagent/events.ts";
-import { loadConfig } from "./config.ts";
-import { commandRun, reconnectRuns, sessionRuns, startRun } from "./client.ts";
-import { inspectRun, renderInspection, summarizeRun } from "./inspect.ts";
-import { readRun, runFile, terminal, writeJson } from "./state.ts";
-import { stateHome } from "./runner.ts";
-import { mixturePreview, renderMixtureCall, renderMixtureResult } from "./tool-render.ts";
+import { readFileSync } from "node:fs";
+import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider } from "@earendil-works/pi-ai";
+import { isSwarmAttached } from "../agent-swarm/events.ts";
+import { queryBackgroundJobs } from "../bg-bash/events.ts";
+import { CHECKPOINT, restoreCheckpoint, type Checkpoint } from "./checkpoint.ts";
+import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
+import { addUsage, callRole, createMixtureProvider, emitMessage, failureMessage, resolveModel, type Registry } from "./provider.ts";
+import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
+import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
+import { tagReceipts } from "./usage.ts";
 
-const RunParams = Type.Object({
-	task: Type.String({ description: "Task for each configured model" }),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
-	cwd: Type.Optional(Type.String()),
-});
-const ProcessParams = Type.Object({
-	action: StringEnum(["list", "inspect", "send", "stop", "restart", "resume"]),
-	runId: Type.Optional(Type.String()),
-	workerId: Type.Optional(Type.String({ description: "Worker slot, for example slot-0" })),
-	message: Type.Optional(Type.String({ description: "Steering message" })),
-});
-
-export function createMixtureExtension(pi: ExtensionAPI, client = { startRun, commandRun, sessionRuns, readRun, reconnectRuns }) {
-	let enabled = false;
-	let timer: ReturnType<typeof setInterval> | undefined;
-	const delivered = new Set<string>();
-	const result = (value: unknown, path: string) => ({
-		content: [{ type: "text" as const, text: renderInspection(value, path) }],
-		details: { stateFile: path, preview: mixturePreview(value) },
-	});
-	const start = (params: { task: string; cwd?: string; timeoutMs?: number }, ctx: ExtensionContext) => {
-		if (!enabled) throw new Error("Mixture is disabled. Run /mixture to enable it.");
-		if (!params.task.trim()) throw new Error("task is required");
-		const config = loadConfig();
-		return client.startRun({ task: params.task.trim(), models: config.models,
-			timeoutMs: params.timeoutMs ?? config.timeoutMs, cwd: params.cwd ?? ctx.cwd,
-			thinking: pi.getThinkingLevel(),
-		}, ctx.sessionManager.getSessionId());
+export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry) {
+	let registry = initialRegistry ?? new ModelRegistry(await ModelRuntime.create({ allowModelNetwork: false }));
+	let config: MixtureConfig | undefined;
+	let diagnostic: string | undefined;
+	let registered: Provider | undefined;
+	let ctx: ExtensionContext | undefined;
+	let session: MixtureSession | undefined;
+	let rootId: string | undefined;
+	let snapshotHash: string | undefined;
+	let pending: Promise<AssistantMessage> | undefined;
+	let requesting = false;
+	try { config = loadConfig(); }
+	catch (error) { diagnostic = String(error); }
+	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
+	const status = () => diagnostic ?? (session ? inspection(session) : `Mixture presets: ${Object.keys(config!.presets).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`);
+	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session) : "mix ready" : undefined); };
+	const persist = (stage: Checkpoint["stage"]) => {
+		if (!ctx || !session || ctx.sessionManager.getSessionId() !== rootId) return;
+		const checkpoint: Checkpoint = { version: 2, cwd: ctx.cwd, stage: requesting ? "request" : stage, state: structuredClone(session.state) };
+		const hash = fingerprint(checkpoint);
+		if (hash === snapshotHash) return;
+		pi.appendEntry(CHECKPOINT, checkpoint);
+		snapshotHash = hash;
 	};
-	const runTool = {
-		name: "mixture_run", label: "Mixture Run",
-		description: "Start parallel background model workers in retained worktrees. Returns a run ID immediately. Completion arrives automatically. Use mixture_process to inspect, steer, stop or restart.",
-		parameters: RunParams,
-		renderCall: (args: any, theme: any) => renderMixtureCall("mixture_run", args, theme),
-		renderResult: renderMixtureResult,
-		async execute(_id: string, params: typeof RunParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
-			const run = start(params, ctx);
-			return result(summarizeRun(run), runFile(run.id));
-		},
-	};
-	const processTool = {
-		name: "mixture_process", label: "Mixture Process",
-		description: "Manage durable mixture runs. List this session's runs; inspect retained outputs, usage, attempts and command acknowledgements. Send steers a running worker. Stop accepts an optional worker. Restart requires a worker. Resume explicitly transfers ownership to this session. Responses are bounded; full state stays on disk.",
-		parameters: ProcessParams,
-		renderCall: (args: any, theme: any) => renderMixtureCall("mixture_process", args, theme),
-		renderResult: renderMixtureResult,
-		async execute(_id: string, params: typeof ProcessParams.static, _signal: unknown, _update: unknown, ctx: ExtensionContext) {
-			if (!enabled) throw new Error("Mixture is disabled. Run /mixture to enable it.");
-			const session = ctx.sessionManager.getSessionId();
-			if (params.action === "list") {
-				const runs = client.sessionRuns(session).map(summarizeRun);
-				const path = join(stateHome(), "listings", `${encodeURIComponent(session)}.json`);
-				writeJson(path, runs);
-				return result(runs, path);
-			}
-			if (!params.runId) throw new Error("runId is required");
-			const path = runFile(params.runId);
-			if (params.action === "inspect") return result(inspectRun(client.readRun(params.runId), params.workerId), path);
-			if (["send", "restart"].includes(params.action) && !params.workerId) throw new Error("workerId is required");
-			if (params.action === "send" && !params.message?.trim()) throw new Error("message is required");
-			return result(client.commandRun(params.runId, session, params.action, params.workerId, params.message), path);
-		},
-	};
-	pi.registerTool(runTool);
-	pi.registerTool(processTool);
-	pi.registerMessageRenderer("mixture-completion", (message, options, theme) => renderMixtureResult(message, options, theme));
-	const monitor = (ctx: ExtensionContext) => {
-		client.reconnectRuns(ctx.sessionManager.getSessionId());
-		delivered.clear();
-		for (const entry of ctx.sessionManager.getEntries()) {
-			if (entry.type === "custom_message" && entry.customType === "mixture-completion") {
-				const details = entry.details as { notificationId?: string } | undefined;
-				if (details?.notificationId) delivered.add(details.notificationId);
-			}
+	const detach = async (reason: string, warn = false) => {
+		const old = session;
+		if (!old) return;
+		await old.abort();
+		await pending?.catch(() => {});
+		old.reconcile(reason);
+		persist("detached");
+		if (warn && ctx) {
+			const jobs = queryBackgroundJobs(pi, rootId!);
+			const running = jobs.jobs.filter(job => job.status === "running");
+			if (running.length || jobs.error) ctx.ui.notify(`Mixture stopped inference, not shell jobs. ${jobs.error ?? `Still running: ${running.map(job => job.id).join(", ")}`}`, "warning");
 		}
-		const scan = () => {
-			for (const run of client.sessionRuns(ctx.sessionManager.getSessionId())) {
-				for (const worker of run.workers) for (const attempt of worker.attempts) {
-					const notificationId = `${run.id}/${worker.id}/${attempt.attempt}`;
-					if (!terminal(attempt.status) || delivered.has(notificationId)) continue;
-					pi.sendMessage({ customType: "mixture-completion", display: true,
-						content: renderInspection({ runId: run.id, workerId: worker.id, model: worker.model,
-							cwd: worker.cwd, branch: worker.branch, changes: worker.changes, ...attempt }, runFile(run.id)),
-						details: { notificationId, stateFile: runFile(run.id), preview: mixturePreview({ runId: run.id, workerId: worker.id, model: worker.model, changes: worker.changes, ...attempt }) },
-					}, { deliverAs: "steer", triggerTurn: true });
-					delivered.add(notificationId);
-					pi.events.emit(ASYNC_JOB_COMPLETED_EVENT, {
-						source: "mixture", id: notificationId,
-						status: attempt.status === "ok" ? "exited" : "failed",
-					} satisfies AsyncJobCompletedEvent);
+		if (session === old) session = undefined;
+		snapshotHash = undefined;
+	};
+	const activate = async (context: ExtensionContext, reset = false) => {
+		if (session && (reset || context.sessionManager.getSessionId() !== rootId || context.model?.provider !== "mixture" || session.state.preset !== context.model.id)) await detach("model or session changed", true);
+		ctx = context;
+		registry = context.modelRegistry;
+		const active = pi.getActiveTools().filter(name => name !== CONTROL);
+		pi.setActiveTools(selected() ? [...active, CONTROL] : active);
+		render();
+	};
+	const ensureSession = () => {
+		if (!selected() || !ctx || !config) throw new Error("Select a Mixture model first");
+		if (isSwarmAttached(pi)) throw new Error("Mixture cannot execute while a managed swarm is attached. Stop or finish that swarm first.");
+		if (!session) {
+			const name = ctx.model!.id;
+			const preset = config.presets[name];
+			const restored = restoreCheckpoint(ctx.sessionManager.getBranch(), ctx.sessionManager.getEntries(), name, preset, ctx.cwd);
+			rootId = ctx.sessionManager.getSessionId();
+			const owner = rootId;
+			const created = new MixtureSession(preset, registry, restored.state ?? newState(name, preset), () => queryBackgroundJobs(pi, owner), () => {
+				if (session !== created || ctx?.sessionManager.getSessionId() !== owner) return;
+				render(); persist("response");
+			}, ctx.cwd);
+			session = created;
+			if (restored.state) created.reconcile("session restored");
+			if (restored.warning) { created.state.warning = restored.warning; ctx.ui.notify(restored.warning, "warning"); }
+		}
+		return session;
+	};
+	const buildProvider = (candidate: MixtureConfig) => createMixtureProvider(candidate, registry.find.bind(registry), (name, context, options) => {
+		const stream = createAssistantMessageEventStream();
+		const preset = candidate.presets[name];
+		void (async () => {
+			try {
+				if (selected() && ctx?.model?.id === name && options?.sessionId === ctx.sessionManager.getSessionId()) {
+					const active = ensureSession();
+					requesting = true; render(); persist("request");
+					const request = active.next(context, options, ctx.thinkingLevel);
+					pending = request;
+					const message = await request;
+					if (pending === request) { pending = undefined; requesting = false; }
+					if (session === active) persist("response");
+					emitMessage(stream, message);
+					return;
 				}
+				// Pi helper requests have a separate routing ID and never join a run.
+				const model = resolveModel(preset.lead, registry.find.bind(registry));
+				emitMessage(stream, await callRole(registry, preset.lead, context, options?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off"), {
+					...options, timeoutMs: preset.limits.requestTimeoutMs,
+					maxTokens: Math.min(options?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
+				}));
+			} catch (error) {
+				if (options?.sessionId === rootId) { pending = undefined; requesting = false; }
+				emitMessage(stream, failureMessage({ api: "mixture", provider: "mixture", id: name } as Model<any>, error, options?.signal?.aborted));
 			}
-		};
-		let lastError = "";
-		const check = () => {
-			try { scan(); lastError = ""; }
-			catch (error) {
-				const message = `Mixture completion check failed: ${String(error)}`;
-				if (message !== lastError) ctx.ui.notify(message, "error");
-				lastError = message;
-			}
-		};
-		check();
-		timer = setInterval(check, 1000);
-		timer.unref();
-	};
-	const setEnabled = (value: boolean, ctx: ExtensionContext) => {
-		enabled = value;
-		if (timer) clearInterval(timer);
-		timer = undefined;
-		const active = new Set(pi.getActiveTools());
-		for (const tool of [runTool, processTool]) {
-			enabled ? active.add(tool.name) : active.delete(tool.name);
-		}
-		pi.setActiveTools([...active]);
-		if (enabled) monitor(ctx);
-	};
-	pi.registerCommand("mixture", {
-		description: "Toggle mixture tools and completion notifications for this session",
-		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /mixture. Toggle it on, then ask the agent to run a mixture task.", "info");
-				return;
-			}
-			setEnabled(!enabled, ctx);
-			ctx.ui.notify(enabled ? "Mixture enabled" : "Mixture disabled. Existing workers keep running.", "info");
+		})();
+		return stream;
+	});
+	pi.registerTool({
+		name: CONTROL, label: "Mixture", description: controlTool.description, parameters: ControlParams,
+		execute: async (id, input, signal, _update, context) => {
+			if (signal?.aborted) throw new Error("Mixture control cancelled");
+			ctx = context;
+			const active = ensureSession();
+			const result = await active.control(id, input);
+			return { ...result, details: { ...result.details, usageSummary: inspection(active) } };
+		},
+		renderCall: (args, theme) => controlCard(`Mixture ${args.action ?? "coordination"}`, false, theme),
+		renderResult: (result, options, theme) => {
+			const summary = (result.details as { usageSummary?: string } | undefined)?.usageSummary;
+			return controlCard(`${result.content.filter(block => block.type === "text").map(block => block.text).join("\n")}${options.expanded && typeof summary === "string" ? `\n\n${summary}` : ""}`, options.expanded, theme);
 		},
 	});
-	pi.on("session_start", (_event, ctx) => setEnabled(false, ctx));
-	pi.on("session_shutdown", () => {
-		enabled = false;
-		if (timer) clearInterval(timer);
+	pi.registerCommand("mixture", {
+		description: "Configure or inspect Mixture models",
+		getArgumentCompletions: prefix => ["status", "configure", "inspect"].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
+		handler: async (args, context) => {
+			const [action = "status", name, extra] = args.trim().split(/\s+/).filter(Boolean);
+			try {
+				if (extra || !["status", "configure", "inspect"].includes(action) || name && action !== "configure") throw new Error("Usage: /mixture [status | inspect | configure [preset]]");
+				if (action !== "configure") {
+					if (selected()) ensureSession();
+					if (action === "inspect" && context.mode === "tui") await context.ui.custom<void>((tui, theme, _keys, done) => new Inspector(status(), () => Math.min(30, tui.terminal.rows - 4), () => tui.requestRender(), () => done(), theme), { overlay: true, overlayOptions: { width: "100%", maxHeight: "90%" } });
+					else context.ui.notify(status(), diagnostic ? "error" : "info");
+					return;
+				}
+				if (session) {
+					const jobs = queryBackgroundJobs(pi, rootId!);
+					if (jobs.error || jobs.jobs.some(job => job.status === "running") || session.state.bgManaged && !jobs.available) throw new Error("Reconcile Mixture's background jobs before changing its configuration");
+				}
+				let before: string | null = null;
+				try { before = readFileSync(configPath(), "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+				const proposed = await configure(context, config, name);
+				if (!proposed) return;
+				if (context.model?.provider === "mixture" && !Object.hasOwn(proposed.presets, context.model.id)) throw new Error("Select another model before removing the active Mixture preset");
+				const provider = buildProvider(proposed);
+				pi.registerProvider(provider);
+				try { saveConfig(proposed, undefined, before); }
+				catch (error) { if (registered) pi.registerProvider(registered); else pi.unregisterProvider("mixture"); throw error; }
+				await detach("configuration changed");
+				config = proposed; registered = provider; diagnostic = undefined;
+				if (context.model?.provider === "mixture") {
+					const replacement = context.modelRegistry.find("mixture", context.model.id);
+					if (replacement) await pi.setModel(replacement);
+				}
+				context.ui.notify(`Saved ${configPath()}. Select mixture/<preset> with /model.`, "info");
+			} catch (error) { context.ui.notify(String(error), "error"); }
+		},
 	});
+	pi.on("session_start", async (_event, context) => { await activate(context, true); if (diagnostic) context.ui.notify(diagnostic, "error"); });
+	pi.on("model_select", (_event, context) => activate(context));
+	pi.on("before_agent_start", async (event, context) => { await activate(context); if (selected()) ensureSession().newRequest(event.prompt); });
+	pi.on("agent_start", () => { if (selected()) session?.resumeLoop(); });
+	pi.on("tool_call", event => {
+		if (!selected()) return;
+		try { ensureSession().guard(event.toolCallId, event.toolName, event.input); }
+		catch (error) { return { block: true, reason: String(error) }; }
+	});
+	pi.on("message_end", async event => {
+		if (!selected() || !session || event.message.role !== "assistant" || !["aborted", "error"].includes(event.message.stopReason)) return;
+		const usage = await session.drainAfterAbort();
+		if (!usage.totalTokens && !usage.cost.total) return;
+		addUsage(usage, event.message.usage);
+		return { message: tagReceipts({ ...event.message, usage }, session.lastDrained) };
+	});
+	pi.on("turn_end", event => { if (selected()) { session?.completeTurn(event.toolResults, event.message.role === "assistant" ? event.message : undefined); persist("turn"); } });
+	pi.on("agent_end", async () => { if (session) { await session.abort(); session.reconcile("request ended"); persist("idle"); } render(); });
+	pi.on("session_before_switch", () => detach("session switch"));
+	pi.on("session_before_fork", () => detach("session fork"));
+	pi.on("session_before_tree", () => detach("tree navigation"));
+	pi.on("session_tree", (_event, context) => activate(context, true));
+	pi.on("session_before_compact", () => detach("compaction"));
+	pi.on("session_compact", (_event, context) => activate(context, true));
+	pi.on("session_compact_failed", (_event, context) => activate(context, true));
+	pi.on("session_shutdown", async () => { await detach("session shutdown", true); ctx = undefined; rootId = undefined; });
+	if (config) {
+		try { registered = buildProvider(config); pi.registerProvider(registered); }
+		catch (error) { diagnostic = `Mixture registration failed: ${String(error)}`; }
+	}
 }
 
 export default createMixtureExtension;
