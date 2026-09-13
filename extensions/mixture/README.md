@@ -85,8 +85,10 @@ request a correction, dismiss advice with reasons, or take over. A candidate
 final answer is withheld until bounded final review completes. When the checkout
 revision already has a clean completed review, candidate review is a single
 report-only request rather than another file-reading batch.
-Failed or incomplete review is disclosed, never counted as clean. Remaining
-serious findings are disclosed when correction rounds are exhausted.
+Failed or incomplete review is disclosed, never counted as clean. A structured
+incomplete report may explicitly resolve an earlier finding it rechecked; findings
+without an explicit disposition remain open. This prevents an unrelated missing
+check from pinning already-corrected advice forever.
 
 Images remain available to roles that support them. Text-only roles receive an
 explicit omitted-image warning; their review must not be treated as visual

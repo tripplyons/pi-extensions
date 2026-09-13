@@ -41,10 +41,11 @@ const ReportParams = Type.Object({
 		path: Type.Optional(Type.String({ maxLength: 1000 })),
 		evidence: Type.Optional(Type.String({ maxLength: 4000 })),
 	}), { maxItems: 32 }),
+	resolvedFindingIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 120 }), { maxItems: 32 })),
 	notes: Type.Optional(Type.String({ maxLength: 2000 })),
 	incompleteReason: Type.Optional(Type.String({ maxLength: 2000 })),
 });
-const reportTool = { name: "mixture_review", description: "Finish this review batch. Return all findings that still apply at the requested revision, including reconfirmed earlier findings. An empty list means you checked and found none. Keep issue IDs stable across updates. Set incompleteReason if any needed check could not be completed. Never treat a failed or incomplete check as clean.", parameters: ReportParams };
+const reportTool = { name: "mixture_review", description: "Finish this review batch. Return all findings that still apply at the requested revision, including reconfirmed earlier findings. For each earlier finding that you directly rechecked and found resolved, include its ID in resolvedFindingIds. Never list an unresolved or unchecked finding there. Keep issue IDs stable across updates. Set incompleteReason if any needed check could not be completed. An incomplete report preserves earlier findings unless you explicitly resolve them; it is never treated as clean.", parameters: ReportParams };
 type Report = Static<typeof ReportParams>;
 export type ReviewerRequest = (index: number, context: Context, signal: AbortSignal) => Promise<AssistantMessage>;
 export interface CheckpointReview { findings: Finding[]; warnings: string[]; revision: number }
@@ -151,7 +152,8 @@ export class ReviewPool {
 		const target = updates.at(-1)!;
 		state.status = "reviewing";
 		state.batchCalls = 0;
-		this.appendUpdates(index, updates, `Review requested at revision ${target.revision}. Call mixture_review when finished.`);
+		const earlier = state.findings.map(finding => finding.id);
+		this.appendUpdates(index, updates, `Review requested at revision ${target.revision}. Call mixture_review when finished.${earlier.length ? ` Earlier finding IDs require an explicit disposition: ${earlier.join(", ")}. Report each one again if it still applies, or put its ID in resolvedFindingIds only after checking the current evidence. An incomplete check does not resolve it.` : ""}`);
 		this.notify();
 		const failedTools: string[] = [];
 		try {
@@ -182,10 +184,16 @@ export class ReviewPool {
 					if (report.revision !== target.revision) throw new Error(`Report revision ${report.revision} does not match requested revision ${target.revision}`);
 					if (new Set(report.findings.map(finding => finding.id)).size !== report.findings.length) throw new Error("Reviewer repeated a finding ID");
 					const previous = new Map(state.findings.map(finding => [finding.id, finding]));
+					const resolved = new Set(report.resolvedFindingIds ?? []);
+					if (resolved.size !== (report.resolvedFindingIds?.length ?? 0)) throw new Error("Reviewer repeated a resolved finding ID");
+					for (const id of resolved) {
+						if (!previous.has(id)) throw new Error(`Reviewer resolved unknown finding ID: ${id}`);
+						if (report.findings.some(finding => finding.id === id)) throw new Error(`Reviewer both reported and resolved finding ID: ${id}`);
+					}
 					const reported = report.findings.map(finding => ({ ...finding, severity: finding.severity as Finding["severity"], reviewer: index, model: role.model, revision: target.revision, alerted: previous.get(finding.id)?.severity === finding.severity ? previous.get(finding.id)!.alerted : false }));
 					const incomplete = report.incompleteReason?.trim() || (failedTools.length ? `Read-only tool failures: ${failedTools.join(", ")}` : undefined);
 					state.findings = incomplete || state.imageWarning
-						? [...reported, ...[...previous.values()].filter(finding => !reported.some(current => current.id === finding.id))]
+						? [...reported, ...[...previous.values()].filter(finding => !reported.some(current => current.id === finding.id) && !resolved.has(finding.id))]
 						: reported;
 					state.messages.push(structuredClone(message), { role: "toolResult", toolName: reportTool.name, toolCallId: calls[0].id,
 						content: [{ type: "text", text: `Review recorded at revision ${target.revision}.` }], isError: false, timestamp: Date.now() });

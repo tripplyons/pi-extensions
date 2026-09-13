@@ -215,6 +215,22 @@ test("an incomplete structured report cannot clear a prior concern", async () =>
 	} finally { await pool.freeze(); }
 });
 
+test("an incomplete structured report can explicitly resolve a rechecked prior concern", async () => {
+	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
+	let calls = 0;
+	const pool = new ReviewPool(preset, [newReviewer()], process.cwd(), async (_index, context) => {
+		if (++calls === 1) return report(1, [issue]);
+		expect(JSON.stringify(context.messages)).toContain("missing-check");
+		return reply("mixture_review", { revision: 2, findings: [], resolvedFindingIds: ["missing-check"], incompleteReason: "External compatibility was unavailable" });
+	}, () => true);
+	try {
+		expect((await pool.checkpoint(1, "Initial check")).findings).toHaveLength(1);
+		const result = await pool.checkpoint(2, "The candidate now includes the missing check");
+		expect(result.warnings.join("\n")).toContain("External compatibility");
+		expect(result.findings).toEqual([]);
+	} finally { await pool.freeze(); }
+});
+
 test("execution deltas preserve multiline edits and failure labels", () => {
 	const message = reply("edit", { path: "fixture", oldText: "old\nline", newText: "new\nline" });
 	const call = message.content[0]; if (call.type !== "toolCall") throw new Error("fixture");
