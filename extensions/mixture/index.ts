@@ -110,7 +110,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 					const message = await request;
 					if (pending === request) { pending = undefined; requesting = false; }
 					if (session === active) persist("response");
-					const outward = ["error", "aborted"].includes(message.stopReason) ? message : { ...message, usage: emptyUsage() };
+					const outward = ["error", "aborted"].includes(message.stopReason) ? message : { ...message, usage: { ...emptyUsage(), totalTokens: active.rootContextTokens() } };
 					emitMessage(stream, outward);
 					return;
 				}

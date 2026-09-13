@@ -120,6 +120,9 @@ export class MixtureSession {
 		for (const role of [this.state.lead, this.state.writer, ...this.state.reviewers]) addUsage(total, role.usage);
 		return total;
 	}
+	rootContextTokens() {
+		return Math.max(1, estimateContextTokens({ systemPrompt: this.prompt("lead"), messages: this.state.lead.messages, tools: this.tools("lead") }).tokens);
+	}
 
 	rebaseLeadAfterCompaction(compactionId: string) {
 		this.state.rootCompactionId = compactionId;

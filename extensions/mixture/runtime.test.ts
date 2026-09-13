@@ -89,7 +89,7 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 	}
 }, 30_000);
 
-test("nested role usage does not trigger root compaction", async () => {
+test("context marker prevents stale nested usage from retriggering root compaction", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "mixture-context-accounting-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = dir;
@@ -128,15 +128,21 @@ test("nested role usage does not trigger root compaction", async () => {
 			extensionFactories: [(pi: ExtensionAPI) => pi.registerProvider(provider), (pi: ExtensionAPI) => createMixtureExtension(pi, registry)] });
 		await loader.reload(); expect(loader.getExtensions().errors).toEqual([]);
 		const runtime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: null, modelsStorePath: join(dir, "catalog"), allowModelNetwork: false });
+		const manager = SessionManager.inMemory(dir);
+		manager.appendMessage({ role: "user", content: "Old request", timestamp: Date.now() - 20_000 });
+		const stale = manager.appendMessage({ role: "assistant", api: "fixture", provider: "mixture", model: "default", content: text("Old response"), stopReason: "stop", timestamp: Date.now() - 10_000,
+			usage: { ...emptyUsage(), input: 225_000, totalTokens: 225_000 } });
+		manager.appendCompaction("Previous compacted context", stale, 225_000);
 		({ session } = await createAgentSession({ cwd: dir, agentDir: dir, resourceLoader: loader, settingsManager: settings,
-			sessionManager: SessionManager.inMemory(dir), modelRuntime: runtime, model: modelDefinition("default", preset, find), thinkingLevel: "off" }));
+			sessionManager: manager, modelRuntime: runtime, model: modelDefinition("default", preset, find), thinkingLevel: "off" }));
+		const tokensBefore = session.getSessionStats().tokens.total;
 		const errors: unknown[] = []; await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
 		await session.prompt("Complete a small task.");
 		expect(errors).toEqual([]);
 		expect(helpers).toBe(0);
-		expect(session.sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(0);
-		expect(session.getSessionStats().tokens.total).toBe(450_000);
-		expect(session.getContextUsage()?.tokens).toBeLessThan(1_000);
+		expect(session.sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(1);
+		expect(session.getSessionStats().tokens.total - tokensBefore).toBe(450_000);
+		expect(session.getContextUsage()?.tokens).toBeLessThan(10_000);
 	} finally {
 		if (session) { await session.extensionRunner?.emit({ type: "session_shutdown" }); session.dispose(); }
 		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;

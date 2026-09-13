@@ -162,8 +162,11 @@ Usage receipts preserve underlying model identities and charge completed calls
 once, including summaries, failed calls that report usage and rejected final
 candidates. Completed nested calls are carried by the following native tool result,
 including coordination results; cancellation can carry unreported usage on an
-aborted/error assistant receipt. Nested role token counts therefore do not inflate
-the main context-pressure estimate. Clean-footer includes tool-result,
+aborted/error assistant receipt. Successful outer messages expose a context-only
+lead estimate while their billable token components remain zero. Nested role token
+counts therefore do not inflate the main context-pressure estimate, and Pi can
+still distinguish the composite's live lead context from stale pre-compaction
+usage. Clean-footer includes tool-result,
 compaction and branch-summary costs.
 
 An abruptly terminated request may have unknown provider usage. Persisted but

@@ -70,7 +70,7 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		expect(readFileSync(join(dir, "fixture.txt"), "utf8")).toBe("after\n");
 		const entries = session.sessionManager.getEntries();
 		const successfulAssistantUsage = session.messages.flatMap(message => message.role === "assistant" && !["error", "aborted"].includes(message.stopReason) ? [message.usage] : []);
-		expect(successfulAssistantUsage.every(usage => usage.totalTokens === 0 && usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0)).toBe(true);
+		expect(successfulAssistantUsage.every(usage => usage.totalTokens > 0 && usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0)).toBe(true);
 		const accountedOnTools = emptyUsage();
 		for (const entry of entries) if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) addUsage(accountedOnTools, entry.message.usage);
 		expect(accountedOnTools.totalTokens).toBe(requests.length * 11);
