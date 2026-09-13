@@ -54,6 +54,7 @@ export interface MixtureState {
 	finalCorrections: number;
 	jobs: Record<string, Actor>;
 	bgManaged: boolean;
+	rootCompactionId?: string;
 	final?: { message: AssistantMessage; checkpoint: string; receipt: string; ready: boolean };
 	origins: Record<string, Origin>;
 	warning?: string;
@@ -120,6 +121,15 @@ export class MixtureSession {
 		return total;
 	}
 
+	rebaseLeadAfterCompaction(compactionId: string) {
+		this.state.rootCompactionId = compactionId;
+		this.state.lead.messages = [];
+		this.state.lead.contextTokens = undefined;
+		this.state.seenUsers = [];
+		this.state.initialized = false;
+		this.firstTaskSync = true;
+	}
+
 	newRequest(task = "") {
 		this.controller.abort();
 		this.controller = new AbortController();
@@ -177,7 +187,8 @@ export class MixtureSession {
 		const images = new Map([...this.state.attachments, ...newImages].map(image => [fingerprint(image), image]));
 		this.state.attachments = [...images.values()];
 		if (!this.state.initialized) {
-			this.state.lead.messages = structuredClone(context.messages);
+			const recoveryNotes = this.state.lead.messages;
+			this.state.lead.messages = [...structuredClone(context.messages), ...recoveryNotes];
 			this.state.initialized = true;
 		} else {
 			for (const [index, message] of users.entries()) if (!seen.has(ids[index])) {

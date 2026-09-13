@@ -85,10 +85,15 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		expect(errors).toEqual([]);
 		expect(readFileSync(join(dir, "fixture.txt"), "utf8")).toBe("after + manual edit\n");
 		const resumed = requests.find(request => JSON.stringify(request.context.messages).includes("session restored"))!;
-		expect(JSON.stringify(resumed.context.messages)).toContain("Inspect the current fixture");
-		expect(JSON.stringify(resumed.context.messages)).toContain("Writer report");
-		const latest = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
+		const resumedContext = JSON.stringify(resumed.context.messages);
+		expect(resumedContext).toContain("Inspect the current fixture");
+		expect(resumedContext).toContain("Writer report");
+		expect(resumedContext).not.toContain('"oldText":"before"');
+		const restoredEntries = session.sessionManager.getEntries();
+		const latest = restoredEntries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
+		const rootCompaction = restoredEntries.findLast(entry => entry.type === "compaction")!;
 		const restored = parseCheckpoint((latest as any).data);
+		expect(restored.state.rootCompactionId).toBe(rootCompaction.id);
 		expect(restored.state.writer.calls).toBe(4);
 		expect(restored.state.writer.messages.filter(message => message.role === "toolResult" && message.toolCallId === "edit")).toHaveLength(1);
 		expect(session.getSessionStats().tokens.total).toBe(requests.length * 11);

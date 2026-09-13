@@ -69,7 +69,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		if (!session) {
 			const name = ctx.model!.id;
 			const preset = config.presets[name];
-			const restored = restoreCheckpoint(ctx.sessionManager.getBranch(), ctx.sessionManager.getEntries(), name, preset, ctx.cwd);
+			const branch = ctx.sessionManager.getBranch();
+			const restored = restoreCheckpoint(branch, ctx.sessionManager.getEntries(), name, preset, ctx.cwd);
+			const rootCompaction = branch.findLast(entry => entry.type === "compaction");
 			rootId = ctx.sessionManager.getSessionId();
 			const owner = rootId;
 			const created = new MixtureSession(preset, registry, restored.state ?? newState(name, preset), () => queryBackgroundJobs(pi, owner), () => {
@@ -77,6 +79,10 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				render(); persist("response");
 			}, ctx.cwd);
 			session = created;
+			if (rootCompaction && created.state.rootCompactionId !== rootCompaction.id) {
+				if (restored.state) created.rebaseLeadAfterCompaction(rootCompaction.id);
+				else created.state.rootCompactionId = rootCompaction.id;
+			}
 			if (restored.state) created.reconcile("session restored");
 			if (restored.warning) { created.state.warning = restored.warning; ctx.ui.notify(restored.warning, "warning"); }
 		}

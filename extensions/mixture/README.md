@@ -150,8 +150,10 @@ is recorded as interrupted: the operation may already have changed files.
 Each role compacts its own context with the same model, preserving task facts,
 unresolved advice, images and recent complete tool batches. Recognized context
 overflow gets one bounded recovery attempt. Failed summaries preserve the last
-valid history. Pi's own compaction and other helper requests use the lead alone,
-without starting collaborators.
+valid history. After Pi compacts the root session, Mixture rebases the lead on
+that compacted context instead of retaining the larger pre-compaction history.
+Pi's own compaction and other helper requests use the lead alone, without
+starting collaborators.
 
 Usage receipts preserve underlying model identities and charge completed calls
 once, including summaries, failed calls that report usage and rejected final

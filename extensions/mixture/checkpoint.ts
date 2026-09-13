@@ -35,7 +35,7 @@ export function parseCheckpoint(value: unknown): Checkpoint {
 	assert(typeof state.initialized === "boolean" && typeof state.bgManaged === "boolean" && typeof state.brief === "string" && typeof state.task === "string" && Array.isArray(state.attachments), "task context");
 	assert(state.attachments.every((image: unknown) => object(image) && image.type === "image" && typeof image.data === "string" && typeof image.mimeType === "string"), "images");
 	for (const field of ["revision", "delegations", "writerTurns", "finalCorrections"]) assert(count(state[field]), field);
-	for (const field of ["warning", "reviewSummary"]) assert(state[field] === undefined || typeof state[field] === "string", field);
+	for (const field of ["warning", "reviewSummary", "rootCompactionId"]) assert(state[field] === undefined || typeof state[field] === "string", field);
 	for (const role of [state.lead, state.writer, ...state.reviewers]) {
 		assert(object(role) && Array.isArray(role.messages) && role.messages.every(validMessage) && validUsage(role.usage) && count(role.calls), "role history or usage");
 		for (const field of ["summaries", "contextTokens"]) assert(role[field] === undefined || count(role[field]), field);

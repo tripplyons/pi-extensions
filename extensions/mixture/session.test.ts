@@ -51,6 +51,24 @@ test("a new user request reaches the cheap writer before the first lead inferenc
 	expect(h.calls[0].options.serviceTier).toBe("priority");
 });
 
+test("root compaction rebases only the lead context and preserves usage accounting", async () => {
+	const h = harness([content("Continued from compacted context.")]);
+	h.state.initialized = true;
+	h.state.seenUsers = ["stale-user"];
+	h.state.lead.messages = [{ role: "user", content: "raw history that root compaction removed", timestamp: 1 }];
+	h.state.lead.usage = { ...emptyUsage(), input: 123, totalTokens: 123 };
+	h.session.rebaseLeadAfterCompaction("compact-1");
+	h.session.reconcile("session restored");
+	h.context.messages = [{ role: "user", content: "Compacted root context", timestamp: 2 }];
+	await h.next();
+	const request = JSON.stringify(h.calls[0].context.messages);
+	expect(request).toContain("Compacted root context");
+	expect(request).toContain("session restored");
+	expect(request).not.toContain("raw history that root compaction removed");
+	expect(h.state.rootCompactionId).toBe("compact-1");
+	expect(h.state.lead.usage.totalTokens).toBe(124);
+});
+
 test("delegates through normal tool calls, keeps distinct histories, and holds the final", async () => {
 	const h = harness([
 		[call("delegate", CONTROL, { action: "delegate", task: "Edit the fixture", constraints: ["Preserve unrelated files"], successCriteria: ["Test passes"] })],
