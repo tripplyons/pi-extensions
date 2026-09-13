@@ -156,7 +156,6 @@ export class ReviewPool {
 		const failedTools: string[] = [];
 		try {
 			while (state.batchCalls < batchTurns) {
-				if (state.requestCalls >= this.preset.limits.reviewerRequests) throw new Error(`Review request limit (${this.preset.limits.reviewerRequests}) reached`);
 				signal.throwIfAborted();
 				state.requestCalls++;
 				state.batchCalls++;

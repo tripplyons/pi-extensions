@@ -144,14 +144,15 @@ test("deadline freezes late reviews without cancelling healthy results or callin
 	} finally { await pool.freeze(); }
 });
 
-test("review request limits are bounded and malformed reports are not clean", async () => {
-	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1); preset.limits.reviewerRequests = 1;
+test("a failed review batch does not disable later checkpoints", async () => {
+	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
 	const states = [newReviewer()]; let calls = 0;
-	const pool = new ReviewPool(preset, states, process.cwd(), async () => { calls++; return report(99); }, () => true);
+	const pool = new ReviewPool(preset, states, process.cwd(), async () => ++calls === 1 ? report(99) : report(2), () => true);
 	try {
 		expect((await pool.checkpoint(1, "Check")).warnings.join("\n")).toContain("does not match");
-		expect((await pool.checkpoint(2, "Check again")).warnings.join("\n")).toContain("request limit");
-		expect(calls).toBe(1);
+		expect((await pool.checkpoint(2, "Check again")).warnings).toEqual([]);
+		expect(calls).toBe(2);
+		expect(states[0].requestCalls).toBe(2);
 	} finally { await pool.freeze(); }
 });
 

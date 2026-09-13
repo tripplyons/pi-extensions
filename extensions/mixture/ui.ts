@@ -23,9 +23,9 @@ export function inspection(session: MixtureSession): string {
 	}
 	for (const [name, timing] of Object.entries(timings.checkpoints)) lines.push(`Review ${name}: ${timing.count} waits; avg ${Math.round(timing.totalMs / timing.count)}ms; max ${Math.round(timing.maxMs)}ms`);
 	lines.push("", `Total reported cost: $${session.usage.cost.total.toFixed(4)}; queued reviews: ${session.reviews.backlog}`,
-		`Delegations: ${state.delegations}/${preset.limits.delegations}; writer responses: ${state.writerTurns}/${preset.limits.writerTurns}; final assessments: ${state.finalCorrections}/${preset.limits.finalCorrections}`);
+		`Delegations: ${state.delegations}; writer responses: ${state.writerTurns}/${preset.limits.writerTurns}; final assessments: ${state.finalCorrections}`);
 	for (const [index, reviewer] of state.reviewers.entries()) {
-		lines.push(`Reviewer ${index + 1}: ${reviewer.status}; revision ${reviewer.revision}; ${reviewer.requestCalls}/${preset.limits.reviewerRequests} requests this task`);
+		lines.push(`Reviewer ${index + 1}: ${reviewer.status}; revision ${reviewer.revision}; ${reviewer.requestCalls} requests this task`);
 		if (reviewer.warning) lines.push(`  Incomplete review: ${reviewer.warning}`);
 		if (reviewer.imageWarning) lines.push(`  ${reviewer.imageWarning}`);
 		for (const finding of reviewer.findings) lines.push(`  [${finding.severity}] ${finding.id}, revision ${finding.revision}: ${finding.summary}${finding.path ? ` (${finding.path})` : ""}${finding.evidence ? `\n    ${finding.evidence}` : ""}`);

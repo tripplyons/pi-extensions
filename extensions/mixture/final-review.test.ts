@@ -4,7 +4,7 @@ import { defaultConfig } from "./config.ts";
 import { addUsage, emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, controlTool, MixtureSession, newState } from "./session.ts";
 
-test("final-review corrections are bounded; rejected candidates stay hidden and are charged once", async () => {
+test("serious findings keep the final-correction loop active; rejected candidates stay hidden and are charged once", async () => {
 	const preset = defaultConfig().presets.default;
 	preset.lead = "openai-codex/lead"; preset.writer.model = "openai-codex/writer";
 	preset.reviewers = [{ model: "openai-codex/reviewer", thinking: "low" }];
@@ -32,27 +32,25 @@ test("final-review corrections are bounded; rejected candidates stay hidden and 
 	const visible: AssistantMessage[] = [];
 	const billed = emptyUsage();
 	try {
-		for (let turn = 0; turn < 6; turn++) {
+		for (let turn = 0; turn < 4; turn++) {
 			const message = await session.next(context, { sessionId: "root", serviceTier: "priority" } as RoleStreamOptions);
 			visible.push(message); addUsage(billed, message.usage);
 			const call = message.content.find(block => block.type === "toolCall");
-			if (!call) break;
-			expect(call.name).toBe(CONTROL);
-			const output = await session.control(call.id, call.arguments as any);
+			expect(call?.name).toBe(CONTROL);
+			const output = await session.control(call!.id, call!.arguments as any);
 			addUsage(billed, output.usage);
-			const result: ToolResultMessage = { role: "toolResult", toolName: CONTROL, toolCallId: call.id, ...output, timestamp: Date.now(), isError: false };
+			const result: ToolResultMessage = { role: "toolResult", toolName: CONTROL, toolCallId: call!.id, ...output, timestamp: Date.now(), isError: false };
 			session.completeTurn([result], message);
 		}
-		expect(leadCalls).toBe(3);
-		expect(reviewCalls).toBe(3);
-		expect(roleOptions).toHaveLength(6);
+		expect(leadCalls).toBe(4);
+		expect(reviewCalls).toBe(4);
+		expect(roleOptions).toHaveLength(8);
 		expect(roleOptions.every(options => options.serviceTier === "priority")).toBe(true);
-		expect(state.finalCorrections).toBe(2);
-		expect(visible.slice(0, -1).every(message => message.content.every(block => block.type === "toolCall"))).toBe(true);
-		expect(JSON.stringify(visible.at(-1))).toContain("Candidate 3");
-		expect(JSON.stringify(visible.at(-1))).toContain("Verification is still missing");
-		expect(billed.totalTokens).toBe(6);
-		expect(session.usage.totalTokens).toBe(6);
+		expect(state.finalCorrections).toBe(4);
+		expect(visible.every(message => message.content.every(block => block.type === "toolCall"))).toBe(true);
+		expect(JSON.stringify(state.lead.messages)).toContain("Verification is still missing");
+		expect(billed.totalTokens).toBe(8);
+		expect(session.usage.totalTokens).toBe(8);
 		expect(state.receipts.every(receipt => receipt.delivery === "reported")).toBe(true);
 	} finally { await session.abort(); }
 });

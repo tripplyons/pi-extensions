@@ -139,7 +139,21 @@ test("running jobs and unknown background status block writer handoff", async ()
 	await h.finishControl(message);
 	expect(h.state.owner).toBe("writer");
 });
-test("steering reaches both roles once without resetting delegation limits", async () => {
+test("lead-to-writer loops do not have a delegation cap", async () => {
+	const h = harness([]);
+	for (let index = 0; index < 12; index++) {
+		const delegate = `delegate-${index}`;
+		h.state.origins[delegate] = { actor: "lead", synthetic: true };
+		await h.session.control(delegate, { action: "delegate", task: `Pass ${index}`, successCriteria: ["Report"] });
+		const report = `report-${index}`;
+		h.state.origins[report] = { actor: "writer", synthetic: true };
+		await h.session.control(report, { action: "report", report: `Completed pass ${index}` });
+	}
+	expect(h.state.delegations).toBe(12);
+	expect(h.session.active).toBe("lead");
+});
+
+test("steering reaches both roles once without resetting the delegation count", async () => {
 	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })], [call("read1", "read", { path: "test" })], content("Done")]);
 	await h.finishControl(await h.next());
 	h.context.messages.push({ role: "user", content: "Do not change the public API", timestamp: 2 });

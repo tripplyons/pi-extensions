@@ -289,7 +289,7 @@ export class MixtureSession {
 		}
 		if (typeof actor === "number" && internal) {
 			const reviewer = this.state.reviewers[actor];
-			if (reviewer.requestCalls >= this.preset.limits.reviewerRequests || reviewer.batchCalls >= this.preset.limits.reviewerBatchTurns) throw new Error("Reviewer request limit reached during context recovery");
+			if (reviewer.batchCalls >= this.preset.limits.reviewerBatchTurns) throw new Error("Reviewer batch limit reached during context recovery");
 			reviewer.requestCalls++; reviewer.batchCalls++;
 		}
 		const model = resolveModel(id, this.registry.find.bind(this.registry));
@@ -418,7 +418,6 @@ export class MixtureSession {
 			case "delegate": {
 				this.autoDelegate = false;
 				if (!input.task?.trim() || !input.successCriteria?.length || input.successCriteria.some(value => !value.trim())) throw new Error("Delegation needs a nonempty task and successCriteria");
-				if (this.state.delegations >= this.preset.limits.delegations) throw new Error("Mixture delegation limit reached; summarize remaining work or take over");
 				this.state.delegations++;
 				this.state.writerTurns = 0;
 				this.state.brief = `Task: ${input.task}\nConstraints:\n${(input.constraints ?? []).map(value => `- ${value}`).join("\n")}\nSuccess criteria:\n${input.successCriteria.map(value => `- ${value}`).join("\n")}`;
@@ -462,11 +461,11 @@ export class MixtureSession {
 				this.state.reviewSummary = this.reviewSummary(review);
 				this.reviews.markAlerted(review.findings);
 				const serious = review.findings.filter(finding => finding.severity !== "nit");
-				if (serious.length && this.state.finalCorrections < this.preset.limits.finalCorrections) {
+				if (serious.length) {
 					this.state.finalCorrections++;
 					this.state.receipts.find(receipt => receipt.id === pending.receipt)!.delivery = "nested";
 					this.state.final = undefined;
-					this.note("lead", `[Final candidate withheld, assessment ${this.state.finalCorrections}/${this.preset.limits.finalCorrections}]\n${this.state.reviewSummary}\nAssess these findings. Delegate a correction or take over if needed; otherwise explain your disagreement and remaining uncertainty in a revised final answer.`);
+					this.note("lead", `[Final candidate withheld, assessment ${this.state.finalCorrections}]\n${this.state.reviewSummary}\nAssess these findings. Delegate a correction or take over if needed; otherwise explain your disagreement and remaining uncertainty in a revised final answer.`);
 					result = `Final candidate withheld for lead assessment.\n${this.state.reviewSummary}`;
 				} else {
 					pending.ready = true;

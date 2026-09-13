@@ -118,21 +118,21 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | --- | ---: | --- |
 | `requestTimeoutMs` | 240000 | Each underlying request, including auth |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
-| `delegations` | 8 | Per accepted user request |
 | `reviewerBatchTurns` | 2 | Requests per reviewer batch |
-| `reviewerRequests` | 24 | Per reviewer per accepted user request |
 | `catchUpMs` | 120000 | Checkpoint review deadline |
-| `finalCorrections` | 2 | Final-answer reassessments per user request |
 | `leadMaxTokens` | 16384 | Lead output ceiling |
 | `writerMaxTokens` | 8192 | Writer output ceiling |
 | `reviewerMaxTokens` | 8192 | Reviewer output ceiling |
 | `maxCostUsd` | unset | Estimated admission cap for the role-state lifetime |
 
 Output limits are clamped to each provider's model limit. Steering does not reset
-request limits. In-flight estimated costs are reserved before admitting another
-request, including concurrent reviewers. Estimates use configured model prices;
-they are not guaranteed billing ceilings. A limit stops that loop with an
-explicit reason. Provider retries default to zero.
+request limits. Lead-to-writer delegations, reviewer batches across checkpoints,
+and final-answer correction cycles have no cumulative cap, so iterative loops can
+continue until completion or cancellation. In-flight estimated costs are reserved
+before admitting another request, including concurrent reviewers. Estimates use
+configured model prices; they are not guaranteed billing ceilings. A configured
+limit stops the affected operation with an explicit reason. Provider retries
+default to zero.
 
 ## Sessions, context and usage
 
