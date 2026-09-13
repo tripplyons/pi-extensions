@@ -6,10 +6,10 @@ import { queryBackgroundJobs } from "../bg-bash/events.ts";
 import { CHECKPOINT, encodeCheckpoint, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
-import { addUsage, callRole, createMixtureProvider, emitMessage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
+import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
 import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
-import { tagReceipts } from "./usage.ts";
+import { receiptIds, tagReceipts } from "./usage.ts";
 
 export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry) {
 	let registry = initialRegistry ?? new ModelRegistry(await ModelRuntime.create({ allowModelNetwork: false }));
@@ -110,7 +110,8 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 					const message = await request;
 					if (pending === request) { pending = undefined; requesting = false; }
 					if (session === active) persist("response");
-					emitMessage(stream, message);
+					const outward = ["error", "aborted"].includes(message.stopReason) ? message : { ...message, usage: emptyUsage() };
+					emitMessage(stream, outward);
 					return;
 				}
 				// Pi helper requests have a separate routing ID and never join a run.
@@ -185,6 +186,15 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		if (!selected()) return;
 		try { ensureSession().guard(event.toolCallId, event.toolName, event.input); }
 		catch (error) { return { block: true, reason: String(error) }; }
+	});
+	pi.on("tool_result", (event, context) => {
+		if (!session || context.sessionManager.getSessionId() !== rootId) return;
+		const nested = session.takeUsage();
+		if (!nested.totalTokens && !nested.cost.total) return;
+		const usage = structuredClone(event.usage ?? emptyUsage());
+		addUsage(usage, nested);
+		const details = event.details && typeof event.details === "object" && !Array.isArray(event.details) ? event.details : {};
+		return { usage, details: { ...details, mixtureReceiptIds: [...new Set([...receiptIds(details), ...session.lastDrained])] } };
 	});
 	pi.on("message_end", async event => {
 		if (!selected() || !session || event.message.role !== "assistant" || !["aborted", "error"].includes(event.message.stopReason)) return;

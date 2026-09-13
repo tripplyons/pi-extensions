@@ -88,3 +88,58 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 		rmSync(dir, { recursive: true, force: true });
 	}
 }, 30_000);
+
+test("nested role usage does not trigger root compaction", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "mixture-context-accounting-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = dir;
+	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+	try {
+		const preset = defaultConfig().presets.default;
+		preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 250_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+		const steps = [
+			{ actor: "writer", content: text("Inspected the request and completed the work.") },
+			{ actor: "lead", content: text("Work completed.") },
+		];
+		let helpers = 0;
+		const provider: Provider = {
+			id: "fixture", name: "Fixture", auth: { apiKey: { name: "Fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
+			getModels: () => [find("fixture", "lead")!, find("fixture", "writer")!], stream: () => { throw new Error("Use simple"); },
+			streamSimple: (model, context) => {
+				let content: AssistantMessage["content"];
+				let input: number;
+				if (!context.tools?.length) { helpers++; content = text("Compact summary"); input = 10; }
+				else {
+					const step = steps.shift();
+					if (!step || step.actor !== model.id) throw new Error(`Unexpected role ${model.id}; wanted ${step?.actor}`);
+					content = step.content; input = 225_000;
+				}
+				const stream = createAssistantMessageEventStream();
+				emitMessage(stream, { role: "assistant", api: "fixture", provider: "fixture", model: model.id, content,
+					stopReason: "stop", timestamp: Date.now(), usage: { ...emptyUsage(), input, totalTokens: input } });
+				return stream;
+			},
+		};
+		const registry: Registry = { find, getProvider: () => provider, getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }) };
+		const settings = SettingsManager.inMemory({ packages: [], compaction: { enabled: true, reserveTokens: 60_000, keepRecentTokens: 20_000 }, retry: { enabled: false } });
+		const loader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+			extensionFactories: [(pi: ExtensionAPI) => pi.registerProvider(provider), (pi: ExtensionAPI) => createMixtureExtension(pi, registry)] });
+		await loader.reload(); expect(loader.getExtensions().errors).toEqual([]);
+		const runtime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: null, modelsStorePath: join(dir, "catalog"), allowModelNetwork: false });
+		({ session } = await createAgentSession({ cwd: dir, agentDir: dir, resourceLoader: loader, settingsManager: settings,
+			sessionManager: SessionManager.inMemory(dir), modelRuntime: runtime, model: modelDefinition("default", preset, find), thinkingLevel: "off" }));
+		const errors: unknown[] = []; await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
+		await session.prompt("Complete a small task.");
+		expect(errors).toEqual([]);
+		expect(helpers).toBe(0);
+		expect(session.sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(0);
+		expect(session.getSessionStats().tokens.total).toBe(450_000);
+		expect(session.getContextUsage()?.tokens).toBeLessThan(1_000);
+	} finally {
+		if (session) { await session.extensionRunner?.emit({ type: "session_shutdown" }); session.dispose(); }
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+		rmSync(dir, { recursive: true, force: true });
+	}
+}, 30_000);

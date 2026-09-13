@@ -70,7 +70,7 @@ test("one overflow retry charges the failed call, summary and successful candida
 	expect(requests).toHaveLength(3);
 	expect(requests[1].tools).toBeUndefined();
 	expect(state.lead.summaries).toBe(1);
-	expect(receipt.usage.totalTokens).toBe(8);
+	expect(receipt.usage.totalTokens).toBe(15);
 	expect(final.usage.totalTokens).toBe(7);
 	expect(session.usage.totalTokens).toBe(15);
 	expect(session.takeUsage().totalTokens).toBe(0);

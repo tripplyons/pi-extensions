@@ -8,7 +8,7 @@ import { sessionCost } from "../clean-footer/index.ts";
 import { CHECKPOINT, materializeCheckpoint } from "./checkpoint.ts";
 import { defaultConfig } from "./config.ts";
 import { createMixtureExtension } from "./index.ts";
-import { emitMessage, emptyUsage, modelDefinition, type Registry } from "./provider.ts";
+import { addUsage, emitMessage, emptyUsage, modelDefinition, type Registry } from "./provider.ts";
 
 const tool = (id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"] => [{ type: "toolCall", id, name, arguments: args }];
 const text = (value: string): AssistantMessage["content"] => [{ type: "text", text: value }];
@@ -69,6 +69,11 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		expect((session.messages.at(-1) as AssistantMessage).errorMessage).toBeUndefined();
 		expect(readFileSync(join(dir, "fixture.txt"), "utf8")).toBe("after\n");
 		const entries = session.sessionManager.getEntries();
+		const successfulAssistantUsage = session.messages.flatMap(message => message.role === "assistant" && !["error", "aborted"].includes(message.stopReason) ? [message.usage] : []);
+		expect(successfulAssistantUsage.every(usage => usage.totalTokens === 0 && usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0)).toBe(true);
+		const accountedOnTools = emptyUsage();
+		for (const entry of entries) if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) addUsage(accountedOnTools, entry.message.usage);
+		expect(accountedOnTools.totalTokens).toBe(requests.length * 11);
 		const checkpoints = entries.filter(entry => entry.type === "custom" && entry.customType === CHECKPOINT);
 		expect(checkpoints.filter(entry => (entry as any).data?.kind === "snapshot")).toHaveLength(1);
 		expect(checkpoints.some(entry => (entry as any).data?.kind === "delta")).toBe(true);

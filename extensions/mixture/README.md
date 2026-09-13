@@ -160,9 +160,10 @@ starting collaborators.
 
 Usage receipts preserve underlying model identities and charge completed calls
 once, including summaries, failed calls that report usage and rejected final
-candidates. Nested calls are carried by native control-tool results; cancellation
-can carry unreported usage on an aborted/error assistant receipt. These do not
-inflate the main context-pressure estimate. Clean-footer includes tool-result,
+candidates. Completed nested calls are carried by the following native tool result,
+including coordination results; cancellation can carry unreported usage on an
+aborted/error assistant receipt. Nested role token counts therefore do not inflate
+the main context-pressure estimate. Clean-footer includes tool-result,
 compaction and branch-summary costs.
 
 An abruptly terminated request may have unknown provider usage. Persisted but

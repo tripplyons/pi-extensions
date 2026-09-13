@@ -138,7 +138,7 @@ export function restoreCheckpoint(branch: SessionEntry[], allEntries: SessionEnt
 		const state = checkpoint.state;
 		if (checkpoint.cwd !== cwd) return { warning: "Mixture checkpoint belongs to another working directory; starting fresh role contexts. Re-read the current checkout." };
 		if (state.preset !== name || state.configKey !== fingerprint(preset) || state.reviewers.length !== preset.reviewers.length) return { warning: "Mixture preset changed; starting fresh role contexts against the current checkout." };
-		const billed = new Set(allEntries.flatMap(entry => entry.type === "message" ? receiptIds(entry.message.role === "toolResult" ? entry.message.toolName === CONTROL ? entry.message.details : undefined : entry.message) : []));
+		const billed = new Set(allEntries.flatMap(entry => entry.type === "message" ? receiptIds(entry.message.role === "toolResult" ? entry.message.details : entry.message) : []));
 		for (const receipt of state.receipts) {
 			if (billed.has(receipt.id)) receipt.delivery = "reported";
 			else if (receipt.delivery === "reported") receipt.delivery = "nested";

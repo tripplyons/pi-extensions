@@ -272,9 +272,7 @@ export class MixtureSession {
 		if (!isContextOverflow(result.message, model.contextWindow) || result.message.stopReason === "aborted") return result;
 		result.receipt.delivery = "nested";
 		await compact(true);
-		const retried = await this.request(actor, context, options, true);
-		if (typeof actor !== "number") retried.receipt.delivery = "reported";
-		return retried;
+		return this.request(actor, context, options, true);
 	}
 	private async request(actor: Actor | number, context: Context, options: SimpleStreamOptions, internal = false): Promise<{ message: AssistantMessage; receipt: UsageReceipt }> {
 		const role = typeof actor === "number" ? this.preset.reviewers[actor] : actor === "writer" ? this.preset.writer : undefined;
@@ -311,7 +309,7 @@ export class MixtureSession {
 			});
 			addUsage(state.usage, message.usage);
 			state.calls++;
-			const recorded = receipt(label, id, message, internal || typeof actor === "number" ? "nested" : "reported");
+			const recorded = receipt(label, id, message, "nested");
 			this.state.receipts.push(recorded);
 			tagReceipts(message, [recorded.id]);
 			return { message: epoch === this.epoch ? message : { ...message, stopReason: "aborted", errorMessage: "Mixture request cancelled" }, receipt: recorded };
@@ -330,7 +328,7 @@ export class MixtureSession {
 
 	private async terminal(message: AssistantMessage) {
 		await this.reviews.freeze();
-		addUsage(message.usage, this.takeUsage());
+		message.usage = this.takeUsage();
 		return tagReceipts(message, this.lastDrained);
 	}
 	private reviewSummary(review: CheckpointReview): string {
@@ -343,15 +341,16 @@ export class MixtureSession {
 		this.requestOptions = options;
 		if (this.state.final) {
 			const pending = this.state.final;
-			this.state.receipts.find(receipt => receipt.id === pending.receipt)!.delivery = "reported";
+			const pendingReceipt = this.state.receipts.find(receipt => receipt.id === pending.receipt)!;
 			this.state.final = undefined;
 			this.changed();
 			if (pending.ready && !this.signal.aborted && !options.signal?.aborted) {
+				pendingReceipt.delivery = "reported";
 				this.state.owner = undefined;
 				return pending.message;
 			}
+			pendingReceipt.delivery = "nested";
 			const error = failureMessage(resolveModel(this.modelId, this.registry.find.bind(this.registry)), "Final checkpoint was interrupted or denied; no final answer was released", this.signal.aborted || options.signal?.aborted);
-			error.usage = pending.message.usage;
 			tagReceipts(error, [pending.receipt]);
 			return this.terminal(error);
 		}
@@ -469,6 +468,7 @@ export class MixtureSession {
 					result = `Final candidate withheld for lead assessment.\n${this.state.reviewSummary}`;
 				} else {
 					pending.ready = true;
+					this.state.receipts.find(receipt => receipt.id === pending.receipt)!.delivery = "nested";
 					if (review.warnings.length || serious.length || this.state.warning) {
 						this.state.warning = [this.state.warning, this.state.reviewSummary].filter(Boolean).join("\n");
 						pending.message.content.push({ type: "text", text: `\n\n${this.state.warning}` });
