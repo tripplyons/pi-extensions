@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT, parseCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT, materializeCheckpoint } from "./checkpoint.ts";
 import { defaultConfig } from "./config.ts";
 import { createMixtureExtension } from "./index.ts";
 import { emitMessage, emptyUsage, modelDefinition, type Registry } from "./provider.ts";
@@ -53,8 +53,10 @@ test("real Pi tree navigation starts the selected branch without stale reviewer 
 			sessionManager: SessionManager.inMemory(dir), modelRuntime: runtime, model: modelDefinition("default", preset, find), thinkingLevel: "low" }));
 		const errors: unknown[] = []; await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
 		await session.prompt("First branch task");
-		const firstCheckpoint = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
-		expect(parseCheckpoint((firstCheckpoint as any).data).state.reviewers[0].findings[0].id).toBe("old-branch-nit");
+		const firstEntries = session.sessionManager.getEntries();
+		const firstCheckpoint = firstEntries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
+		expect(firstCheckpoint.type).toBe("custom");
+		expect(materializeCheckpoint(session.sessionManager.getBranch()).checkpoint!.state.reviewers[0].findings[0].id).toBe("old-branch-nit");
 		const firstUser = session.sessionManager.getEntries().find(entry => entry.type === "message" && entry.message.role === "user")!;
 		const navigation = await session.navigateTree(firstUser.id);
 		expect(navigation).toMatchObject({ cancelled: false, editorText: "First branch task" });
@@ -64,8 +66,10 @@ test("real Pi tree navigation starts the selected branch without stale reviewer 
 		expect(has(secondLead.context, "Second branch task")).toBe(true);
 		expect(has(secondLead.context, "old-branch-nit")).toBe(false);
 		expect(JSON.stringify(session.messages.at(-1))).not.toContain("old-branch-nit");
-		const checkpoint = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
-		const state = parseCheckpoint((checkpoint as any).data).state;
+		const secondEntries = session.sessionManager.getEntries();
+		const checkpoint = secondEntries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
+		expect(checkpoint.type).toBe("custom");
+		const state = materializeCheckpoint(session.sessionManager.getBranch()).checkpoint!.state;
 		expect(state.reviewers[0].findings).toEqual([]);
 		expect(state.task).toBe("Second branch task");
 	} finally {

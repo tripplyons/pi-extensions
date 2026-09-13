@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT, parseCheckpoint, restoreCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT, encodeCheckpoint, MAX_DELTA_CHAIN, parseCheckpoint, restoreCheckpoint } from "./checkpoint.ts";
 import { defaultConfig } from "./config.ts";
 import { emptyUsage } from "./provider.ts";
 import { MixtureSession, newState } from "./session.ts";
@@ -22,6 +22,63 @@ function fixture() {
 	state.owner = "lead"; state.origins.write = { actor: "lead", synthetic: false };
 	return { manager, state, message, row };
 }
+
+test("version 3 checkpoints store small deltas and restore their full state", () => {
+	const manager = SessionManager.inMemory(cwd);
+	const before = newState("default", preset);
+	before.initialized = true;
+	before.lead.messages.push({ role: "user", content: "x".repeat(200_000), timestamp: 1 });
+	const snapshot = encodeCheckpoint(cwd, "response", before);
+	manager.appendCustomEntry(CHECKPOINT, snapshot);
+	const after = structuredClone(before);
+	after.revision = 1;
+	after.lead.messages.push({ role: "user", content: "small follow-up", timestamp: 2 });
+	const delta = encodeCheckpoint(cwd, "turn", after, before);
+	expect(delta.kind).toBe("delta");
+	expect(JSON.stringify(delta).length).toBeLessThan(JSON.stringify(snapshot).length / 100);
+	manager.appendCustomEntry(CHECKPOINT, delta);
+	const restored = restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd);
+	expect(restored.warning).toBeUndefined();
+	expect(restored.state).toEqual(after);
+});
+
+test("periodic snapshots bound restore chains without returning to quadratic growth", () => {
+	const manager = SessionManager.inMemory(cwd);
+	let previous: ReturnType<typeof newState> | undefined;
+	let chain = 0;
+	let bytes = 0;
+	let snapshots = 0;
+	let fullSize = 0;
+	for (let revision = 0; revision < 200; revision++) {
+		const state = previous ? structuredClone(previous) : newState("default", preset);
+		if (!state.lead.messages.length) state.lead.messages.push({ role: "user", content: "x".repeat(200_000), timestamp: 1 });
+		state.revision = revision;
+		const stored = encodeCheckpoint(cwd, "turn", state, chain < MAX_DELTA_CHAIN ? previous : undefined);
+		manager.appendCustomEntry(CHECKPOINT, stored);
+		const size = JSON.stringify(stored).length;
+		bytes += size;
+		if (stored.kind === "snapshot") { snapshots++; fullSize ||= size; chain = 0; }
+		else chain++;
+		previous = state;
+	}
+	expect(snapshots).toBe(4);
+	expect(bytes).toBeLessThan(fullSize * 10);
+	expect(restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd).state?.revision).toBe(199);
+});
+
+test("a corrupt delta restores the preceding snapshot with an explicit warning", () => {
+	const manager = SessionManager.inMemory(cwd);
+	const state = newState("default", preset);
+	const snapshot = encodeCheckpoint(cwd, "response", state);
+	manager.appendCustomEntry(CHECKPOINT, snapshot);
+	const changed = structuredClone(state); changed.revision = 1;
+	const delta = encodeCheckpoint(cwd, "turn", changed, state);
+	expect(delta.kind).toBe("delta");
+	manager.appendCustomEntry(CHECKPOINT, { ...delta, hash: "corrupt" });
+	const restored = restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd);
+	expect(restored.warning).toContain("preceding valid");
+	expect(restored.state?.revision).toBe(0);
+});
 
 test("restores recorded tool results after a checkpoint without duplicating the assistant or its fee", () => {
 	const { manager, state, message } = fixture();

@@ -3,8 +3,9 @@ import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext }
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { isSwarmAttached } from "../agent-swarm/events.ts";
 import { queryBackgroundJobs } from "../bg-bash/events.ts";
-import { CHECKPOINT, restoreCheckpoint, type Checkpoint } from "./checkpoint.ts";
+import { CHECKPOINT, encodeCheckpoint, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
+import { cloneJson } from "./delta.ts";
 import { addUsage, callRole, createMixtureProvider, emitMessage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
 import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
@@ -18,7 +19,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	let ctx: ExtensionContext | undefined;
 	let session: MixtureSession | undefined;
 	let rootId: string | undefined;
-	let snapshotHash: string | undefined;
+	let persistedState: MixtureSession["state"] | undefined;
+	let persistedStage: CheckpointStage | undefined;
+	let deltaChain = 0;
 	let pending: Promise<AssistantMessage> | undefined;
 	let requesting = false;
 	try { config = loadConfig(); }
@@ -26,13 +29,16 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
 	const status = () => diagnostic ?? (session ? inspection(session) : `Mixture presets: ${Object.keys(config!.presets).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`);
 	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session) : "mix ready" : undefined); };
-	const persist = (stage: Checkpoint["stage"]) => {
+	const persist = (stage: CheckpointStage) => {
 		if (!ctx || !session || ctx.sessionManager.getSessionId() !== rootId) return;
-		const checkpoint: Checkpoint = { version: 2, cwd: ctx.cwd, stage: requesting ? "request" : stage, state: structuredClone(session.state) };
-		const hash = fingerprint(checkpoint);
-		if (hash === snapshotHash) return;
+		const checkpointStage = requesting ? "request" : stage;
+		const state = cloneJson(session.state);
+		if (persistedState && fingerprint(state) === fingerprint(persistedState) && checkpointStage === persistedStage) return;
+		const checkpoint = encodeCheckpoint(ctx.cwd, checkpointStage, state, deltaChain < MAX_DELTA_CHAIN ? persistedState : undefined);
 		pi.appendEntry(CHECKPOINT, checkpoint);
-		snapshotHash = hash;
+		persistedState = state;
+		persistedStage = checkpointStage;
+		deltaChain = checkpoint.kind === "delta" ? deltaChain + 1 : 0;
 	};
 	const detach = async (reason: string, warn = false) => {
 		const old = session;
@@ -47,7 +53,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			if (running.length || jobs.error) ctx.ui.notify(`Mixture stopped inference, not shell jobs. ${jobs.error ?? `Still running: ${running.map(job => job.id).join(", ")}`}`, "warning");
 		}
 		if (session === old) session = undefined;
-		snapshotHash = undefined;
+		persistedState = undefined;
+		persistedStage = undefined;
+		deltaChain = 0;
 	};
 	const activate = async (context: ExtensionContext, reset = false) => {
 		if (session && (reset || context.sessionManager.getSessionId() !== rootId || context.model?.provider !== "mixture" || session.state.preset !== context.model.id)) await detach("model or session changed", true);

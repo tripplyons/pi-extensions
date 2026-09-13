@@ -6,7 +6,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime,
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { defaultConfig } from "./config.ts";
 import { createMixtureExtension } from "./index.ts";
-import { CHECKPOINT, parseCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT, materializeCheckpoint } from "./checkpoint.ts";
 import { modelDefinition, validatePreset } from "./provider.ts";
 
 const live = process.env.PI_MIXTURE_E2E === "1";
@@ -48,7 +48,7 @@ const live = process.env.PI_MIXTURE_E2E === "1";
 		const entries = session.sessionManager.getEntries();
 		const entry = entries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT);
 		expect(entry?.type).toBe("custom");
-		const state = parseCheckpoint((entry as any).data).state;
+		const state = materializeCheckpoint(session.sessionManager.getBranch()).checkpoint!.state;
 		const stats = session.getSessionStats();
 		const summary = {
 			path: dir, models: { lead: preset.lead, writer: preset.writer.model, reviewers: preset.reviewers.map(role => role.model) },

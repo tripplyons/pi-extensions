@@ -137,9 +137,12 @@ default to zero.
 ## Sessions, context and usage
 
 Versioned custom entries in the current Pi session hold role histories, findings,
-counters, usage receipts and writer ownership. They are not injected into the
-main model context. Ephemeral sessions remain ephemeral. No global daemon,
-private credential copy or separate run directory is created.
+counters, usage receipts and writer ownership. A lifecycle starts with one full
+snapshot; later checkpoints store content-addressed deltas and periodically start
+a new snapshot chain. A snapshot is also used whenever it is smaller. This avoids
+repeatedly appending the complete role history while keeping restore work bounded. Checkpoints are not injected into the main model context. Ephemeral
+sessions remain ephemeral. No global daemon, private credential copy or separate
+run directory is created.
 
 Reload/resume restores the active branch's valid checkpoint. Model/preset changes,
 new sessions, forks, tree navigation and compaction invalidate stale work.

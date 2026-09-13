@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type Provider } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT, parseCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT, materializeCheckpoint } from "./checkpoint.ts";
 import { defaultConfig } from "./config.ts";
 import { createMixtureExtension } from "./index.ts";
 import { emitMessage, emptyUsage, modelDefinition, type Registry } from "./provider.ts";
@@ -67,8 +67,10 @@ for (const { textOnlyReviewer, delegate } of [
 			expect(roleRequests.length).toBeGreaterThan(0);
 			expect(roleRequests.every(request => hasImage(request.context))).toBe(!(textOnlyReviewer && id === "reviewer-b"));
 		}
-		const checkpoint = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
-		const state = parseCheckpoint((checkpoint as any).data).state;
+		const entries = session.sessionManager.getEntries();
+		const checkpoint = entries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
+		expect(checkpoint.type).toBe("custom");
+		const state = materializeCheckpoint(session.sessionManager.getBranch()).checkpoint!.state;
 		expect(state.attachments).toEqual([image]);
 		expect(state.reviewers.every(reviewer => reviewer.revision === 0)).toBe(true);
 		expect(state.reviewers[0].imageWarning).toBeUndefined();
@@ -77,8 +79,12 @@ for (const { textOnlyReviewer, delegate } of [
 		expect(session.messages.at(-1)).toMatchObject({ role: "assistant", model: "lead", stopReason: "stop" });
 		if (textOnlyReviewer) {
 			await session.prompt("Give a text-only follow-up with no new image evidence.");
-			const nextCheckpoint = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
-			const nextState = parseCheckpoint((nextCheckpoint as any).data).state;
+			const nextEntries = session.sessionManager.getEntries();
+			const nextCheckpoint = nextEntries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
+			expect(nextCheckpoint.type).toBe("custom");
+			const nextMaterialized = materializeCheckpoint(session.sessionManager.getBranch());
+			expect(nextMaterialized.warning).toBeUndefined();
+			const nextState = nextMaterialized.checkpoint!.state;
 			expect(nextState.reviewers.every(reviewer => !reviewer.imageWarning)).toBe(true);
 			expect(JSON.stringify(session.messages.at(-1))).not.toContain("Incomplete review");
 		}

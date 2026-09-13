@@ -1,14 +1,28 @@
 import type { Message, Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Preset } from "./config.ts";
+import { applyDelta, cloneJson, createDelta, type DeltaOperation } from "./delta.ts";
 import { CONTROL, fingerprint, type Actor, type MixtureState } from "./session.ts";
 import { receiptIds } from "./usage.ts";
 
 export const CHECKPOINT = "mixture-checkpoint-v2";
-export interface Checkpoint { version: 2; cwd: string; stage: "request" | "response" | "turn" | "idle" | "detached"; state: MixtureState }
+export const MAX_DELTA_CHAIN = 64;
+export type CheckpointStage = "request" | "response" | "turn" | "idle" | "detached";
+export interface Checkpoint { version: 2; cwd: string; stage: CheckpointStage; state: MixtureState }
+export interface SnapshotCheckpoint { version: 3; kind: "snapshot"; cwd: string; stage: CheckpointStage; hash: string; state: MixtureState }
+export interface DeltaCheckpoint { version: 3; kind: "delta"; cwd: string; stage: CheckpointStage; baseHash: string; hash: string; changes: DeltaOperation[] }
+export type StoredCheckpoint = SnapshotCheckpoint | DeltaCheckpoint;
+
 function assert(value: unknown, label: string): asserts value { if (!value) throw new Error(`Invalid Mixture checkpoint: ${label}`); }
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
+function canonical(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (!object(value)) return value;
+	return Object.fromEntries(Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => [key, canonical(value[key])]));
+}
+const checkpointHash = (state: MixtureState) => fingerprint(canonical(state));
 const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const stage = (value: unknown): value is CheckpointStage => ["request", "response", "turn", "idle", "detached"].includes(String(value));
 function validUsage(value: unknown): value is Usage {
 	return object(value) && ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every(key => count(value[key]))
 		&& object(value.cost) && ["input", "output", "cacheRead", "cacheWrite", "total"].every(key => typeof value.cost[key] === "number" && Number.isFinite(value.cost[key]) && value.cost[key] >= 0);
@@ -26,9 +40,8 @@ function validMessage(value: unknown): value is Message {
 		&& ["stop", "toolUse", "length", "error", "aborted"].includes(value.stopReason);
 	return value.role === "user" || typeof value.toolCallId === "string" && typeof value.toolName === "string" && typeof value.isError === "boolean";
 }
-export function parseCheckpoint(value: unknown): Checkpoint {
-	assert(object(value) && value.version === 2 && typeof value.cwd === "string" && ["request", "response", "turn", "idle", "detached"].includes(value.stage), "version or stage");
-	const state = value.state;
+function parseState(value: unknown): MixtureState {
+	const state = value;
 	assert(object(state) && state.version === 2 && typeof state.preset === "string" && typeof state.configKey === "string" && typeof state.id === "string", "identity");
 	assert(["lead", "writer"].includes(state.active) && [undefined, "lead", "writer"].includes(state.owner), "writer ownership");
 	assert(Array.isArray(state.reviewers) && Array.isArray(state.receipts) && Array.isArray(state.seenUsers) && state.seenUsers.every((id: unknown) => typeof id === "string"), "role lists");
@@ -52,16 +65,76 @@ export function parseCheckpoint(value: unknown): Checkpoint {
 	assert(state.receipts.every((receipt: unknown) => object(receipt) && typeof receipt.id === "string" && typeof receipt.role === "string" && typeof receipt.model === "string" && validUsage(receipt.usage) && ["reported", "held", "nested"].includes(receipt.delivery)), "receipts");
 	assert(new Set(state.receipts.map((receipt: { id: string }) => receipt.id)).size === state.receipts.length, "duplicate receipts");
 	if (state.final) assert(object(state.final) && validMessage(state.final.message) && state.final.message.role === "assistant" && typeof state.final.checkpoint === "string" && typeof state.final.ready === "boolean" && state.receipts.some((receipt: { id: string }) => receipt.id === state.final.receipt), "held final answer");
-	return structuredClone(value) as Checkpoint;
+	return cloneJson(state) as MixtureState;
+}
+
+export function parseCheckpoint(value: unknown): Checkpoint {
+	assert(object(value) && typeof value.cwd === "string" && stage(value.stage), "version or stage");
+	if (value.version === 2) return { version: 2, cwd: value.cwd, stage: value.stage, state: parseState(value.state) };
+	assert(value.version === 3 && value.kind === "snapshot" && typeof value.hash === "string", "snapshot header");
+	const state = parseState(value.state);
+	assert(checkpointHash(state) === value.hash, "snapshot hash");
+	return { version: 2, cwd: value.cwd, stage: value.stage, state };
+}
+
+export function encodeCheckpoint(cwd: string, checkpointStage: CheckpointStage, state: MixtureState, previous?: MixtureState): StoredCheckpoint {
+	const serializedState = cloneJson(state);
+	const snapshot: SnapshotCheckpoint = { version: 3, kind: "snapshot", cwd, stage: checkpointStage, hash: checkpointHash(serializedState), state: serializedState };
+	if (!previous) return snapshot;
+	const serializedPrevious = cloneJson(previous);
+	const delta: DeltaCheckpoint = { version: 3, kind: "delta", cwd, stage: checkpointStage,
+		baseHash: checkpointHash(serializedPrevious), hash: snapshot.hash, changes: createDelta(serializedPrevious, serializedState) };
+	if (delta.changes.length > 100_000) return snapshot;
+	return JSON.stringify(delta).length < JSON.stringify(snapshot).length ? delta : snapshot;
+}
+
+function applyStored(previous: Checkpoint | undefined, value: unknown): Checkpoint {
+	if (!object(value) || value.version !== 3 || value.kind !== "delta") return parseCheckpoint(value);
+	assert(previous && typeof value.cwd === "string" && stage(value.stage) && typeof value.baseHash === "string" && typeof value.hash === "string", "delta header");
+	assert(previous.cwd === value.cwd && checkpointHash(previous.state) === value.baseHash, "delta base");
+	const state = parseState(applyDelta(previous.state, value.changes));
+	assert(checkpointHash(state) === value.hash, "delta hash");
+	return { version: 2, cwd: value.cwd, stage: value.stage, state };
+}
+
+export function materializeCheckpoint(branch: SessionEntry[]): { checkpoint?: Checkpoint; index: number; warning?: string } {
+	let checkpoint: Checkpoint | undefined;
+	let checkpointIndex = -1;
+	let chainWarning: string | undefined;
+	// Every v2 record and v3 snapshot is self-contained. Start at the newest valid
+	// one so legacy sessions do not repeatedly parse and clone their full history.
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry.type !== "custom" || entry.customType !== CHECKPOINT || !object(entry.data)
+			|| entry.data.version !== 2 && !(entry.data.version === 3 && entry.data.kind === "snapshot")) continue;
+		try {
+			checkpoint = parseCheckpoint(entry.data);
+			checkpointIndex = index;
+			break;
+		} catch (error) { chainWarning ??= String(error); }
+	}
+	if (!checkpoint) return { index: -1, warning: chainWarning };
+	for (let index = checkpointIndex + 1; index < branch.length; index++) {
+		const entry = branch[index];
+		if (entry.type !== "custom" || entry.customType !== CHECKPOINT || !object(entry.data) || entry.data.version !== 3 || entry.data.kind !== "delta") continue;
+		try {
+			checkpoint = applyStored(checkpoint, entry.data);
+			checkpointIndex = index;
+		} catch (error) {
+			chainWarning = String(error);
+			break;
+		}
+	}
+	return { checkpoint, index: checkpointIndex, warning: chainWarning };
 }
 
 export function restoreCheckpoint(branch: SessionEntry[], allEntries: SessionEntry[], name: string, preset: Preset, cwd: string): { state?: MixtureState; warning?: string } {
-	const index = branch.findLastIndex(entry => entry.type === "custom" && entry.customType === CHECKPOINT);
-	if (index < 0) return {};
-	const entry = branch[index];
-	if (entry.type !== "custom") return {};
+	const materialized = materializeCheckpoint(branch);
+	const { checkpoint } = materialized;
+	const checkpointIndex = materialized.index;
+	const chainWarning = materialized.warning;
+	if (!checkpoint) return { warning: chainWarning ? `${chainWarning}. Starting fresh role contexts; existing session entries are unchanged.` : undefined };
 	try {
-		const checkpoint = parseCheckpoint(entry.data);
 		const state = checkpoint.state;
 		if (checkpoint.cwd !== cwd) return { warning: "Mixture checkpoint belongs to another working directory; starting fresh role contexts. Re-read the current checkout." };
 		if (state.preset !== name || state.configKey !== fingerprint(preset) || state.reviewers.length !== preset.reviewers.length) return { warning: "Mixture preset changed; starting fresh role contexts against the current checkout." };
@@ -70,7 +143,7 @@ export function restoreCheckpoint(branch: SessionEntry[], allEntries: SessionEnt
 			if (billed.has(receipt.id)) receipt.delivery = "reported";
 			else if (receipt.delivery === "reported") receipt.delivery = "nested";
 		}
-		const messages = branch.slice(index + 1).flatMap(entry => entry.type === "message" && ["user", "assistant", "toolResult"].includes(entry.message.role) ? [entry.message as Message] : []);
+		const messages = branch.slice(checkpointIndex + 1).flatMap(entry => entry.type === "message" && ["user", "assistant", "toolResult"].includes(entry.message.role) ? [entry.message as Message] : []);
 		for (const message of messages) {
 			if (message.role === "user") {
 				if (!state.seenUsers.includes(fingerprint(message))) { state.lead.messages.push(message); state.seenUsers.push(fingerprint(message)); }
@@ -102,6 +175,8 @@ export function restoreCheckpoint(branch: SessionEntry[], allEntries: SessionEnt
 			reviewer.pending = [];
 			reviewer.status = reviewer.warning ? "incomplete" : "idle";
 		}
-		return { state, warning: checkpoint.stage === "request" ? "Mixture request was interrupted. Any provider usage not checkpointed remains unknown." : undefined };
+		const warnings = [chainWarning ? `${chainWarning}. Restored the preceding valid Mixture checkpoint.` : undefined,
+			checkpoint.stage === "request" ? "Mixture request was interrupted. Any provider usage not checkpointed remains unknown." : undefined].filter((value): value is string => !!value);
+		return { state, warning: warnings.join(" ") || undefined };
 	} catch (error) { return { warning: `${String(error)}. Starting fresh role contexts; existing session entries are unchanged.` }; }
 }
