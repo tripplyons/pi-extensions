@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { isSwarmAttached } from "../agent-swarm/events.ts";
 import { queryBackgroundJobs } from "../bg-bash/events.ts";
 import { CHECKPOINT, restoreCheckpoint, type Checkpoint } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
-import { addUsage, callRole, createMixtureProvider, emitMessage, failureMessage, resolveModel, type Registry } from "./provider.ts";
+import { addUsage, callRole, createMixtureProvider, emitMessage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
 import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
 import { tagReceipts } from "./usage.ts";
@@ -57,6 +57,12 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		pi.setActiveTools(selected() ? [...active, CONTROL] : active);
 		render();
 	};
+	const inheritFastMode = (options?: SimpleStreamOptions): RoleStreamOptions | undefined => {
+		const fast: { enabled?: boolean } = {};
+		pi.events.emit("fast:query", fast);
+		if (fast.enabled === undefined) return options;
+		return { ...options, serviceTier: fast.enabled ? "priority" : "default" };
+	};
 	const ensureSession = () => {
 		if (!selected() || !ctx || !config) throw new Error("Select a Mixture model first");
 		if (isSwarmAttached(pi)) throw new Error("Mixture cannot execute while a managed swarm is attached. Stop or finish that swarm first.");
@@ -81,10 +87,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		const preset = candidate.presets[name];
 		void (async () => {
 			try {
+				const inheritedOptions = inheritFastMode(options);
 				if (selected() && ctx?.model?.id === name && options?.sessionId === ctx.sessionManager.getSessionId()) {
 					const active = ensureSession();
 					requesting = true; render(); persist("request");
-					const request = active.next(context, options, ctx.thinkingLevel);
+					const request = active.next(context, inheritedOptions, ctx.thinkingLevel);
 					pending = request;
 					const message = await request;
 					if (pending === request) { pending = undefined; requesting = false; }
@@ -94,9 +101,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				}
 				// Pi helper requests have a separate routing ID and never join a run.
 				const model = resolveModel(preset.lead, registry.find.bind(registry));
-				emitMessage(stream, await callRole(registry, preset.lead, context, options?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off"), {
-					...options, timeoutMs: preset.limits.requestTimeoutMs,
-					maxTokens: Math.min(options?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
+				emitMessage(stream, await callRole(registry, preset.lead, context, inheritedOptions?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off"), {
+					...inheritedOptions, timeoutMs: preset.limits.requestTimeoutMs,
+					maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
 				}));
 			} catch (error) {
 				if (options?.sessionId === rootId) { pending = undefined; requesting = false; }

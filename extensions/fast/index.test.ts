@@ -45,6 +45,7 @@ test("toggle overrides request tier without changing the original request", asyn
   const session = setup();
   const payload = { model: "gpt-5.4", service_tier: "priority", reasoning: { effort: "high" } };
   expect(session.request(payload)).toBe(payload);
+  expect(session.fast()).toBeUndefined();
 	await session.toggle();
 	expect(session.fast()).toBe(true);
   expect(session.request(payload).service_tier).toBe("priority");

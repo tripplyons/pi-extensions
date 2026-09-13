@@ -3,8 +3,9 @@
 - `/fast` or Ctrl+F enables Codex priority requests. Toggle again to force standard requests.
 - Ctrl+F replaces the editor's forward-character shortcut. Right arrow still moves the cursor.
 - The footer shows `fast` while the override is enabled and clears when it is disabled.
-- The override applies to subsequent chat requests using `openai-codex`.
-  Other providers and independent subagent sessions are unchanged.
+- The override applies to subsequent chat requests using `openai-codex` and to
+  `openai-codex` roles inside Mixture requests. Other providers and independent
+  subagent sessions are unchanged.
 - Reloading, resuming, restarting Pi, and forking preserve the override in hidden
   session history. Forks inherit the state at their branch point.
 - New sessions start without an override. Until fast mode is toggled, existing Codex

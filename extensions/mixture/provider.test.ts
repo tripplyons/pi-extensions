@@ -35,7 +35,7 @@ test("emits native text and structured tool events with one terminal result", as
 test("role calls use effective provider auth, endpoint, callbacks and thinking", async () => {
 	let seen: { model: Model<any>; options: SimpleStreamOptions } | undefined;
 	const registry: Registry = {
-		find: () => model(),
+		find: () => model("openai-codex"),
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "role-secret", headers: { "x-role": "yes" }, env: { REGION: "local" }, baseUrl: "https://role.invalid" }),
 		getProvider: () => ({ streamSimple: (model, _context, options) => {
 			seen = { model, options: options! };
@@ -44,11 +44,11 @@ test("role calls use effective provider auth, endpoint, callbacks and thinking",
 	};
 	const callback = () => {};
 	const result = await callRole(registry, "test/lead", { messages: [] }, "high", {
-		timeoutMs: 1000, maxTokens: 999_999, apiKey: "composite-secret", headers: { authorization: "wrong" }, env: { WRONG: "wrong" }, onPayload: callback,
+		timeoutMs: 1000, maxTokens: 999_999, serviceTier: "priority", apiKey: "composite-secret", headers: { authorization: "wrong" }, env: { WRONG: "wrong" }, onPayload: callback,
 	});
 	expect(result.stopReason).toBe("toolUse");
 	expect(seen?.model.baseUrl).toBe("https://role.invalid");
-	expect(seen?.options).toMatchObject({ apiKey: "role-secret", headers: { "x-role": "yes" }, env: { REGION: "local" }, reasoning: "high", maxTokens: 20_000, maxRetries: 0 });
+	expect(seen?.options).toMatchObject({ apiKey: "role-secret", headers: { "x-role": "yes" }, env: { REGION: "local" }, reasoning: "high", serviceTier: "priority", maxTokens: 20_000, maxRetries: 0 });
 	expect(seen?.options.onPayload).toBe(callback);
 });
 test("timeout bounds auth and never dispatches after cancellation", async () => {

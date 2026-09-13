@@ -5,7 +5,10 @@ const FAST_STATE_ENTRY = "fast-state";
 export default function fastExtension(pi: ExtensionAPI) {
   let fast: boolean | undefined;
 
-  pi.events.on("fast:query", (query: { enabled?: boolean }) => { query.enabled = fast === true; });
+  pi.events.on("fast:query", (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    (value as { enabled?: boolean }).enabled = fast;
+  });
 
   pi.on("session_start", (_event, ctx) => {
     fast = undefined;

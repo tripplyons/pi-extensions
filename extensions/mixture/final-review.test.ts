@@ -1,18 +1,20 @@
 import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { defaultConfig } from "./config.ts";
-import { addUsage, emitMessage, emptyUsage, type Registry } from "./provider.ts";
+import { addUsage, emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, controlTool, MixtureSession, newState } from "./session.ts";
 
 test("final-review corrections are bounded; rejected candidates stay hidden and are charged once", async () => {
 	const preset = defaultConfig().presets.default;
-	preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer";
-	preset.reviewers = [{ model: "fixture/reviewer", thinking: "low" }];
+	preset.lead = "openai-codex/lead"; preset.writer.model = "openai-codex/writer";
+	preset.reviewers = [{ model: "openai-codex/reviewer", thinking: "low" }];
 	let leadCalls = 0; let reviewCalls = 0;
+	const roleOptions: RoleStreamOptions[] = [];
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, api: "fixture", name: id, baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
-		getProvider: () => ({ streamSimple: model => {
+		getProvider: () => ({ streamSimple: (model, _context, options) => {
+			roleOptions.push(options ?? {});
 			const reviewing = model.id === "reviewer";
 			if (reviewing) reviewCalls++; else leadCalls++;
 			const message: AssistantMessage = { role: "assistant", api: "fixture", provider: "fixture", model: model.id, timestamp: Date.now(),
@@ -31,7 +33,7 @@ test("final-review corrections are bounded; rejected candidates stay hidden and 
 	const billed = emptyUsage();
 	try {
 		for (let turn = 0; turn < 6; turn++) {
-			const message = await session.next(context, { sessionId: "root" });
+			const message = await session.next(context, { sessionId: "root", serviceTier: "priority" } as RoleStreamOptions);
 			visible.push(message); addUsage(billed, message.usage);
 			const call = message.content.find(block => block.type === "toolCall");
 			if (!call) break;
@@ -43,6 +45,8 @@ test("final-review corrections are bounded; rejected candidates stay hidden and 
 		}
 		expect(leadCalls).toBe(3);
 		expect(reviewCalls).toBe(3);
+		expect(roleOptions).toHaveLength(6);
+		expect(roleOptions.every(options => options.serviceTier === "priority")).toBe(true);
 		expect(state.finalCorrections).toBe(2);
 		expect(visible.slice(0, -1).every(message => message.content.every(block => block.type === "toolCall"))).toBe(true);
 		expect(JSON.stringify(visible.at(-1))).toContain("Candidate 3");

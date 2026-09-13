@@ -9,6 +9,7 @@ import { splitModel, type MixtureConfig, type Preset } from "./config.ts";
 export type Registry = Pick<ModelRegistry, "find" | "getProvider" | "getApiKeyAndHeaders">;
 export type Lookup = (provider: string, model: string) => Model<Api> | undefined;
 export type MixtureStream = (preset: string, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+export type RoleStreamOptions = SimpleStreamOptions & { serviceTier?: "priority" | "default" };
 export const emptyUsage = (): Usage => ({
 	input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -128,7 +129,7 @@ export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 }
 
 export async function callRole(registry: Registry, id: string, context: Context, thinking: ModelThinkingLevel,
-	options: SimpleStreamOptions & { timeoutMs: number }, onPartial?: (message: AssistantMessage) => void): Promise<AssistantMessage> {
+	options: RoleStreamOptions & { timeoutMs: number }, onPartial?: (message: AssistantMessage) => void): Promise<AssistantMessage> {
 	const model = resolveModel(id, registry.find.bind(registry));
 	if (!getSupportedThinkingLevels(model).includes(thinking)) throw new Error(`${id} does not support thinking ${thinking}`);
 	const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(options.timeoutMs)]);
@@ -142,11 +143,12 @@ export async function callRole(registry: Registry, id: string, context: Context,
 		signal.throwIfAborted();
 		// Never carry the composite provider's authentication, headers, environment,
 		// or sampling overrides into a different provider.
-		const request: SimpleStreamOptions = {
+		const request: RoleStreamOptions = {
 			signal, apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
 			timeoutMs: options.timeoutMs, maxRetries: 0,
 			maxTokens: Math.min(options.maxTokens ?? model.maxTokens, model.maxTokens),
 			...(thinking === "off" ? {} : { reasoning: thinking }),
+			...(model.provider === "openai-codex" && options.serviceTier ? { serviceTier: options.serviceTier } : {}),
 			sessionId: options.sessionId, cacheRetention: options.cacheRetention,
 			onPayload: options.onPayload, onResponse: options.onResponse,
 		};

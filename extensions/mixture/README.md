@@ -49,6 +49,8 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
   validated separately. Recursive `mixture/*` role models are rejected.
 - Credentials stay in Pi. Each request resolves its own effective provider,
   authentication, headers and endpoint, including provider overrides.
+- An explicit session `/fast` override is inherited by every `openai-codex`
+  role request. Untoggled sessions leave the provider's existing tier unchanged.
 - Role models must be present in Pi's catalog or model configuration. Discovery
   does not fetch missing metadata or make inference calls. Missing models and
   unsupported thinking levels produce diagnostics, not substitute models.

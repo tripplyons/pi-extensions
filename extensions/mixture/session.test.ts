@@ -2,19 +2,19 @@ import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { defaultConfig } from "./config.ts";
-import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
+import { emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, MixtureSession, controlTool, newState } from "./session.ts";
 
 const call = (id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"][number] => ({ type: "toolCall", id, name, arguments: args });
 const content = (value: string): AssistantMessage["content"] => [{ type: "text", text: value }];
 function harness(script: AssistantMessage["content"][], stops: AssistantMessage["stopReason"][] = []) {
-	const calls: Array<{ model: string; context: Context }> = [];
+	const calls: Array<{ model: string; context: Context; options: RoleStreamOptions }> = [];
 	const preset = defaultConfig().presets.default; preset.reviewers = [];
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
-		getProvider: () => ({ streamSimple: (model, context) => {
-			calls.push({ model: model.id, context: structuredClone(context) });
+		getProvider: () => ({ streamSimple: (model, context, options) => {
+			calls.push({ model: model.id, context: structuredClone(context), options: { ...options } });
 			const content = script.shift(); if (!content) throw new Error("Unexpected inference");
 			const stream = createAssistantMessageEventStream();
 			emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content, usage: { ...emptyUsage(), output: 1, totalTokens: 1 }, timestamp: Date.now(), stopReason: stops.shift() ?? (content.some(block => block.type === "toolCall") ? "toolUse" : "stop") });
@@ -26,7 +26,7 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 	const session = new MixtureSession(preset, registry, state, () => jobs);
 	const context: Context = { systemPrompt: "User rules", messages: [{ role: "user", content: "Fix this", timestamp: 1 }],
 		tools: [controlTool, ...["read", "edit", "write", "bash", "subagent", "bg_process"].map(name => ({ name, description: name, parameters: Type.Object({}) }))] };
-	const next = () => session.next(context, { sessionId: "root" });
+	const next = (options: RoleStreamOptions = {}) => session.next(context, { sessionId: "root", ...options });
 	const finishControl = async (message: AssistantMessage) => {
 		const block = message.content.find(block => block.type === "toolCall")!;
 		const result = await session.control(block.id, block.arguments as any);
@@ -39,14 +39,16 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 
 test("a new user request reaches the cheap writer before the first lead inference", async () => {
 	const h = harness([content("Implemented and verified.")]);
+	h.preset.writer.model = "openai-codex/gpt-5.6-luna";
 	h.session.newRequest("Fix this without changing unrelated files");
 	const delegated = await h.next();
 	expect(h.calls).toHaveLength(0);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
 	await h.finishControl(delegated);
 	expect(h.session.active).toBe("writer");
-	await h.next();
-	expect(h.calls.map(call => call.model)).toEqual([h.preset.writer.model.split("/").slice(1).join("/")]);
+	await h.next({ serviceTier: "priority" });
+	expect(h.calls.map(call => call.model)).toEqual(["gpt-5.6-luna"]);
+	expect(h.calls[0].options.serviceTier).toBe("priority");
 });
 
 test("delegates through normal tool calls, keeps distinct histories, and holds the final", async () => {
