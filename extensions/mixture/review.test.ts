@@ -17,7 +17,7 @@ const deferred = <T>() => {
 	return { promise, resolve };
 };
 
-test("reviewers run concurrently, serialize their own requests and reconfirm stale findings", async () => {
+test("reviewers run concurrently, serialize their own requests and reconfirm coalesced findings", async () => {
 	const preset = defaultConfig().presets.default;
 	const states = preset.reviewers.map(newReviewer);
 	const requests: Array<{ index: number; context: Context; result: ReturnType<typeof deferred<AssistantMessage>> }> = [];
@@ -34,24 +34,49 @@ test("reviewers run concurrently, serialize their own requests and reconfirm sta
 		expect(active).toEqual([1, 1]);
 		pool.enqueue(2, "Execution two");
 		expect(requests).toHaveLength(2);
-		requests[0].result.resolve(report(1, [issue]));
-		await untilRequests(3);
-		expect(states[0].findings[0]).toMatchObject({ revision: 1, severity: "concern" });
-		expect(pool.serious).toHaveLength(1);
-		expect(requests[2].index).toBe(0);
-		requests[1].result.resolve(report(1, [issue]));
-		await untilRequests(4);
-		expect(requests[3].index).toBe(1);
-		requests[2].result.resolve(report(2));
-		requests[3].result.resolve(report(2, [issue]));
+		for (const request of requests) request.result.resolve(report(1, [issue]));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(requests).toHaveLength(2);
+		expect(pool.serious).toHaveLength(2);
 		const checkpoint = pool.checkpoint(2, "Confirm the result");
-		await untilRequests(6);
-		for (const request of requests.slice(4)) request.result.resolve(report(2));
+		await untilRequests(4);
+		for (const request of requests.slice(2)) {
+			expect(JSON.stringify(request.context.messages)).toContain("Execution two");
+			request.result.resolve(report(2));
+		}
 		const result = await checkpoint;
 		expect(result.findings).toEqual([]);
 		expect(result.warnings).toEqual([]);
 		expect(peak).toEqual([1, 1]);
 		for (const request of requests) expect(request.context.tools?.map(tool => tool.name).sort()).toEqual(["find", "grep", "ls", "mixture_review", "read"]);
+	} finally { await pool.freeze(); }
+});
+
+test("primed evidence coalesces until an explicit review trigger", async () => {
+	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
+	const states = [newReviewer()];
+	const requests: Array<{ context: Context; result: ReturnType<typeof deferred<AssistantMessage>> }> = [];
+	const pool = new ReviewPool(preset, states, process.cwd(), async (_index, context, signal) => {
+		const result = deferred<AssistantMessage>(); requests.push({ context: structuredClone(context), result });
+		return abortable(result.promise, signal);
+	}, () => true);
+	try {
+		pool.prime(0, "Initial delegation");
+		expect(requests).toHaveLength(0);
+		pool.enqueue(1, "Native edit completed");
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(requests).toHaveLength(1);
+		expect(JSON.stringify(requests[0].context.messages)).toContain("Initial delegation");
+		pool.prime(2, "Tests passed after the edit");
+		requests[0].result.resolve(report(1));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(requests).toHaveLength(1);
+		const checkpoint = pool.checkpoint(2, "Final writer report");
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(requests).toHaveLength(2);
+		expect(JSON.stringify(requests[1].context.messages)).toContain("Tests passed after the edit");
+		requests[1].result.resolve(report(2));
+		expect((await checkpoint).warnings).toEqual([]);
 	} finally { await pool.freeze(); }
 });
 
@@ -64,6 +89,7 @@ test("native read-only tools inspect files and preserve tool-call/result pairs",
 		count++;
 		if (count === 1) return reply("read", { path: "fixture.txt" });
 		expect(JSON.stringify(context.messages)).toContain("before\\nafter");
+		expect(context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
 		return report(3, [issue]);
 	}, () => true);
 	try {

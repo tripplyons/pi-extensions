@@ -25,7 +25,6 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [
-			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Change before to after in fixture.txt", constraints: ["Keep unrelated files"], successCriteria: ["Read confirms after"] }) },
 			{ actor: "writer", content: tool("edit", "edit", { path: "fixture.txt", oldText: "before", newText: "after" }) },
 			{ actor: "writer", content: tool("read", "read", { path: "fixture.txt" }) },
 			{ actor: "writer", content: tool("verify", "bash", { command: `test "$(< fixture.txt)" = ${denied ? "before" : "after"} && printf verification-passed` }) },
@@ -76,7 +75,7 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 		expect(JSON.stringify(requests[2].context.messages)).toContain(denied ? "Fixture permission denial" : "Successfully replaced");
 		expect(session.messages.at(-1)).toMatchObject({ role: "assistant", model: "lead", stopReason: "stop" });
 		expect(JSON.stringify(session.messages.at(-1))).toContain(denied ? "denied" : "verified");
-		expect(session.getSessionStats().tokens.total).toBe(66);
+		expect(session.getSessionStats().tokens.total).toBe(55);
 		expect(JSON.stringify(session.messages)).toContain("verification-passed");
 		expect(existsSync(join(dir, ".git"))).toBe(false);
 		const callsBefore = requests.length;

@@ -33,9 +33,9 @@ test("concurrent reviewers cannot reserve the same remaining spend allowance", a
 	const session = new MixtureSession(preset, registry, state, () => ({ available: true, jobs: [] }));
 	try {
 		await session.control("delegate", { action: "delegate", task: "Inspect fixture", successCriteria: ["No defects"] });
-		await first;
-		// This checkpoint queues more work while the first reservation is held.
+		// The checkpoint admits both reviewers concurrently, but only one reservation fits.
 		const review = session.reviews.checkpoint(0, "Final verification");
+		await first;
 		expect(requested).toHaveLength(1);
 		release();
 		const result = await review;

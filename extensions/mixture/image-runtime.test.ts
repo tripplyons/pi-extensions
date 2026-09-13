@@ -64,11 +64,8 @@ for (const { textOnlyReviewer, delegate } of [
 		expect(errors).toEqual([]);
 		for (const id of ["lead", "writer", "reviewer-a", "reviewer-b"]) {
 			const roleRequests = requests.filter(request => request.id === id);
-			if (id === "writer" && !delegate) expect(roleRequests).toEqual([]);
-			else {
-				expect(roleRequests.length).toBeGreaterThan(0);
-				expect(roleRequests.every(request => hasImage(request.context))).toBe(!(textOnlyReviewer && id === "reviewer-b"));
-			}
+			expect(roleRequests.length).toBeGreaterThan(0);
+			expect(roleRequests.every(request => hasImage(request.context))).toBe(!(textOnlyReviewer && id === "reviewer-b"));
 		}
 		const checkpoint = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
 		const state = parseCheckpoint((checkpoint as any).data).state;

@@ -37,6 +37,18 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 	return { calls, preset, session, state, next, finishControl, jobs, context };
 }
 
+test("a new user request reaches the cheap writer before the first lead inference", async () => {
+	const h = harness([content("Implemented and verified.")]);
+	h.session.newRequest("Fix this without changing unrelated files");
+	const delegated = await h.next();
+	expect(h.calls).toHaveLength(0);
+	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
+	await h.finishControl(delegated);
+	expect(h.session.active).toBe("writer");
+	await h.next();
+	expect(h.calls.map(call => call.model)).toEqual([h.preset.writer.model.split("/").slice(1).join("/")]);
+});
+
 test("delegates through normal tool calls, keeps distinct histories, and holds the final", async () => {
 	const h = harness([
 		[call("delegate", CONTROL, { action: "delegate", task: "Edit the fixture", constraints: ["Preserve unrelated files"], successCriteria: ["Test passes"] })],

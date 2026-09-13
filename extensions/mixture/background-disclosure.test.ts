@@ -21,13 +21,11 @@ test("leaving Mixture reports a surviving tracked shell job without killing it",
 		const preset = defaultConfig().presets.default; preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];
 		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost });
-		let calls = 0;
 		const provider: Provider = { id: "fixture", name: "Fixture", auth: { apiKey: { name: "Fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
 			getModels: () => ["lead", "writer", "ordinary"].map(id => find("fixture", id)!), stream: () => { throw new Error("Use simple"); },
 			streamSimple: (model) => {
 				const content = model.id === "ordinary" ? [{ type: "text" as const, text: "Ordinary model resumed after the switch." }]
-					: ++calls === 1 ? tool("mixture_control", { action: "delegate", task: "Start a tracked job", successCriteria: ["Leave it running for disclosure"] })
-						: tool("bash", { command: "read -r release; printf unexpected > output.txt", timeout: 0.1 });
+					: tool("bash", { command: "read -r release; printf unexpected > output.txt", timeout: 0.1 });
 				const stream = createAssistantMessageEventStream(); emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content,
 					usage: emptyUsage(), timestamp: Date.now(), stopReason: content.some(block => block.type === "toolCall") ? "toolUse" : "stop" }); return stream;
 			},

@@ -11,16 +11,16 @@ export interface RoleConfig {
 }
 
 export const DEFAULT_LIMITS = {
-	requestTimeoutMs: 120_000,
+	requestTimeoutMs: 240_000,
 	writerTurns: 32,
 	delegations: 8,
-	reviewerBatchTurns: 4,
+	reviewerBatchTurns: 2,
 	reviewerRequests: 24,
-	catchUpMs: 30_000,
+	catchUpMs: 120_000,
 	finalCorrections: 2,
 	leadMaxTokens: 16_384,
 	writerMaxTokens: 8_192,
-	reviewerMaxTokens: 4_096,
+	reviewerMaxTokens: 8_192,
 };
 export type Limits = typeof DEFAULT_LIMITS & { maxCostUsd?: number };
 export interface Preset {
@@ -41,7 +41,7 @@ export const defaultConfig = (): MixtureConfig => ({
 	presets: {
 		default: {
 			lead: "openai-codex/gpt-6-astra",
-			writer: { model: "openrouter/deepseek/deepseek-v4.1-flash", thinking: "high" },
+			writer: { model: "openrouter/z-ai/glm-5.3-flash", thinking: "low" },
 			reviewers: [
 				{ model: "openrouter/z-ai/glm-5.3-flash", thinking: "low" },
 				{ model: "openrouter/meta/muse-spark-1.3-contributor", thinking: "low" },

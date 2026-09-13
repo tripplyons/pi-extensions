@@ -4,10 +4,12 @@ Mixture is a native Pi model with a lead, a writer and independent read-only
 reviewers. Select `mixture/default` through `/model`. Requires Pi 0.85.1 or newer.
 Selecting an ordinary model does not start collaborators.
 
-The lead plans, delegates, assesses reports and answers the user. The writer
-normally edits and tests in your current checkout, including uncommitted and
-untracked files. No Git repository, worktree or editing subprocess is required.
-The lead can explicitly take over after a safe writer handoff.
+The writer receives each complete user request first, then plans, edits and tests
+in your current checkout, including uncommitted and untracked files. The lead
+uses Astra after the writer reports to assess evidence, resolve ambiguity, direct
+corrections and answer the user. This keeps routine investigation on the cheaper
+model. No Git repository, worktree or editing subprocess is required. The lead
+can explicitly take over after a safe writer handoff.
 
 ## Configuration
 
@@ -27,8 +29,8 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
     "default": {
       "lead": "openai-codex/gpt-6-astra",
       "writer": {
-        "model": "openrouter/deepseek/deepseek-v4.1-flash",
-        "thinking": "high"
+        "model": "openrouter/z-ai/glm-5.3-flash",
+        "thinking": "low"
       },
       "reviewers": [
         { "model": "openrouter/z-ai/glm-5.3-flash", "thinking": "low" },
@@ -68,15 +70,20 @@ and `ls`, plus a structured reporting operation. Their private reads use those
 read-only implementations, not the outer editing-tool loop. Reviewers cannot
 run shell commands or call arbitrary extension tools. This is not an OS sandbox.
 
-Reviewers receive delegation constraints and completed execution deltas. They
-run concurrently, but each reviewer serializes its own requests. Findings carry
-model identity, severity, evidence and the execution revision. Reads can race a
-writer; concerns and blockers are reconfirmed at a completed boundary before
-asking the lead to act. Review is advice, not a vote or user authority.
+Reviewers receive delegation constraints and completed execution deltas. The
+initial brief and read/test evidence are queued without spending a request. A
+native edit or write starts both reviewers concurrently with the writer; the
+next checkpoint coalesces any later evidence. Each reviewer gets at most one
+grouped read batch before its required structured report. Findings carry model
+identity, severity, evidence and the execution revision. Reads can race a writer;
+concerns and blockers are reconfirmed at a completed boundary before asking the
+lead to act. Review is advice, not a vote or user authority.
 
-A serious confirmed finding pauses new writer steps for lead assessment. The
-lead may request a correction, dismiss advice with reasons, or take over.
-A candidate final answer is withheld until bounded final review completes.
+Live findings accumulate while the writer continues, so review does not mistake
+an unfinished multi-step change for a completed defect or serialize the work.
+At the writer-report boundary, the lead may request a correction, dismiss advice
+with reasons, or take over. A candidate final answer is withheld until bounded
+final review completes.
 Failed or incomplete review is disclosed, never counted as clean. Remaining
 serious findings are disclosed when correction rounds are exhausted.
 
@@ -108,16 +115,16 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 
 | Field | Default | Scope |
 | --- | ---: | --- |
-| `requestTimeoutMs` | 120000 | Each underlying request, including auth |
+| `requestTimeoutMs` | 240000 | Each underlying request, including auth |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
 | `delegations` | 8 | Per accepted user request |
-| `reviewerBatchTurns` | 4 | Requests per reviewer batch |
+| `reviewerBatchTurns` | 2 | Requests per reviewer batch |
 | `reviewerRequests` | 24 | Per reviewer per accepted user request |
-| `catchUpMs` | 30000 | Checkpoint review deadline |
+| `catchUpMs` | 120000 | Checkpoint review deadline |
 | `finalCorrections` | 2 | Final-answer reassessments per user request |
 | `leadMaxTokens` | 16384 | Lead output ceiling |
 | `writerMaxTokens` | 8192 | Writer output ceiling |
-| `reviewerMaxTokens` | 4096 | Reviewer output ceiling |
+| `reviewerMaxTokens` | 8192 | Reviewer output ceiling |
 | `maxCostUsd` | unset | Estimated admission cap for the role-state lifetime |
 
 Output limits are clamped to each provider's model limit. Steering does not reset

@@ -17,7 +17,7 @@ const live = process.env.PI_MIXTURE_E2E === "1";
 	const registry = new ModelRegistry(runtime);
 	const config = defaultConfig();
 	const preset = config.presets.default;
-	Object.assign(preset.limits, { writerTurns: 8, delegations: 4, reviewerRequests: 24, reviewerBatchTurns: 4,
+	Object.assign(preset.limits, { writerTurns: 8, delegations: 4, reviewerRequests: 24, reviewerBatchTurns: 2,
 		catchUpMs: 45_000, requestTimeoutMs: 90_000, leadMaxTokens: 2048, writerMaxTokens: 4096, reviewerMaxTokens: 2048, maxCostUsd: 2 });
 	validatePreset(preset, registry.find.bind(registry));
 	const dir = mkdtempSync(join(tmpdir(), "mixture-live-"));

@@ -26,7 +26,6 @@ test("native background writer retains its lease until explicit stop, then lead 
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const roles: string[] = [];
 		const steps: Array<{ actor: string; content: (context: Context) => AssistantMessage["content"] }> = [
-			{ actor: "lead", content: () => tool("delegate", "mixture_control", { action: "delegate", task: "Start the fixture job, then explicitly stop it", successCriteria: ["Lead can safely write after the job stops"] }) },
 			{ actor: "writer", content: () => tool("start", "bash", { command: "printf started; read -r release; printf unexpected > output.txt", timeout: 0.1 }) },
 			{ actor: "writer", content: () => tool("blocked-report", "mixture_control", { action: "report", report: "Handing back early" }) },
 			{ actor: "writer", content: context => {
@@ -72,7 +71,7 @@ test("native background writer retains its lease until explicit stop, then lead 
 		expect(errors).toEqual([]);
 		expect((session.messages.at(-1) as AssistantMessage).errorMessage).toBeUndefined();
 		expect(steps).toHaveLength(0);
-		expect(roles).toEqual(["lead", "writer", "writer", "writer", "writer", "lead", "lead", "lead"]);
+		expect(roles).toEqual(["writer", "writer", "writer", "writer", "lead", "lead", "lead"]);
 		expect(readFileSync(join(dir, "output.txt"), "utf8")).toBe("lead owns the lease\n");
 		expect(session.messages.find(message => message.role === "toolResult" && message.toolCallId === "blocked-report")).toMatchObject({ isError: true });
 	} finally {

@@ -26,11 +26,11 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [
-			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Change before to after in fixture.txt", successCriteria: ["Read confirms after"] }) },
 			{ actor: "writer", content: tool("edit", "edit", { path: "fixture.txt", oldText: "before", newText: "after" }) },
 			{ actor: "writer", content: text("Edited fixture.txt. No unrelated files changed.") },
 			{ actor: "lead", content: text("Changed fixture.txt.") },
-			{ actor: "lead", content: tool("reread", "read", { path: "fixture.txt" }) },
+			{ actor: "writer", content: tool("reread", "read", { path: "fixture.txt" }) },
+			{ actor: "writer", content: text("Read the current file. The manual edit remains.") },
 			{ actor: "lead", content: text("Read the current file. Your manual edit remains.") },
 		];
 		let helpers = 0;
@@ -84,12 +84,12 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		expect(steps).toHaveLength(0);
 		expect(errors).toEqual([]);
 		expect(readFileSync(join(dir, "fixture.txt"), "utf8")).toBe("after + manual edit\n");
-		const resumed = requests.find(request => request.context.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("Inspect the current fixture")))!;
-		expect(JSON.stringify(resumed.context.messages)).toContain("session restored");
+		const resumed = requests.find(request => JSON.stringify(request.context.messages).includes("session restored"))!;
+		expect(JSON.stringify(resumed.context.messages)).toContain("Inspect the current fixture");
 		expect(JSON.stringify(resumed.context.messages)).toContain("Writer report");
 		const latest = session.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;
 		const restored = parseCheckpoint((latest as any).data);
-		expect(restored.state.writer.calls).toBe(2);
+		expect(restored.state.writer.calls).toBe(4);
 		expect(restored.state.writer.messages.filter(message => message.role === "toolResult" && message.toolCallId === "edit")).toHaveLength(1);
 		expect(session.getSessionStats().tokens.total).toBe(requests.length * 11);
 		expect(session.getSessionStats().cost).toBeCloseTo(requests.length * 0.001);
