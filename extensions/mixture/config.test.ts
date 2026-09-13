@@ -12,10 +12,10 @@ test("missing config uses the selected roster without writing", () => {
 	const dir = temporary();
 	const config = loadConfig(dir);
 	expect(config).toEqual(defaultConfig());
-	expect(config.presets.default.reviewers).toHaveLength(2);
+	expect(config.presets.default.reviewers).toHaveLength(1);
 	expect(existsSync(configPath(dir))).toBe(false);
 	config.presets.default.reviewers.length = 0;
-	expect(defaultConfig().presets.default.reviewers).toHaveLength(2);
+	expect(defaultConfig().presets.default.reviewers).toHaveLength(1);
 });
 test("strict versioned config rejects old schema, recursion, unsafe names, and limits", () => {
 	for (const change of [

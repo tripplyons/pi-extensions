@@ -100,6 +100,14 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 			expect(["aborted", "error"]).toContain(final.stopReason);
 			expect(final.errorMessage).toContain("aborted");
 		} else expect(final.stopReason).toBe("stop");
+		if (mode !== "abort") {
+			const firstReviewer = requests.findIndex(request => request.id.startsWith("reviewer"));
+			expect(firstReviewer).toBeGreaterThanOrEqual(2);
+			expect(requests.slice(0, firstReviewer).filter(request => request.id === "writer")).toHaveLength(2);
+			const performance = session.messages.flatMap(message => message.role === "toolResult" ? [(message as any).details?.performanceStats] : []).filter(Boolean).at(-1);
+			expect(performance.requests.writer.count).toBeGreaterThan(0);
+			expect(performance.checkpoints["writer-report"].count).toBeGreaterThan(0);
+		}
 		if (mode === "correct") {
 			expect(leadCalls).toBeGreaterThan(2);
 			expect(JSON.stringify(requests.filter(request => request.id === "lead"))).toContain("Negative numbers remain negative");

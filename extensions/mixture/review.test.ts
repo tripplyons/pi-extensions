@@ -19,6 +19,7 @@ const deferred = <T>() => {
 
 test("reviewers run concurrently, serialize their own requests and reconfirm coalesced findings", async () => {
 	const preset = defaultConfig().presets.default;
+	preset.reviewers.push({ model: "fixture/second-reviewer", thinking: "low" });
 	const states = preset.reviewers.map(newReviewer);
 	const requests: Array<{ index: number; context: Context; result: ReturnType<typeof deferred<AssistantMessage>> }> = [];
 	const active = [0, 0]; const peak = [0, 0];
@@ -77,6 +78,12 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		expect(JSON.stringify(requests[1].context.messages)).toContain("Tests passed after the edit");
 		requests[1].result.resolve(report(2));
 		expect((await checkpoint).warnings).toEqual([]);
+		const candidate = pool.checkpoint(2, "Lead final-answer candidate", undefined, undefined, true);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(requests).toHaveLength(3);
+		expect(requests[2].context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		requests[2].result.resolve(report(2));
+		expect((await candidate).warnings).toEqual([]);
 	} finally { await pool.freeze(); }
 });
 
@@ -120,6 +127,7 @@ test("forbidden tool calls fail before mutation and do not clear existing concer
 
 test("deadline freezes late reviews without cancelling healthy results or calling failure clean", async () => {
 	const preset = defaultConfig().presets.default; preset.limits.catchUpMs = 20;
+	preset.reviewers.push({ model: "fixture/late-reviewer", thinking: "low" });
 	const states = preset.reviewers.map(newReviewer);
 	const late = deferred<AssistantMessage>();
 	const pool = new ReviewPool(preset, states, process.cwd(), async (index, _context, signal) => index === 0 ? report(7, [issue]) : abortable(late.promise, signal), () => true);
@@ -144,6 +152,16 @@ test("review request limits are bounded and malformed reports are not clean", as
 		expect((await pool.checkpoint(1, "Check")).warnings.join("\n")).toContain("does not match");
 		expect((await pool.checkpoint(2, "Check again")).warnings.join("\n")).toContain("request limit");
 		expect(calls).toBe(1);
+	} finally { await pool.freeze(); }
+});
+
+test("an empty optional incomplete reason does not invalidate a completed report", async () => {
+	const preset = defaultConfig().presets.default;
+	const states = [newReviewer()];
+	const pool = new ReviewPool(preset, states, process.cwd(), async () => reply("mixture_review", { revision: 1, findings: [], incompleteReason: "" }), () => true);
+	try {
+		expect((await pool.checkpoint(1, "Check")).warnings).toEqual([]);
+		expect(states[0].status).toBe("idle");
 	} finally { await pool.freeze(); }
 });
 

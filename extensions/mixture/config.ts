@@ -44,7 +44,6 @@ export const defaultConfig = (): MixtureConfig => ({
 			writer: { model: "openrouter/z-ai/glm-5.3-flash", thinking: "low" },
 			reviewers: [
 				{ model: "openrouter/z-ai/glm-5.3-flash", thinking: "low" },
-				{ model: "openrouter/meta/muse-spark-1.3-contributor", thinking: "low" },
 			],
 			limits: { ...DEFAULT_LIMITS },
 		},

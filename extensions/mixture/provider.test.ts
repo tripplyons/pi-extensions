@@ -21,7 +21,7 @@ test("native provider has ambient role auth and conservative catalog metadata", 
 	expect(provider.getModels()[0].maxTokens).toBe(16_384);
 	expect(await provider.auth.apiKey!.resolve({} as any)).toEqual({ auth: {}, source: "Mixture role providers" });
 	const preset = config.presets.default;
-	expect(modelDefinition("default", preset, (p, id) => ({ ...model(p, id), input: id.includes("meta") ? ["text"] : ["text", "image"] })).input).toEqual(["text"]);
+	expect(modelDefinition("default", preset, (p, id) => ({ ...model(p, id), input: id.includes("meta") ? ["text"] : ["text", "image"] })).input).toEqual(["text", "image"]);
 	expect(() => validatePreset(preset, (p, id) => ({ ...model(p, id), thinkingLevelMap: { low: null } }))).toThrow("does not support");
 });
 test("emits native text and structured tool events with one terminal result", async () => {

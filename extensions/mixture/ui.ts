@@ -13,11 +13,15 @@ export function compactStatus(session: MixtureSession): string {
 }
 export function inspection(session: MixtureSession): string {
 	const { state, preset } = session;
-	const roles = [["Lead", preset.lead, state.lead], ["Writer", preset.writer.model, state.writer], ...state.reviewers.map((reviewer, index) => [`Reviewer ${index + 1}`, preset.reviewers[index].model, reviewer] as const)] as const;
+	const roles = [["Lead", preset.lead, state.lead, "lead"], ["Writer", preset.writer.model, state.writer, "writer"], ...state.reviewers.map((reviewer, index) => [`Reviewer ${index + 1}`, preset.reviewers[index].model, reviewer, `reviewer-${index + 1}`] as const)] as const;
+	const timings = session.performanceStats();
 	const lines = [`Mixture ${state.preset}`, `Active: ${state.active}; writer lease: ${state.owner ?? "none"}; execution revision: ${state.revision}`, ""];
-	for (const [name, model, role] of roles) {
-		lines.push(`${name}: ${model}`, `  ${role.calls} requests; ${role.usage.totalTokens} tokens; $${role.usage.cost.total.toFixed(4)}; context ~${role.contextTokens ?? "?"}; summaries ${role.summaries ?? 0}`);
+	for (const [name, model, role, timingKey] of roles) {
+		const timing = timings.requests[timingKey];
+		const latency = timing ? `; latency avg ${Math.round(timing.totalMs / timing.count)}ms, max ${Math.round(timing.maxMs)}ms` : "";
+		lines.push(`${name}: ${model}`, `  ${role.calls} requests; ${role.usage.totalTokens} tokens; $${role.usage.cost.total.toFixed(4)}; context ~${role.contextTokens ?? "?"}; summaries ${role.summaries ?? 0}${latency}`);
 	}
+	for (const [name, timing] of Object.entries(timings.checkpoints)) lines.push(`Review ${name}: ${timing.count} waits; avg ${Math.round(timing.totalMs / timing.count)}ms; max ${Math.round(timing.maxMs)}ms`);
 	lines.push("", `Total reported cost: $${session.usage.cost.total.toFixed(4)}; queued reviews: ${session.reviews.backlog}`,
 		`Delegations: ${state.delegations}/${preset.limits.delegations}; writer responses: ${state.writerTurns}/${preset.limits.writerTurns}; final assessments: ${state.finalCorrections}/${preset.limits.finalCorrections}`);
 	for (const [index, reviewer] of state.reviewers.entries()) {

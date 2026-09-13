@@ -33,8 +33,7 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
         "thinking": "low"
       },
       "reviewers": [
-        { "model": "openrouter/z-ai/glm-5.3-flash", "thinking": "low" },
-        { "model": "openrouter/meta/muse-spark-1.3-contributor", "thinking": "low" }
+        { "model": "openrouter/z-ai/glm-5.3-flash", "thinking": "low" }
       ]
     }
   }
@@ -70,20 +69,20 @@ and `ls`, plus a structured reporting operation. Their private reads use those
 read-only implementations, not the outer editing-tool loop. Reviewers cannot
 run shell commands or call arbitrary extension tools. This is not an OS sandbox.
 
-Reviewers receive delegation constraints and completed execution deltas. The
-initial brief and read/test evidence are queued without spending a request. A
-native edit or write starts both reviewers concurrently with the writer; the
-next checkpoint coalesces any later evidence. Each reviewer gets at most one
-grouped read batch before its required structured report. Findings carry model
-identity, severity, evidence and the execution revision. Reads can race a writer;
-concerns and blockers are reconfirmed at a completed boundary before asking the
-lead to act. Review is advice, not a vote or user authority.
+Reviewers receive delegation constraints and completed execution deltas. Briefs,
+reads, edits and test evidence are queued without spending a request. Review
+starts only at a completed writer-report boundary, where each configured reviewer
+gets at most one grouped read batch before its required structured report.
+Findings carry model identity, severity, evidence and the execution revision.
+Concerns and blockers are reconfirmed before asking the lead to act. Reviewers
+audit each explicit criterion but treat optional generality outside the task as
+a nit at most. Review is advice, not a vote or user authority.
 
-Live findings accumulate while the writer continues, so review does not mistake
-an unfinished multi-step change for a completed defect or serialize the work.
-At the writer-report boundary, the lead may request a correction, dismiss advice
-with reasons, or take over. A candidate final answer is withheld until bounded
-final review completes.
+The default preset uses one reviewer. At the writer-report boundary, the lead may
+request a correction, dismiss advice with reasons, or take over. A candidate
+final answer is withheld until bounded final review completes. When the checkout
+revision already has a clean completed review, candidate review is a single
+report-only request rather than another file-reading batch.
 Failed or incomplete review is disclosed, never counted as clean. Remaining
 serious findings are disclosed when correction rounds are exhausted.
 
@@ -167,6 +166,8 @@ Neither missing usage nor zero configured model prices prove that a call was fre
 
 - `/mixture` or `/mixture status`: roster, ownership, review state and usage.
 - `/mixture inspect`: scrollable details in the TUI; textual status outside it.
+  Inspection includes per-role request latency and writer-report/final-review wait
+  totals for runtime tests and performance comparisons.
 - Expand coordination tool cards for findings and per-role usage.
 - The compact status uses Pi's status API and works alongside clean-footer.
 

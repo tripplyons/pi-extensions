@@ -82,6 +82,12 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	expect(JSON.stringify(h.state.lead.messages)).not.toContain('"oldText"');
 	expect(JSON.stringify(h.state.writer.messages)).toContain("Preserve unrelated files");
 	expect(h.session.usage.totalTokens).toBe(4);
+	const performance = h.session.performanceStats();
+	expect(performance.requests.lead.count).toBe(2);
+	expect(performance.requests.writer.count).toBe(2);
+	expect(performance.requests.lead.totalMs).toBeGreaterThanOrEqual(0);
+	expect(performance.checkpoints["writer-report"].count).toBe(1);
+	expect(performance.checkpoints["final-answer"].count).toBe(1);
 });
 
 test("rejects mixed control/mutation batches before any execution", async () => {
