@@ -86,6 +86,34 @@ describe("clean footer working indicator", () => {
 		expect(harness.workingVisibility).toEqual([false, true]);
 		footer.dispose();
 	});
+
+	test("counts successful and failed compaction as running", async () => {
+		const harness = createHarness();
+		await harness.handlers.get("session_start")?.({}, harness.ctx);
+		const footer = harness.footer();
+
+		await harness.handlers.get("session_before_compact")?.({}, harness.ctx);
+		expect(footer.render(200)[0]).toStartWith("[*] project-folder");
+		expect(harness.renderRequests()).toBe(1);
+		await harness.handlers.get("session_compact")?.({}, harness.ctx);
+		expect(footer.render(200)[0]).toStartWith("project-folder");
+		expect(harness.renderRequests()).toBe(2);
+
+		await harness.handlers.get("session_before_compact")?.({}, harness.ctx);
+		expect(footer.render(200)[0]).toStartWith("[*] project-folder");
+		await harness.handlers.get("session_compact_failed")?.({}, harness.ctx);
+		expect(footer.render(200)[0]).toStartWith("project-folder");
+		expect(harness.renderRequests()).toBe(4);
+
+		await harness.handlers.get("agent_start")?.({}, harness.ctx);
+		await harness.handlers.get("session_before_compact")?.({}, harness.ctx);
+		await harness.handlers.get("session_compact")?.({}, harness.ctx);
+		expect(footer.render(200)[0]).toStartWith("[*] project-folder");
+		expect(harness.renderRequests()).toBe(5);
+		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
+		expect(footer.render(200)[0]).toStartWith("project-folder");
+		expect(harness.renderRequests()).toBe(6);
+	});
 });
 
 describe("clean footer extension statuses", () => {

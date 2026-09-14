@@ -29,13 +29,23 @@ export function sessionCost(entries: readonly SessionEntry[]): number {
 }
 
 export default function cleanFooterExtension(pi: ExtensionAPI) {
-	let working = false;
+	let agentRunning = false;
+	let compacting = false;
 	let maxCost = 0;
 	let requestFooterRender: (() => void) | undefined;
+	const working = () => agentRunning || compacting;
+	const setActivity = (activity: "agent" | "compaction", active: boolean) => {
+		const before = working();
+		if (activity === "agent") agentRunning = active;
+		else compacting = active;
+		if (before !== working()) requestFooterRender?.();
+	};
 
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
+		agentRunning = false;
+		compacting = false;
 		maxCost = 0;
 		ctx.ui.setWorkingVisible(false);
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -62,7 +72,7 @@ export default function cleanFooterExtension(pi: ExtensionAPI) {
 					maxCost = Math.max(maxCost, sessionCost(ctx.sessionManager.getEntries()));
 
 					const folder = basename(ctx.cwd) || ctx.cwd;
-					const workingStatus = working ? `${theme.fg("accent", theme.bold(WORKING_MARKER))} ` : "";
+					const workingStatus = working() ? `${theme.fg("accent", theme.bold(WORKING_MARKER))} ` : "";
 					const folderStatus = workingStatus + theme.fg("accent", theme.bold(folder));
 					const parts = [
 						folderStatus,
@@ -92,19 +102,28 @@ export default function cleanFooterExtension(pi: ExtensionAPI) {
 	pi.on("agent_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		working = true;
-		requestFooterRender?.();
+		setActivity("agent", true);
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		working = false;
-		requestFooterRender?.();
+		setActivity("agent", false);
+	});
+
+	pi.on("session_before_compact", (_event, ctx) => {
+		if (ctx.mode === "tui") setActivity("compaction", true);
+	});
+	pi.on("session_compact", (_event, ctx) => {
+		if (ctx.mode === "tui") setActivity("compaction", false);
+	});
+	pi.on("session_compact_failed", (_event, ctx) => {
+		if (ctx.mode === "tui") setActivity("compaction", false);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		working = false;
+		agentRunning = false;
+		compacting = false;
 		if (ctx.mode === "tui") ctx.ui.setWorkingVisible(true);
 	});
 }
