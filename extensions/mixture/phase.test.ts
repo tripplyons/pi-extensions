@@ -100,10 +100,25 @@ test("history stays bounded independently of counting", () => {
 	expect(validPhase(phase)).toBe(true);
 });
 
+test("standing constraints are canonicalized, deduplicated and bounded", () => {
+	let phase = delegatePhase(undefined, { ...brief, constraints: ["  Preserve human edits.  "] }).phase;
+	phase = delegatePhase(assess(phase, "progress"), { ...brief, phaseId: phase.id, constraints: ["preserve   human edits", "Do not install dependencies"] }).phase;
+	expect(phase.constraints).toEqual(["Preserve human edits.", "Do not install dependencies"]);
+	const full = delegatePhase(undefined, { ...brief, constraints: Array.from({ length: 16 }, (_, index) => `Constraint ${index}`) }).phase;
+	expect(() => delegatePhase(assess(full, "progress"), { ...brief, phaseId: full.id, constraints: ["Seventeenth distinct constraint"] })).toThrow("at most 16");
+});
+
+test("an immediate action appears in only its delegated attempt", () => {
+	const initial = delegatePhase(undefined, { ...brief, immediateAction: { tool: "bash", description: "Run the exact reproduction before source exploration" } });
+	expect(initial.brief).toContain("Required first tool:\n- bash: Run the exact reproduction");
+	const next = delegatePhase(assess(initial.phase, "progress"), { ...brief, phaseId: initial.phase.id });
+	expect(next.brief).not.toContain("Required first tool");
+});
+
 test("missing, malformed, and oversized fields fail without mutating phase state", () => {
 	const phase = delegatePhase(undefined, brief).phase;
 	const before = structuredClone(phase);
-	for (const extra of [{ nextAction: "" }, { nextAction: "x".repeat(4_001) }, { acceptedEvidence: [" "] }, { acceptedEvidence: Array(9).fill("Fact") }, { acceptedEvidence: ["x".repeat(2_001)] }, { successCriteria: [] }]) {
+	for (const extra of [{ nextAction: "" }, { nextAction: "x".repeat(4_001) }, { acceptedEvidence: [" "] }, { acceptedEvidence: Array(9).fill("Fact") }, { acceptedEvidence: ["x".repeat(2_001)] }, { constraints: Array(17).fill("Constraint") }, { immediateAction: { tool: "", description: "Run it" } }, { successCriteria: [] }]) {
 		expect(() => delegatePhase(undefined, { ...brief, ...extra })).toThrow();
 	}
 	for (const extra of [{ phaseId: "wrong" }, { evidence: " " }, { evidence: "x".repeat(2_001) }, { assessment: "blocked" as const }]) {

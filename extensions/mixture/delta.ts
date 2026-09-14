@@ -3,7 +3,8 @@ export type DeltaOperation =
 	| { op: "set"; path: DeltaPath; value: unknown }
 	| { op: "delete"; path: DeltaPath }
 	| { op: "append"; path: DeltaPath; values: unknown[] }
-	| { op: "truncate"; path: DeltaPath; length: number };
+	| { op: "truncate"; path: DeltaPath; length: number }
+	| { op: "splice"; path: DeltaPath; start: number; deleteCount: number; values: unknown[] };
 
 const unsafe = new Set(["__proto__", "constructor", "prototype"]);
 const plainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -15,6 +16,15 @@ export const cloneJson = <T>(value: T): T => value === undefined ? value : JSON.
 function changes(before: unknown, after: unknown, path: DeltaPath, output: DeltaOperation[]) {
 	if (before === after) return;
 	if (Array.isArray(before) && Array.isArray(after)) {
+		const equal = (left: unknown, right: unknown) => left === right || JSON.stringify(left) === JSON.stringify(right);
+		let prefix = 0;
+		while (prefix < before.length && prefix < after.length && equal(before[prefix], after[prefix])) prefix++;
+		let suffix = 0;
+		while (suffix < before.length - prefix && suffix < after.length - prefix && equal(before[before.length - suffix - 1], after[after.length - suffix - 1])) suffix++;
+		if (suffix && prefix + suffix >= Math.min(before.length, after.length) / 2) {
+			output.push({ op: "splice", path, start: prefix, deleteCount: before.length - prefix - suffix, values: cloneJson(after.slice(prefix, after.length - suffix)) });
+			return;
+		}
 		const shared = Math.min(before.length, after.length);
 		for (let index = 0; index < shared; index++) changes(before[index], after[index], [...path, index], output);
 		if (after.length > before.length) output.push({ op: "append", path, values: cloneJson(after.slice(before.length)) });
@@ -62,7 +72,7 @@ export function applyDelta<T>(before: T, operations: unknown): T {
 	if (!Array.isArray(operations) || operations.length > 100_000) throw new Error("invalid operation list");
 	let root: unknown = cloneJson(before);
 	for (const candidate of operations) {
-		if (!plainObject(candidate) || !safePath(candidate.path) || !["set", "delete", "append", "truncate"].includes(String(candidate.op))) throw new Error("invalid delta operation");
+		if (!plainObject(candidate) || !safePath(candidate.path) || !["set", "delete", "append", "truncate", "splice"].includes(String(candidate.op))) throw new Error("invalid delta operation");
 		const operation = candidate as unknown as DeltaOperation;
 		if (operation.op === "set") {
 			if (!operation.path.length) { root = cloneJson(operation.value); continue; }
@@ -84,9 +94,12 @@ export function applyDelta<T>(before: T, operations: unknown): T {
 			if (operation.op === "append") {
 				if (!Array.isArray(operation.values)) throw new Error("invalid append values");
 				array.push(...cloneJson(operation.values));
-			} else {
+			} else if (operation.op === "truncate") {
 				if (!Number.isSafeInteger(operation.length) || operation.length < 0 || operation.length > array.length) throw new Error("invalid truncate length");
 				array.length = operation.length;
+			} else {
+				if (!Number.isSafeInteger(operation.start) || operation.start < 0 || operation.start > array.length || !Number.isSafeInteger(operation.deleteCount) || operation.deleteCount < 0 || operation.start + operation.deleteCount > array.length || !Array.isArray(operation.values)) throw new Error("invalid splice operation");
+				array.splice(operation.start, operation.deleteCount, ...cloneJson(operation.values));
 			}
 		}
 	}

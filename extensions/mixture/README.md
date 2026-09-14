@@ -80,7 +80,10 @@ run shell commands or call arbitrary extension tools. This is not an OS sandbox.
 
 Reviewers receive delegation constraints and completed execution deltas. The
 harness starts a tactical background review every `reviewEveryBatches` completed
-writer tool batches and coalesces newer evidence while a review is running.
+writer batches that advance the execution revision. Read-only batches are retained as
+evidence for the next scheduled or checkpoint review but do not advance the cadence.
+Newer evidence coalesces while a review is running, and each request retains at most
+the latest eight distinct images.
 Incremental cycles focus on changed evidence and unresolved findings; completion
 and handoff checkpoints audit the full scope. Completed findings are inserted into
 the writer's private history automatically. The writer corrects supported findings
@@ -136,6 +139,10 @@ verification. Composite input metadata reflects the whole roster conservatively.
 
 Each delegation separates the concrete `nextAction` from `acceptedEvidence`
 (facts and checks not to repeat), standing `constraints`, and `successCriteria`.
+A phase retains at most 16 normalized standing constraints; continuations inherit
+them and add only distinct entries. An optional `immediateAction` names the first
+writer tool and explains why it must run before other tool exploration. A mismatched
+tool call is blocked, while writer reporting and escalation remain available.
 The original phase outcome and acceptance remain in every continuation brief,
 even when the next step is smaller. User steering is retained across continuations.
 
@@ -219,7 +226,7 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | `writerRequestTimeoutMs` | 240000 | Absolute ceiling for each writer request, including auth |
 | `writerIdleTimeoutMs` | 240000 | Writer silence deadline, reset by provider stream activity |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
-| `reviewEveryBatches` | 3 | Completed writer tool batches per scheduled background review |
+| `reviewEveryBatches` | 3 | Writer batches that advance execution revision per scheduled background review |
 | `leadEveryReviews` | 3 | Scheduled review cycles per forced lead checkpoint |
 | `reviewerBatchTurns` | 2 | Requests per reviewer batch |
 | `catchUpMs` | 120000 | Checkpoint review deadline |
@@ -248,7 +255,11 @@ output and no tool call is eligible. Other provider failures are not retried her
 Versioned custom entries in the current Pi session hold role histories, findings,
 counters, phase assessments, usage receipts and writer ownership. A lifecycle starts with one full
 snapshot; later checkpoints store content-addressed deltas and periodically start
-a new snapshot chain. A snapshot is also used whenever it is smaller. This avoids
+a new snapshot chain. Image bytes are stored once per active branch as immutable
+content-addressed blob entries; checkpoint histories contain references and hydrate
+them during restore. Unchanged-state request stages use lightweight hash markers.
+Array prefix removal uses compact splice deltas, and a snapshot replaces any delta
+that reaches half its size. This avoids
 repeatedly appending the complete role history while keeping restore work bounded.
 Superseded reviewer-feedback and lead-progress notes are replaced by their current
 authoritative form instead of accumulating across cycles. Lifetime scheduling,

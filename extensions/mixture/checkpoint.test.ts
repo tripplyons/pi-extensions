@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT, encodeCheckpoint, MAX_DELTA_CHAIN, parseCheckpoint, restoreCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, MAX_DELTA_CHAIN, parseCheckpoint, restoreCheckpoint } from "./checkpoint.ts";
 import { defaultConfig } from "./config.ts";
 import { emptyUsage } from "./provider.ts";
 import { MixtureSession, newState } from "./session.ts";
@@ -43,6 +43,35 @@ test("version 3 checkpoints store small deltas and restore their full state", ()
 	const restored = restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd);
 	expect(restored.warning).toBeUndefined();
 	expect(restored.state).toEqual(after);
+});
+
+test("image blobs are stored once while snapshots, deltas and markers keep references", () => {
+	const manager = SessionManager.inMemory(cwd);
+	const state = newState("default", preset);
+	const image = { type: "image" as const, mimeType: "image/png", data: "image-data".repeat(200_000) };
+	state.attachments = [image];
+	state.writer.messages.push({ role: "user", timestamp: 1, content: [{ type: "text", text: "inspect" }, image] });
+	const blobs = checkpointBlobs(state);
+	expect(blobs).toHaveLength(1);
+	manager.appendCustomEntry(CHECKPOINT_BLOB, blobs[0]);
+	const snapshot = encodeCheckpoint(cwd, "response", state);
+	manager.appendCustomEntry(CHECKPOINT, snapshot);
+	const marker = encodeCheckpoint(cwd, "turn", structuredClone(state), state);
+	manager.appendCustomEntry(CHECKPOINT, marker);
+	expect(marker.kind).toBe("marker");
+	expect(JSON.stringify(snapshot)).not.toContain("image-data");
+	expect(JSON.stringify(marker).length).toBeLessThan(300);
+	expect(restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd).state?.attachments).toEqual([image]);
+});
+
+test("missing image blobs reject a referenced checkpoint visibly", () => {
+	const manager = SessionManager.inMemory(cwd);
+	const state = newState("default", preset);
+	state.attachments = [{ type: "image", mimeType: "image/png", data: "missing" }];
+	manager.appendCustomEntry(CHECKPOINT, encodeCheckpoint(cwd, "response", state));
+	const restored = restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd);
+	expect(restored.state).toBeUndefined();
+	expect(restored.warning).toContain("missing or corrupt image blob");
 });
 
 test("periodic snapshots bound restore chains without returning to quadratic growth", () => {

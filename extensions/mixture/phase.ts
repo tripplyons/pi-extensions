@@ -4,10 +4,16 @@ import { Type, type Static } from "typebox";
 
 export const ASSESSMENTS = ["progress", "stalled", "blocked", "complete", "superseded"] as const;
 export type Assessment = typeof ASSESSMENTS[number];
+const MAX_CONSTRAINTS = 16;
 const evidenceSchema = () => Type.String({ minLength: 1, maxLength: 2_000 });
+const immediateActionSchema = Type.Object({
+	tool: Type.String({ minLength: 1, maxLength: 120 }),
+	description: Type.String({ minLength: 1, maxLength: 1_000 }),
+});
 export const phaseFields = {
 	task: Type.Optional(Type.String()),
-	constraints: Type.Optional(Type.Array(Type.String())),
+	constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2_000 }), { maxItems: MAX_CONSTRAINTS })),
+	immediateAction: Type.Optional(immediateActionSchema),
 	successCriteria: Type.Optional(Type.Array(Type.String())),
 	nextAction: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Required for delegate: concrete next implementation or diagnostic step." })),
 	acceptedEvidence: Type.Optional(Type.Array(evidenceSchema(), { maxItems: 8, description: "Accepted facts and checks the writer should not repeat without conflicting evidence." })),
@@ -26,6 +32,7 @@ export interface PhaseRecord {
 	change?: string;
 	blocker?: string;
 }
+export interface ImmediateAction { tool: string; description: string }
 export interface PhaseState {
 	id: string;
 	outcome: string;
@@ -43,9 +50,20 @@ export const closedPhase = (phase: PhaseState) => phase.assessment === "complete
 function nonempty(value: unknown, label: string, limit = Infinity): asserts value is string {
 	if (typeof value !== "string" || !value.trim() || value.length > limit) throw new Error(`${label} must be nonempty${Number.isFinite(limit) ? ` and at most ${limit} characters` : ""}`);
 }
-function strings(value: unknown, label: string): asserts value is string[] {
-	if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
-	for (const item of value) nonempty(item, label);
+function strings(value: unknown, label: string, limit = Infinity): asserts value is string[] {
+	if (!Array.isArray(value) || value.length > limit) throw new Error(`${label} must be an array with at most ${limit} entries`);
+	for (const item of value) nonempty(item, label, 2_000);
+}
+const constraintKey = (value: string) => value.trim().toLowerCase().replace(/[.!;:]+$/g, "").replace(/\s+/g, " ");
+function mergeConstraints(current: string[], additions: string[]) {
+	const output = current.map(value => value.trim());
+	const keys = new Set(output.map(constraintKey));
+	for (const value of additions) {
+		const trimmed = value.trim();
+		if (!keys.has(constraintKey(trimmed))) { output.push(trimmed); keys.add(constraintKey(trimmed)); }
+	}
+	if (output.length > MAX_CONSTRAINTS) throw new Error(`A phase may retain at most ${MAX_CONSTRAINTS} distinct standing constraints`);
+	return output;
 }
 function append(phase: PhaseState, record: PhaseRecord) {
 	phase.history.push(record);
@@ -77,7 +95,11 @@ export function delegatePhase(previous: PhaseState | undefined, input: PhaseInpu
 	nonempty(input.nextAction, "Delegation nextAction", 4_000);
 	strings(input.successCriteria, "Delegation successCriteria");
 	if (!input.successCriteria.length) throw new Error("Delegation needs nonempty successCriteria");
-	if (input.constraints !== undefined) strings(input.constraints, "Delegation constraints");
+	if (input.constraints !== undefined) strings(input.constraints, "Delegation constraints", MAX_CONSTRAINTS);
+	if (input.immediateAction !== undefined) {
+		nonempty(input.immediateAction.tool, "Immediate-action tool", 120);
+		nonempty(input.immediateAction.description, "Immediate-action description", 1_000);
+	}
 	if (input.acceptedEvidence !== undefined) {
 		if (!Array.isArray(input.acceptedEvidence) || input.acceptedEvidence.length > 8) throw new Error("acceptedEvidence must contain at most eight entries");
 		for (const evidence of input.acceptedEvidence) nonempty(evidence, "Accepted evidence", 2_000);
@@ -101,14 +123,15 @@ export function delegatePhase(previous: PhaseState | undefined, input: PhaseInpu
 		phase.attempt++;
 		phase.assessment = undefined;
 		phase.blocker = undefined;
-		phase.constraints = [...new Set([...phase.constraints, ...(input.constraints ?? [])])];
+		phase.constraints = mergeConstraints(phase.constraints, input.constraints ?? []);
 	} else {
 		if (input.phaseId !== undefined || input.changedPrerequisite !== undefined) throw new Error("A new phase must omit phaseId and changedPrerequisite; the previous phase is absent or closed");
-		phase = { id: randomUUID(), outcome: input.task.trim(), successCriteria: [...input.successCriteria], constraints: [...(input.constraints ?? [])],
+		phase = { id: randomUUID(), outcome: input.task.trim(), successCriteria: [...input.successCriteria], constraints: mergeConstraints([], input.constraints ?? []),
 			attempt: 1, correction: false, failedCorrections: 0, history: [] };
 	}
 	const bullets = (items: string[]) => items.length ? items.map(item => `- ${item}`).join("\n") : "- None recorded.";
-	const brief = `[Mixture phase ${phase.id}, attempt ${phase.attempt}${phase.correction ? ", correction" : ""}]\nPhase outcome: ${phase.outcome}\n\nNext action:\n${input.nextAction.trim()}\n\nCurrent task:\n${input.task.trim()}\n\nAccepted evidence / do not repeat without conflicting evidence:\n${bullets(input.acceptedEvidence ?? [])}\n\nStanding constraints:\n${bullets(phase.constraints)}\n\nPhase success criteria (not replaced by this step):\n${bullets(phase.successCriteria)}\n\nCurrent step completion checks:\n${bullets(input.successCriteria)}`;
+	const immediate = input.immediateAction ? `\n\nRequired first tool:\n- ${input.immediateAction.tool}: ${input.immediateAction.description.trim()}` : "";
+	const brief = `[Mixture phase ${phase.id}, attempt ${phase.attempt}${phase.correction ? ", correction" : ""}]\nPhase outcome: ${phase.outcome}\n\nNext action:\n${input.nextAction.trim()}${immediate}\n\nCurrent task:\n${input.task.trim()}\n\nAccepted evidence / do not repeat without conflicting evidence:\n${bullets(input.acceptedEvidence ?? [])}\n\nStanding constraints:\n${bullets(phase.constraints)}\n\nPhase success criteria (not replaced by this step):\n${bullets(phase.successCriteria)}\n\nCurrent step completion checks:\n${bullets(input.successCriteria)}`;
 	return { phase, brief };
 }
 
@@ -124,7 +147,7 @@ export function validPhase(value: unknown): value is PhaseState {
 	const text = (item: unknown, max = Infinity) => typeof item === "string" && !!item.trim() && item.length <= max;
 	const count = (item: unknown) => Number.isSafeInteger(item) && (item as number) >= 0;
 	const list = (item: unknown) => Array.isArray(item) && item.every(value => text(value));
-	return object(value) && text(value.id, 128) && text(value.outcome) && list(value.successCriteria) && list(value.constraints)
+	return object(value) && text(value.id, 128) && text(value.outcome) && list(value.successCriteria) && list(value.constraints) && value.constraints.length <= MAX_CONSTRAINTS
 		&& (value.legacy === true || value.successCriteria.length > 0)
 		&& count(value.attempt) && value.attempt >= 1 && typeof value.correction === "boolean" && count(value.failedCorrections) && value.failedCorrections <= 2 && value.failedCorrections < value.attempt
 		&& (value.correction || value.failedCorrections === 0) && (value.assessment !== "progress" || value.failedCorrections === 0)

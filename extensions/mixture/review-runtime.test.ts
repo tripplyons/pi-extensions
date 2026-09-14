@@ -130,7 +130,7 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		if (mode !== "abort") {
 			const firstReviewer = requests.findIndex(request => request.id.startsWith("reviewer"));
 			expect(firstReviewer).toBeGreaterThanOrEqual(2);
-			expect(requests.slice(0, firstReviewer).filter(request => request.id === "writer")).toHaveLength(mode === "correct" ? 3 : 2);
+			expect(requests.slice(0, firstReviewer).filter(request => request.id === "writer")).toHaveLength(mode === "correct" ? 4 : 2);
 			const performance = session.messages.flatMap(message => message.role === "toolResult" ? [(message as any).details?.performanceStats] : []).filter(Boolean).at(-1);
 			expect(performance.requests.writer.count).toBeGreaterThan(0);
 			expect(performance.checkpoints["writer-report"].count).toBeGreaterThan(0);
@@ -154,7 +154,7 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 			expect(displays.some(display => display.includes("reviewer · reviewing · $"))).toBe(true);
 			expect(displays.some(display => display.includes("lead · assessing · $"))).toBe(true);
 		}
-		if (mode === "correct") expect(requests.some(request => request.id.startsWith("reviewer") && request.display?.includes("writer · working"))).toBe(true);
+		if (mode === "correct") expect(requests.some(request => request.id.startsWith("reviewer") && request.display?.includes("writer · working"))).toBe(false);
 		const noNestedUsage = structuredClone(session.messages) as Message[];
 		for (const message of noNestedUsage) {
 			if (message.role === "toolResult") delete message.usage;

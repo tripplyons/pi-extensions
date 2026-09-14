@@ -54,6 +54,16 @@ const user = (content: string): Message => ({ role: "user", content, timestamp: 
 function bounded(value: string, max = 24_000) {
 	return value.length <= max ? value : `${value.slice(0, max)}\n[Evidence truncated at ${max} characters; use the read-only tools to inspect the source.]`;
 }
+function latestImages(updates: Array<{ images?: ImageContent[] }>, limit = 8) {
+	const output: ImageContent[] = [];
+	const seen = new Set<string>();
+	for (const update of updates.toReversed()) for (const image of (update.images ?? []).toReversed()) {
+		const key = `${image.mimeType}:${image.data}`;
+		if (!seen.has(key)) { output.unshift(image); seen.add(key); }
+		if (output.length >= limit) return output;
+	}
+	return output;
+}
 export function executionDelta(message: AssistantMessage, results: ToolResultMessage[], revision: number): string {
 	const calls = message.content.filter(block => block.type === "toolCall");
 	return `[Execution revision ${revision}]\n${calls.map(call => {
@@ -84,7 +94,7 @@ export class ReviewPool {
 	}
 	configurePrompt(systemPrompt: string) { this.systemPrompt = systemPrompt; }
 	configureScope(content?: string, images: ImageContent[] = []) {
-		this.scope = content?.trim() ? { content: bounded(content, 48_000), images: structuredClone(images) } : undefined;
+		this.scope = content?.trim() ? { content: bounded(content, 48_000), images: structuredClone(latestImages([{ images }])) } : undefined;
 	}
 	get backlog() { return this.states.reduce((total, state) => total + state.pending.length + (state.status === "reviewing" ? 1 : 0), 0); }
 	get serious() { return this.states.flatMap(state => state.findings).filter(finding => finding.severity !== "nit" && !finding.alerted); }
@@ -128,7 +138,7 @@ export class ReviewPool {
 			state.pending.push(update);
 			if (state.pending.length > 16) {
 				const older = state.pending.splice(0, state.pending.length - 8);
-				state.pending.unshift({ ...older.at(-1)!, content: bounded(older.map(item => item.content).join("\n\n"), 48_000), images: older.flatMap(item => item.images ?? []) });
+				state.pending.unshift({ ...older.at(-1)!, content: bounded(older.map(item => item.content).join("\n\n"), 48_000), images: latestImages(older) });
 			}
 			if (!this.running.has(index)) state.status = "queued";
 			if (start) this.requested.add(index);
@@ -161,7 +171,7 @@ export class ReviewPool {
 		const role = this.preset.reviewers[index];
 		const target = updates.at(-1)!;
 		const content = `${updates.map(update => update.content).join("\n\n")}\n\n${instruction}`;
-		const images = updates.flatMap(update => update.images ?? []);
+		const images = latestImages(updates);
 		if (images.length && !this.supportsImages(role.model)) state.imageWarning = `${role.model}, revision ${target.revision}: image evidence omitted because this model supports text only`;
 		state.messages.push(images.length && this.supportsImages(role.model)
 			? { role: "user", timestamp: Date.now(), content: [{ type: "text", text: content }, ...images] }

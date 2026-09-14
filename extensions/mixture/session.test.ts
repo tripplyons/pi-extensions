@@ -62,7 +62,10 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	const leadActions = (h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
 	expect(leadActions).toEqual(["delegate", "assess", "takeover"]);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
-	await h.finishControl(delegated);
+	const delegatedResult = await h.finishControl(delegated);
+	expect((delegatedResult.details as any).usageSummary).toBeUndefined();
+	expect((delegatedResult.details as any).controlSummary).toMatchObject({ phaseId: h.state.phase!.id, attempt: 1, findings: { total: 0, serious: 0 } });
+	expect(JSON.stringify((delegatedResult.details as any).controlSummary).length).toBeLessThan(1_000);
 	expect(h.session.active).toBe("writer");
 	await h.next({ serviceTier: "priority" });
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra", "gpt-5.6-luna"]);
@@ -91,6 +94,46 @@ test("routes session controls to the lead and arbitrary effectful tools to the l
 	h.state.origins.experiment = { actor: "writer", synthetic: false };
 	h.session.completeTurn([{ role: "toolResult", toolCallId: "experiment", toolName: "run_experiment", content: content("passed"), isError: false, timestamp: 1 }]);
 	expect(h.state.revision).toBe(1);
+});
+
+test("an immediate action blocks other writer tools until the named tool is accepted", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Reproduce the failure", nextAction: "Run the exact test", immediateAction: { tool: "bash", description: "Run the seed-12 reproduction before reading more source" }, successCriteria: ["Failure reproduced"] })],
+	]);
+	await h.finishControl(await h.next());
+	h.state.origins["read-first"] = { actor: "writer", synthetic: false };
+	expect(() => h.session.guard("read-first", "read", {})).toThrow("requires bash first");
+	expect(h.state.immediateAction?.tool).toBe("bash");
+	h.state.origins["bash-first"] = { actor: "writer", synthetic: false };
+	expect(() => h.session.guard("bash-first", "bash", {})).not.toThrow();
+	expect(h.state.immediateAction).toBeUndefined();
+	expect(() => h.session.guard("read-first", "read", {})).not.toThrow();
+});
+
+test("periodic review counts only writer batches that advance execution revision", async () => {
+	const h = harness([[call("review", "mixture_review", { revision: 2, findings: [] })]]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	h.preset.limits.reviewEveryBatches = 2;
+	h.state.reviewers.push(newReviewer());
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	const result = (id: string, toolName: string): ToolResultMessage => ({ role: "toolResult", toolCallId: id, toolName, content: content("ok"), isError: false, timestamp: 1 });
+	for (const id of ["read-1", "read-2", "read-3"]) {
+		h.state.origins[id] = { actor: "writer", synthetic: false };
+		h.session.completeTurn([result(id, "read")], { role: "assistant", provider: "fixture", model: "writer", api: "fixture", content: [call(id, "read", {})], stopReason: "toolUse", usage: emptyUsage(), timestamp: 1 });
+	}
+	expect(h.state.writerBatches).toBe(0);
+	expect(h.state.coordination?.scheduledReviews).toBe(0);
+	for (const id of ["edit-1", "edit-2"]) {
+		h.state.origins[id] = { actor: "writer", synthetic: false };
+		h.session.completeTurn([result(id, "edit")], { role: "assistant", provider: "fixture", model: "writer", api: "fixture", content: [call(id, "edit", {})], stopReason: "toolUse", usage: emptyUsage(), timestamp: 1 });
+	}
+	await new Promise(resolve => setImmediate(resolve));
+	await h.session.reviews.freeze();
+	expect(h.state.writerBatches).toBe(2);
+	expect(h.state.coordination?.scheduledReviews).toBe(1);
+	expect(h.calls).toHaveLength(1);
+	expect(JSON.stringify(h.calls[0].context.messages)).toContain("read-1");
 });
 
 test("root compaction rebases only the lead context and preserves usage accounting", async () => {

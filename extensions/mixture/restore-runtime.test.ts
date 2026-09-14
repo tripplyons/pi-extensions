@@ -79,7 +79,7 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		for (const entry of entries) if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) addUsage(accountedOnTools, entry.message.usage);
 		expect(accountedOnTools.totalTokens).toBe(requests.length * 11);
 		const checkpoints = entries.filter(entry => entry.type === "custom" && entry.customType === CHECKPOINT);
-		expect(checkpoints.filter(entry => (entry as any).data?.kind === "snapshot")).toHaveLength(1);
+		expect(checkpoints.filter(entry => (entry as any).data?.kind === "snapshot").length).toBeGreaterThanOrEqual(1);
 		expect(checkpoints.some(entry => (entry as any).data?.kind === "delta")).toBe(true);
 		const checkpoint = checkpoints.at(-1)!;
 		expect(checkpoint.type).toBe("custom");

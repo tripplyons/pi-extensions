@@ -3,12 +3,12 @@ import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext }
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { isSwarmAttached } from "../agent-swarm/events.ts";
 import { queryBackgroundJobs } from "../bg-bash/events.ts";
-import { CHECKPOINT, encodeCheckpoint, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
+import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeMarker, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
 import { releaseProviderSessions } from "./events.ts";
 import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
-import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
+import { CONTROL, ControlParams, MixtureSession, controlTool, newState } from "./session.ts";
 import { compactStatus, configure, controlCall, controlCard, inspection, Inspector } from "./ui.ts";
 import { receiptIds, tagReceipts } from "./usage.ts";
 
@@ -22,7 +22,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	let rootId: string | undefined;
 	let persistedState: MixtureSession["state"] | undefined;
 	let persistedStage: CheckpointStage | undefined;
+	let persistedHash: string | undefined;
+	let stateGeneration = 0;
+	let persistedGeneration = -1;
 	let deltaChain = 0;
+	let persistedBlobs = new Set<string>();
 	let pending: Promise<AssistantMessage> | undefined;
 	let requesting = false;
 	let compacting = false;
@@ -38,12 +42,23 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	const persist = (stage: CheckpointStage) => {
 		if (!ctx || !session || ctx.sessionManager.getSessionId() !== rootId) return;
 		const checkpointStage = requesting ? "request" : stage;
+		if (persistedHash && stateGeneration === persistedGeneration) {
+			if (checkpointStage === persistedStage) return;
+			pi.appendEntry(CHECKPOINT, encodeMarker(ctx.cwd, checkpointStage, persistedHash));
+			persistedStage = checkpointStage;
+			return;
+		}
 		const state = cloneJson(session.state);
-		if (persistedState && fingerprint(state) === fingerprint(persistedState) && checkpointStage === persistedStage) return;
+		for (const blob of checkpointBlobs(state)) if (!persistedBlobs.has(blob.hash)) {
+			pi.appendEntry(CHECKPOINT_BLOB, blob);
+			persistedBlobs.add(blob.hash);
+		}
 		const checkpoint = encodeCheckpoint(ctx.cwd, checkpointStage, state, deltaChain < MAX_DELTA_CHAIN ? persistedState : undefined);
 		pi.appendEntry(CHECKPOINT, checkpoint);
 		persistedState = state;
 		persistedStage = checkpointStage;
+		persistedHash = checkpoint.hash;
+		persistedGeneration = stateGeneration;
 		deltaChain = checkpoint.kind === "delta" ? deltaChain + 1 : 0;
 	};
 	const detach = async (reason: string, warn = false) => {
@@ -62,7 +77,10 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		if (session === old) session = undefined;
 		persistedState = undefined;
 		persistedStage = undefined;
+		persistedHash = undefined;
+		persistedGeneration = -1;
 		deltaChain = 0;
+		persistedBlobs = new Set();
 	};
 	const activate = async (context: ExtensionContext, reset = false) => {
 		if (session && (reset || context.sessionManager.getSessionId() !== rootId || context.model?.provider !== "mixture" || session.state.preset !== context.model.id)) await detach("model or session changed", true);
@@ -86,12 +104,14 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			const name = ctx.model!.id;
 			const preset = config.presets[name];
 			const branch = ctx.sessionManager.getBranch();
+			persistedBlobs = new Set(branch.flatMap(entry => entry.type === "custom" && entry.customType === CHECKPOINT_BLOB && typeof (entry.data as any)?.hash === "string" ? [(entry.data as any).hash] : []));
 			const restored = restoreCheckpoint(branch, ctx.sessionManager.getEntries(), name, preset, ctx.cwd);
 			const rootCompaction = branch.findLast(entry => entry.type === "compaction");
 			rootId = ctx.sessionManager.getSessionId();
 			const owner = rootId;
 			const created = new MixtureSession(preset, registry, restored.state ?? newState(name, preset), () => queryBackgroundJobs(pi, owner), () => {
 				if (session !== created || ctx?.sessionManager.getSessionId() !== owner) return;
+				stateGeneration++;
 				render(); persist("response");
 			}, ctx.cwd);
 			session = created;
@@ -141,14 +161,10 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			if (signal?.aborted) throw new Error("Mixture control cancelled");
 			ctx = context;
 			const active = ensureSession();
-			const result = await active.control(id, input);
-			return { ...result, details: { ...result.details, usageSummary: inspection(active) } };
+			return active.control(id, input);
 		},
 		renderCall: (args, theme, context) => controlCall(args, context.expanded, theme),
-		renderResult: (result, options, theme) => {
-			const summary = (result.details as { usageSummary?: string } | undefined)?.usageSummary;
-			return controlCard(`${result.content.filter(block => block.type === "text").map(block => block.text).join("\n")}${options.expanded && typeof summary === "string" ? `\n\n${summary}` : ""}`, options.expanded, theme);
-		},
+		renderResult: (result, options, theme) => controlCard(result.content.filter(block => block.type === "text").map(block => block.text).join("\n"), options.expanded, theme),
 	});
 	pi.registerCommand("mixture", {
 		description: "Configure or inspect Mixture models",

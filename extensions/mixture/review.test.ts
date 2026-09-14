@@ -103,6 +103,26 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 	} finally { await pool.freeze(); }
 });
 
+test("review requests retain only the latest eight distinct images", async () => {
+	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
+	const states = [newReviewer()];
+	let request: { context: Context; result: ReturnType<typeof deferred<AssistantMessage>> } | undefined;
+	const pool = new ReviewPool(preset, states, process.cwd(), async (_index, context, signal) => {
+		const result = deferred<AssistantMessage>(); request = { context: structuredClone(context), result };
+		return abortable(result.promise, signal);
+	}, () => true);
+	try {
+		for (let index = 0; index < 12; index++) pool.prime(index, `Evidence ${index}`, [{ type: "image", mimeType: "image/png", data: `image-${index}` }]);
+		pool.enqueue(12, "Trigger review");
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const images = request!.context.messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(block => block.type === "image") : []);
+		expect(images).toHaveLength(8);
+		expect(images.map(image => image.data)).toEqual(Array.from({ length: 8 }, (_, index) => `image-${index + 4}`));
+		request!.result.resolve(report(12));
+		await new Promise(resolve => setTimeout(resolve, 0));
+	} finally { await pool.freeze(); }
+});
+
 test("report-only checkpoints require a clean current review", async () => {
 	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
 	const contexts: Context[] = [];

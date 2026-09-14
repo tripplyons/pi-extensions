@@ -20,6 +20,14 @@ test("state deltas round-trip appends, mutations, deletions and truncation", () 
 	expect(delta.some(operation => operation.op === "delete")).toBe(true);
 });
 
+test("state deltas compact a removed history prefix into one splice", () => {
+	const before = { messages: Array.from({ length: 100 }, (_, index) => ({ id: index, text: "x".repeat(1_000) })) };
+	const after = { messages: before.messages.slice(90) };
+	const delta = createDelta(before, after);
+	expect(delta).toEqual([{ op: "splice", path: ["messages"], start: 0, deleteCount: 90, values: [] }]);
+	expect(applyDelta(before, delta)).toEqual(after);
+});
+
 test("state deltas reject unsafe or structurally invalid paths", () => {
 	expect(() => applyDelta({}, [{ op: "set", path: ["__proto__", "polluted"], value: true }])).toThrow("invalid delta operation");
 	expect(() => applyDelta({}, [{ op: "append", path: ["missing"], values: [] }])).toThrow("path does not exist");

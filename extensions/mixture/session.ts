@@ -5,7 +5,7 @@ import { compactRole, estimateContextTokens, forModel, imageContent, interruptPe
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import type { Preset } from "./config.ts";
 import { addUsage, callRole, emptyUsage, failureMessage, resolveModel, type Registry } from "./provider.ts";
-import { adoptLegacyPhase, assessPhase, delegatePhase, phaseFields, phaseSummary, type PhaseState } from "./phase.ts";
+import { adoptLegacyPhase, assessPhase, delegatePhase, phaseFields, phaseSummary, type ImmediateAction, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
 import { drainReceipts, receipt, receiptIds, tagReceipts, type UsageReceipt } from "./usage.ts";
 
@@ -64,6 +64,7 @@ export interface MixtureState {
 	writerReviewSequences?: number[];
 	writerReviewsDelivered?: number;
 	writerProgress?: string[];
+	immediateAction?: ImmediateAction;
 	coordination?: CoordinationStats;
 	finalCorrections: number;
 	jobs: Record<string, Actor>;
@@ -325,6 +326,11 @@ export class MixtureSession {
 		const origin = Object.hasOwn(this.state.origins, id) ? this.state.origins[id] : undefined;
 		if (!origin) throw new Error("Mixture rejected a tool without a recorded role origin");
 		if (!this.allowed(origin.actor, name, args)) throw new Error(`${origin.actor} does not own permission to call ${name}`);
+		if (origin.actor === "writer" && name !== CONTROL && this.state.immediateAction) {
+			if (name !== this.state.immediateAction.tool) throw new Error(`This delegation requires ${this.state.immediateAction.tool} first: ${this.state.immediateAction.description}`);
+			this.state.immediateAction = undefined;
+			this.changed();
+		}
 		if (name === CONTROL) {
 			if (["report", "escalate"].includes(String(args.action)) && origin.actor !== "writer") throw new Error("Only the writer can report or escalate a delegation");
 			if (args.action === "pause" && (!origin.synthetic || origin.actor !== "writer")) throw new Error("Only the harness can pause the writer for review");
@@ -582,6 +588,7 @@ export class MixtureSession {
 				if (this.state.owner === "writer") throw new Error("The writer already holds the lease; assess steering with update or explicitly take over");
 				const previousPhase = this.state.phase;
 				const delegated = delegatePhase(previousPhase, input);
+				if (input.immediateAction && this.rootTools.length && !this.rootTools.some(tool => tool.name === input.immediateAction!.tool && tool.name !== CONTROL)) throw new Error(`Immediate-action tool is not available to the writer: ${input.immediateAction.tool}`);
 				if (delegated.phase.id !== previousPhase?.id) {
 					await this.reviews.startPhase();
 					current();
@@ -589,6 +596,7 @@ export class MixtureSession {
 					this.state.finalCorrections = 0;
 				}
 				this.state.phase = delegated.phase;
+				this.state.immediateAction = input.immediateAction ? { tool: input.immediateAction.tool.trim(), description: input.immediateAction.description.trim() } : undefined;
 				this.state.delegations++;
 				this.state.writerTurns = 0;
 				this.state.writerReportRejections = 0;
@@ -683,6 +691,7 @@ export class MixtureSession {
 			}
 			case "takeover":
 				if (this.state.delegations === 0 && !this.state.phase) throw new Error("The lead must initiate a writer phase before taking over");
+				this.state.immediateAction = undefined;
 				this.state.owner = "lead";
 				result = "Lead took the writer lease. The sidekick is not executing. Native mutation and shell tools are now available to the lead.";
 				break;
@@ -714,11 +723,15 @@ export class MixtureSession {
 		}
 		this.changed();
 		const usage = this.takeUsage();
-		return { content: [{ type: "text" as const, text: result }], details: { action: input.action, actor: this.active, revision: this.state.revision, mixtureReceiptIds: this.lastDrained, performanceStats: this.performanceStats() }, usage };
+		const findings = this.reviews.findings;
+		return { content: [{ type: "text" as const, text: result }], details: { action: input.action, actor: this.active, revision: this.state.revision, mixtureReceiptIds: this.lastDrained,
+			controlSummary: { phaseId: this.state.phase?.id, attempt: this.state.phase?.attempt, findings: { total: findings.length, serious: findings.filter(finding => finding.severity !== "nit").length }, usage: { tokens: this.usage.totalTokens, costUsd: this.usage.cost.total } },
+			performanceStats: this.performanceStats() }, usage };
 	}
 
 	completeTurn(results: ToolResultMessage[], message?: AssistantMessage) {
 		const writerBatch = results.some(result => this.state.origins[result.toolCallId]?.actor === "writer" && result.toolName !== CONTROL);
+		const effectfulWriterBatch = results.some(result => this.state.origins[result.toolCallId]?.actor === "writer" && result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName));
 		const leadTakeoverBatch = this.state.owner === "lead" && results.some(result => this.state.origins[result.toolCallId]?.actor === "lead" && result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName));
 		for (const result of results) {
 			const origin = this.state.origins[result.toolCallId];
@@ -736,11 +749,11 @@ export class MixtureSession {
 		if (message && !this.signal.aborted && !this.requestOptions.signal?.aborted && results.some(result => result.toolName !== CONTROL)) {
 			const delta = executionDelta(message, results, this.state.revision);
 			if (writerBatch) {
-				this.state.writerBatches = (this.state.writerBatches ?? 0) + 1;
+				if (effectfulWriterBatch) this.state.writerBatches = (this.state.writerBatches ?? 0) + 1;
 				const progress = this.state.writerProgress ??= [];
 				progress.push(executionProgress(message, results, this.state.revision));
 				while (progress.length > 1 && progress.reduce((length, item) => length + item.length, 0) > 24_000) progress.shift();
-				if (this.state.reviewers.length && this.state.writerBatches % this.preset.limits.reviewEveryBatches === 0) {
+				if (effectfulWriterBatch && this.state.reviewers.length && this.state.writerBatches % this.preset.limits.reviewEveryBatches === 0) {
 					const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(results));
 					(this.state.writerReviewSequences ??= []).push(sequence);
 					this.recordCoordination("review-scheduled", sequence);

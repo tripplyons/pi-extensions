@@ -84,7 +84,7 @@ test("native Pi rows preserve lead previews through streaming, expansion and his
 	component.setExpanded(true);
 	expect(output()).toContain("FINAL_ACTION_DETAIL");
 	expect(output()).toContain("Keep unrelated edits");
-	expect(output()).toContain("Per-role usage detail");
+	expect(output()).not.toContain("Per-role usage detail");
 	expect(output()).toContain("Full result details.");
 	component.setExpanded(false);
 	expect(output()).not.toContain("FINAL_ACTION_DETAIL");

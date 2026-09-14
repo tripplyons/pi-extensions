@@ -49,6 +49,7 @@ export function controlCall(args: Partial<ControlInput>, expanded: boolean, them
 			["Next action", args.nextAction], ["Message", args.message],
 			["Assessment", args.assessment], ["Evidence", args.evidence], ["Blocker", args.blocker],
 			["Task", args.task], ["Accepted evidence", args.acceptedEvidence],
+			["Required first tool", args.immediateAction?.tool], ["Immediate-action description", args.immediateAction?.description],
 			["Constraints", args.constraints], ["Success criteria", args.successCriteria],
 			["Phase ID", args.phaseId], ["Changed prerequisite", args.changedPrerequisite?.change],
 			["Prerequisite evidence", args.changedPrerequisite?.evidence],
