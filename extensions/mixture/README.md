@@ -67,9 +67,11 @@ permission hooks, visible tool output and recorded results. `mixture_control`
 coordinates delegation, in-flight writer updates, reports and takeover; it is active only in Mixture.
 Controls cannot share a batch with other tools. Its schema exposes only actions
 valid for the current role and lease: writer report/escalation, lead steering
-update/takeover, or lead delegation/takeover. Unknown effectful tools require the
-writer lease. Nested editing-agent launches and execution while attached to
-a managed swarm are blocked.
+update/takeover, or lead delegation/takeover. Unknown effectful tools require the writer lease. This includes extension tools
+such as autoresearch and image generation; Mixture does not maintain an allowlist
+that silently hides newly installed writer tools. Conversation-level goal creation
+and completion remain with the lead. Nested editing-agent launches and execution
+while attached to a managed swarm are blocked.
 
 Reviewers have separate histories and only Pi's native `read`, `grep`, `find`
 and `ls`, plus a structured reporting operation. Their private reads use those
@@ -145,7 +147,8 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 
 | Field | Default | Scope |
 | --- | ---: | --- |
-| `requestTimeoutMs` | 240000 | Each underlying request, including auth |
+| `requestTimeoutMs` | 240000 | Each lead or reviewer request, including auth |
+| `writerRequestTimeoutMs` | 240000 | Each writer request, including auth |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
 | `reviewEveryBatches` | 3 | Completed writer tool batches per scheduled background review |
 | `leadEveryReviews` | 3 | Scheduled review cycles per forced lead checkpoint |
@@ -163,8 +166,10 @@ continue until completion or cancellation. In-flight estimated costs are reserve
 before admitting another request, including concurrent reviewers. Estimates use
 configured model prices; they are not guaranteed billing ceilings. A configured
 limit stops the affected operation with an explicit reason. A zero-output writer
-connection or request-timeout failure gets one same-role retry before the harness
-escalates it to the lead; other provider failures are not retried here.
+connection or request-timeout failure gets at most one same-role retry per
+delegation before the harness escalates it to the lead. Retrying never runs a tool,
+rolls back files, or resets the writer history: only a request that produced no
+output and no tool call is eligible. Other provider failures are not retried here.
 
 ## Sessions, context and usage
 

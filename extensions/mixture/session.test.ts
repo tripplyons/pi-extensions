@@ -30,7 +30,7 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 	const state = newState("default", preset);
 	const session = new MixtureSession(preset, registry, state, () => jobs);
 	const context: Context = { systemPrompt: "User rules", messages: [{ role: "user", content: "Fix this", timestamp: 1 }],
-		tools: [controlTool, ...["read", "edit", "write", "bash", "subagent", "bg_process"].map(name => ({ name, description: name, parameters: Type.Object({}) }))] };
+		tools: [controlTool, ...["read", "edit", "write", "bash", "subagent", "bg_process", "get_goal", "create_goal", "update_goal", "init_experiment", "run_experiment", "log_experiment", "imagegen"].map(name => ({ name, description: name, parameters: Type.Object({}) }))] };
 	const next = (options: RoleStreamOptions = {}) => session.next(context, { sessionId: "root", ...options });
 	const finishControl = async (message: AssistantMessage) => {
 		const block = message.content.find(block => block.type === "toolCall")!;
@@ -53,6 +53,8 @@ test("the lead defines the initial brief before the writer starts", async () => 
 		`root/mixture/${h.state.id}/writer`,
 	]);
 	h.preset.writer.model = "openai-codex/gpt-5.6-luna";
+	h.preset.limits.requestTimeoutMs = 111_000;
+	h.preset.limits.writerRequestTimeoutMs = 222_000;
 	h.session.newRequest("Fix this without changing unrelated files");
 	const delegated = await h.next();
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra"]);
@@ -63,7 +65,31 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	expect(h.session.active).toBe("writer");
 	await h.next({ serviceTier: "priority" });
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra", "gpt-5.6-luna"]);
+	expect(h.calls[0].options.timeoutMs).toBe(111_000);
+	expect(h.calls[1].options.timeoutMs).toBe(222_000);
 	expect(h.calls[1].options.serviceTier).toBe("priority");
+});
+
+test("routes session controls to the lead and arbitrary effectful tools to the lease holder", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Optimize", successCriteria: ["Benchmark improves"] })],
+		content("Working"),
+	]);
+	await h.finishControl(await h.next());
+	const leadTools = h.calls[0].context.tools?.map(tool => tool.name) ?? [];
+	expect(leadTools).toEqual(expect.arrayContaining(["get_goal", "create_goal", "update_goal"]));
+	expect(leadTools).not.toEqual(expect.arrayContaining(["init_experiment", "run_experiment", "log_experiment", "imagegen"]));
+	await h.next();
+	const writerTools = h.calls[1].context.tools?.map(tool => tool.name) ?? [];
+	expect(writerTools).toEqual(expect.arrayContaining(["get_goal", "init_experiment", "run_experiment", "log_experiment", "imagegen"]));
+	expect(writerTools).not.toEqual(expect.arrayContaining(["create_goal", "update_goal", "subagent"]));
+
+	h.state.origins.goal = { actor: "lead", synthetic: false };
+	h.session.completeTurn([{ role: "toolResult", toolCallId: "goal", toolName: "create_goal", content: content("created"), isError: false, timestamp: 1 }]);
+	expect(h.state.revision).toBe(0);
+	h.state.origins.experiment = { actor: "writer", synthetic: false };
+	h.session.completeTurn([{ role: "toolResult", toolCallId: "experiment", toolName: "run_experiment", content: content("passed"), isError: false, timestamp: 1 }]);
+	expect(h.state.revision).toBe(1);
 });
 
 test("root compaction rebases only the lead context and preserves usage accounting", async () => {
@@ -340,6 +366,26 @@ test("a zero-output transient writer failure is retried once before lead escalat
 		expect(JSON.stringify(h.state.writer.messages)).toContain("Harness retry after transient provider failure");
 		expect(report.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "report" } });
 	}
+});
+
+test("a delegation retries at most once and preserves completed writer work", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+		[],
+		[call("write", "write", { path: "fixture", content: "kept" })],
+		[],
+	], ["toolUse", "error", "toolUse", "error"], [undefined, "timeout", undefined, "timeout"]);
+	await h.finishControl(await h.next());
+	const write = await h.next();
+	h.session.guard("write", "write", { path: "fixture", content: "kept" });
+	h.session.completeTurn([{ role: "toolResult", toolCallId: "write", toolName: "write", content: content("written"), isError: false, timestamp: 1 }], write);
+	const escalation = await h.next();
+	expect(h.calls).toHaveLength(4);
+	expect(h.state.writerRetries).toBe(1);
+	expect(h.state.revision).toBe(1);
+	expect(JSON.stringify(h.state.writer.messages)).toContain("written");
+	expect(JSON.stringify(h.state.writer.messages)).toContain("no checkout changes or completed writer history were reverted");
+	expect(escalation.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "escalate" } });
 });
 
 test("truncated tool batches and cancelled calls never grant a lease", async () => {

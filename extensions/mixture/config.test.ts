@@ -26,6 +26,7 @@ test("strict versioned config rejects old schema, recursion, unsafe names, and l
 		() => ({ ...defaultConfig(), presets: { "../bad": defaultConfig().presets.default } }),
 		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, lead: "mixture/default" } } }),
 		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, limits: { requestTimeoutMs: 0 } } } }),
+		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, limits: { writerRequestTimeoutMs: 600_001 } } } }),
 		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, limits: { delegations: 8 } } } }),
 		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, limits: { reviewerRequests: 24 } } } }),
 		() => ({ ...defaultConfig(), presets: { default: { ...defaultConfig().presets.default, limits: { finalCorrections: 2 } } } }),

@@ -33,6 +33,7 @@ test("version 3 checkpoints store small deltas and restore their full state", ()
 	const after = structuredClone(before);
 	after.revision = 1;
 	after.writerRetries = 1;
+	after.writerRetryDelegation = 1;
 	after.writerReportRejections = 2;
 	after.lead.messages.push({ role: "user", content: "small follow-up", timestamp: 2 });
 	const delta = encodeCheckpoint(cwd, "turn", after, before);

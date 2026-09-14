@@ -48,7 +48,7 @@ function parseState(value: unknown): MixtureState {
 	assert(typeof state.initialized === "boolean" && typeof state.bgManaged === "boolean" && typeof state.brief === "string" && typeof state.task === "string" && Array.isArray(state.attachments), "task context");
 	assert(state.attachments.every((image: unknown) => object(image) && image.type === "image" && typeof image.data === "string" && typeof image.mimeType === "string"), "images");
 	for (const field of ["revision", "delegations", "writerTurns", "finalCorrections"]) assert(count(state[field]), field);
-	for (const field of ["writerRetries", "writerReportRejections", "writerBatches", "writerReviewsDelivered"]) assert(state[field] === undefined || count(state[field]), field);
+	for (const field of ["writerRetries", "writerRetryDelegation", "writerReportRejections", "writerBatches", "writerReviewsDelivered"]) assert(state[field] === undefined || count(state[field]), field);
 	assert(state.writerReviewSequences === undefined || Array.isArray(state.writerReviewSequences) && state.writerReviewSequences.every(count), "writer review sequences");
 	assert(state.writerProgress === undefined || Array.isArray(state.writerProgress) && state.writerProgress.every((value: unknown) => typeof value === "string"), "writer progress");
 	assert(state.coordination === undefined || object(state.coordination)

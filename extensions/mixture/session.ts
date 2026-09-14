@@ -58,6 +58,7 @@ export interface MixtureState {
 	delegations: number;
 	writerTurns: number;
 	writerRetries?: number;
+	writerRetryDelegation?: number;
 	writerReportRejections?: number;
 	writerBatches?: number;
 	writerReviewSequences?: number[];
@@ -77,7 +78,7 @@ export const fingerprint = (value: unknown) => createHash("sha256").update(JSON.
 export function newState(name: string, preset: Preset): MixtureState {
 	return { version: 2, preset: name, configKey: fingerprint(preset), id: randomUUID(), active: "lead",
 		lead: freshRole(), writer: freshRole(), reviewers: preset.reviewers.map(newReviewer), receipts: [], seenUsers: [], initialized: false, brief: "", task: "", attachments: [], revision: 0,
-		delegations: 0, writerTurns: 0, writerRetries: 0, writerReportRejections: 0, writerBatches: 0, writerReviewSequences: [], writerReviewsDelivered: 0, writerProgress: [],
+		delegations: 0, writerTurns: 0, writerRetries: 0, writerRetryDelegation: 0, writerReportRejections: 0, writerBatches: 0, writerReviewSequences: [], writerReviewsDelivered: 0, writerProgress: [],
 		coordination: { scheduledReviews: 0, deliveredReviews: 0, leadCheckpoints: 0, escalations: 0, recent: [] }, finalCorrections: 0, jobs: {}, bgManaged: false, origins: {} };
 }
 const text = (message: AssistantMessage) => message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
@@ -97,8 +98,10 @@ function executionProgress(message: AssistantMessage, results: ToolResultMessage
 	});
 	return `[Execution revision ${revision}]\n${lines.join("\n")}`;
 }
-const READ_TOOLS = new Set(["read", "grep", "find", "ls", "web_run", "get_goal", "ask_user"]);
-const SPAWN_TOOLS = new Set(["subagent", "subagent_process", "swarm_spawn", "swarm_restart", "run_experiment"]);
+const READ_TOOLS = new Set(["read", "grep", "find", "ls", "web_run", "get_goal"]);
+const LEAD_SESSION_TOOLS = new Set(["ask_user", "create_goal", "update_goal"]);
+const CHECKOUT_NEUTRAL_TOOLS = new Set([...READ_TOOLS, ...LEAD_SESSION_TOOLS, "bg_process", "sleep"]);
+const NESTED_AGENT_TOOLS = new Set(["subagent", "subagent_process"]);
 
 export class MixtureSession {
 	readonly state: MixtureState;
@@ -118,6 +121,7 @@ export class MixtureSession {
 		private readonly changed: () => void = () => {}, cwd = process.cwd()) {
 		this.state = state;
 		this.state.writerRetries ??= 0;
+		this.state.writerRetryDelegation ??= 0;
 		this.state.writerReportRejections ??= 0;
 		this.state.writerBatches ??= 0;
 		this.state.writerReviewSequences ??= [];
@@ -188,6 +192,7 @@ export class MixtureSession {
 		this.state.delegations = 0;
 		this.state.writerTurns = 0;
 		this.state.writerRetries = 0;
+		this.state.writerRetryDelegation = 0;
 		this.state.writerReportRejections = 0;
 		this.state.finalCorrections = 0;
 		this.state.warning = undefined;
@@ -272,11 +277,12 @@ export class MixtureSession {
 
 	allowed(actor: Actor, name: string, args?: Record<string, unknown>): boolean {
 		if (name === CONTROL) return true;
-		if (SPAWN_TOOLS.has(name) || name.startsWith("swarm_") || name.startsWith("mixture_")) return false;
+		if (NESTED_AGENT_TOOLS.has(name) || name.startsWith("swarm_") || name.startsWith("mixture_")) return false;
+		if (LEAD_SESSION_TOOLS.has(name)) return actor === "lead";
 		if (name === "bg_process" && args?.scope === "all") return false;
 		if (name === "bg_process" && (args?.action === "list" || args?.action === "output")) return true;
 		if (name === "bg_process" && actor === "lead" && args?.action === "kill" && typeof args.id === "string" && this.state.jobs[args.id] === "writer") return true;
-		if (READ_TOOLS.has(name)) return actor === "lead" || name !== "ask_user";
+		if (READ_TOOLS.has(name)) return true;
 		return this.state.owner === actor;
 	}
 	guard(id: string, name: string, args: Record<string, unknown>) {
@@ -377,7 +383,7 @@ export class MixtureSession {
 			const thinking: ModelThinkingLevel = role?.thinking ?? this.leadThinking ?? options.reasoning ?? (model.reasoning ? "high" : "off");
 			const message = await callRole(this.registry, id, context, thinking, {
 				...options, signal: AbortSignal.any([this.signal, ...(options.signal ? [options.signal] : [])]),
-				timeoutMs: this.preset.limits.requestTimeoutMs, maxTokens,
+				timeoutMs: actor === "writer" ? this.preset.limits.writerRequestTimeoutMs : this.preset.limits.requestTimeoutMs, maxTokens,
 				sessionId: `${options.sessionId ?? this.state.id}/mixture/${this.state.id}/${label}`,
 			});
 			addUsage(state.usage, message.usage);
@@ -483,9 +489,10 @@ export class MixtureSession {
 		try {
 			const context = { systemPrompt: this.prompt(actor), messages: this.state[actor].messages, tools: this.tools(actor) };
 			let result = await this.call(actor, context, options);
-			if (actor === "writer" && retryableWriterFailure(result.message) && this.state.writerTurns < this.preset.limits.writerTurns) {
+			if (actor === "writer" && retryableWriterFailure(result.message) && this.state.writerRetryDelegation !== this.state.delegations && this.state.writerTurns < this.preset.limits.writerTurns) {
 				this.state.writerRetries = (this.state.writerRetries ?? 0) + 1;
-				this.note("writer", `[Harness retry after transient provider failure: ${result.message.errorMessage ?? "network error"}]`);
+				this.state.writerRetryDelegation = this.state.delegations;
+				this.note("writer", `[Harness retry after transient provider failure: ${result.message.errorMessage ?? "network error"}. The failed request produced no tool call, so no tool ran and no checkout changes or completed writer history were reverted.]`);
 				result = await this.call(actor, { ...context, messages: this.state.writer.messages }, options);
 			}
 			message = result.message;
@@ -658,7 +665,7 @@ export class MixtureSession {
 
 	completeTurn(results: ToolResultMessage[], message?: AssistantMessage) {
 		const writerBatch = results.some(result => this.state.origins[result.toolCallId]?.actor === "writer" && result.toolName !== CONTROL);
-		const leadTakeoverBatch = this.state.owner === "lead" && results.some(result => this.state.origins[result.toolCallId]?.actor === "lead" && result.toolName !== CONTROL && !READ_TOOLS.has(result.toolName));
+		const leadTakeoverBatch = this.state.owner === "lead" && results.some(result => this.state.origins[result.toolCallId]?.actor === "lead" && result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName));
 		for (const result of results) {
 			const origin = this.state.origins[result.toolCallId];
 			if (!origin) continue;
@@ -666,7 +673,7 @@ export class MixtureSession {
 			else if (result.isError) this.note(origin.actor, `[Mixture control failed] ${JSON.stringify(result.content)}. Reconcile this failure before continuing; do not blindly repeat it.`);
 			const job = result.details?.job;
 			if (job?.id && job.status === "running") this.state.jobs[job.id] = origin.actor;
-			if (result.toolName !== CONTROL && !READ_TOOLS.has(result.toolName)) this.state.revision++;
+			if (result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName)) this.state.revision++;
 			delete this.state.origins[result.toolCallId];
 		}
 		if (message && !this.signal.aborted && !this.requestOptions.signal?.aborted && results.some(result => result.toolName !== CONTROL)) {
