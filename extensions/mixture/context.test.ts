@@ -4,6 +4,7 @@ import { compactRole, forModel, imageContent, interruptPending, messageGroups } 
 import { defaultConfig } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
 import { MixtureSession, newState } from "./session.ts";
+import { assessPhase, delegatePhase } from "./phase.ts";
 
 const user = (content: Message["content"]): Message => ({ role: "user", timestamp: 1, content } as Message);
 const model: Model<any> = { id: "lead", provider: "fixture", api: "fixture", name: "lead", baseUrl: "", input: ["text", "image"], reasoning: true, contextWindow: 32_000, maxTokens: 512, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -61,6 +62,13 @@ test("one overflow retry charges the failed call, summary and successful candida
 		const stream = createAssistantMessageEventStream(); emitMessage(stream, message); return stream;
 	} } as any) };
 	const state = newState("default", preset); state.initialized = true; state.delegations = 1; state.lead.messages = [user("old task"), answer("plan"), user("update")];
+	const brief = { task: "Verify the fixture", nextAction: "Run the fixture check", successCriteria: ["Fixture passes"] };
+	state.phase = delegatePhase(undefined, brief).phase;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		state.phase = assessPhase(state.phase, { phaseId: state.phase.id, assessment: "stalled", evidence: "The same failed check was repeated without a fix" });
+		if (attempt < 2) state.phase = delegatePhase(state.phase, { ...brief, phaseId: state.phase.id }).phase;
+	}
+	const priorPhase = structuredClone(state.phase);
 	const session = new MixtureSession(preset, registry, state, () => ({ available: true, jobs: [] }));
 	const checkpoint = await session.next({ messages: [user("Verify current files")] }, {}, "off");
 	const call = checkpoint.content.find(block => block.type === "toolCall")!;
@@ -70,6 +78,9 @@ test("one overflow retry charges the failed call, summary and successful candida
 	expect(requests).toHaveLength(3);
 	expect(requests[1].tools).toBeUndefined();
 	expect(state.lead.summaries).toBe(1);
+	expect(state.phase).toEqual(priorPhase);
+	expect(JSON.stringify(requests[2].messages)).toContain("failed corrective attempts: 2/2");
+	expect(JSON.stringify(requests[2].messages)).toContain("Fixture passes");
 	expect(receipt.usage.totalTokens).toBe(15);
 	expect(final.usage.totalTokens).toBe(7);
 	expect(session.usage.totalTokens).toBe(15);

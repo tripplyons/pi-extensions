@@ -3,13 +3,14 @@ import { getSelectListTheme, type ExtensionCommandContext, type Theme } from "@e
 import { fuzzyFilter, Input, Key, matchesKey, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { defaultConfig, parseConfig, type MixtureConfig, type RoleConfig } from "./config.ts";
 import { validatePreset } from "./provider.ts";
+import { phaseSummary } from "./phase.ts";
 import type { MixtureSession } from "./session.ts";
 
 const clean = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-export function compactStatus(session: MixtureSession): string {
-	const state = session.state;
-	const incomplete = state.reviewers.filter(reviewer => reviewer.warning || reviewer.imageWarning).length;
-	return `mix ${state.active} r${state.revision} · review ${session.reviews.backlog}${incomplete ? ` (${incomplete} incomplete)` : ""} · $${session.usage.cost.total.toFixed(3)}`;
+export function compactStatus(session: MixtureSession, compacting = false): string {
+	const activity = compacting ? "compacting" : session.activity;
+	const actor = activity === "reviewing" ? "reviewer" : session.active;
+	return `${actor} · ${activity} · $${session.usage.cost.total.toFixed(3)}`;
 }
 export function inspection(session: MixtureSession): string {
 	const { state, preset } = session;
@@ -32,6 +33,7 @@ export function inspection(session: MixtureSession): string {
 		if (reviewer.imageWarning) lines.push(`  ${reviewer.imageWarning}`);
 		for (const finding of reviewer.findings) lines.push(`  [${finding.severity}] ${finding.id}, revision ${finding.revision}: ${finding.summary}${finding.path ? ` (${finding.path})` : ""}${finding.evidence ? `\n    ${finding.evidence}` : ""}`);
 	}
+	if (state.phase) lines.push("", phaseSummary(state.phase, false));
 	if (state.task) lines.push("", `User request: ${state.task}`);
 	if (state.brief) lines.push("", state.brief);
 	if (state.warning) lines.push("", state.warning);

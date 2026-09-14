@@ -3,12 +3,14 @@ import { createAssistantMessageEventStream, type AssistantMessage, type ToolResu
 import { defaultConfig } from "./config.ts";
 import { addUsage, emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, controlTool, MixtureSession, newState } from "./session.ts";
+import { assessPhase, delegatePhase } from "./phase.ts";
 
 test("serious findings keep the final-correction loop active; rejected candidates stay hidden and are charged once", async () => {
 	const preset = defaultConfig().presets.default;
 	preset.lead = "openai-codex/lead"; preset.writer.model = "openai-codex/writer";
 	preset.reviewers = [{ model: "openai-codex/reviewer", thinking: "low" }];
 	let leadCalls = 0; let reviewCalls = 0;
+	const reviewContexts: string[] = [];
 	const roleOptions: RoleStreamOptions[] = [];
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, api: "fixture", name: id, baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
@@ -16,7 +18,7 @@ test("serious findings keep the final-correction loop active; rejected candidate
 		getProvider: () => ({ streamSimple: (model, _context, options) => {
 			roleOptions.push(options ?? {});
 			const reviewing = model.id === "reviewer";
-			if (reviewing) reviewCalls++; else leadCalls++;
+			if (reviewing) { reviewCalls++; reviewContexts.push(JSON.stringify(_context.messages)); } else leadCalls++;
 			const message: AssistantMessage = { role: "assistant", api: "fixture", provider: "fixture", model: model.id, timestamp: Date.now(),
 				usage: { ...emptyUsage(), input: 1, totalTokens: 1 }, stopReason: reviewing ? "toolUse" : "stop",
 				content: reviewing ? [{ type: "toolCall", id: `review_${reviewCalls}`, name: "mixture_review", arguments: { revision: 0,
@@ -27,8 +29,14 @@ test("serious findings keep the final-correction loop active; rejected candidate
 		} }) as any,
 	};
 	const state = newState("default", preset);
-	state.delegations = 1;
+	const brief = { task: "Fix foreground interruption", nextAction: "Run the process-boundary check", successCriteria: ["Foreground child stops while persistent jobs survive"] };
+	state.phase = delegatePhase(undefined, brief).phase;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		state.phase = assessPhase(state.phase, { phaseId: state.phase.id, assessment: "stalled", evidence: "Only repeated research; the process-boundary check has not run" });
+		if (attempt < 2) state.phase = delegatePhase(state.phase, { ...brief, phaseId: state.phase.id }).phase;
+	}
 	const session = new MixtureSession(preset, registry, state, () => ({ available: true, sessionId: "root", jobs: [] }));
+	session.newRequest("Continue the same task");
 	const context = { messages: [{ role: "user" as const, content: "Finish", timestamp: 1 }], tools: [controlTool] };
 	const visible: AssistantMessage[] = [];
 	const billed = emptyUsage();
@@ -45,6 +53,9 @@ test("serious findings keep the final-correction loop active; rejected candidate
 		}
 		expect(leadCalls).toBe(4);
 		expect(reviewCalls).toBe(4);
+		expect(state.delegations).toBe(0);
+		expect(state.phase.failedCorrections).toBe(2);
+		expect(reviewContexts.every(context => context.includes(brief.successCriteria[0]))).toBe(true);
 		expect(roleOptions).toHaveLength(8);
 		expect(roleOptions.every(options => options.serviceTier === "priority")).toBe(true);
 		expect(state.finalCorrections).toBe(4);

@@ -25,7 +25,7 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [
-			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Change fixture.txt and verify it", constraints: ["Preserve unrelated.txt"], successCriteria: ["fixture.txt contains after", "The verification command passes"] }) },
+			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Change fixture.txt and verify it", nextAction: "Edit before to after, read the file, and run the verification command", constraints: ["Preserve unrelated.txt"], successCriteria: ["fixture.txt contains after", "The verification command passes"] }) },
 			{ actor: "writer", content: tool("edit", "edit", { path: "fixture.txt", oldText: "before", newText: "after" }) },
 			{ actor: "writer", content: tool("read", "read", { path: "fixture.txt" }) },
 			{ actor: "writer", content: tool("verify", "bash", { command: `test "$(< fixture.txt)" = ${denied ? "before" : "after"} && printf verification-passed` }) },
@@ -101,7 +101,7 @@ test("context marker prevents stale nested usage from retriggering root compacti
 		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 250_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const steps = [
-			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Complete the work", successCriteria: ["The request is complete"] }) },
+			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Complete the work", nextAction: "Inspect and complete the request", successCriteria: ["The request is complete"] }) },
 			{ actor: "writer", content: text("Inspected the request and completed the work.") },
 			{ actor: "lead", content: text("Work completed.") },
 		];

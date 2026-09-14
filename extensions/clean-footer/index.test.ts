@@ -117,17 +117,21 @@ describe("clean footer working indicator", () => {
 });
 
 describe("clean footer extension statuses", () => {
-	test("keeps Mixture identity and progress visible on narrow terminals", async () => {
+	test("keeps the normal footer and compact Mixture section visible on narrow terminals", async () => {
 		const harness = createHarness();
 		Object.assign(harness.ctx.model, { provider: "mixture", id: "default" });
-		harness.statuses.set("mixture", "mix writer r3 · review 2 · $0.004");
+		harness.statuses.set("mixture", "writer · working · $0.004");
+		harness.statuses.set("other-package", "other status");
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
-		const lines = harness.footer().render(60);
+		const footer = harness.footer();
+		const lines = footer.render(60);
 		expect(lines).toHaveLength(2);
-		expect(lines[0]).toContain("mixture/default");
-		expect(lines[1]).toContain("writer r3 · review 2");
+		expect(lines[0]).toContain("project-folder | mixture/default | high");
+		expect(lines[1]).toContain("writer · working · $0.004 | other status");
 		expect(lines.every((line: string) => visibleWidth(line) <= 60)).toBe(true);
-		expect(harness.footer().render(200)).toHaveLength(1);
+		expect(footer.render(200)).toHaveLength(1);
+		expect(footer.render(200)[0]).toContain("39.5%/200k | $0.00 | writer · working · $0.004 | other status");
+		for (const width of [0, 1, 8, 24]) expect(footer.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
 	});
 	test("shows local mode when enabled", async () => {
 		const harness = createHarness();

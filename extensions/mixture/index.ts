@@ -25,11 +25,12 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	let deltaChain = 0;
 	let pending: Promise<AssistantMessage> | undefined;
 	let requesting = false;
+	let compacting = false;
 	try { config = loadConfig(); }
 	catch (error) { diagnostic = String(error); }
 	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
 	const status = () => diagnostic ?? (session ? inspection(session) : `Mixture presets: ${Object.keys(config!.presets).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`);
-	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session) : "mix ready" : undefined); };
+	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : "lead · unavailable · $?" : undefined); };
 	const releaseRoleResources = (target = session) => {
 		if (!target || !rootId) return;
 		releaseProviderSessions(pi, target.resourceSessionIds(rootId));
@@ -69,6 +70,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		registry = context.modelRegistry;
 		const active = pi.getActiveTools().filter(name => name !== CONTROL);
 		pi.setActiveTools(selected() ? [...active, CONTROL] : active);
+		if (selected() && !isSwarmAttached(pi)) ensureSession();
 		render();
 	};
 	const inheritFastMode = (options?: SimpleStreamOptions): RoleStreamOptions | undefined => {
@@ -215,9 +217,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	pi.on("session_before_fork", () => detach("session fork"));
 	pi.on("session_before_tree", () => detach("tree navigation"));
 	pi.on("session_tree", (_event, context) => activate(context, true));
-	pi.on("session_before_compact", () => detach("compaction"));
-	pi.on("session_compact", (_event, context) => activate(context, true));
-	pi.on("session_compact_failed", (_event, context) => activate(context, true));
+	pi.on("session_before_compact", () => { compacting = true; render(); return detach("compaction"); });
+	pi.on("session_compact", (_event, context) => { compacting = false; return activate(context, true); });
+	pi.on("session_compact_failed", (_event, context) => { compacting = false; return activate(context, true); });
 	pi.on("session_shutdown", async () => { await detach("session shutdown", true); ctx = undefined; rootId = undefined; });
 	if (config) {
 		try { registered = buildProvider(config); pi.registerProvider(registered); }

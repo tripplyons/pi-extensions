@@ -25,7 +25,7 @@ test("leaving Mixture reports a surviving tracked shell job without killing it",
 			getModels: () => ["lead", "writer", "ordinary"].map(id => find("fixture", id)!), stream: () => { throw new Error("Use simple"); },
 			streamSimple: (model) => {
 				const content = model.id === "ordinary" ? [{ type: "text" as const, text: "Ordinary model resumed after the switch." }]
-					: model.id === "lead" ? tool("mixture_control", { action: "delegate", task: "Start the tracked job", successCriteria: ["The job is started"] })
+					: model.id === "lead" ? tool("mixture_control", { action: "delegate", task: "Start the tracked job", nextAction: "Launch the tracked fixture job", successCriteria: ["The job is started"] })
 						: tool("bash", { command: "read -r release; printf unexpected > output.txt", timeout: 0.1 });
 				const stream = createAssistantMessageEventStream(); emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content,
 					usage: emptyUsage(), timestamp: Date.now(), stopReason: content.some(block => block.type === "toolCall") ? "toolUse" : "stop" }); return stream;

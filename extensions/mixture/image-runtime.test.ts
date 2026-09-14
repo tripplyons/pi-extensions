@@ -40,7 +40,7 @@ for (const { textOnlyReviewer } of [
 					const revision = Number(JSON.stringify(context.messages.filter(message => message.role === "user").at(-1)).match(/Review requested at revision (\d+)/)?.[1]);
 					content = tool("mixture_review", { revision, findings: [], notes: "Image evidence was retained and inspected." });
 				} else if (model.id === "writer") content = tool("mixture_control", { action: "report", report: "Inspected the attached image without changing files." });
-				else if (++leadCalls % 2 === 1) content = tool("mixture_control", { action: "delegate", task: "Inspect the attached image", successCriteria: ["Preserve image evidence"] });
+				else if (++leadCalls % 2 === 1) content = tool("mixture_control", { action: "delegate", task: "Inspect the attached image", nextAction: "Read the image and report its visible contents", successCriteria: ["Preserve image evidence"] });
 				else content = [{ type: "text", text: "The image was inspected without changing files." }];
 				const stream = createAssistantMessageEventStream();
 				emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content,

@@ -26,11 +26,12 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [
-			{ actor: "lead", content: tool("delegate-first", "mixture_control", { action: "delegate", task: "Change fixture.txt", successCriteria: ["fixture.txt contains after"] }) },
+			{ actor: "lead", content: tool("delegate-first", "mixture_control", { action: "delegate", task: "Change fixture.txt", nextAction: "Edit before to after in fixture.txt", successCriteria: ["fixture.txt contains after"] }) },
 			{ actor: "writer", content: tool("edit", "edit", { path: "fixture.txt", oldText: "before", newText: "after" }) },
 			{ actor: "writer", content: text("Edited fixture.txt. No unrelated files changed.") },
+			{ actor: "lead", content: tool("assess-first", "mixture_control", { action: "assess", phaseId: "current", assessment: "complete", evidence: "The edit tool confirmed before was replaced with after" }) },
 			{ actor: "lead", content: text("Changed fixture.txt.") },
-			{ actor: "lead", content: tool("delegate-second", "mixture_control", { action: "delegate", task: "Inspect the current fixture", successCriteria: ["Report the current contents without changing them"] }) },
+			{ actor: "lead", content: tool("delegate-second", "mixture_control", { action: "delegate", task: "Inspect the current fixture", nextAction: "Read fixture.txt without modifying it", successCriteria: ["Report the current contents without changing them"] }) },
 			{ actor: "writer", content: tool("reread", "read", { path: "fixture.txt" }) },
 			{ actor: "writer", content: text("Read the current file. The manual edit remains.") },
 			{ actor: "lead", content: text("Read the current file. Your manual edit remains.") },
@@ -45,7 +46,8 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 				else {
 					const step = steps.shift();
 					if (!step || step.actor !== model.id) throw new Error(`Unexpected ${model.id}, wanted ${step?.actor}`);
-					content = step.content;
+					content = structuredClone(step.content);
+					for (const block of content) if (block.type === "toolCall" && block.arguments.phaseId === "current") block.arguments.phaseId = JSON.stringify(context.messages).match(/Phase ID: ([\w-]+)/)?.[1];
 				}
 				const stream = createAssistantMessageEventStream();
 				emitMessage(stream, { role: "assistant", api: "fixture", provider: "fixture", model: model.id, content,

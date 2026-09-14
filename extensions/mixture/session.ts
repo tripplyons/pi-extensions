@@ -5,24 +5,23 @@ import { compactRole, estimateContextTokens, forModel, imageContent, interruptPe
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import type { Preset } from "./config.ts";
 import { addUsage, callRole, emptyUsage, failureMessage, resolveModel, type Registry } from "./provider.ts";
+import { adoptLegacyPhase, assessPhase, delegatePhase, phaseFields, phaseSummary, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
 import { drainReceipts, receipt, receiptIds, tagReceipts, type UsageReceipt } from "./usage.ts";
 
 export const CONTROL = "mixture_control";
 const controlParams = (actions: string[]) => Type.Object({
 	action: StringEnum(actions),
-	task: Type.Optional(Type.String()),
+	...phaseFields,
 	message: Type.Optional(Type.String()),
-	constraints: Type.Optional(Type.Array(Type.String())),
-	successCriteria: Type.Optional(Type.Array(Type.String())),
 	report: Type.Optional(Type.String()),
 	checkpoint: Type.Optional(Type.String()),
 });
-export const ControlParams = controlParams(["delegate", "update", "report", "escalate", "takeover", "checkpoint", "pause"]);
+export const ControlParams = controlParams(["delegate", "assess", "update", "report", "escalate", "takeover", "checkpoint", "pause"]);
 export type ControlInput = Static<typeof ControlParams>;
 export const controlTool: Tool = {
 	name: CONTROL,
-	description: "Mixture role coordination. Lead: delegate a bounded task with constraints and successCriteria, update the current writer after assessing user steering, or explicitly take over writing after the writer stops. Writer: report only when the delegated work is complete, or escalate an ambiguity, blocker, failure, or required user decision. The harness schedules reviews and decides handoff timing. Never combine a control with other tool calls. Checkpoint and pause are reserved for the harness.",
+	description: "Mixture role coordination. Lead: delegate a bounded task with nextAction, acceptedEvidence, constraints and successCriteria. At handoffs, assess the current phaseId with evidence before continuing it. Two failed corrective attempts block equivalent delegation; reopening requires changedPrerequisite evidence. Update an active writer after user steering, or explicitly take over after the writer stops. Writer: report only when the delegated work is complete, or escalate an ambiguity, blocker, failure, or required user decision. The harness schedules reviews and decides handoff timing. Never combine a control with other tool calls. Checkpoint and pause are reserved for the harness.",
 	parameters: ControlParams,
 };
 export type Actor = "lead" | "writer";
@@ -52,6 +51,7 @@ export interface MixtureState {
 	seenUsers: string[];
 	initialized: boolean;
 	brief: string;
+	phase?: PhaseState;
 	task: string;
 	attachments: ImageContent[];
 	revision: number;
@@ -108,6 +108,8 @@ export class MixtureSession {
 	private controller = new AbortController();
 	private epoch = 0;
 	private inFlightCost = 0;
+	private running = false;
+	private reviewing = false;
 	private requestOptions: SimpleStreamOptions = {};
 	private leadThinking?: ModelThinkingLevel;
 	lastDrained: string[] = [];
@@ -127,6 +129,7 @@ export class MixtureSession {
 		this.state.writerReviewSequences ??= [];
 		this.state.writerReviewsDelivered ??= 0;
 		this.state.writerProgress ??= [];
+		if (!this.state.phase && this.state.brief.trim()) this.state.phase = adoptLegacyPhase(this.state.brief);
 		this.state.coordination ??= { scheduledReviews: 0, deliveredReviews: 0, leadCheckpoints: 0, escalations: 0, recent: [] };
 		this.reviews = new ReviewPool(preset, state.reviewers, cwd, async (index, context, signal) => {
 			const result = await this.call(index, context, { ...this.requestOptions,
@@ -138,6 +141,15 @@ export class MixtureSession {
 
 	get signal() { return this.controller.signal; }
 	get active() { return this.state.active; }
+	get activity() {
+		const { active, owner, phase, final } = this.state;
+		if (this.running && this.reviewing) return "reviewing";
+		if (active === "lead" && owner !== "lead" && (phase?.assessment === "blocked" || phase?.assessment === "stalled" && phase.failedCorrections >= 2)) return "blocked";
+		if (!this.running) return "idle";
+		if (active === "writer" || owner === "lead") return "working";
+		if (final) return "finishing";
+		return phase && !["complete", "superseded"].includes(phase.assessment ?? "") ? "assessing" : "planning";
+	}
 	get modelId() { return this.active === "lead" ? this.preset.lead : this.preset.writer.model; }
 	performanceStats(): PerformanceStats { return { ...structuredClone(this.timings), coordination: structuredClone(this.state.coordination) }; }
 	private recordTiming(group: "requests" | "checkpoints", name: string, started: number) {
@@ -160,8 +172,15 @@ export class MixtureSession {
 	}
 	private async reviewCheckpoint(kind: "writer-report" | "writer-escalation" | "final-answer", revision: number, content: string, signal?: AbortSignal, images?: ImageContent[], candidateOnly = false) {
 		const started = performance.now();
+		const epoch = this.epoch;
+		this.reviewing = this.state.reviewers.length > 0;
+		this.changed();
 		try { return await this.reviews.checkpoint(revision, content, signal, images, candidateOnly); }
-		finally { this.recordTiming("checkpoints", kind, started); }
+		finally {
+			if (epoch === this.epoch) this.reviewing = false;
+			this.recordTiming("checkpoints", kind, started);
+			this.changed();
+		}
 	}
 	get usage() {
 		const total = emptyUsage();
@@ -200,13 +219,27 @@ export class MixtureSession {
 		this.state.attachments = [];
 		this.state.active = "lead";
 		this.firstTaskSync = true;
-		this.state.brief = "";
+		this.state.brief = this.state.phase ? phaseSummary(this.state.phase, false) : "";
 		this.resetWriterWindow();
 		this.reviews.newRequest();
+		this.running = true;
+		this.reviewing = false;
+		this.changed();
 	}
-	resumeLoop() { if (this.signal.aborted) { this.controller = new AbortController(); this.epoch++; } }
-	abort() { this.controller.abort(); this.epoch++; return this.reviews.freeze(); }
+	resumeLoop() {
+		if (this.signal.aborted) { this.controller = new AbortController(); this.epoch++; }
+		this.running = true;
+		this.changed();
+	}
+	abort() {
+		this.controller.abort(); this.epoch++;
+		this.running = false; this.reviewing = false;
+		this.changed();
+		return this.reviews.freeze();
+	}
 	reconcile(reason: string) {
+		this.running = false;
+		this.reviewing = false;
 		let interrupted = this.state.active === "writer" || !!this.state.final || !!Object.keys(this.state.origins).length;
 		for (const role of [this.state.lead, this.state.writer, ...this.state.reviewers]) interrupted = interruptPending(role.messages) || interrupted;
 		if (this.state.final) {
@@ -223,6 +256,7 @@ export class MixtureSession {
 		}
 		if (!jobs.available && this.state.bgManaged) this.state.warning = "Background ownership is unavailable. Reload bg-bash before a writer handoff.";
 		if (jobs.error || jobs.jobs.some(job => job.status === "running")) this.state.warning = `Background ownership requires reconciliation: ${jobs.error ?? jobs.jobs.filter(job => job.status === "running").map(job => job.id).join(", ")}`;
+		this.changed();
 	}
 	async drainAfterAbort() {
 		await this.abort();
@@ -273,6 +307,7 @@ export class MixtureSession {
 		this.rootTools = context.tools ?? [];
 		this.state.bgManaged ||= this.rootTools.some(tool => tool.name === "bg_process");
 		this.reviews.configurePrompt(this.systemPrompt);
+		if (this.state.phase) this.replaceNote("lead", "[Harness phase tracking]", phaseSummary(this.state.phase));
 	}
 
 	allowed(actor: Actor, name: string, args?: Record<string, unknown>): boolean {
@@ -292,7 +327,7 @@ export class MixtureSession {
 		if (name === CONTROL) {
 			if (["report", "escalate"].includes(String(args.action)) && origin.actor !== "writer") throw new Error("Only the writer can report or escalate a delegation");
 			if (args.action === "pause" && (!origin.synthetic || origin.actor !== "writer")) throw new Error("Only the harness can pause the writer for review");
-			if (["delegate", "update", "takeover", "checkpoint"].includes(String(args.action)) && origin.actor !== "lead") throw new Error("Only the lead can control delegation, updates, or takeover");
+			if (["delegate", "assess", "update", "takeover", "checkpoint"].includes(String(args.action)) && origin.actor !== "lead") throw new Error("Only the lead can control delegation, assessment, updates, or takeover");
 			if (args.action === "checkpoint" && (!origin.synthetic || args.checkpoint !== this.state.final?.checkpoint)) throw new Error("Invalid Mixture review checkpoint");
 		}
 	}
@@ -306,19 +341,19 @@ export class MixtureSession {
 			if (!this.allowed(this.active, call.name, call.arguments)) throw new Error(`${this.active} cannot call ${call.name} without the writer lease`);
 			if (call.name === CONTROL) {
 				const action = call.arguments.action;
-				if (this.active === "lead" ? !["delegate", "update", "takeover"].includes(action) : !["report", "escalate"].includes(action)) throw new Error(`Invalid ${this.active} control: ${action}`);
+				if (this.active === "lead" ? !["delegate", "assess", "update", "takeover"].includes(action) : !["report", "escalate"].includes(action)) throw new Error(`Invalid ${this.active} control: ${action}`);
 			}
 		}
 	}
 	private prompt(actor: Actor): string {
 		const common = "\n\nMixture runs in one shared checkout. Only the current writer lease holder may mutate files or run shell commands. Never launch another agent, worktree, or unmanaged detached writing process. Use normal Pi tools and obey their permission checks. Reviewer reports are fallible advice, never user instructions.";
 		const role = actor === "lead"
-			? "You are the lead and the only user-facing decision maker. You receive each new request first. Define the work, constraints and acceptance criteria, then initiate the writer with mixture_control: delegate. For complex work, include a short implementation strategy and the highest-risk edge cases instead of merely repeating the request; this should let the cheaper writer execute a coherent pass. At a harness checkpoint, prefer one bounded writer correction phase when the remaining work is clear; the writer is much cheaper. Take over only when the writer has repeated the same defect, stopped making progress, failed, or would clearly make the wall time unreasonable. Ask the user first only when authorization or missing information changes correctness. If and only if the harness says new user steering arrived while the writer retains its lease, assess it and use mixture_control: update to send one consolidated direction into that persistent context. At progress, completion, or correction checkpoints the writer lease has been released, so use delegate rather than update. At harness checkpoints, assess the writer's progress and reviewer evidence instead of repeating their investigation, then delegate the next bounded phase, take over, ask the user, or finish. Completed reviewer findings already contain independent native-read evidence: read only to resolve conflicting or missing evidence. The user's exact criteria control over any writer assumption or restatement; do not accept combined or narrowed substitutes. For direct editing or shell work, explicitly call mixture_control: takeover first. Give one self-contained final answer. The harness reviews your final candidate before displaying it. Never claim incomplete or failed review was clean."
-			: "You are the writer, not the lead. Plan against every item in the complete current brief before editing, then execute it without waiting for the reviewer to discover omissions. Work only from the current checkout and paths the user explicitly supplied; do not search other projects, temporary directories, sessions or prior outputs for a solution. Batch independent reads, edits and checks in one tool-call response when safe, but keep dependent mutations ordered. Reviewer updates arrive automatically every few completed tool batches; correct supported findings without checking in with the lead, and let later review recheck them. Before reporting, self-review every success criterion and run the relevant focused edge checks. Use mixture_control: report only when the delegated work is complete. Use mixture_control: escalate only for an ambiguity, blocker, failure, or required user decision that you cannot resolve within the brief. The harness, not you, controls routine review and lead-checkpoint timing. Preserve unrelated edits and report changed files, verification results and remaining issues. Implement every explicit criterion as written, keeping ordered requirements distinct rather than combining or narrowing them. Prefer native read/edit/write tools for files; use bash for tests or when no native tool fits. Stop managed background jobs or wait for completion before reporting or escalating. Do not answer the user, ask them questions, delegate, or change role ownership. Keep reports concise and factual.";
+			? "You are the lead and the only user-facing decision maker. You receive each new request first. Define the outcome and acceptance criteria, then initiate the writer with mixture_control: delegate. Put the concrete next implementation or diagnostic step in nextAction, settled facts and checks in acceptedEvidence, and standing boundaries in constraints. Do not bury the next action in a repeated long brief. At each writer handoff, call assess with the current phaseId, an assessment, and concrete evidence before delegating a continuation with that same phaseId. Progress means a newly satisfied criterion or resolved uncertainty, including useful read-only diagnosis; repeated searches, edits alone, and promises are not progress. Assess stalled when the writer repeats work without advancing the outcome, or blocked with the actual missing prerequisite. The initial stalled attempt permits two corrective attempts; after both fail, do not delegate equivalent work again. Take over or resolve a concrete blocker. Reopen with changedPrerequisite only when new evidence, authorization, or a resolved blocker changes what the writer can do, not for urgency or a renamed task. The harness enforces the count; you are responsible for the truth of the assessment. Complete or user-directed superseded dispositions need evidence before starting a new phase. Ask the user first only when authorization or missing information changes correctness. If and only if the harness says new user steering arrived while the writer retains its lease, assess it and use mixture_control: update to send one consolidated direction into that persistent context. At progress, completion, or correction checkpoints the writer lease has been released, so assess before delegate rather than using update. Use the harness phase record across new requests and compaction; a new prompt does not erase a stalled attempt. At checkpoints, use recorded execution and reviewer evidence instead of repeating the investigation, then assess and continue, take over, ask a necessary question, or finish. Do not mark blocked or unfinished obligations complete to obtain another writer budget. Completed reviewer findings already contain independent native-read evidence: read only to resolve conflicting or missing evidence. The user's exact criteria control over any writer assumption or restatement; do not accept combined or narrowed substitutes. For direct editing or shell work, explicitly call mixture_control: takeover first. Give one self-contained final answer. The harness reviews your final candidate before displaying it. Never claim incomplete or failed review was clean."
+			: "You are the writer, not the lead. Start with the brief's next action and execute it, checking it against the original phase criteria and standing constraints. Accepted evidence is settled: do not repeat those reads or checks unless new conflicting evidence makes rechecking necessary. Plan against every item in the complete current brief before editing, then execute it without waiting for the reviewer to discover omissions. A narrower current step does not replace phase acceptance. If the next action cannot be performed, identify the concrete blocker rather than looping through the same research. Work only from the current checkout and paths the user explicitly supplied; do not search other projects, temporary directories, sessions or prior outputs for a solution. Batch independent reads, edits and checks in one tool-call response when safe, but keep dependent mutations ordered. Reviewer updates arrive automatically every few completed tool batches; correct supported findings without checking in with the lead, and let later review recheck them. Before reporting, self-review every success criterion and run the relevant focused edge checks. Use mixture_control: report only when the delegated work is complete. Use mixture_control: escalate only for an ambiguity, blocker, failure, or required user decision that you cannot resolve within the brief. The harness, not you, controls routine review and lead-checkpoint timing. Preserve unrelated edits and report changed files, verification results and remaining issues. Implement every explicit criterion as written, keeping ordered requirements distinct rather than combining or narrowing them. Prefer native read/edit/write tools for files; use bash for tests or when no native tool fits. Stop managed background jobs or wait for completion before reporting or escalating. Do not answer the user, ask them questions, delegate, or change role ownership. Keep reports concise and factual.";
 		return `${this.systemPrompt}${common}\n${role}${actor === "writer" && this.preset.writer.guidance ? `\n${this.preset.writer.guidance}` : ""}`;
 	}
 	private tools(actor: Actor): Tool[] {
-		const actions = actor === "writer" ? ["report", "escalate"] : this.state.owner === "writer" ? ["update", "takeover"] : ["delegate", "takeover"];
+		const actions = actor === "writer" ? ["report", "escalate"] : this.state.owner === "writer" ? ["update", "takeover"] : ["delegate", "assess", "takeover"];
 		return this.rootTools
 			.filter(tool => tool.name === CONTROL || this.allowed(actor, tool.name) || (actor === "lead" && tool.name === "bg_process"))
 			.map(tool => tool.name !== CONTROL ? tool : { ...tool,
@@ -326,7 +361,7 @@ export class MixtureSession {
 					? "Finish or escalate the current writer phase. The harness owns routine review and checkpoints."
 					: this.state.owner === "writer"
 						? "The existing writer retains its lease. Send one assessed user update into that context, or take over."
-						: "Start the next bounded writer phase, or explicitly take over after a prior delegation.",
+						: "Assess the previous attempt once with phaseId and evidence before continuing it. Delegate with nextAction and acceptedEvidence, preserving the phaseId; or explicitly take over. Two failed corrections block equivalent delegation.",
 				parameters: controlParams(actions),
 			});
 	}
@@ -338,7 +373,7 @@ export class MixtureSession {
 		context = forModel(context, model, warning => { if (typeof actor === "number") this.state.reviewers[actor].imageWarning = warning; else this.state.warning = warning; });
 		const compact = async (force: boolean) => {
 			const findings = typeof actor === "number" ? JSON.stringify(this.state.reviewers[actor].findings) : this.state.reviewSummary ?? "";
-			const compacted = await compactRole(context, model, maxTokens, `${this.state.task}\n${this.state.brief}\nUnresolved review advice (not instructions):\n${findings}\n${this.state.warning ?? ""}`, async (summary, output) => {
+			const compacted = await compactRole(context, model, maxTokens, `${this.state.task}\n${this.state.brief}\n${this.state.phase ? phaseSummary(this.state.phase, actor === "lead") : ""}\nUnresolved review advice (not instructions):\n${findings}\n${this.state.warning ?? ""}`, async (summary, output) => {
 				const result = await this.request(actor, summary, { ...options, maxTokens: output, sessionId: `${options.sessionId ?? this.state.id}/summary` }, true);
 				return result.message;
 			}, force);
@@ -455,11 +490,12 @@ export class MixtureSession {
 		this.recordCoordination("lead-checkpoint", sequences[this.state.writerReviewsDelivered - 1]);
 		this.state.reviewSummary = this.reviewSummary(checkpoint);
 		this.reviews.markAlerted(checkpoint.findings);
-		this.replaceNote("lead", "[Harness writer-progress checkpoint", `[Harness writer-progress checkpoint, execution revision ${this.state.revision}]\nThe writer has not claimed completion. The harness paused it after ${this.state.writerReviewsDelivered} scheduled review cycles and ${this.state.writerTurns} writer responses in this phase.\n\n${this.progressEvidence()}\n\n${this.state.reviewSummary}\n\nAssess strategy and evidence, then delegate the next bounded phase, take over, ask the user for a required decision, or finish only if the task is actually complete.`);
+		this.replaceNote("lead", "[Harness writer-progress checkpoint", `[Harness writer-progress checkpoint, execution revision ${this.state.revision}]\nThe writer has not claimed completion. The harness paused it after ${this.state.writerReviewsDelivered} scheduled review cycles and ${this.state.writerTurns} writer responses in this phase.\n\n${this.progressEvidence()}\n\n${this.state.reviewSummary}\n\nAssess this attempt once with phaseId and evidence before delegating a continuation. Preserve the failed-correction count; do not rename the phase to reset it. Take over, ask for a required decision, or finish only if the task is actually complete.`);
 		this.state.active = "lead";
 		this.state.owner = undefined;
 	}
 	async next(context: Context, options: SimpleStreamOptions = {}, thinking?: ModelThinkingLevel): Promise<AssistantMessage> {
+		this.running = true;
 		this.leadThinking = thinking;
 		this.sync(context);
 		this.requestOptions = options;
@@ -479,6 +515,7 @@ export class MixtureSession {
 			return this.terminal(error);
 		}
 		this.prepareWriterTurn();
+		this.changed();
 		if (this.active === "writer" && this.state.writerTurns >= this.preset.limits.writerTurns) {
 			try { this.requireNoJobs(); }
 			catch (error) { return this.synthetic("pause", { report: `Incomplete: writer response limit reached. ${String(error)}` }); }
@@ -516,7 +553,7 @@ export class MixtureSession {
 		}
 		if (actor === "writer") return this.synthetic(message.stopReason === "length" ? "escalate" : "report", { report: `${message.stopReason === "length" ? "Incomplete (output truncated):\n" : ""}${text(message) || "Writer returned no report."}` }, message.usage, receiptIds(message));
 		if (this.state.owner === "writer") return this.synthetic("update", { message: text(message) || "Continue the current writer plan while incorporating the latest user direction." }, message.usage, receiptIds(message));
-		if (this.state.delegations === 0) return this.terminal({ ...failureMessage(resolveModel(this.modelId, this.registry.find.bind(this.registry)), "Lead ended before initiating the required writer phase"), usage: message.usage, mixtureReceiptIds: receiptIds(message) } as AssistantMessage);
+		if (this.state.delegations === 0 && !this.state.phase) return this.terminal({ ...failureMessage(resolveModel(this.modelId, this.registry.find.bind(this.registry)), "Lead ended before initiating the required writer phase"), usage: message.usage, mixtureReceiptIds: receiptIds(message) } as AssistantMessage);
 		if (message.stopReason === "length") return this.terminal({ ...message, stopReason: "error", errorMessage: "Lead output was truncated before a final answer" });
 		const checkpoint = randomUUID();
 		recorded.delivery = "held";
@@ -542,12 +579,13 @@ export class MixtureSession {
 		switch (input.action) {
 			case "delegate": {
 				if (this.state.owner === "writer") throw new Error("The writer already holds the lease; assess steering with update or explicitly take over");
-				if (!input.task?.trim() || !input.successCriteria?.length || input.successCriteria.some(value => !value.trim())) throw new Error("Delegation needs a nonempty task and successCriteria");
+				const delegated = delegatePhase(this.state.phase, input);
+				this.state.phase = delegated.phase;
 				this.state.delegations++;
 				this.state.writerTurns = 0;
 				this.state.writerReportRejections = 0;
 				this.resetWriterWindow();
-				this.state.brief = `Task: ${input.task}\nConstraints:\n${(input.constraints ?? []).map(value => `- ${value}`).join("\n")}\nSuccess criteria:\n${input.successCriteria.map(value => `- ${value}`).join("\n")}`;
+				this.state.brief = delegated.brief;
 				this.removeNotes("writer", "[Harness reviewer feedback", "[Harness rejected the completion report");
 				this.reviews.configureScope(`[User request]\n${this.state.task}\n\n[Lead delegation]\n${this.state.brief}`, this.state.attachments);
 				const seenImages = new Set(imageContent(this.state.writer.messages).map(fingerprint));
@@ -556,7 +594,13 @@ export class MixtureSession {
 				this.state.owner = "writer";
 				this.state.active = "writer";
 				this.reviews.prime(this.state.revision, `[Pre-execution context]\nThe writer has only just received this task. Unchanged files and missing verification are not defects at this stage.\n[User request]\n${this.state.task}\n[Delegation]\n${this.state.brief}`, this.state.attachments);
-				result = "Delegated to writer. Its normal Pi tool calls follow; no editing subprocess or worktree was created.";
+				result = `Delegated phase ${delegated.phase.id}, attempt ${delegated.phase.attempt}${delegated.phase.correction ? " (corrective)" : ""}. Its normal Pi tool calls follow; no editing subprocess or worktree was created.`;
+				break;
+			}
+			case "assess": {
+				if (this.state.owner === "writer") throw new Error("The writer retains its lease; update its steering or take over before assessing the attempt");
+				this.state.phase = assessPhase(this.state.phase, input);
+				result = phaseSummary(this.state.phase);
 				break;
 			}
 			case "update": {
@@ -564,6 +608,7 @@ export class MixtureSession {
 				if (!input.message?.trim()) throw new Error("Writer update message is required");
 				const update = `[Lead update after user steering]\n${input.message.trim()}`;
 				this.state.brief += `\nLead update:\n${input.message.trim()}`;
+				if (this.state.phase) this.state.phase.constraints.push(`User steering (overrides conflicting earlier direction): ${input.message.trim()}`);
 				this.removeNotes("lead", "[Harness user steering requires lead assessment");
 				const seenImages = new Set(imageContent(this.state.writer.messages).map(fingerprint));
 				const attachments = this.state.attachments.filter(image => !seenImages.has(fingerprint(image)));
@@ -586,7 +631,7 @@ export class MixtureSession {
 						this.reviews.markAlerted(review.findings);
 						this.recordCoordination("lead-checkpoint", this.state.reviewers[0]?.sequence);
 						this.removeNotes("lead", "[Harness writer-progress checkpoint", "[Writer completion requires lead assessment");
-						this.note("lead", `[Writer completion requires lead assessment, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness paused the writer after three rejected completion reports in this delegation. Prefer takeover if the same defects have repeated; otherwise delegate one bounded correction phase.`);
+						this.note("lead", `[Writer completion requires lead assessment, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness paused the writer after three rejected completion reports in this delegation. Assess this writer attempt with evidence. Prefer takeover if the same defects have repeated; any further delegation must pass the phase correction gate.`);
 						this.state.active = "lead";
 						this.state.owner = undefined;
 						result = `Harness transferred the third rejected completion report to the lead.\n${this.state.reviewSummary}`;
@@ -599,7 +644,7 @@ export class MixtureSession {
 				} else {
 					this.reviews.markAlerted(review.findings);
 					this.removeNotes("lead", "[Harness writer-progress checkpoint", "[Writer completion report");
-					this.note("lead", `[Writer completion report, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness accepted this lead checkpoint. Assess completion and evidence; do not repeat specific non-conflicting reviewer reads.`);
+					this.note("lead", `[Writer completion report, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness accepted this lead checkpoint, not phase completion. Assess the attempt with phaseId and evidence before another delegation; do not repeat specific non-conflicting reviewer reads.`);
 					this.state.active = "lead";
 					this.state.owner = undefined;
 					result = `Harness transferred the completed writer phase to the lead${review.warnings.length ? " with incomplete-review warnings" : ""}.\n${this.state.reviewSummary}`;
@@ -614,7 +659,7 @@ export class MixtureSession {
 				this.state.reviewSummary = this.reviewSummary(review);
 				this.reviews.markAlerted(review.findings);
 				this.removeNotes("lead", "[Harness writer-progress checkpoint", "[Writer escalation");
-				this.note("lead", `[Writer escalation, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness transferred this unresolved decision to the lead.`);
+				this.note("lead", `[Writer escalation, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness transferred this unresolved decision to the lead. Assess the attempt and record a concrete blocker if work cannot proceed; do not reset the phase by renaming it.`);
 				this.state.active = "lead";
 				this.state.owner = undefined;
 				result = `Harness transferred the writer escalation to the lead.\n${this.state.reviewSummary}`;
@@ -624,12 +669,12 @@ export class MixtureSession {
 				this.state.active = "lead";
 				const jobs = this.jobs();
 				if (jobs.available && !jobs.error && !jobs.jobs.some(job => job.status === "running")) this.state.owner = undefined;
-				this.note("lead", `[Writer paused for assessment at a completed tool boundary]\n${input.report}\nThe writer model is paused. Any running writer job keeps its lease. Inspect or explicitly stop its tracked job before another delegation, takeover, or final answer. Decide whether to request a correction, dismiss the advice with reasons, or take over.`);
+				this.note("lead", `[Writer paused for assessment at a completed tool boundary]\n${input.report}\nThe writer model is paused. Any running writer job keeps its lease. Inspect or explicitly stop its tracked job before another delegation, takeover, or final answer. Once the lease is reconciled, assess the attempt with evidence before requesting an eligible correction, or take over.`);
 				result = `Writer paused; the lead will assess the confirmed review. Writer lease: ${this.state.owner ?? "none"}.`;
 				break;
 			}
 			case "takeover":
-				if (this.state.delegations === 0) throw new Error("The lead must initiate a writer phase before taking over");
+				if (this.state.delegations === 0 && !this.state.phase) throw new Error("The lead must initiate a writer phase before taking over");
 				this.state.owner = "lead";
 				result = "Lead took the writer lease. The sidekick is not executing. Native mutation and shell tools are now available to the lead.";
 				break;
@@ -644,7 +689,7 @@ export class MixtureSession {
 					this.state.finalCorrections++;
 					this.state.receipts.find(receipt => receipt.id === pending.receipt)!.delivery = "nested";
 					this.state.final = undefined;
-					this.replaceNote("lead", "[Final candidate withheld", `[Final candidate withheld, assessment ${this.state.finalCorrections}]\n${this.state.reviewSummary}\nAssess these findings. Delegate a correction or take over if needed; otherwise explain your disagreement and remaining uncertainty in a revised final answer.`);
+					this.replaceNote("lead", "[Final candidate withheld", `[Final candidate withheld, assessment ${this.state.finalCorrections}]\n${this.state.reviewSummary}\nAssess these findings against the recorded phase. Any writer continuation requires an assessed eligible attempt; do not reset a stalled phase. Take over if needed, or explain your disagreement and remaining uncertainty in a revised final answer.`);
 					result = `Final candidate withheld for lead assessment.\n${this.state.reviewSummary}`;
 				} else {
 					pending.ready = true;

@@ -64,10 +64,10 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
 
 Lead and writer calls use the normal Pi tool loop, including validation,
 permission hooks, visible tool output and recorded results. `mixture_control`
-coordinates delegation, in-flight writer updates, reports and takeover; it is active only in Mixture.
+coordinates delegation, phase assessment, in-flight writer updates, reports and takeover; it is active only in Mixture.
 Controls cannot share a batch with other tools. Its schema exposes only actions
 valid for the current role and lease: writer report/escalation, lead steering
-update/takeover, or lead delegation/takeover. Unknown effectful tools require the writer lease. This includes extension tools
+update/takeover, or lead delegation/assessment/takeover. Unknown effectful tools require the writer lease. This includes extension tools
 such as autoresearch and image generation; Mixture does not maintain an allowlist
 that silently hides newly installed writer tools. Conversation-level goal creation
 and completion remain with the lead. Nested editing-agent launches and execution
@@ -96,8 +96,9 @@ Completion reports, unresolved escalations and review failures can cause an
 earlier checkpoint. A completion report with supported concerns is withheld so
 the reviewer can return them directly to the writer. After three rejected
 completion reports in one delegation, the harness forces lead assessment instead
-of allowing an unbounded local correction stall; a new delegation renews the
-counter. Models supply briefs, work and judgments, but cannot change the review cadence or
+of allowing an unbounded local correction stall. A new delegation renews that
+local report counter, but not the phase's failed-correction history described below.
+Models supply briefs, work and judgments, but cannot change the review cadence or
 bypass lease and handoff checks. If the lead takes over editing, each
 mutation batch requests a review as well; requests coalesce while the reviewer is
 busy so final review can overlap the lead's correction work.
@@ -122,6 +123,65 @@ check from pinning already-corrected advice forever.
 Images remain available to roles that support them. Text-only roles receive an
 explicit omitted-image warning; their review must not be treated as visual
 verification. Composite input metadata reflects the whole roster conservatively.
+
+## Handoffs and stalled work
+
+Each delegation separates the concrete `nextAction` from `acceptedEvidence`
+(facts and checks not to repeat), standing `constraints`, and `successCriteria`.
+The original phase outcome and acceptance remain in every continuation brief,
+even when the next step is smaller. User steering is retained across continuations.
+
+For example, the lead can start with:
+
+```json
+{
+  "action": "delegate",
+  "task": "Fix foreground cancellation without stopping persistent jobs",
+  "nextAction": "Add the missing abort subscription and run the process-boundary regression",
+  "acceptedEvidence": ["The signal reaches the tool but not the foreground child"],
+  "constraints": ["Do not stop unrelated or already-persistent jobs"],
+  "successCriteria": ["Foreground child exits on Escape", "Persistent job survives"]
+}
+```
+
+At a writer handoff, the lead calls `assess` with the harness's `phaseId`, an
+`assessment`, and concrete `evidence` before delegating again:
+
+- `progress`: a criterion advanced or an uncertainty was resolved. Useful
+  read-only diagnosis counts; repeated reads or edits alone do not prove progress.
+- `stalled`: the attempt did not advance the outcome. Name the repeated behavior
+  or unresolved obstacle in the evidence.
+- `blocked`: execution needs a changed prerequisite. Also supply `blocker`.
+- `complete`: the phase criteria are met, with evidence.
+- `superseded`: the user cancelled or replaced the phase. Cite that direction;
+  do not use this to hide unfinished obligations.
+
+An attempt receives at most one progress/stalled/blocked assessment. The separate
+assessment call saves its result before another delegation can be rejected.
+Completion or user-directed supersession can also close work finished by the lead.
+
+The initial stalled attempt allows correction 1. If correction 1 stalls, correction
+2 is allowed. If correction 2 also stalls, another equivalent delegation is
+rejected. Progress resets the consecutive failed-correction count, not its audit
+history. A blocked assessment stops delegation immediately.
+
+The lead can take over, ask for a required decision, or report the concrete blocker.
+To resume the same stalled/blocked phase, `delegate` must include its `phaseId`
+and `changedPrerequisite: { "change": "...", "evidence": "..." }`. This starts an
+ordinary attempt with a reset streak while retaining the reason and prior history.
+A renamed task, urgency instruction, new user message, or reload does not reset it.
+Starting another phase requires completing or explicitly superseding the old one.
+
+The harness enforces recorded decisions, not their semantic truth. The lead must
+judge whether evidence actually shows progress or a changed prerequisite. It can
+still make that judgment incorrectly. This policy does not guarantee faster or
+better live-model execution.
+
+`nextAction` is required and limited to 4,000 characters. Evidence, blocker and
+prerequisite strings are limited to 2,000 characters each. `acceptedEvidence`
+allows up to eight nonempty entries. Oversized or blank supplied values are
+rejected. Phase state retains the latest eight assessment/prerequisite records
+plus independent counters, so trimming history cannot grant more retries.
 
 ## Background jobs and cancellation
 
@@ -163,8 +223,8 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 Output limits are clamped to each provider's model limit. Steering does not reset
 request limits. Writer stream activity renews only the idle deadline; the absolute
 writer ceiling and outer cancellation remain authoritative. Lead-to-writer delegations, reviewer batches across checkpoints,
-and final-answer correction cycles have no cumulative cap, so iterative loops can
-continue until completion or cancellation. In-flight estimated costs are reserved
+and final-answer correction cycles have no cumulative cap. Productive iterations
+can continue, but equivalent stalled delegations are subject to the phase gate. In-flight estimated costs are reserved
 before admitting another request, including concurrent reviewers. Estimates use
 configured model prices; they are not guaranteed billing ceilings. A configured
 limit stops the affected operation with an explicit reason. A zero-output writer
@@ -176,7 +236,7 @@ output and no tool call is eligible. Other provider failures are not retried her
 ## Sessions, context and usage
 
 Versioned custom entries in the current Pi session hold role histories, findings,
-counters, usage receipts and writer ownership. A lifecycle starts with one full
+counters, phase assessments, usage receipts and writer ownership. A lifecycle starts with one full
 snapshot; later checkpoints store content-addressed deltas and periodically start
 a new snapshot chain. A snapshot is also used whenever it is smaller. This avoids
 repeatedly appending the complete role history while keeping restore work bounded.
@@ -192,6 +252,14 @@ new sessions, forks, tree navigation and compaction invalidate stale work.
 Restoration returns decisions to the lead and requires inspecting current files.
 It does not roll files back or replay an interrupted write. A missing tool result
 is recorded as interrupted: the operation may already have changed files.
+
+Phase identity, assessment and failed-correction counts survive request boundaries,
+abort, reload and compaction. Forks and tree navigation restore the selected branch's
+phase state, not future or sibling decisions. Existing v2 state and v3 snapshot/delta
+records remain readable. A legacy checkpoint without phase tracking adopts its old
+brief as unresolved work with explicitly unknown earlier correction history;
+counting starts from the observed boundary. Different cwd/preset restoration still
+starts fresh contexts under the existing compatibility checks.
 
 Each role compacts its own context with the same model, preserving task facts,
 unresolved advice, images and recent complete tool batches. Recognized context
@@ -221,10 +289,25 @@ Neither missing usage nor zero configured model prices prove that a call was fre
 
 - `/mixture` or `/mixture status`: roster, ownership, review state and usage.
 - `/mixture inspect`: scrollable details in the TUI; textual status outside it.
-  Inspection includes per-role request latency and separate periodic, escalation,
-  completion-report and final-review wait totals for runtime comparisons.
+  Inspection includes the durable phase assessment, blocker and correction count,
+  per-role request latency, and separate periodic, escalation, completion-report
+  and final-review wait totals.
 - Expand coordination tool cards for findings and per-role usage.
-- The compact status uses Pi's status API and works alongside clean-footer.
+- The Mixture footer section shows only `role · activity · $cost`, for example
+  `writer · working · $0.024`. The rest of clean-footer stays unchanged: project,
+  model, thinking, context pressure, session cost and other extension statuses.
+  Mixture's cost includes its lead, writer and reviewers, including their context
+  summaries. It excludes Pi's root compaction and other non-Mixture session usage;
+  those still contribute to the separate session-cost figure.
+- Activity follows the execution state: `planning`, `working`, `assessing`,
+  `reviewing`, `finishing`, `blocked`, `compacting` or `idle`. A blocking review
+  wait shows `reviewer`; concurrent background review does not replace the active
+  lead/writer role. A recorded blocker or exhausted correction budget stays visible
+  across idle and reload until the phase is resolved or the lead takes over.
+  Live activity is not restored as if inference were still running.
+- Revision numbers, review queue counts and warnings remain in inspection and
+  expanded tool cards rather than the footer. The status uses Pi's status API;
+  clean-footer keeps its existing narrow-terminal wrapping.
 
 The legacy background tools, supervisors and worktree interfaces are removed.
 Existing external artifacts are left alone; no old processes are stopped or

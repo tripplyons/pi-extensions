@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Message, type Provider, type Usage } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getLastAssistantUsage, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { defaultConfig } from "./config.ts";
-import { sessionCost } from "../clean-footer/index.ts";
+import cleanFooter, { sessionCost } from "../clean-footer/index.ts";
 import { createMixtureExtension } from "./index.ts";
 import { addUsage, emitMessage, emptyUsage, modelDefinition, type Registry } from "./provider.ts";
 
@@ -28,16 +28,20 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		preset.limits.requestTimeoutMs = 1000;
 		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 0.1 } });
-		const requests: Array<{ id: string; context: Context }> = [];
+		const statuses = new Map<string, string>();
+		const displays: string[] = [];
+		let footer: { render(width: number): string[] } | undefined;
+		const requests: Array<{ id: string; context: Context; display?: string }> = [];
 		const billed: Usage[] = [];
 		let leadCalls = 0;
+		let correctionAssessed = false;
 		let writerCalls = 0;
 		const provider: Provider = {
 			id: "fixture", name: "Fixture", auth: { apiKey: { name: "Fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
 			getModels: () => ["lead", "writer", "reviewer-a", "reviewer-b"].map(id => find("fixture", id)!),
 			stream: () => { throw new Error("Use simple"); },
 			streamSimple: (model, context, options) => {
-				requests.push({ id: model.id, context: JSON.parse(JSON.stringify(context)) });
+				requests.push({ id: model.id, context: JSON.parse(JSON.stringify(context)), display: footer?.render(400).join("\n") });
 				if (requests.length > 80) throw new Error("Fixture detected an unbounded request loop");
 				const stream = createAssistantMessageEventStream();
 				const message: AssistantMessage = { role: "assistant", api: "fixture", provider: "fixture", model: model.id,
@@ -67,8 +71,14 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 					}
 				} else if (model.id === "lead") {
 					leadCalls++;
-					if (leadCalls === 1) message.content = tool("mixture_control", { action: "delegate", task: "Implement abs in answer.ts", constraints: ["Preserve the checkout"], successCriteria: ["abs(-2) is 2"] });
-					else if (JSON.stringify(context.messages).includes("Negative numbers remain negative") && readFileSync(join(dir, "answer.ts"), "utf8") === bad) message.content = tool("mixture_control", { action: "delegate", task: "Correct the negative-input defect in answer.ts", successCriteria: ["abs(-2) is 2"] });
+					if (leadCalls === 1) message.content = tool("mixture_control", { action: "delegate", task: "Implement abs in answer.ts", nextAction: "Write abs and verify negative inputs", constraints: ["Preserve the checkout"], successCriteria: ["abs(-2) is 2"] });
+					else if (JSON.stringify(context.messages).includes("Negative numbers remain negative") && readFileSync(join(dir, "answer.ts"), "utf8") === bad) {
+						const phaseId = JSON.stringify(context.messages).match(/Phase ID: ([\w-]+)/)?.[1];
+						message.content = tool("mixture_control", correctionAssessed
+							? { action: "delegate", phaseId, task: "Correct the negative-input defect in answer.ts", nextAction: "Negate negative inputs and verify abs(-2)", successCriteria: ["abs(-2) is 2"] }
+							: { action: "assess", phaseId, assessment: "stalled", evidence: "Independent review and the file both show negative inputs remain negative" });
+						correctionAssessed = true;
+					}
 					else message.content = [{ type: "text", text: "Implemented abs in answer.ts." }];
 				} else {
 					writerCalls++;
@@ -90,7 +100,7 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 			extensionFactories: [(pi: ExtensionAPI) => {
 				pi.registerProvider(provider);
 				pi.on("tool_result", event => { if (mode === "abort" && event.toolName === "write") void session!.abort(); });
-			}, (pi: ExtensionAPI) => createMixtureExtension(pi, initialRegistry)],
+			}, cleanFooter, (pi: ExtensionAPI) => createMixtureExtension(pi, initialRegistry)],
 		});
 		await loader.reload();
 		expect(loader.getExtensions().errors).toEqual([]);
@@ -98,7 +108,17 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		({ session } = await createAgentSession({ cwd: dir, agentDir: dir, resourceLoader: loader, settingsManager: settings,
 			sessionManager: SessionManager.inMemory(dir), modelRuntime: runtime, model: modelDefinition("default", preset, find), thinkingLevel: "high" }));
 		const errors: unknown[] = [];
-		await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
+		await session.bindExtensions({ mode: "tui", onError: error => errors.push(error), uiContext: {
+			notify() {}, setWorkingVisible() {},
+			setStatus(key: string, value?: string) {
+				if (value === undefined) statuses.delete(key); else statuses.set(key, value);
+				if (footer) displays.push(footer.render(400).join("\n"));
+			},
+			setFooter(factory: any) {
+				footer = factory({ requestRender() {} }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, { getExtensionStatuses: () => statuses });
+			},
+		} as any });
+		expect(footer!.render(400).join("\n")).toContain("lead · idle · $0.000");
 		await session.prompt("Implement abs in answer.ts, including negative inputs.");
 		expect(errors).toEqual([]);
 		expect(readFileSync(join(dir, "answer.ts"), "utf8")).toBe(good);
@@ -126,6 +146,15 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		expect(session.getSessionStats().tokens.total).toBe(total.totalTokens);
 		expect(session.getSessionStats().cost).toBeCloseTo(total.cost.total, 10);
 		expect(sessionCost(session.sessionManager.getEntries())).toBeCloseTo(total.cost.total, 10);
+		expect(displays.some(display => display.includes("lead · planning · $0.000"))).toBe(true);
+		expect(displays.some(display => display.includes("writer · working · $"))).toBe(true);
+		expect(footer!.render(400).join("\n")).toContain(`lead · idle · $${total.cost.total.toFixed(3)}`);
+		expect(footer!.render(400).join("\n")).toContain("mixture/default | high");
+		if (mode !== "abort") {
+			expect(displays.some(display => display.includes("reviewer · reviewing · $"))).toBe(true);
+			expect(displays.some(display => display.includes("lead · assessing · $"))).toBe(true);
+		}
+		if (mode === "correct") expect(requests.some(request => request.id.startsWith("reviewer") && request.display?.includes("writer · working"))).toBe(true);
 		const noNestedUsage = structuredClone(session.messages) as Message[];
 		for (const message of noNestedUsage) {
 			if (message.role === "toolResult") delete message.usage;

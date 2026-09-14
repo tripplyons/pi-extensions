@@ -26,7 +26,7 @@ test("native background writer retains its lease until explicit stop, then lead 
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const roles: string[] = [];
 		const steps: Array<{ actor: string; content: (context: Context) => AssistantMessage["content"] }> = [
-			{ actor: "lead", content: () => tool("delegate", "mixture_control", { action: "delegate", task: "Run and stop the bounded fixture job", successCriteria: ["The job is stopped before handoff"] }) },
+			{ actor: "lead", content: () => tool("delegate", "mixture_control", { action: "delegate", task: "Run and stop the bounded fixture job", nextAction: "Launch the fixture job, then stop it before reporting", successCriteria: ["The job is stopped before handoff"] }) },
 			{ actor: "writer", content: () => tool("start", "bash", { command: "printf started; read -r release; printf unexpected > output.txt", timeout: 0.1 }) },
 			{ actor: "writer", content: () => tool("blocked-report", "mixture_control", { action: "report", report: "Handing back early" }) },
 			{ actor: "writer", content: context => {

@@ -4,6 +4,7 @@ import type { Preset } from "./config.ts";
 import { applyDelta, cloneJson, createDelta, type DeltaOperation } from "./delta.ts";
 import { CONTROL, fingerprint, type Actor, type MixtureState } from "./session.ts";
 import { receiptIds } from "./usage.ts";
+import { validPhase } from "./phase.ts";
 
 export const CHECKPOINT = "mixture-checkpoint-v2";
 export const MAX_DELTA_CHAIN = 64;
@@ -51,6 +52,7 @@ function parseState(value: unknown): MixtureState {
 	for (const field of ["writerRetries", "writerRetryDelegation", "writerReportRejections", "writerBatches", "writerReviewsDelivered"]) assert(state[field] === undefined || count(state[field]), field);
 	assert(state.writerReviewSequences === undefined || Array.isArray(state.writerReviewSequences) && state.writerReviewSequences.every(count), "writer review sequences");
 	assert(state.writerProgress === undefined || Array.isArray(state.writerProgress) && state.writerProgress.every((value: unknown) => typeof value === "string"), "writer progress");
+	assert(state.phase === undefined || validPhase(state.phase), "phase tracking");
 	assert(state.coordination === undefined || object(state.coordination)
 		&& ["scheduledReviews", "deliveredReviews", "leadCheckpoints", "escalations"].every(field => count(state.coordination[field]))
 		&& Array.isArray(state.coordination.recent) && state.coordination.recent.length <= 64

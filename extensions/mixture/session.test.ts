@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { defaultConfig } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { newReviewer } from "./review.ts";
+import { delegatePhase } from "./phase.ts";
 import { CONTROL, MixtureSession, controlTool, newState } from "./session.ts";
 
 const call = (id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"][number] => ({ type: "toolCall", id, name, arguments: args });
@@ -44,7 +45,7 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 
 test("the lead defines the initial brief before the writer starts", async () => {
 	const h = harness([
-		[call("delegate", CONTROL, { action: "delegate", task: "Fix this without changing unrelated files", successCriteria: ["Relevant checks pass"] })],
+		[call("delegate", CONTROL, { action: "delegate", task: "Fix this without changing unrelated files", nextAction: "Inspect the failing behavior, fix it, and run focused checks", successCriteria: ["Relevant checks pass"] })],
 		content("Implemented and verified."),
 	]);
 	expect(h.session.resourceSessionIds("root")).toEqual([
@@ -59,7 +60,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	const delegated = await h.next();
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra"]);
 	const leadActions = (h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
-	expect(leadActions).toEqual(["delegate", "takeover"]);
+	expect(leadActions).toEqual(["delegate", "assess", "takeover"]);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
 	await h.finishControl(delegated);
 	expect(h.session.active).toBe("writer");
@@ -72,7 +73,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 
 test("routes session controls to the lead and arbitrary effectful tools to the lease holder", async () => {
 	const h = harness([
-		[call("delegate", CONTROL, { action: "delegate", task: "Optimize", successCriteria: ["Benchmark improves"] })],
+		[call("delegate", CONTROL, { action: "delegate", task: "Optimize", nextAction: "Run the benchmark and measure a bounded change", successCriteria: ["Benchmark improves"] })],
 		content("Working"),
 	]);
 	await h.finishControl(await h.next());
@@ -112,7 +113,7 @@ test("root compaction rebases only the lead context and preserves usage accounti
 
 test("delegates through normal tool calls, keeps distinct histories, and holds the final", async () => {
 	const h = harness([
-		[call("delegate", CONTROL, { action: "delegate", task: "Edit the fixture", constraints: ["Preserve unrelated files"], successCriteria: ["Test passes"] })],
+		[call("delegate", CONTROL, { action: "delegate", task: "Edit the fixture", nextAction: "Replace old with new and run the fixture test", constraints: ["Preserve unrelated files"], successCriteria: ["Test passes"] })],
 		[call("edit", "edit", { path: "fixture", edits: [{ oldText: "old", newText: "new" }] })],
 		content("Changed fixture. Test passed."),
 		content("Fixed and verified."),
@@ -174,6 +175,8 @@ test("the harness forces a lead checkpoint after three completed review cycles",
 	h.state.owner = "writer";
 	h.state.delegations = 1;
 	h.state.task = "Complete the fixture";
+	h.state.phase = delegatePhase(undefined, { task: "Complete the fixture", nextAction: "Read the fixture and fix it", successCriteria: ["Fixture passes"] }).phase;
+	const priorPhase = structuredClone(h.state.phase);
 	h.state.lead.messages.push({ role: "user", content: "[Harness writer-progress checkpoint, stale]\nobsolete", timestamp: 1 });
 	for (let revision = 1; revision <= 3; revision++) h.state.writerReviewSequences!.push(h.session.reviews.prime(0, `Cycle ${revision}`));
 	h.state.reviewers[0].pending = [];
@@ -191,6 +194,8 @@ test("the harness forces a lead checkpoint after three completed review cycles",
 	expect(h.session.performanceStats().checkpoints["writer-progress"].count).toBe(1);
 	expect(h.session.performanceStats().coordination).toMatchObject({ deliveredReviews: 3, leadCheckpoints: 1, escalations: 0 });
 	expect(h.state.coordination?.recent.map(event => event.kind)).toEqual(["feedback-delivered", "lead-checkpoint"]);
+	expect(h.state.phase).toEqual(priorPhase);
+	expect(JSON.stringify(h.calls[0].context.messages)).toContain(`Phase ID: ${priorPhase.id}`);
 });
 
 test("a rejected completion audit returns directly to the cheaper writer", async () => {
@@ -265,7 +270,7 @@ test("lead must explicitly acquire the writer lease", async () => {
 	expect(() => h.session.guard("good", "bash", { command: "printf ok" })).not.toThrow();
 });
 test("running jobs and unknown background status block writer handoff", async () => {
-	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })]]);
+	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Edit the fixture", successCriteria: ["Pass"] })]]);
 	const message = await h.next();
 	h.jobs.jobs.push({ id: "job1", status: "running", cwd: "/fixture", ownerSessionId: "root" });
 	await expect(h.finishControl(message)).rejects.toThrow("running jobs: job1");
@@ -277,15 +282,18 @@ test("running jobs and unknown background status block writer handoff", async ()
 	await h.finishControl(message);
 	expect(h.state.owner).toBe("writer");
 });
-test("lead-to-writer loops do not have a delegation cap", async () => {
+test("verified phase completions do not have a delegation cap", async () => {
 	const h = harness([]);
 	for (let index = 0; index < 12; index++) {
 		const delegate = `delegate-${index}`;
 		h.state.origins[delegate] = { actor: "lead", synthetic: true };
-		await h.session.control(delegate, { action: "delegate", task: `Pass ${index}`, successCriteria: ["Report"] });
+		await h.session.control(delegate, { action: "delegate", task: `Pass ${index}`, nextAction: "Perform the next independent pass", successCriteria: ["Report"] });
 		const report = `report-${index}`;
 		h.state.origins[report] = { actor: "writer", synthetic: true };
 		await h.session.control(report, { action: "report", report: `Completed pass ${index}` });
+		const assessment = `assess-${index}`;
+		h.state.origins[assessment] = { actor: "lead", synthetic: false };
+		await h.session.control(assessment, { action: "assess", phaseId: h.state.phase!.id, assessment: "complete", evidence: `Pass ${index} meets its acceptance criterion` });
 	}
 	expect(h.state.delegations).toBe(12);
 	expect(h.session.active).toBe("lead");
@@ -293,12 +301,13 @@ test("lead-to-writer loops do not have a delegation cap", async () => {
 
 test("the lead assesses steering before updating the persistent writer", async () => {
 	const h = harness([
-		[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+		[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Edit the fixture", successCriteria: ["Pass"] })],
 		[call("update", CONTROL, { action: "update", message: "Preserve the public API while continuing the current plan." })],
 		[call("read1", "read", { path: "test" })],
 		content("Done"),
 	]);
 	await h.finishControl(await h.next());
+	const originalPhase = structuredClone(h.state.phase!);
 	h.context.messages.push({ role: "user", content: "Do not change the public API", timestamp: 2 });
 	const update = await h.next();
 	expect(h.calls.at(-1)?.model).toBe("gpt-6-astra");
@@ -311,12 +320,19 @@ test("the lead assesses steering before updating the persistent writer", async (
 	expect(h.state.owner).toBe("writer");
 	const read = await h.next();
 	h.session.completeTurn([{ role: "toolResult", toolCallId: "read1", toolName: "read", content: content("fixture"), isError: false, timestamp: 1 }], read);
-	await h.next();
+	await h.finishControl(await h.next());
 	expect(h.state.lead.messages.filter(message => message.role === "user" && message.content === "Do not change the public API")).toHaveLength(1);
 	expect(JSON.stringify(h.state.writer.messages)).toContain("Preserve the public API");
 	expect(h.state.writer.messages.some(message => message.role === "user" && message.content === "Do not change the public API")).toBeFalse();
 	expect(h.state.brief).toContain("Preserve the public API");
 	expect(h.state.delegations).toBe(1);
+	expect(h.state.phase).toMatchObject({ id: originalPhase.id, attempt: 1, failedCorrections: 0 });
+	expect(h.state.phase!.assessment).toBeUndefined();
+	h.state.origins.assess = { actor: "lead", synthetic: false };
+	await h.session.control("assess", { action: "assess", phaseId: originalPhase.id, assessment: "progress", evidence: "The read resolved the fixture contents" });
+	h.state.origins.continue = { actor: "lead", synthetic: false };
+	await h.session.control("continue", { action: "delegate", phaseId: originalPhase.id, task: "Finish implementation", nextAction: "Edit the private implementation", successCriteria: ["Pass"] });
+	expect(h.state.brief).toContain("User steering (overrides conflicting earlier direction): Preserve the public API");
 });
 test("plain lead steering text is converted into an update instead of ending the writer phase", async () => {
 	const h = harness([content("Keep the current implementation, but preserve the public API."), content("Done")]);
@@ -334,7 +350,7 @@ test("plain lead steering text is converted into an update instead of ending the
 });
 
 test("failed writer and exhausted writer return incomplete reports to the lead", async () => {
-	const failed = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })], []], ["toolUse", "error"]);
+	const failed = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Edit the fixture", successCriteria: ["Pass"] })], []], ["toolUse", "error"]);
 	await failed.finishControl(await failed.next());
 	const report = await failed.next();
 	expect(report.usage.totalTokens).toBe(1);
@@ -342,7 +358,7 @@ test("failed writer and exhausted writer return incomplete reports to the lead",
 	expect(failed.session.active).toBe("lead");
 	expect(JSON.stringify(failed.state.lead.messages)).toContain("Writer failed");
 	expect(failed.session.performanceStats().checkpoints["writer-escalation"].count).toBe(1);
-	const limited = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })], [call("read", "read", { path: "test" })]]);
+	const limited = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Read the fixture before editing", successCriteria: ["Pass"] })], [call("read", "read", { path: "test" })]]);
 	limited.preset.limits.writerTurns = 1;
 	await limited.finishControl(await limited.next());
 	await limited.next();
@@ -354,7 +370,7 @@ test("failed writer and exhausted writer return incomplete reports to the lead",
 test("a zero-output transient writer failure is retried once before lead escalation", async () => {
 	for (const error of ["WebSocket error", "The operation was aborted due to timeout"]) {
 		const h = harness([
-			[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+			[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Edit the fixture", successCriteria: ["Pass"] })],
 			[],
 			content("Completed after retry."),
 		], ["toolUse", "error", "stop"], [undefined, error]);
@@ -370,7 +386,7 @@ test("a zero-output transient writer failure is retried once before lead escalat
 
 test("a delegation retries at most once and preserves completed writer work", async () => {
 	const h = harness([
-		[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+		[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Write the fixture", successCriteria: ["Pass"] })],
 		[],
 		[call("write", "write", { path: "fixture", content: "kept" })],
 		[],
