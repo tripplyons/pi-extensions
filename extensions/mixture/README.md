@@ -97,7 +97,9 @@ After `leadEveryReviews` completed scheduled review cycles, the harness snapshot
 current findings plus a bounded tool/status milestone digest at a safe tool
 boundary and transfers control to the lead without starting a redundant review.
 Completion reports, unresolved escalations and review failures can cause an
-earlier checkpoint. A completion report with supported concerns is withheld so
+earlier checkpoint. Completion and escalation handoffs include a bounded tail of
+recorded tool outcomes alongside the writer's report, so lead assessment does not
+depend on prose alone. A completion report with supported concerns is withheld so
 the reviewer can return them directly to the writer. After three rejected
 completion reports in one delegation, the harness forces lead assessment instead
 of allowing an unbounded local correction stall. A new delegation renews that

@@ -190,6 +190,8 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	expect(h.calls[0].context.systemPrompt).not.toContain("Run focused tests before reporting.");
 	expect(h.calls[1].context.tools?.map(tool => tool.name)).not.toContain("subagent");
 	expect(JSON.stringify(h.state.lead.messages)).toContain("Writer completion report");
+	expect(JSON.stringify(h.state.lead.messages)).toContain("[Recorded writer execution evidence]");
+	expect(JSON.stringify(h.state.lead.messages)).toContain("edit fixture: success — done");
 	expect(JSON.stringify(h.state.lead.messages)).not.toContain('"oldText"');
 	expect(JSON.stringify(h.state.writer.messages)).toContain("Preserve unrelated files");
 	expect(h.session.usage.totalTokens).toBe(4);
@@ -241,6 +243,21 @@ test("the harness forces a lead checkpoint after three completed review cycles",
 	expect(h.state.coordination?.recent.map(event => event.kind)).toEqual(["feedback-delivered", "lead-checkpoint"]);
 	expect(h.state.phase).toEqual(priorPhase);
 	expect(JSON.stringify(h.calls[0].context.messages)).toContain(`Phase ID: ${priorPhase.id}`);
+});
+
+test("completion handoffs include only the bounded tail of execution evidence", async () => {
+	const h = harness([]);
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	h.state.writerProgress = Array.from({ length: 20 }, (_, index) => `milestone-${index}-${"x".repeat(1_000)}`);
+	h.state.origins.report = { actor: "writer", synthetic: false };
+	await h.session.control("report", { action: "report", report: "Completed" });
+	const handoff = JSON.stringify(h.state.lead.messages);
+	expect(handoff).toContain("[Recorded writer execution evidence]");
+	expect(handoff).toContain("Earlier execution milestones omitted");
+	expect(handoff).not.toContain("milestone-0-");
+	expect(handoff).toContain("milestone-19-");
+	expect(handoff.length).toBeLessThan(15_000);
 });
 
 test("a rejected completion audit returns directly to the cheaper writer", async () => {
@@ -493,6 +510,9 @@ test("a delegation retries at most once and preserves completed writer work", as
 	expect(JSON.stringify(h.state.writer.messages)).toContain("written");
 	expect(JSON.stringify(h.state.writer.messages)).toContain("no checkout changes or completed writer history were reverted");
 	expect(escalation.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "escalate" } });
+	await h.finishControl(escalation);
+	expect(JSON.stringify(h.state.lead.messages)).toContain("[Recorded writer execution evidence]");
+	expect(JSON.stringify(h.state.lead.messages)).toContain("write fixture: success — written");
 });
 
 test("truncated tool batches and cancelled calls never grant a lease", async () => {

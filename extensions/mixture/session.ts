@@ -474,6 +474,9 @@ export class MixtureSession {
 		const content = (this.state.writerProgress ?? []).join("\n\n");
 		return content.length <= 12_000 ? content : `[Earlier execution milestones omitted from this checkpoint.]\n${content.slice(-12_000)}`;
 	}
+	private handoffEvidence() {
+		return `[Recorded writer execution evidence]\n${this.progressEvidence() || "- No completed writer tool batches were recorded."}`;
+	}
 	private prepareWriterTurn() {
 		if (this.state.active !== "writer" || !this.state.reviewers.length) return;
 		const sequences = this.state.writerReviewSequences ?? [];
@@ -641,7 +644,8 @@ export class MixtureSession {
 			}
 			case "report": {
 				if (!input.report?.trim()) throw new Error("Writer report is required");
-				const review = await this.reviewCheckpoint("writer-report", this.state.revision, `${this.currentScope()}\nWriter completion report:\n${input.report}`, signal, undefined, true);
+				const evidence = this.handoffEvidence();
+				const review = await this.reviewCheckpoint("writer-report", this.state.revision, `${this.currentScope()}\n${evidence}\nWriter completion report:\n${input.report}`, signal, undefined, true);
 				current();
 				this.state.reviewSummary = this.reviewSummary(review);
 				const serious = review.findings.filter(finding => finding.severity !== "nit");
@@ -651,7 +655,7 @@ export class MixtureSession {
 						this.reviews.markAlerted(review.findings);
 						this.recordCoordination("lead-checkpoint", this.state.reviewers[0]?.sequence);
 						this.removeNotes("lead", "[Harness writer-progress checkpoint", "[Writer completion requires lead assessment");
-						this.note("lead", `[Writer completion requires lead assessment, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness paused the writer after three rejected completion reports in this delegation. Assess this writer attempt with evidence. Prefer takeover if the same defects have repeated; any further delegation must pass the phase correction gate.`);
+						this.note("lead", `[Writer completion requires lead assessment, execution revision ${this.state.revision}]\n${input.report}\n\n${evidence}\n\n${this.state.reviewSummary}\n\nThe harness paused the writer after three rejected completion reports in this delegation. Assess this writer attempt with evidence. Prefer takeover if the same defects have repeated; any further delegation must pass the phase correction gate.`);
 						this.state.active = "lead";
 						this.state.owner = undefined;
 						result = `Harness transferred the third rejected completion report to the lead.\n${this.state.reviewSummary}`;
@@ -664,7 +668,7 @@ export class MixtureSession {
 				} else {
 					this.reviews.markAlerted(review.findings);
 					this.removeNotes("lead", "[Harness writer-progress checkpoint", "[Writer completion report");
-					this.note("lead", `[Writer completion report, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness accepted this lead checkpoint, not phase completion. Assess the attempt with phaseId and evidence before another delegation; do not repeat specific non-conflicting reviewer reads.`);
+					this.note("lead", `[Writer completion report, execution revision ${this.state.revision}]\n${input.report}\n\n${evidence}\n\n${this.state.reviewSummary}\n\nThe harness accepted this lead checkpoint, not phase completion. Assess the attempt with phaseId and evidence before another delegation; do not repeat specific non-conflicting reviewer reads.`);
 					this.state.active = "lead";
 					this.state.owner = undefined;
 					result = `Harness transferred the completed writer phase to the lead${review.warnings.length ? " with incomplete-review warnings" : ""}.\n${this.state.reviewSummary}`;
@@ -673,13 +677,14 @@ export class MixtureSession {
 			}
 			case "escalate": {
 				if (!input.report?.trim()) throw new Error("Writer escalation is required");
-				const review = await this.reviewCheckpoint("writer-escalation", this.state.revision, `${this.currentScope()}\nWriter escalation:\n${input.report}`, signal);
+				const evidence = this.handoffEvidence();
+				const review = await this.reviewCheckpoint("writer-escalation", this.state.revision, `${this.currentScope()}\n${evidence}\nWriter escalation:\n${input.report}`, signal);
 				current();
 				this.recordCoordination("writer-escalation");
 				this.state.reviewSummary = this.reviewSummary(review);
 				this.reviews.markAlerted(review.findings);
 				this.removeNotes("lead", "[Harness writer-progress checkpoint", "[Writer escalation");
-				this.note("lead", `[Writer escalation, execution revision ${this.state.revision}]\n${input.report}\n\n${this.state.reviewSummary}\n\nThe harness transferred this unresolved decision to the lead. Assess the attempt and record a concrete blocker if work cannot proceed; do not reset the phase by renaming it.`);
+				this.note("lead", `[Writer escalation, execution revision ${this.state.revision}]\n${input.report}\n\n${evidence}\n\n${this.state.reviewSummary}\n\nThe harness transferred this unresolved decision to the lead. Assess the attempt and record a concrete blocker if work cannot proceed; do not reset the phase by renaming it.`);
 				this.state.active = "lead";
 				this.state.owner = undefined;
 				result = `Harness transferred the writer escalation to the lead.\n${this.state.reviewSummary}`;
