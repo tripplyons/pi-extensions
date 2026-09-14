@@ -1,12 +1,13 @@
+import { stripVTControlCharacters } from "node:util";
 import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSelectListTheme, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, Input, Key, matchesKey, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { defaultConfig, parseConfig, type MixtureConfig, type RoleConfig } from "./config.ts";
 import { validatePreset } from "./provider.ts";
 import { phaseSummary } from "./phase.ts";
-import type { MixtureSession } from "./session.ts";
+import type { ControlInput, MixtureSession } from "./session.ts";
 
-const clean = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+const clean = (text: string) => stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 export function compactStatus(session: MixtureSession, compacting = false): string {
 	const activity = compacting ? "compacting" : session.activity;
 	const actor = activity === "reviewing" ? "reviewer" : session.active;
@@ -39,11 +40,42 @@ export function inspection(session: MixtureSession): string {
 	if (state.warning) lines.push("", state.warning);
 	return clean(lines.join("\n"));
 }
+export function controlCall(args: Partial<ControlInput>, expanded: boolean, theme: Theme) {
+	const value = (input: unknown) => typeof input === "string" ? clean(input).trim() : "";
+	const action = value(args.action).replace(/\s+/g, " ") || "coordination";
+	const title = `Mixture ${action}`;
+	if (expanded) {
+		const fields: [string, unknown][] = [
+			["Next action", args.nextAction], ["Message", args.message],
+			["Assessment", args.assessment], ["Evidence", args.evidence], ["Blocker", args.blocker],
+			["Task", args.task], ["Accepted evidence", args.acceptedEvidence],
+			["Constraints", args.constraints], ["Success criteria", args.successCriteria],
+			["Phase ID", args.phaseId], ["Changed prerequisite", args.changedPrerequisite?.change],
+			["Prerequisite evidence", args.changedPrerequisite?.evidence],
+			["Report", args.report], ["Checkpoint", args.checkpoint],
+		];
+		const details = fields.flatMap(([label, input]) => {
+			const content = Array.isArray(input) ? input.map(value).filter(Boolean).map(item => `- ${item}`).join("\n") : value(input);
+			return content ? [`${label}:\n${content}`] : [];
+		});
+		return controlCard([title, ...details].join("\n\n"), true, theme);
+	}
+	const message = action === "delegate" ? value(args.nextAction) || value(args.task)
+		: action === "update" || action === "takeover" ? value(args.message)
+		: action === "assess" ? [value(args.assessment), value(args.evidence)].filter(Boolean).join(": ") : "";
+	const preview = message.replace(/\s+/g, " ");
+	return { invalidate() {}, render(width: number) {
+		const lines = [truncateToWidth(theme.fg("toolTitle", title), width)];
+		if (preview) lines.push(truncateToWidth(theme.fg("muted", preview), Math.min(width, 160), "…"));
+		return lines;
+	} };
+}
 export function controlCard(content: string, expanded: boolean, theme: Theme) {
 	const body = clean(content);
 	const text = new Text(expanded ? body : theme.fg("muted", body.split("\n")[0]), 0, 0);
 	return { invalidate() { text.invalidate(); }, render(width: number) {
-		return expanded ? text.render(width) : [truncateToWidth(text.render(Math.max(width, 1))[0] ?? "", width)];
+		const lines = text.render(Math.max(width, 1));
+		return expanded ? lines.map(line => truncateToWidth(line, width)) : [truncateToWidth(lines[0] ?? "", width)];
 	} };
 }
 export class Inspector {

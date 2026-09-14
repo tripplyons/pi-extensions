@@ -2,6 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { stripVTControlCharacters } from "node:util";
+import { initTheme, InteractiveMode } from "@earendil-works/pi-coding-agent";
+import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { createAssistantMessageEventStream, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createMixtureExtension } from "./index.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
@@ -17,6 +20,7 @@ const harness = async (config?: string, fast?: boolean) => {
 	if (config) writeFileSync(join(dir, "mixture.json"), config);
 	const commands = new Map<string, any>(); const handlers = new Map<string, any>(); const providers: Provider[] = []; const tools: string[] = [];
 	const roleOptions: Array<SimpleStreamOptions & { serviceTier?: string }> = [];
+	const definitions = new Map<string, any>();
 	let calls = 0;
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost }),
@@ -29,7 +33,7 @@ const harness = async (config?: string, fast?: boolean) => {
 	};
 	const pi = {
 		registerCommand: (name: string, value: any) => commands.set(name, value),
-		registerTool: (tool: any) => tools.push(tool.name),
+		registerTool: (tool: any) => { tools.push(tool.name); definitions.set(tool.name, tool); },
 		on: (event: string, handler: any) => handlers.set(event, handler),
 		registerProvider: (provider: Provider) => providers.push(provider),
 		unregisterProvider: (id: string) => { const index = providers.findIndex(provider => provider.id === id); if (index >= 0) providers.splice(index, 1); },
@@ -38,7 +42,7 @@ const harness = async (config?: string, fast?: boolean) => {
 		events: { emit(name: string, value: { enabled?: boolean }) { if (name === "fast:query" && fast !== undefined) value.enabled = fast; } },
 	};
 	await createMixtureExtension(pi as any, registry);
-	return { dir, commands, handlers, providers, tools, registry, roleOptions, get calls() { return calls; } };
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -50,6 +54,52 @@ test("factory registers a native model without starting inference or old tools",
 	await h.handlers.get("session_start")({}, { modelRegistry: h.registry, thinkingLevel: "high", model: { provider: "ordinary" }, ui: { notify() {} } });
 	expect(h.calls).toBe(0);
 });
+test("native Pi rows preserve lead previews through streaming, expansion and history rebuilds", async () => {
+	initTheme("dark", false);
+	const h = await harness();
+	const args = { action: "delegate", task: "Repair the fixture", nextAction: `Fix the known defect. ${"Check the edge case. ".repeat(20)}FINAL_ACTION_DETAIL`, constraints: ["Keep unrelated edits"] };
+	const result = { role: "toolResult", toolCallId: "preview", toolName: "mixture_control", content: [{ type: "text", text: "Delegated to writer.\nFull result details." }], details: { usageSummary: "Per-role usage detail" }, isError: false };
+	const call = (arguments_: any) => ({ role: "assistant", content: [{ type: "toolCall", id: "preview", name: "mixture_control", arguments: arguments_ }], stopReason: "toolUse" });
+	const mode = {
+		chatContainer: new Container(), pendingTools: new Map(), toolOutputExpanded: false,
+		settingsManager: { getShowCacheMissNotices: () => false, getShowImages: () => false, getImageWidthCells: () => 60 },
+		sessionManager: { getCwd: () => h.dir }, ui: { requestRender() {} },
+		getRegisteredToolDefinition: (name: string) => h.definitions.get(name),
+		addMessageToChat() {}, maybeShowAssistantDiagnostics() {},
+	};
+	const rebuild = (entries: any[]) => {
+		mode.chatContainer.clear();
+		(InteractiveMode.prototype as any).renderSessionItems.call(mode, entries);
+	};
+	const output = () => stripVTControlCharacters(mode.chatContainer.render(240).join("\n"));
+	rebuild([call({ action: "delegate", nextAction: "Fix the" })]);
+	expect(output()).toContain("Fix the");
+	const component = mode.pendingTools.get("preview");
+	component.updateArgs(args); component.setArgsComplete(); component.markExecutionStarted();
+	component.updateResult(result);
+	expect(output()).toContain("Fix the known defect.");
+	expect(output()).toContain("Delegated to writer.");
+	expect(output()).not.toContain("FINAL_ACTION_DETAIL");
+	expect(output()).not.toContain("Per-role usage detail");
+	component.setExpanded(true);
+	expect(output()).toContain("FINAL_ACTION_DETAIL");
+	expect(output()).toContain("Keep unrelated edits");
+	expect(output()).toContain("Per-role usage detail");
+	expect(output()).toContain("Full result details.");
+	component.setExpanded(false);
+	expect(output()).not.toContain("FINAL_ACTION_DETAIL");
+	for (let reload = 0; reload < 2; reload++) {
+		rebuild([call(args), result]);
+		expect(output()).toContain("Fix the known defect.");
+		expect(output()).toContain("Delegated to writer.");
+		expect(output()).not.toContain("FINAL_ACTION_DETAIL");
+		expect(mode.chatContainer.render(24).every(line => visibleWidth(line) <= 24)).toBe(true);
+	}
+	rebuild([call(args), { ...result, isError: true, content: [{ type: "text", text: "Rejected: writer lease is still held." }] }]);
+	expect(output()).toContain("Rejected: writer lease is still held.");
+	expect(h.calls).toBe(0);
+});
+
 test("invalid config retains commands but registers no provider and writes no replacement", async () => {
 	const h = await harness('{"models":["old/model"]}');
 	expect(h.providers).toHaveLength(0);

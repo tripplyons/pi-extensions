@@ -9,7 +9,7 @@ import { cloneJson } from "./delta.ts";
 import { releaseProviderSessions } from "./events.ts";
 import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
-import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
+import { compactStatus, configure, controlCall, controlCard, inspection, Inspector } from "./ui.ts";
 import { receiptIds, tagReceipts } from "./usage.ts";
 
 export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry) {
@@ -144,7 +144,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			const result = await active.control(id, input);
 			return { ...result, details: { ...result.details, usageSummary: inspection(active) } };
 		},
-		renderCall: (args, theme) => controlCard(`Mixture ${args.action ?? "coordination"}`, false, theme),
+		renderCall: (args, theme, context) => controlCall(args, context.expanded, theme),
 		renderResult: (result, options, theme) => {
 			const summary = (result.details as { usageSummary?: string } | undefined)?.usageSummary;
 			return controlCard(`${result.content.filter(block => block.type === "text").map(block => block.text).join("\n")}${options.expanded && typeof summary === "string" ? `\n\n${summary}` : ""}`, options.expanded, theme);

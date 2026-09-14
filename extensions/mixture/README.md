@@ -292,7 +292,15 @@ Neither missing usage nor zero configured model prices prove that a call was fre
   Inspection includes the durable phase assessment, blocker and correction count,
   per-role request latency, and separate periodic, escalation, completion-report
   and final-review wait totals.
-- Expand coordination tool cards for findings and per-role usage.
+- Collapsed lead tool cards show the action plus one message-preview line:
+  `delegate` shows the next action (or the task on older calls), `update` shows
+  the lead's message, and `assess` shows the assessment and its evidence.
+  Previews flatten whitespace and stop at 160 display columns or the available
+  width, with an ellipsis when clipped. The tool's result or error remains below.
+- Expand a coordination card to read the full handoff fields, accepted evidence,
+  constraints and completion checks, followed by findings and per-role usage.
+  Previews work while arguments stream and when session history is restored.
+  Other tools' rendering is unchanged.
 - The Mixture footer section shows only `role · activity · $cost`, for example
   `writer · working · $0.024`. The rest of clean-footer stays unchanged: project,
   model, thinking, context pressure, session cost and other extension statuses.

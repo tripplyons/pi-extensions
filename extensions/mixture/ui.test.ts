@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { defaultConfig } from "./config.ts";
 import type { Registry } from "./provider.ts";
 import { newReviewer } from "./review.ts";
 import { MixtureSession, newState } from "./session.ts";
-import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
+import { compactStatus, configure, controlCall, controlCard, inspection, Inspector } from "./ui.ts";
 
 const theme = { fg: (_color: string, text: string) => text } as Theme;
 
@@ -24,6 +25,51 @@ test("control cards and the inspector stay within narrow terminals and support s
 	expect(view.render(24).length).toBeLessThanOrEqual(8);
 	view.handleInput("\x1b");
 	expect(closed).toBe(true);
+});
+
+test("collapsed lead cards show one bounded message line and expand the full handoff", () => {
+	const args = {
+		action: "delegate", phaseId: "phase-123", task: "Repair the parser",
+		nextAction: `Fix the boundary case.\n\t${"Verify Unicode input. ".repeat(20)}FINAL_CHECK`,
+		acceptedEvidence: ["The parser regression is reproduced"], constraints: ["Preserve human edits"],
+		successCriteria: ["The regression test passes"],
+		changedPrerequisite: { change: "Authorization received", evidence: "The user approved this repair" },
+	};
+	const before = JSON.stringify(args);
+	const collapsed = controlCall(args, false, theme);
+	for (const width of [0, 1, 8, 24, 80, 160, 240]) {
+		const lines = collapsed.render(width);
+		expect(lines).toHaveLength(2);
+		expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
+		expect(visibleWidth(lines[1])).toBeLessThanOrEqual(160);
+		expect(lines.join("\n")).not.toContain("FINAL_CHECK");
+	}
+	expect(collapsed.render(240)[0]).toBe("Mixture delegate");
+	expect(collapsed.render(240)[1]).toStartWith("Fix the boundary case. Verify Unicode input.");
+	expect(stripVTControlCharacters(collapsed.render(240)[1])).toEndWith("…");
+	const expanded = controlCall(args, true, theme).render(80);
+	expect(expanded.every(line => visibleWidth(line) <= 80)).toBe(true);
+	for (const expected of ["FINAL_CHECK", args.task, args.phaseId, ...args.acceptedEvidence, ...args.constraints, ...args.successCriteria, ...Object.values(args.changedPrerequisite)]) expect(expanded.join("\n")).toContain(expected);
+	expect(JSON.stringify(args)).toBe(before);
+});
+
+test("lead updates and assessments preview safely while streaming and on restored legacy calls", () => {
+	expect(controlCall({ action: "update", message: "Keep\n\tthe existing design" }, false, theme).render(80)).toEqual(["Mixture update", "Keep the existing design"]);
+	expect(controlCall({ action: "assess", assessment: "stalled", evidence: "Only the same reads were repeated" }, false, theme).render(80)).toEqual(["Mixture assess", "stalled: Only the same reads were repeated"]);
+	expect(controlCall({ action: "delegate", task: "Legacy task without nextAction" }, false, theme).render(80)).toEqual(["Mixture delegate", "Legacy task without nextAction"]);
+	expect(controlCall({}, false, theme).render(80)).toEqual(["Mixture coordination"]);
+	expect(controlCall({ action: "delegate", nextAction: "  " }, false, theme).render(80)).toEqual(["Mixture delegate"]);
+	expect(controlCall({ action: "delegate", nextAction: { incomplete: true }, constraints: [null, "Keep this"] } as any, true, theme).render(80).join("\n")).toContain("Keep this");
+	expect(controlCall({ action: "report", report: "Writer report" }, false, theme).render(80)).toEqual(["Mixture report"]);
+	expect(controlCall({ action: "report", report: "Writer report" }, true, theme).render(80).join("\n")).toContain("Writer report");
+	const message = "\x1b]0;hidden title\x07\x1b[31m检查👩‍💻 café\x1b[0m";
+	for (const expanded of [false, true]) for (const width of [1, 8, 24, 80]) {
+		const lines = controlCall({ action: "update", message }, expanded, theme).render(width);
+		expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
+		expect(lines.join("\n")).not.toContain("\x1b]");
+		expect(lines.join("\n")).not.toContain("\x1b[31m");
+		expect(lines.join("\n")).not.toContain("hidden title");
+	}
 });
 
 test("compact status follows handoffs, recorded blockers, takeover and idle without hiding inspection data", async () => {
