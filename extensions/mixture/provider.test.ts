@@ -51,6 +51,50 @@ test("role calls use effective provider auth, endpoint, callbacks and thinking",
 	expect(seen?.options).toMatchObject({ apiKey: "role-secret", headers: { "x-role": "yes" }, env: { REGION: "local" }, reasoning: "high", serviceTier: "priority", maxTokens: 20_000, maxRetries: 0 });
 	expect(seen?.options.onPayload).toBe(callback);
 });
+test("writer idle deadlines reset on stream activity but remain absolutely bounded", async () => {
+	let completedSignal: AbortSignal | undefined;
+	const activeRegistry: Registry = {
+		find: () => model(), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
+		getProvider: () => ({ streamSimple: (_model, _context, options) => {
+			completedSignal = options?.signal;
+			return (async function* () {
+				const partial = { ...message(), content: [], stopReason: "pending" as const };
+				yield { type: "start", partial };
+				for (let index = 0; index < 4; index++) { await Bun.sleep(12); yield { type: "text_delta", contentIndex: 0, delta: "x", partial }; }
+				yield { type: "done", reason: "stop", message: { ...message(), content: [{ type: "text", text: "complete" }], stopReason: "stop" } };
+			})() as any;
+		} }) as any,
+	};
+	const active = await callRole(activeRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 200, idleTimeoutMs: 25 });
+	expect(active.stopReason).toBe("stop");
+	await Bun.sleep(35);
+	expect(completedSignal?.aborted).toBe(false);
+
+	const stalledRegistry: Registry = {
+		find: () => model(), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
+		getProvider: () => ({ streamSimple: () => (async function* () {
+			const partial = { ...message(), content: [], stopReason: "pending" as const };
+			yield { type: "start", partial };
+			await Bun.sleep(80);
+			yield { type: "done", reason: "stop", message: message() };
+		})() as any }) as any,
+	};
+	const stalled = await callRole(stalledRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 200, idleTimeoutMs: 20 });
+	expect(stalled.stopReason).toBe("error");
+	expect(stalled.errorMessage).toContain("provider idle timeout");
+
+	const boundedRegistry: Registry = {
+		find: () => model(), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
+		getProvider: () => ({ streamSimple: (_model, _context, options) => (async function* () {
+			const partial = { ...message(), content: [], stopReason: "pending" as const };
+			while (!options?.signal?.aborted) { await Bun.sleep(10); yield { type: "text_delta", contentIndex: 0, delta: "x", partial }; }
+		})() as any }) as any,
+	};
+	const bounded = await callRole(boundedRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 45, idleTimeoutMs: 25 });
+	expect(bounded.stopReason).toBe("error");
+	expect(bounded.errorMessage).not.toContain("provider idle timeout");
+});
+
 test("timeout bounds auth and never dispatches after cancellation", async () => {
 	let calls = 0;
 	const registry: Registry = {

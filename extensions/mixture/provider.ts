@@ -129,11 +129,20 @@ export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 }
 
 export async function callRole(registry: Registry, id: string, context: Context, thinking: ModelThinkingLevel,
-	options: RoleStreamOptions & { timeoutMs: number }, onPartial?: (message: AssistantMessage) => void): Promise<AssistantMessage> {
+	options: RoleStreamOptions & { timeoutMs: number; idleTimeoutMs?: number }, onPartial?: (message: AssistantMessage) => void): Promise<AssistantMessage> {
 	const model = resolveModel(id, registry.find.bind(registry));
 	if (!getSupportedThinkingLevels(model).includes(thinking)) throw new Error(`${id} does not support thinking ${thinking}`);
-	const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(options.timeoutMs)]);
+	const idle = options.idleTimeoutMs === undefined ? undefined : new AbortController();
+	let idleTimer: NodeJS.Timeout | undefined;
+	const resetIdle = () => {
+		if (!idle || options.idleTimeoutMs === undefined) return;
+		if (idleTimer) clearTimeout(idleTimer);
+		idleTimer = setTimeout(() => idle.abort(new Error(`${id}: provider idle timeout after ${options.idleTimeoutMs}ms`)), options.idleTimeoutMs);
+		idleTimer.unref?.();
+	};
+	const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(options.timeoutMs), ...(idle ? [idle.signal] : [])]);
 	let latest: AssistantMessage | undefined;
+	resetIdle();
 	try {
 		signal.throwIfAborted();
 		const provider = registry.getProvider(model.provider);
@@ -157,6 +166,7 @@ export async function callRole(registry: Registry, id: string, context: Context,
 			let terminal: AssistantMessage | undefined;
 			for await (const event of source) {
 				if (signal.aborted) break;
+				resetIdle();
 				latest = "partial" in event ? event.partial : event.type === "done" ? event.message : event.error;
 				onPartial?.(latest);
 				if (event.type === "done") terminal = event.message;
@@ -168,5 +178,7 @@ export async function callRole(registry: Registry, id: string, context: Context,
 		return await abortable(consume(), signal);
 	} catch (error) {
 		return { ...failureMessage(model, error, options.signal?.aborted), usage: latest?.usage ?? emptyUsage() };
+	} finally {
+		if (idleTimer) clearTimeout(idleTimer);
 	}
 }

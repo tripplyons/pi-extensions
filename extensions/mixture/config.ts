@@ -13,6 +13,7 @@ export interface RoleConfig {
 export const DEFAULT_LIMITS = {
 	requestTimeoutMs: 240_000,
 	writerRequestTimeoutMs: 240_000,
+	writerIdleTimeoutMs: 240_000,
 	writerTurns: 32,
 	reviewEveryBatches: 3,
 	leadEveryReviews: 3,

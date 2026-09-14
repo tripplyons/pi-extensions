@@ -148,7 +148,8 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | Field | Default | Scope |
 | --- | ---: | --- |
 | `requestTimeoutMs` | 240000 | Each lead or reviewer request, including auth |
-| `writerRequestTimeoutMs` | 240000 | Each writer request, including auth |
+| `writerRequestTimeoutMs` | 240000 | Absolute ceiling for each writer request, including auth |
+| `writerIdleTimeoutMs` | 240000 | Writer silence deadline, reset by provider stream activity |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
 | `reviewEveryBatches` | 3 | Completed writer tool batches per scheduled background review |
 | `leadEveryReviews` | 3 | Scheduled review cycles per forced lead checkpoint |
@@ -160,7 +161,8 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | `maxCostUsd` | unset | Estimated admission cap for the role-state lifetime |
 
 Output limits are clamped to each provider's model limit. Steering does not reset
-request limits. Lead-to-writer delegations, reviewer batches across checkpoints,
+request limits. Writer stream activity renews only the idle deadline; the absolute
+writer ceiling and outer cancellation remain authoritative. Lead-to-writer delegations, reviewer batches across checkpoints,
 and final-answer correction cycles have no cumulative cap, so iterative loops can
 continue until completion or cancellation. In-flight estimated costs are reserved
 before admitting another request, including concurrent reviewers. Estimates use

@@ -383,7 +383,8 @@ export class MixtureSession {
 			const thinking: ModelThinkingLevel = role?.thinking ?? this.leadThinking ?? options.reasoning ?? (model.reasoning ? "high" : "off");
 			const message = await callRole(this.registry, id, context, thinking, {
 				...options, signal: AbortSignal.any([this.signal, ...(options.signal ? [options.signal] : [])]),
-				timeoutMs: actor === "writer" ? this.preset.limits.writerRequestTimeoutMs : this.preset.limits.requestTimeoutMs, maxTokens,
+				timeoutMs: actor === "writer" ? this.preset.limits.writerRequestTimeoutMs : this.preset.limits.requestTimeoutMs,
+				...(actor === "writer" ? { idleTimeoutMs: this.preset.limits.writerIdleTimeoutMs } : {}), maxTokens,
 				sessionId: `${options.sessionId ?? this.state.id}/mixture/${this.state.id}/${label}`,
 			});
 			addUsage(state.usage, message.usage);
