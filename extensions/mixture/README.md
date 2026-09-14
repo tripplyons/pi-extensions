@@ -90,7 +90,8 @@ the writer's private history automatically. The writer corrects supported findin
 without a lead round trip, and later review must explicitly recheck them. New user
 steering pauses inference at a model boundary for lead assessment, then the lead
 injects one consolidated update into the existing writer context without starting
-a replacement phase.
+a replacement phase. Updates are retained separately from standing constraints;
+the latest eight remain in phase state and later continuation briefs.
 
 After `leadEveryReviews` completed scheduled review cycles, the harness snapshots
 current findings plus a bounded tool/status milestone digest at a safe tool
@@ -102,7 +103,11 @@ completion reports in one delegation, the harness forces lead assessment instead
 of allowing an unbounded local correction stall. A new delegation renews that
 local report counter, but not the phase's failed-correction history described below.
 Models supply briefs, work and judgments, but cannot change the review cadence or
-bypass lease and handoff checks. If the lead takes over editing, each
+bypass lease and handoff checks. The lead owns correctness-critical acceptance-oracle
+design, including test cases, production queries, evaluation prompts, rubrics,
+graders, metrics, thresholds, sampling rules, and scoring or pipeline configuration.
+The writer may implement or execute a settled recipe, but must escalate before
+materially changing what counts as success. Reviewers flag unauthorized oracle changes. If the lead takes over editing, each
 mutation batch requests a review as well; requests coalesce while the reviewer is
 busy so final review can overlap the lead's correction work.
 
@@ -144,7 +149,8 @@ them and add only distinct entries. An optional `immediateAction` names the firs
 writer tool and explains why it must run before other tool exploration. A mismatched
 tool call is blocked, while writer reporting and escalation remain available.
 The original phase outcome and acceptance remain in every continuation brief,
-even when the next step is smaller. User steering is retained across continuations.
+even when the next step is smaller. User steering is retained across continuations
+as bounded attempt-tagged updates, not promoted into permanent constraints.
 
 For example, the lead can start with:
 

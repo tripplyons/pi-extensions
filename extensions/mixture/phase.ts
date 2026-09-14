@@ -5,6 +5,7 @@ import { Type, type Static } from "typebox";
 export const ASSESSMENTS = ["progress", "stalled", "blocked", "complete", "superseded"] as const;
 export type Assessment = typeof ASSESSMENTS[number];
 const MAX_CONSTRAINTS = 16;
+const MAX_UPDATES = 8;
 const evidenceSchema = () => Type.String({ minLength: 1, maxLength: 2_000 });
 const immediateActionSchema = Type.Object({
 	tool: Type.String({ minLength: 1, maxLength: 120 }),
@@ -33,6 +34,7 @@ export interface PhaseRecord {
 	blocker?: string;
 }
 export interface ImmediateAction { tool: string; description: string }
+export interface PhaseUpdate { attempt: number; message: string }
 export interface PhaseState {
 	id: string;
 	outcome: string;
@@ -44,6 +46,7 @@ export interface PhaseState {
 	assessment?: Assessment;
 	blocker?: string;
 	history: PhaseRecord[];
+	updates?: PhaseUpdate[];
 	legacy?: boolean;
 }
 export const closedPhase = (phase: PhaseState) => phase.assessment === "complete" || phase.assessment === "superseded";
@@ -68,6 +71,19 @@ function mergeConstraints(current: string[], additions: string[]) {
 function append(phase: PhaseState, record: PhaseRecord) {
 	phase.history.push(record);
 	if (phase.history.length > 8) phase.history.splice(0, phase.history.length - 8);
+}
+export function recordPhaseUpdate(phase: PhaseState | undefined, message: unknown): PhaseState {
+	if (!phase || closedPhase(phase)) throw new Error("Writer updates require an open phase");
+	nonempty(message, "Writer update message", 4_000);
+	const updated = structuredClone(phase);
+	const updates = updated.updates ??= [];
+	updates.push({ attempt: updated.attempt, message: message.trim() });
+	if (updates.length > MAX_UPDATES) updates.splice(0, updates.length - MAX_UPDATES);
+	return updated;
+}
+export function phaseUpdatesSummary(phase: PhaseState | undefined, attempt?: number): string {
+	const updates = phase?.updates?.filter(update => attempt === undefined || update.attempt === attempt) ?? [];
+	return updates.length ? `Lead updates during this phase:\n${updates.map(update => `- Attempt ${update.attempt}: ${update.message}`).join("\n")}` : "";
 }
 function currentPhase(phase: PhaseState | undefined, id: unknown): asserts phase is PhaseState {
 	if (!phase || id !== phase.id) throw new Error(`Use the current phaseId${phase ? ` ${phase.id}` : "; no phase has been delegated"}`);
@@ -131,7 +147,8 @@ export function delegatePhase(previous: PhaseState | undefined, input: PhaseInpu
 	}
 	const bullets = (items: string[]) => items.length ? items.map(item => `- ${item}`).join("\n") : "- None recorded.";
 	const immediate = input.immediateAction ? `\n\nRequired first tool:\n- ${input.immediateAction.tool}: ${input.immediateAction.description.trim()}` : "";
-	const brief = `[Mixture phase ${phase.id}, attempt ${phase.attempt}${phase.correction ? ", correction" : ""}]\nPhase outcome: ${phase.outcome}\n\nNext action:\n${input.nextAction.trim()}${immediate}\n\nCurrent task:\n${input.task.trim()}\n\nAccepted evidence / do not repeat without conflicting evidence:\n${bullets(input.acceptedEvidence ?? [])}\n\nStanding constraints:\n${bullets(phase.constraints)}\n\nPhase success criteria (not replaced by this step):\n${bullets(phase.successCriteria)}\n\nCurrent step completion checks:\n${bullets(input.successCriteria)}`;
+	const updates = phaseUpdatesSummary(phase);
+	const brief = `[Mixture phase ${phase.id}, attempt ${phase.attempt}${phase.correction ? ", correction" : ""}]\nPhase outcome: ${phase.outcome}\n\nNext action:\n${input.nextAction.trim()}${immediate}\n\nCurrent task:\n${input.task.trim()}\n\nAccepted evidence / do not repeat without conflicting evidence:\n${bullets(input.acceptedEvidence ?? [])}\n\nStanding constraints:\n${bullets(phase.constraints)}${updates ? `\n\n${updates}` : ""}\n\nPhase success criteria (not replaced by this step):\n${bullets(phase.successCriteria)}\n\nCurrent step completion checks:\n${bullets(input.successCriteria)}`;
 	return { phase, brief };
 }
 
@@ -139,7 +156,8 @@ export function adoptLegacyPhase(brief: string): PhaseState {
 	return { id: randomUUID(), outcome: brief, successCriteria: [], constraints: [], attempt: 1, correction: false, failedCorrections: 0, history: [], legacy: true };
 }
 export function phaseSummary(phase: PhaseState, lead = true): string {
-	return `[Harness phase tracking]\nPhase ID: ${phase.id}\nOutcome: ${phase.outcome}\nPhase success criteria: ${phase.successCriteria.join("; ") || "See legacy outcome above"}\nStanding constraints: ${phase.constraints.join("; ") || "None recorded"}\nAttempt ${phase.attempt}: ${phase.correction ? "corrective" : "ordinary"}; assessment: ${phase.assessment ?? "required at next lead handoff"}; failed corrective attempts: ${phase.failedCorrections}/2.${phase.legacy ? " Earlier correction history is unknown (legacy checkpoint); counts cover observed attempts only." : ""}${phase.blocker ? `\nBlocker: ${phase.blocker}` : ""}\nRecent assessments:\n${phase.history.map(record => `- Attempt ${record.attempt} ${record.kind}: ${record.change ? `${record.change}: ` : ""}${record.evidence}${record.blocker ? `; blocker: ${record.blocker}` : ""}`).join("\n") || "- None recorded."}${lead ? "\nAssess the attempt once using execution/review evidence before delegating a continuation with this phaseId. Two failed corrective attempts block equivalent delegation. Only an evidence-backed changed prerequisite can reopen stalled work; renaming or urgency is not a change. Complete/supersede explicitly before starting another phase." : ""}`;
+	const updates = phaseUpdatesSummary(phase);
+	return `[Harness phase tracking]\nPhase ID: ${phase.id}\nOutcome: ${phase.outcome}\nPhase success criteria: ${phase.successCriteria.join("; ") || "See legacy outcome above"}\nStanding constraints: ${phase.constraints.join("; ") || "None recorded"}${updates ? `\n${updates}` : ""}\nAttempt ${phase.attempt}: ${phase.correction ? "corrective" : "ordinary"}; assessment: ${phase.assessment ?? "required at next lead handoff"}; failed corrective attempts: ${phase.failedCorrections}/2.${phase.legacy ? " Earlier correction history is unknown (legacy checkpoint); counts cover observed attempts only." : ""}${phase.blocker ? `\nBlocker: ${phase.blocker}` : ""}\nRecent assessments:\n${phase.history.map(record => `- Attempt ${record.attempt} ${record.kind}: ${record.change ? `${record.change}: ` : ""}${record.evidence}${record.blocker ? `; blocker: ${record.blocker}` : ""}`).join("\n") || "- None recorded."}${lead ? "\nAssess the attempt once using execution/review evidence before delegating a continuation with this phaseId. Two failed corrective attempts block equivalent delegation. Only an evidence-backed changed prerequisite can reopen stalled work; renaming or urgency is not a change. Complete/supersede explicitly before starting another phase." : ""}`;
 }
 
 export function validPhase(value: unknown): value is PhaseState {
@@ -153,6 +171,7 @@ export function validPhase(value: unknown): value is PhaseState {
 		&& (value.correction || value.failedCorrections === 0) && (value.assessment !== "progress" || value.failedCorrections === 0)
 		&& (value.assessment === undefined || ASSESSMENTS.includes(value.assessment))
 		&& (value.assessment === "blocked" ? text(value.blocker, 2_000) : value.blocker === undefined) && (value.legacy === undefined || typeof value.legacy === "boolean")
+		&& (value.updates === undefined || Array.isArray(value.updates) && value.updates.length <= MAX_UPDATES && value.updates.every(update => object(update) && count(update.attempt) && update.attempt >= 1 && update.attempt <= value.attempt && text(update.message, 4_000)))
 		&& Array.isArray(value.history) && value.history.length <= 8 && value.history.every(record => object(record) && count(record.attempt) && record.attempt >= 1 && record.attempt <= value.attempt
 			&& [...ASSESSMENTS, "prerequisite"].includes(record.kind) && text(record.evidence, 2_000)
 			&& (record.change === undefined || text(record.change, 2_000)) && (record.kind !== "prerequisite" || text(record.change, 2_000))

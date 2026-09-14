@@ -185,6 +185,8 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	const writerActions = (h.calls[1].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
 	expect(writerActions).toEqual(["report", "escalate"]);
 	expect(h.calls[1].context.systemPrompt).toContain("Run focused tests before reporting.");
+	expect(h.calls[1].context.systemPrompt).toContain("Do not author or materially alter the acceptance oracle");
+	expect(h.calls[0].context.systemPrompt).toContain("Keep ownership of correctness-critical acceptance-oracle design");
 	expect(h.calls[0].context.systemPrompt).not.toContain("Run focused tests before reporting.");
 	expect(h.calls[1].context.tools?.map(tool => tool.name)).not.toContain("subagent");
 	expect(JSON.stringify(h.state.lead.messages)).toContain("Writer completion report");
@@ -410,15 +412,18 @@ test("the lead assesses steering before updating the persistent writer", async (
 	expect(h.state.lead.messages.filter(message => message.role === "user" && message.content === "Do not change the public API")).toHaveLength(1);
 	expect(JSON.stringify(h.state.writer.messages)).toContain("Preserve the public API");
 	expect(h.state.writer.messages.some(message => message.role === "user" && message.content === "Do not change the public API")).toBeFalse();
-	expect(h.state.brief).toContain("Preserve the public API");
+	expect(h.state.brief).not.toContain("Preserve the public API");
 	expect(h.state.delegations).toBe(1);
-	expect(h.state.phase).toMatchObject({ id: originalPhase.id, attempt: 1, failedCorrections: 0 });
+	expect(h.state.phase).toMatchObject({ id: originalPhase.id, attempt: 1, failedCorrections: 0,
+		constraints: [], updates: [{ attempt: 1, message: "Preserve the public API while continuing the current plan." }] });
 	expect(h.state.phase!.assessment).toBeUndefined();
 	h.state.origins.assess = { actor: "lead", synthetic: false };
 	await h.session.control("assess", { action: "assess", phaseId: originalPhase.id, assessment: "progress", evidence: "The read resolved the fixture contents" });
 	h.state.origins.continue = { actor: "lead", synthetic: false };
 	await h.session.control("continue", { action: "delegate", phaseId: originalPhase.id, task: "Finish implementation", nextAction: "Edit the private implementation", successCriteria: ["Pass"] });
-	expect(h.state.brief).toContain("User steering (overrides conflicting earlier direction): Preserve the public API");
+	expect(h.state.brief).toContain("Lead updates during this phase:");
+	expect(h.state.brief).toContain("Attempt 1: Preserve the public API while continuing the current plan.");
+	expect(h.state.phase!.constraints).toEqual([]);
 });
 test("plain lead steering text is converted into an update instead of ending the writer phase", async () => {
 	const h = harness([content("Keep the current implementation, but preserve the public API."), content("Done")]);

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaultConfig } from "./config.ts";
-import { assessPhase, delegatePhase, phaseSummary, validPhase, type PhaseState } from "./phase.ts";
+import { assessPhase, delegatePhase, phaseSummary, recordPhaseUpdate, validPhase, type PhaseState } from "./phase.ts";
 import { MixtureSession, newState, type ControlInput } from "./session.ts";
 
 const brief = { task: "Fix the foreground interrupt", nextAction: "Test the cancellation signal at the process boundary", constraints: ["Persistent jobs must survive"], successCriteria: ["Foreground child terminates", "Persistent job survives"] };
@@ -106,6 +106,21 @@ test("standing constraints are canonicalized, deduplicated and bounded", () => {
 	expect(phase.constraints).toEqual(["Preserve human edits.", "Do not install dependencies"]);
 	const full = delegatePhase(undefined, { ...brief, constraints: Array.from({ length: 16 }, (_, index) => `Constraint ${index}`) }).phase;
 	expect(() => delegatePhase(assess(full, "progress"), { ...brief, phaseId: full.id, constraints: ["Seventeenth distinct constraint"] })).toThrow("at most 16");
+});
+
+test("lead updates are bounded phase records rather than standing constraints", () => {
+	let phase = delegatePhase(undefined, brief).phase;
+	const constraints = structuredClone(phase.constraints);
+	for (let index = 0; index < 12; index++) phase = recordPhaseUpdate(phase, `Direction ${index}`);
+	expect(phase.constraints).toEqual(constraints);
+	expect(phase.updates).toHaveLength(8);
+	expect(phase.updates?.[0]).toEqual({ attempt: 1, message: "Direction 4" });
+	expect(validPhase(phase)).toBe(true);
+	const next = delegatePhase(assess(phase, "progress"), { ...brief, phaseId: phase.id });
+	expect(next.brief).toContain("Lead updates during this phase:");
+	expect(next.brief).toContain("Attempt 1: Direction 11");
+	expect(next.phase.constraints).toEqual(constraints);
+	expect(() => recordPhaseUpdate(phase, "x".repeat(4_001))).toThrow("at most 4000 characters");
 });
 
 test("an immediate action appears in only its delegated attempt", () => {
