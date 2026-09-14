@@ -55,6 +55,6 @@ Extensions and subagents run with your user permissions, including shell and fil
 | thinking-selector | Opens the active model's thinking-level picker with Ctrl+T. |
 | thinking-counter | Displays thinking progress. |
 | [tripp-autoresearch](extensions/tripp-autoresearch/README.md) | Runs experiment loops with benchmarks and keep/revert decisions. |
-| usage | Shows current Codex limits in a dismissible `/usage` overlay. |
+| usage | Shows standard 5h/weekly Codex usage in a dismissible `/codex-usage` popup. |
 
 Autoresearch includes its skills and retains its [upstream license](extensions/tripp-autoresearch/LICENSE). Codex conversion is an npm dependency with its own license and attribution.

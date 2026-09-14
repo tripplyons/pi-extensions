@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSelectListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SelectList, Text } from "@earendil-works/pi-tui";
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
@@ -18,6 +19,39 @@ function label(level: ThinkingLevel, current: ThinkingLevel): string {
 	return level === current ? `${level} (current)` : level;
 }
 
+async function selectThinkingLevel(
+	ctx: ExtensionContext,
+	labels: string[],
+	initialIndex: number,
+): Promise<string | undefined> {
+	if (ctx.mode !== "tui") return ctx.ui.select("Thinking level", labels);
+
+	return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+		const title = new Text(theme.fg("accent", "Thinking level"), 0, 0);
+		const list = new SelectList(
+			labels.map((value) => ({ value, label: value })),
+			Math.max(1, Math.min(labels.length, tui.terminal.rows - 4)),
+			getSelectListTheme(),
+		);
+		list.setSelectedIndex(initialIndex);
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done(undefined);
+		return {
+			render(width: number) {
+				return [...title.render(width), ...list.render(width)];
+			},
+			invalidate() {
+				title.invalidate();
+				list.invalidate();
+			},
+			handleInput(data: string) {
+				list.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	}, { overlay: true, overlayOptions: { width: "50%", anchor: "center" } });
+}
+
 export default function thinkingSelector(pi: ExtensionAPI): void {
 	pi.registerShortcut("ctrl+t", {
 		description: "Select thinking level",
@@ -35,7 +69,8 @@ export default function thinkingSelector(pi: ExtensionAPI): void {
 
 			const current = pi.getThinkingLevel();
 			const labels = levels.map((level) => label(level, current));
-			const selected = await ctx.ui.select("Thinking level", labels);
+			const initialIndex = Math.max(0, levels.indexOf(current));
+			const selected = await selectThinkingLevel(ctx, labels, initialIndex);
 			const index = selected === undefined ? -1 : labels.indexOf(selected);
 			if (index >= 0) pi.setThinkingLevel(levels[index]!);
 		},

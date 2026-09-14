@@ -340,8 +340,11 @@ class BackgroundBashManager {
 
 		const completed = await Promise.race([
 			completion.promise,
-			delay(Math.max(0.1, foregroundSeconds) * 1000).then(() => false),
-		]);
+			delay(Math.max(0.1, foregroundSeconds) * 1000, signal).then(() => false),
+		]).catch((error) => {
+			if (aborted || signal?.aborted) return false;
+			throw error;
+		});
 		if (!completed) completion.cancel();
 		if (signal) signal.removeEventListener("abort", abort);
 

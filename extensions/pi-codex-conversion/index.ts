@@ -8,7 +8,22 @@ export function closeMixtureCodexSessions(value: unknown, close = closeOpenAICod
 	for (const id of value.sessionIds) close(id);
 }
 
+export function preserveNativeFollowUpShortcut(pi: ExtensionAPI): ExtensionAPI {
+	return new Proxy(pi, {
+		get(target, property, receiver) {
+			if (property !== "registerShortcut") return Reflect.get(target, property, receiver);
+			return (
+				key: Parameters<ExtensionAPI["registerShortcut"]>[0],
+				options: Parameters<ExtensionAPI["registerShortcut"]>[1],
+			) => {
+				if (key.toLowerCase() === "alt+enter") return;
+				return target.registerShortcut(key, options);
+			};
+		},
+	});
+}
+
 export default function piCodexConversion(pi: ExtensionAPI) {
 	pi.events.on(MIXTURE_SESSION_RELEASE_EVENT, closeMixtureCodexSessions);
-	return codexConversion(pi);
+	return codexConversion(preserveNativeFollowUpShortcut(pi));
 }

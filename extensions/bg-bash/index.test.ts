@@ -397,6 +397,61 @@ describe("zsh execution and persistent tmux", () => {
 	const tmuxAvailable = testTmux(["-V"]).exitCode === 0;
 	const tmuxTest = tmuxAvailable ? test : test.skip;
 
+	tmuxTest("aborting foreground execution kills its process but preserves later persistent jobs", async () => {
+		const h = createHarness(`abort-${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+		const foregroundPidFile = join(testCacheHome, `foreground-${Date.now()}.pid`);
+		const controller = new AbortController();
+		let foregroundJob: { id: string; tmuxSession: string } | undefined;
+		try {
+			const pending = h.tools.get("bash").execute(
+			"foreground-abort",
+			{ command: `printf '%s' \"$$\" > ${JSON.stringify(foregroundPidFile)}; exec sleep 30`, timeout: 10 },
+			controller.signal,
+			undefined,
+			{ cwd: process.cwd() },
+		);
+			for (let attempt = 0; attempt < 40 && !existsSync(foregroundPidFile); attempt++) await Bun.sleep(25);
+			foregroundJob = h.query().jobs.find(job => job.command.includes("exec sleep 30"));
+			expect(foregroundJob).toBeDefined();
+			const pid = Number(readFileSync(foregroundPidFile, "utf8"));
+			const abortedAt = performance.now();
+			controller.abort();
+			await expect(pending).rejects.toThrow("Command aborted");
+			expect(performance.now() - abortedAt).toBeLessThan(2_000);
+			expect(testTmux(["has-session", "-t", foregroundJob!.tmuxSession]).exitCode).not.toBe(0);
+			let alive = true;
+			try { process.kill(pid, 0); } catch { alive = false; }
+			expect(alive).toBe(false);
+			expect(h.query().jobs.find(job => job.id === foregroundJob!.id)).toBeUndefined();
+
+			const persistentController = new AbortController();
+			const persistent = await h.tools.get("bash").execute(
+				"persistent-after-abort",
+				{ command: "sleep 0.4; printf 'persistent-survived\\n'", timeout: 0.1 },
+				persistentController.signal,
+				undefined,
+				{ cwd: process.cwd() },
+			);
+			const persistentJob = persistent.details.job as { id: string; tmuxSession: string };
+			persistentController.abort();
+			expect(testTmux(["has-session", "-t", persistentJob.tmuxSession]).exitCode).toBe(0);
+			let output = "";
+			for (let attempt = 0; attempt < 40 && !output.includes("persistent-survived"); attempt++) {
+				await Bun.sleep(25);
+				output = (await h.tools.get("bg_process").execute("persistent-output", { action: "output", id: persistentJob.id })).content[0].text;
+			}
+			expect(output).toContain("persistent-survived");
+			await h.tools.get("bg_process").execute("persistent-cleanup", { action: "kill", id: persistentJob.id });
+		} finally {
+			rmSync(foregroundPidFile, { force: true });
+			if (foregroundJob) {
+				testTmux(["kill-session", "-t", foregroundJob.tmuxSession]);
+				rmSync(join(cacheRoot, foregroundJob.id), { recursive: true, force: true });
+			}
+			await h.shutdown();
+		}
+	});
+
 	tmuxTest("backgrounded jobs are shared between concurrent extension instances", async () => {
 		const createInstance = () => {
 			let shutdown: (() => Promise<void>) | undefined;
