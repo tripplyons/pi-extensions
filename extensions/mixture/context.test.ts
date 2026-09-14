@@ -60,7 +60,7 @@ test("one overflow retry charges the failed call, summary and successful candida
 		const message = requests.length === 1 ? { ...answer("", 3), stopReason: "error" as const, errorMessage: "maximum context length exceeded" } : answer(requests.length === 2 ? "Context summary" : "Final answer", requests.length === 2 ? 5 : 7);
 		const stream = createAssistantMessageEventStream(); emitMessage(stream, message); return stream;
 	} } as any) };
-	const state = newState("default", preset); state.initialized = true; state.lead.messages = [user("old task"), answer("plan"), user("update")];
+	const state = newState("default", preset); state.initialized = true; state.delegations = 1; state.lead.messages = [user("old task"), answer("plan"), user("update")];
 	const session = new MixtureSession(preset, registry, state, () => ({ available: true, jobs: [] }));
 	const checkpoint = await session.next({ messages: [user("Verify current files")] }, {}, "off");
 	const call = checkpoint.content.find(block => block.type === "toolCall")!;

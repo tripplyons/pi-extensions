@@ -4,12 +4,14 @@ Mixture is a native Pi model with a lead, a writer and independent read-only
 reviewers. Select `mixture/default` through `/model`. Requires Pi 0.85.1 or newer.
 Selecting an ordinary model does not start collaborators.
 
-The writer receives each complete user request first, then plans, edits and tests
-in your current checkout, including uncommitted and untracked files. The lead
-uses Astra after the writer reports to assess evidence, resolve ambiguity, direct
-corrections and answer the user. This keeps routine investigation on the cheaper
-model. No Git repository, worktree or editing subprocess is required. The lead
-can explicitly take over after a safe writer handoff.
+The lead receives each complete user request first, defines its constraints and
+acceptance criteria, and initiates the writer. The writer then plans, edits and
+tests in your current checkout, including uncommitted and untracked files. The
+harness schedules read-only review during that work and delivers findings directly
+to the writer. It returns control to the lead less often for strategy, ambiguity,
+completion assessment and the user-facing answer. No Git repository, worktree or
+editing subprocess is required. The lead can explicitly take over after a safe
+writer handoff.
 
 ## Configuration
 
@@ -71,19 +73,38 @@ and `ls`, plus a structured reporting operation. Their private reads use those
 read-only implementations, not the outer editing-tool loop. Reviewers cannot
 run shell commands or call arbitrary extension tools. This is not an OS sandbox.
 
-Reviewers receive delegation constraints and completed execution deltas. Briefs,
-reads, edits and test evidence are queued without spending a request. Review
-starts only at a completed writer-report boundary, where each configured reviewer
-gets at most one grouped read batch before its required structured report.
-Findings carry model identity, severity, evidence and the execution revision.
-Concerns and blockers are reconfirmed before asking the lead to act. Reviewers
-audit each explicit criterion but treat optional generality outside the task as
-a nit at most. Review is advice, not a vote or user authority.
+Reviewers receive delegation constraints and completed execution deltas. The
+harness starts a tactical background review every `reviewEveryBatches` completed
+writer tool batches and coalesces newer evidence while a review is running.
+Incremental cycles focus on changed evidence and unresolved findings; completion
+and handoff checkpoints audit the full scope. Completed findings are inserted into
+the writer's private history automatically. The writer corrects supported findings
+without a lead round trip, and later review must explicitly recheck them.
 
-The default preset uses one reviewer. At the writer-report boundary, the lead may
-request a correction, dismiss advice with reasons, or take over. A candidate
-final answer is withheld until bounded final review completes. When the checkout
-revision already has a clean completed review, candidate review is a single
+After `leadEveryReviews` completed scheduled review cycles, the harness snapshots
+current findings plus a bounded tool/status milestone digest at a safe tool
+boundary and transfers control to the lead without starting a redundant review.
+Completion reports, unresolved escalations and review failures can cause an
+earlier checkpoint. A completion report with supported concerns is withheld so
+the reviewer can return them directly to the writer. After three rejected
+completion reports in one delegation, the harness forces lead assessment instead
+of allowing an unbounded local correction stall; a new delegation renews the
+counter. Models supply briefs, work and judgments, but cannot change the review
+cadence or bypass lease and handoff checks. If the lead takes over editing, each
+mutation batch requests a review as well; requests coalesce while the reviewer is
+busy so final review can overlap the lead's correction work.
+
+Tactical cycles report from the supplied execution deltas in one request. Full
+completion and handoff audits get at most one grouped native-read batch before
+their required structured report. Afterward, reviewer model history is reduced to
+the task scope and
+authoritative unresolved findings; obsolete tool transcripts and resolved IDs do
+not inflate later cycles. Findings carry model identity, severity, evidence and the
+execution revision. Reviewers audit each explicit criterion but treat optional
+generality outside the task as a nit at most. Review is advice, not a vote or user
+authority. The default preset uses one reviewer. A candidate final answer is
+withheld until bounded final review completes. When the checkout revision already
+has a clean completed review, writer-completion and candidate reviews use a single
 report-only request rather than another file-reading batch.
 Failed or incomplete review is disclosed, never counted as clean. A structured
 incomplete report may explicitly resolve an earlier finding it rechecked; findings
@@ -120,6 +141,8 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | --- | ---: | --- |
 | `requestTimeoutMs` | 240000 | Each underlying request, including auth |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
+| `reviewEveryBatches` | 3 | Completed writer tool batches per scheduled background review |
+| `leadEveryReviews` | 3 | Scheduled review cycles per forced lead checkpoint |
 | `reviewerBatchTurns` | 2 | Requests per reviewer batch |
 | `catchUpMs` | 120000 | Checkpoint review deadline |
 | `leadMaxTokens` | 16384 | Lead output ceiling |
@@ -133,8 +156,9 @@ and final-answer correction cycles have no cumulative cap, so iterative loops ca
 continue until completion or cancellation. In-flight estimated costs are reserved
 before admitting another request, including concurrent reviewers. Estimates use
 configured model prices; they are not guaranteed billing ceilings. A configured
-limit stops the affected operation with an explicit reason. Provider retries
-default to zero.
+limit stops the affected operation with an explicit reason. A zero-output writer
+connection failure gets one same-role retry before the harness escalates it to the
+lead; other provider failures are not retried here.
 
 ## Sessions, context and usage
 
@@ -142,7 +166,11 @@ Versioned custom entries in the current Pi session hold role histories, findings
 counters, usage receipts and writer ownership. A lifecycle starts with one full
 snapshot; later checkpoints store content-addressed deltas and periodically start
 a new snapshot chain. A snapshot is also used whenever it is smaller. This avoids
-repeatedly appending the complete role history while keeping restore work bounded. Checkpoints are not injected into the main model context. Ephemeral
+repeatedly appending the complete role history while keeping restore work bounded.
+Superseded reviewer-feedback and lead-progress notes are replaced by their current
+authoritative form instead of accumulating across cycles. Lifetime scheduling,
+feedback, lead-checkpoint, and escalation counters remain in bounded checkpoint
+audit metadata. Checkpoints are not injected into the main model context. Ephemeral
 sessions remain ephemeral. No global daemon, private credential copy or separate
 run directory is created.
 
@@ -158,7 +186,8 @@ overflow gets one bounded recovery attempt. Failed summaries preserve the last
 valid history. After Pi compacts the root session, Mixture rebases the lead on
 that compacted context instead of retaining the larger pre-compaction history.
 Pi's own compaction and other helper requests use the lead alone, without
-starting collaborators.
+starting collaborators. When the root request settles or detaches, Mixture
+releases each nested native provider session resource while retaining role history.
 
 Usage receipts preserve underlying model identities and charge completed calls
 once, including summaries, failed calls that report usage and rejected final
@@ -179,8 +208,8 @@ Neither missing usage nor zero configured model prices prove that a call was fre
 
 - `/mixture` or `/mixture status`: roster, ownership, review state and usage.
 - `/mixture inspect`: scrollable details in the TUI; textual status outside it.
-  Inspection includes per-role request latency and writer-report/final-review wait
-  totals for runtime tests and performance comparisons.
+  Inspection includes per-role request latency and separate periodic, escalation,
+  completion-report and final-review wait totals for runtime comparisons.
 - Expand coordination tool cards for findings and per-role usage.
 - The compact status uses Pi's status API and works alongside clean-footer.
 

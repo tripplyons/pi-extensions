@@ -6,6 +6,7 @@ import { queryBackgroundJobs } from "../bg-bash/events.ts";
 import { CHECKPOINT, encodeCheckpoint, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
+import { releaseProviderSessions } from "./events.ts";
 import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
 import { compactStatus, configure, controlCard, inspection, Inspector } from "./ui.ts";
@@ -29,6 +30,10 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
 	const status = () => diagnostic ?? (session ? inspection(session) : `Mixture presets: ${Object.keys(config!.presets).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`);
 	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session) : "mix ready" : undefined); };
+	const releaseRoleResources = (target = session) => {
+		if (!target || !rootId) return;
+		releaseProviderSessions(pi, target.resourceSessionIds(rootId));
+	};
 	const persist = (stage: CheckpointStage) => {
 		if (!ctx || !session || ctx.sessionManager.getSessionId() !== rootId) return;
 		const checkpointStage = requesting ? "request" : stage;
@@ -45,6 +50,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		if (!old) return;
 		await old.abort();
 		await pending?.catch(() => {});
+		releaseRoleResources(old);
 		old.reconcile(reason);
 		persist("detached");
 		if (warn && ctx) {
@@ -204,7 +210,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		return { message: tagReceipts({ ...event.message, usage }, session.lastDrained) };
 	});
 	pi.on("turn_end", event => { if (selected()) { session?.completeTurn(event.toolResults, event.message.role === "assistant" ? event.message : undefined); persist("turn"); } });
-	pi.on("agent_end", async () => { if (session) { await session.abort(); session.reconcile("request ended"); persist("idle"); } render(); });
+	pi.on("agent_end", async () => { if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); } render(); });
 	pi.on("session_before_switch", () => detach("session switch"));
 	pi.on("session_before_fork", () => detach("session fork"));
 	pi.on("session_before_tree", () => detach("tree navigation"));

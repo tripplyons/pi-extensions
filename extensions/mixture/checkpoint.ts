@@ -48,6 +48,13 @@ function parseState(value: unknown): MixtureState {
 	assert(typeof state.initialized === "boolean" && typeof state.bgManaged === "boolean" && typeof state.brief === "string" && typeof state.task === "string" && Array.isArray(state.attachments), "task context");
 	assert(state.attachments.every((image: unknown) => object(image) && image.type === "image" && typeof image.data === "string" && typeof image.mimeType === "string"), "images");
 	for (const field of ["revision", "delegations", "writerTurns", "finalCorrections"]) assert(count(state[field]), field);
+	for (const field of ["writerRetries", "writerReportRejections", "writerBatches", "writerReviewsDelivered"]) assert(state[field] === undefined || count(state[field]), field);
+	assert(state.writerReviewSequences === undefined || Array.isArray(state.writerReviewSequences) && state.writerReviewSequences.every(count), "writer review sequences");
+	assert(state.writerProgress === undefined || Array.isArray(state.writerProgress) && state.writerProgress.every((value: unknown) => typeof value === "string"), "writer progress");
+	assert(state.coordination === undefined || object(state.coordination)
+		&& ["scheduledReviews", "deliveredReviews", "leadCheckpoints", "escalations"].every(field => count(state.coordination[field]))
+		&& Array.isArray(state.coordination.recent) && state.coordination.recent.length <= 64
+		&& state.coordination.recent.every((event: unknown) => object(event) && ["review-scheduled", "feedback-delivered", "lead-checkpoint", "writer-escalation"].includes(event.kind) && count(event.revision) && (event.sequence === undefined || count(event.sequence))), "coordination stats");
 	for (const field of ["warning", "reviewSummary", "rootCompactionId"]) assert(state[field] === undefined || typeof state[field] === "string", field);
 	for (const role of [state.lead, state.writer, ...state.reviewers]) {
 		assert(object(role) && Array.isArray(role.messages) && role.messages.every(validMessage) && validUsage(role.usage) && count(role.calls), "role history or usage");
@@ -56,7 +63,7 @@ function parseState(value: unknown): MixtureState {
 	for (const reviewer of state.reviewers) {
 		assert(["idle", "queued", "reviewing", "incomplete"].includes(reviewer.status), "review status");
 		for (const field of ["warning", "imageWarning"]) assert(reviewer[field] === undefined || typeof reviewer[field] === "string", field);
-		assert(Array.isArray(reviewer.pending) && reviewer.pending.every((update: unknown) => object(update) && count(update.sequence) && count(update.revision) && typeof update.content === "string"), "review queue");
+		assert(Array.isArray(reviewer.pending) && reviewer.pending.every((update: unknown) => object(update) && count(update.sequence) && count(update.revision) && typeof update.content === "string" && (update.checkpoint === undefined || typeof update.checkpoint === "boolean")), "review queue");
 		assert(Array.isArray(reviewer.findings) && reviewer.findings.every((finding: unknown) => object(finding) && typeof finding.id === "string" && typeof finding.summary === "string" && typeof finding.model === "string" && count(finding.reviewer) && count(finding.revision) && typeof finding.alerted === "boolean" && ["nit", "concern", "blocker"].includes(finding.severity)), "review findings");
 		assert(count(reviewer.requestCalls) && count(reviewer.batchCalls) && count(reviewer.sequence) && Number.isInteger(reviewer.revision) && reviewer.revision >= -1, "review counters");
 	}

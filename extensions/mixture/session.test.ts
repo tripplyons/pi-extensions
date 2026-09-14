@@ -3,11 +3,12 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Context,
 import { Type } from "typebox";
 import { defaultConfig } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
+import { newReviewer } from "./review.ts";
 import { CONTROL, MixtureSession, controlTool, newState } from "./session.ts";
 
 const call = (id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"][number] => ({ type: "toolCall", id, name, arguments: args });
 const content = (value: string): AssistantMessage["content"] => [{ type: "text", text: value }];
-function harness(script: AssistantMessage["content"][], stops: AssistantMessage["stopReason"][] = []) {
+function harness(script: AssistantMessage["content"][], stops: AssistantMessage["stopReason"][] = [], errors: Array<string | undefined> = []) {
 	const calls: Array<{ model: string; context: Context; options: RoleStreamOptions }> = [];
 	const preset = defaultConfig().presets.default; preset.reviewers = [];
 	const registry: Registry = {
@@ -17,7 +18,11 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 			calls.push({ model: model.id, context: structuredClone(context), options: { ...options } });
 			const content = script.shift(); if (!content) throw new Error("Unexpected inference");
 			const stream = createAssistantMessageEventStream();
-			emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content, usage: { ...emptyUsage(), output: 1, totalTokens: 1 }, timestamp: Date.now(), stopReason: stops.shift() ?? (content.some(block => block.type === "toolCall") ? "toolUse" : "stop") });
+			const stopReason = stops.shift() ?? (content.some(block => block.type === "toolCall") ? "toolUse" : "stop");
+			const errorMessage = errors.shift();
+			const tokens = stopReason === "error" && errorMessage ? 0 : 1;
+			emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content,
+				usage: { ...emptyUsage(), output: tokens, totalTokens: tokens }, timestamp: Date.now(), stopReason, errorMessage });
 			return stream;
 		} }) as any,
 	};
@@ -37,18 +42,26 @@ function harness(script: AssistantMessage["content"][], stops: AssistantMessage[
 	return { calls, preset, session, state, next, finishControl, jobs, context };
 }
 
-test("a new user request reaches the cheap writer before the first lead inference", async () => {
-	const h = harness([content("Implemented and verified.")]);
+test("the lead defines the initial brief before the writer starts", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Fix this without changing unrelated files", successCriteria: ["Relevant checks pass"] })],
+		content("Implemented and verified."),
+	]);
+	expect(h.session.resourceSessionIds("root")).toEqual([
+		"root/summary",
+		`root/mixture/${h.state.id}/lead`,
+		`root/mixture/${h.state.id}/writer`,
+	]);
 	h.preset.writer.model = "openai-codex/gpt-5.6-luna";
 	h.session.newRequest("Fix this without changing unrelated files");
 	const delegated = await h.next();
-	expect(h.calls).toHaveLength(0);
+	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra"]);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
 	await h.finishControl(delegated);
 	expect(h.session.active).toBe("writer");
 	await h.next({ serviceTier: "priority" });
-	expect(h.calls.map(call => call.model)).toEqual(["gpt-5.6-luna"]);
-	expect(h.calls[0].options.serviceTier).toBe("priority");
+	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra", "gpt-5.6-luna"]);
+	expect(h.calls[1].options.serviceTier).toBe("priority");
 });
 
 test("root compaction rebases only the lead context and preserves usage accounting", async () => {
@@ -83,7 +96,9 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	const edit = await h.next();
 	expect(edit.content[0]).toMatchObject({ name: "edit" });
 	h.session.guard("edit", "edit", {});
-	h.session.completeTurn([{ role: "toolResult", toolCallId: "edit", toolName: "edit", content: content("done"), isError: false, timestamp: 1 }]);
+	h.session.completeTurn([{ role: "toolResult", toolCallId: "edit", toolName: "edit", content: content("done"), isError: false, timestamp: 1 }], edit);
+	expect(h.state.writerProgress).toEqual(["[Execution revision 1]\n- edit fixture: success — done"]);
+	expect(JSON.stringify(h.state.writerProgress)).not.toContain("oldText");
 	await h.finishControl(await h.next());
 	expect(h.session.active).toBe("lead");
 	expect(h.state.owner).toBeUndefined();
@@ -98,7 +113,7 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	expect(h.calls[1].context.systemPrompt).toContain("Run focused tests before reporting.");
 	expect(h.calls[0].context.systemPrompt).not.toContain("Run focused tests before reporting.");
 	expect(h.calls[1].context.tools?.map(tool => tool.name)).not.toContain("subagent");
-	expect(JSON.stringify(h.state.lead.messages)).toContain("Writer report");
+	expect(JSON.stringify(h.state.lead.messages)).toContain("Writer completion report");
 	expect(JSON.stringify(h.state.lead.messages)).not.toContain('"oldText"');
 	expect(JSON.stringify(h.state.writer.messages)).toContain("Preserve unrelated files");
 	expect(h.session.usage.totalTokens).toBe(4);
@@ -108,6 +123,98 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	expect(performance.requests.lead.totalMs).toBeGreaterThanOrEqual(0);
 	expect(performance.checkpoints["writer-report"].count).toBe(1);
 	expect(performance.checkpoints["final-answer"].count).toBe(1);
+});
+
+test("the harness rejects a lead final answer before the required writer phase", async () => {
+	const h = harness([content("I skipped the writer.")]);
+	h.session.newRequest("Complete the task");
+	const result = await h.next();
+	expect(result.stopReason).toBe("error");
+	expect(result.errorMessage).toContain("required writer phase");
+	expect(h.state.delegations).toBe(0);
+});
+
+test("the harness forces a lead checkpoint after three completed review cycles", async () => {
+	const h = harness([
+		content("Continue with a narrower phase."),
+	]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	h.state.reviewers.push(newReviewer());
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	h.state.delegations = 1;
+	h.state.task = "Complete the fixture";
+	h.state.lead.messages.push({ role: "user", content: "[Harness writer-progress checkpoint, stale]\nobsolete", timestamp: 1 });
+	for (let revision = 1; revision <= 3; revision++) h.state.writerReviewSequences!.push(h.session.reviews.prime(0, `Cycle ${revision}`));
+	h.state.reviewers[0].pending = [];
+	h.state.reviewers[0].sequence = 3;
+	const checkpoint = await h.next();
+	expect(h.calls.map(request => request.model)).toEqual(["gpt-6-astra"]);
+	expect(h.session.performanceStats().checkpoints["writer-progress"].count).toBe(1);
+	expect(h.session.active).toBe("lead");
+	expect(h.state.owner).toBeUndefined();
+	expect(checkpoint.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "checkpoint" } });
+	expect(JSON.stringify(h.state.writer.messages)).toContain("Harness reviewer feedback after 3 scheduled review cycle");
+	expect(JSON.stringify(h.state.lead.messages)).toContain("Harness writer-progress checkpoint");
+	expect(JSON.stringify(h.state.lead.messages)).not.toContain("obsolete");
+	expect(h.state.lead.messages.filter(message => message.role === "user" && typeof message.content === "string" && message.content.startsWith("[Harness writer-progress checkpoint"))).toHaveLength(1);
+	expect(h.session.performanceStats().checkpoints["writer-progress"].count).toBe(1);
+	expect(h.session.performanceStats().coordination).toMatchObject({ deliveredReviews: 3, leadCheckpoints: 1, escalations: 0 });
+	expect(h.state.coordination?.recent.map(event => event.kind)).toEqual(["feedback-delivered", "lead-checkpoint"]);
+});
+
+test("a rejected completion audit returns directly to the cheaper writer", async () => {
+	const h = harness([[call("review", "mixture_review", { revision: 0, findings: [{ id: "still-broken", severity: "concern", summary: "The correction is incomplete" }] })]]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	h.state.reviewers.push(newReviewer());
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	h.state.delegations = 1;
+	h.state.task = "Complete the fixture";
+	h.state.brief = "Task: Complete the fixture";
+	h.state.origins.report = { actor: "writer", synthetic: false };
+	const result = await h.session.control("report", { action: "report", report: "Everything is done" });
+	expect(h.session.active).toBe("writer");
+	expect(h.state.owner).toBe("writer");
+	expect(h.state.writerReportRejections).toBe(1);
+	expect(h.state.coordination).toMatchObject({ leadCheckpoints: 0, deliveredReviews: 1 });
+	expect(JSON.stringify(h.state.writer.messages)).toContain("Harness rejected the completion report");
+	expect(result.content[0]).toMatchObject({ type: "text" });
+	expect((result.content[0] as { text: string }).text).toContain("writer remains active");
+});
+
+test("three rejected completion reports force renewable lead assessment", async () => {
+	const h = harness([[call("review", "mixture_review", { revision: 0, findings: [{ id: "repeated", severity: "concern", summary: "The defect remains" }] })]]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	h.state.reviewers.push(newReviewer());
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	h.state.delegations = 1;
+	h.state.task = "Complete the fixture";
+	h.state.brief = "Task: Complete the fixture";
+	h.state.writerReportRejections = 2;
+	h.state.origins.report = { actor: "writer", synthetic: false };
+	const result = await h.session.control("report", { action: "report", report: "Everything is done" });
+	expect(h.session.active).toBe("lead");
+	expect(h.state.owner).toBeUndefined();
+	expect(h.state.writerReportRejections).toBe(3);
+	expect(h.state.coordination).toMatchObject({ leadCheckpoints: 1, deliveredReviews: 0 });
+	expect(JSON.stringify(h.state.lead.messages)).toContain("three rejected completion reports");
+	expect((result.content[0] as { text: string }).text).toContain("third rejected completion report");
+});
+
+test("lead takeover mutations request concurrent review", async () => {
+	const h = harness([[call("review", "mixture_review", { revision: 1, findings: [] })]]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	h.state.reviewers.push(newReviewer());
+	h.state.active = "lead";
+	h.state.owner = "lead";
+	h.state.origins.fix = { actor: "lead", synthetic: false };
+	const message: AssistantMessage = { role: "assistant", provider: "fixture", model: "lead", api: "fixture", content: [call("fix", "edit", { path: "fixture" })], usage: emptyUsage(), timestamp: 1, stopReason: "toolUse" };
+	h.session.completeTurn([{ role: "toolResult", toolCallId: "fix", toolName: "edit", content: content("done"), isError: false, timestamp: 2 }], message);
+	expect(h.state.revision).toBe(1);
+	expect(h.state.coordination).toMatchObject({ scheduledReviews: 1 });
+	await h.session.reviews.freeze();
 });
 
 test("rejects mixed control/mutation batches before any execution", async () => {
@@ -120,6 +227,7 @@ test("rejects mixed control/mutation batches before any execution", async () => 
 });
 test("lead must explicitly acquire the writer lease", async () => {
 	const h = harness([[call("bad", "bash", { command: "touch bad" })], [call("take", CONTROL, { action: "takeover" })], [call("good", "bash", { command: "printf ok" })]]);
+	h.state.delegations = 1;
 	expect((await h.next()).stopReason).toBe("error");
 	await h.finishControl(await h.next());
 	expect(h.state.owner).toBe("lead");
@@ -172,6 +280,7 @@ test("failed writer and exhausted writer return incomplete reports to the lead",
 	await failed.finishControl(report);
 	expect(failed.session.active).toBe("lead");
 	expect(JSON.stringify(failed.state.lead.messages)).toContain("Writer failed");
+	expect(failed.session.performanceStats().checkpoints["writer-escalation"].count).toBe(1);
 	const limited = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })], [call("read", "read", { path: "test" })]]);
 	limited.preset.limits.writerTurns = 1;
 	await limited.finishControl(await limited.next());
@@ -181,6 +290,21 @@ test("failed writer and exhausted writer return incomplete reports to the lead",
 	expect(JSON.stringify(limited.state.lead.messages)).toContain("Incomplete: writer reached");
 	expect(limited.calls).toHaveLength(2);
 });
+test("a zero-output transient writer failure is retried once before lead escalation", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+		[],
+		content("Completed after retry."),
+	], ["toolUse", "error", "stop"], [undefined, "WebSocket error"]);
+	await h.finishControl(await h.next());
+	const report = await h.next();
+	expect(h.calls).toHaveLength(3);
+	expect(h.state.writerTurns).toBe(2);
+	expect(h.state.writerRetries).toBe(1);
+	expect(JSON.stringify(h.state.writer.messages)).toContain("Harness retry after transient provider failure");
+	expect(report.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "report" } });
+});
+
 test("truncated tool batches and cancelled calls never grant a lease", async () => {
 	const h = harness([[call("take", CONTROL, { action: "takeover" })]], ["length"]);
 	expect((await h.next()).stopReason).toBe("error");
@@ -193,6 +317,7 @@ test("truncated tool batches and cancelled calls never grant a lease", async () 
 
 test("nested agents are blocked even for the lease holder", async () => {
 	const h = harness([[call("take", CONTROL, { action: "takeover" })], [call("spawn", "subagent", { task: "edit" })]]);
+	h.state.delegations = 1;
 	await h.finishControl(await h.next());
 	expect((await h.next()).stopReason).toBe("error");
 	expect(h.state.origins.spawn).toBeUndefined();

@@ -17,7 +17,7 @@ const deferred = <T>() => {
 	return { promise, resolve };
 };
 
-test("reviewers run concurrently, serialize their own requests and reconfirm coalesced findings", async () => {
+test("reviewers run concurrently and serialize repeated scheduled review cycles", async () => {
 	const preset = defaultConfig().presets.default;
 	preset.reviewers.push({ model: "fixture/second-reviewer", thinking: "low" });
 	const states = preset.reviewers.map(newReviewer);
@@ -36,20 +36,27 @@ test("reviewers run concurrently, serialize their own requests and reconfirm coa
 		pool.enqueue(2, "Execution two");
 		expect(requests).toHaveLength(2);
 		for (const request of requests) request.result.resolve(report(1, [issue]));
-		await new Promise(resolve => setTimeout(resolve, 0));
-		expect(requests).toHaveLength(2);
-		expect(pool.serious).toHaveLength(2);
-		const checkpoint = pool.checkpoint(2, "Confirm the result");
 		await untilRequests(4);
-		for (const request of requests.slice(2)) {
+		expect(pool.serious).toHaveLength(2);
+		for (const request of requests.slice(2, 4)) {
 			expect(JSON.stringify(request.context.messages)).toContain("Execution two");
+			expect(JSON.stringify(request.context.messages)).toContain("missing-check");
+			request.result.resolve(report(2));
+		}
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(pool.serious).toHaveLength(0);
+		const checkpoint = pool.checkpoint(2, "Confirm the result");
+		await untilRequests(6);
+		for (const request of requests.slice(4)) {
+			expect(JSON.stringify(request.context.messages)).not.toContain("missing-check");
 			request.result.resolve(report(2));
 		}
 		const result = await checkpoint;
 		expect(result.findings).toEqual([]);
 		expect(result.warnings).toEqual([]);
 		expect(peak).toEqual([1, 1]);
-		for (const request of requests) expect(request.context.tools?.map(tool => tool.name).sort()).toEqual(["find", "grep", "ls", "mixture_review", "read"]);
+		for (const request of requests.slice(0, 4)) expect(request.context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		for (const request of requests.slice(4)) expect(request.context.tools?.map(tool => tool.name).sort()).toEqual(["find", "grep", "ls", "mixture_review", "read"]);
 	} finally { await pool.freeze(); }
 });
 
@@ -68,6 +75,9 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		expect(requests).toHaveLength(1);
 		expect(JSON.stringify(requests[0].context.messages)).toContain("Initial delegation");
+		expect(JSON.stringify(requests[0].context.messages)).toContain("tactical incremental review");
+		expect(requests[0].context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(requests[0].context.systemPrompt).toContain("delta-only");
 		pool.prime(2, "Tests passed after the edit");
 		requests[0].result.resolve(report(1));
 		await new Promise(resolve => setTimeout(resolve, 0));
@@ -76,18 +86,38 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		expect(requests).toHaveLength(2);
 		expect(JSON.stringify(requests[1].context.messages)).toContain("Tests passed after the edit");
+		expect(JSON.stringify(requests[1].context.messages)).toContain("completion or handoff checkpoint");
 		requests[1].result.resolve(report(2));
 		expect((await checkpoint).warnings).toEqual([]);
 		const candidate = pool.checkpoint(2, "Lead final-answer candidate", undefined, undefined, true);
 		await new Promise(resolve => setTimeout(resolve, 0));
 		expect(requests).toHaveLength(3);
 		expect(requests[2].context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(requests[2].context.systemPrompt).toContain("Do not repeat that audit");
+		expect(JSON.stringify(requests[2].context.messages.at(-1))).toContain("Assess only whether the supplied completion or final claim conflicts");
+		expect(JSON.stringify(requests[2].context.messages.at(-1))).not.toContain("Audit the complete task scope");
 		requests[2].result.resolve(report(2));
 		expect((await candidate).warnings).toEqual([]);
 	} finally { await pool.freeze(); }
 });
 
-test("native read-only tools inspect files and preserve tool-call/result pairs", async () => {
+test("report-only checkpoints require a clean current review", async () => {
+	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
+	const contexts: Context[] = [];
+	let calls = 0;
+	const pool = new ReviewPool(preset, [newReviewer()], process.cwd(), async (_index, context) => {
+		contexts.push(structuredClone(context));
+		return ++calls === 1 ? report(1, [issue]) : report(1);
+	}, () => true);
+	try {
+		expect((await pool.checkpoint(1, "Initial audit")).findings).toHaveLength(1);
+		expect((await pool.checkpoint(1, "Candidate", undefined, undefined, true)).findings).toEqual([]);
+		expect(contexts[1].tools?.map(tool => tool.name)).toContain("read");
+		expect(contexts[1].systemPrompt).not.toContain("Do not repeat that audit");
+	} finally { await pool.freeze(); }
+});
+
+test("native read-only tools inspect files and retain bounded authoritative state", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "mixture-review-"));
 	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
 	const states = [newReviewer()];
@@ -105,8 +135,29 @@ test("native read-only tools inspect files and preserve tool-call/result pairs",
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0]).toMatchObject({ model: preset.reviewers[0].model, revision: 3, id: "missing-check" });
 		expect(readFileSync(join(dir, "fixture.txt"), "utf8")).toBe("before\nafter\n");
-		expect(states[0].messages.filter(message => message.role === "toolResult")).toHaveLength(2);
+		expect(states[0].messages).toHaveLength(1);
+		expect(JSON.stringify(states[0].messages)).toContain("Current unresolved finding IDs: missing-check");
+		expect(JSON.stringify(states[0].messages)).not.toContain("before\\nafter");
 	} finally { await pool.freeze(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("completed review cycles discard bulky transcripts before the next request", async () => {
+	const preset = defaultConfig().presets.default; preset.reviewers = preset.reviewers.slice(0, 1);
+	const contexts: Context[] = [];
+	const pool = new ReviewPool(preset, [newReviewer()], process.cwd(), async (_index, context) => {
+		contexts.push(structuredClone(context));
+		return report(contexts.length);
+	}, () => true);
+	pool.configureScope("Keep this task scope");
+	try {
+		expect((await pool.checkpoint(1, `Large evidence: ${"x".repeat(40_000)}`)).warnings).toEqual([]);
+		expect((await pool.checkpoint(2, "Small follow-up")).warnings).toEqual([]);
+		const sizes = contexts.map(context => JSON.stringify(context.messages).length);
+		expect(sizes[0]).toBeGreaterThan(40_000);
+		expect(sizes[1]).toBeLessThan(2_000);
+		expect(JSON.stringify(contexts[1].messages)).toContain("Keep this task scope");
+		expect(JSON.stringify(contexts[1].messages)).not.toContain("xxxxxxxxxxxxxxxx");
+	} finally { await pool.freeze(); }
 });
 
 test("forbidden tool calls fail before mutation and do not clear existing concerns", async () => {

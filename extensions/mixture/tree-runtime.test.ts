@@ -34,8 +34,8 @@ test("real Pi tree navigation starts the selected branch without stale reviewer 
 					const revision = Number(JSON.stringify(context.messages.filter(message => message.role === "user").at(-1)).match(/Review requested at revision (\d+)/)?.[1]);
 					const findings = has(context, "First branch task") ? [{ id: "old-branch-nit", severity: "nit", summary: "Only applies to the abandoned branch" }] : [];
 					content = tool("mixture_review", { revision, findings });
-				} else if (model.id === "writer") content = tool("mixture_control", { action: "report", report: "First branch work completed." });
-				else if (has(context, "First branch task") && !has(context, "Writer report")) content = tool("mixture_control", { action: "delegate", task: "Complete first branch work", successCriteria: ["Report completion"] });
+				} else if (model.id === "writer") content = tool("mixture_control", { action: "report", report: "Selected branch work completed." });
+				else if (!has(context, "Writer completion report")) content = tool("mixture_control", { action: "delegate", task: has(context, "Second branch task") ? "Complete second branch work" : "Complete first branch work", successCriteria: ["Report completion"] });
 				else content = [{ type: "text", text: has(context, "Second branch task") ? "Second branch completed cleanly." : "First branch completed." }];
 				const stream = createAssistantMessageEventStream();
 				emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content, usage: { ...emptyUsage(), input: 1, output: 1, totalTokens: 2 },

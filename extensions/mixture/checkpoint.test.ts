@@ -32,6 +32,8 @@ test("version 3 checkpoints store small deltas and restore their full state", ()
 	manager.appendCustomEntry(CHECKPOINT, snapshot);
 	const after = structuredClone(before);
 	after.revision = 1;
+	after.writerRetries = 1;
+	after.writerReportRejections = 2;
 	after.lead.messages.push({ role: "user", content: "small follow-up", timestamp: 2 });
 	const delta = encodeCheckpoint(cwd, "turn", after, before);
 	expect(delta.kind).toBe("delta");

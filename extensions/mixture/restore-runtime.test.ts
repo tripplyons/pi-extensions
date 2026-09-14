@@ -26,9 +26,11 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [
+			{ actor: "lead", content: tool("delegate-first", "mixture_control", { action: "delegate", task: "Change fixture.txt", successCriteria: ["fixture.txt contains after"] }) },
 			{ actor: "writer", content: tool("edit", "edit", { path: "fixture.txt", oldText: "before", newText: "after" }) },
 			{ actor: "writer", content: text("Edited fixture.txt. No unrelated files changed.") },
 			{ actor: "lead", content: text("Changed fixture.txt.") },
+			{ actor: "lead", content: tool("delegate-second", "mixture_control", { action: "delegate", task: "Inspect the current fixture", successCriteria: ["Report the current contents without changing them"] }) },
 			{ actor: "writer", content: tool("reread", "read", { path: "fixture.txt" }) },
 			{ actor: "writer", content: text("Read the current file. The manual edit remains.") },
 			{ actor: "lead", content: text("Read the current file. Your manual edit remains.") },
@@ -94,8 +96,8 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		expect(readFileSync(join(dir, "fixture.txt"), "utf8")).toBe("after + manual edit\n");
 		const resumed = requests.find(request => JSON.stringify(request.context.messages).includes("session restored"))!;
 		const resumedContext = JSON.stringify(resumed.context.messages);
+		expect(resumed.id).toBe("lead");
 		expect(resumedContext).toContain("Inspect the current fixture");
-		expect(resumedContext).toContain("Writer report");
 		expect(resumedContext).not.toContain('"oldText":"before"');
 		const restoredEntries = session.sessionManager.getEntries();
 		const latest = restoredEntries.findLast(entry => entry.type === "custom" && entry.customType === CHECKPOINT)!;

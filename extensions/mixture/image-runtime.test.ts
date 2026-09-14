@@ -13,11 +13,10 @@ const image: ImageContent = { type: "image", mimeType: "image/png", data: "iVBOR
 const hasImage = (context: Context) => context.messages.some(message => typeof message.content !== "string" && message.content.some(block => block.type === "image" && block.data === image.data));
 const tool = (name: string, args: Record<string, unknown>): AssistantMessage["content"] => [{ type: "toolCall", id: crypto.randomUUID(), name, arguments: args }];
 
-for (const { textOnlyReviewer, delegate } of [
-	{ textOnlyReviewer: false, delegate: true },
-	{ textOnlyReviewer: true, delegate: true },
-	{ textOnlyReviewer: false, delegate: false },
-]) test(`real Pi image evidence reaches roles (textOnly=${textOnlyReviewer}, delegate=${delegate})`, async () => {
+for (const { textOnlyReviewer } of [
+	{ textOnlyReviewer: false },
+	{ textOnlyReviewer: true },
+]) test(`real Pi image evidence reaches roles (textOnly=${textOnlyReviewer})`, async () => {
 	const dir = mkdtempSync(join(tmpdir(), "mixture-image-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = dir;
@@ -41,7 +40,7 @@ for (const { textOnlyReviewer, delegate } of [
 					const revision = Number(JSON.stringify(context.messages.filter(message => message.role === "user").at(-1)).match(/Review requested at revision (\d+)/)?.[1]);
 					content = tool("mixture_review", { revision, findings: [], notes: "Image evidence was retained and inspected." });
 				} else if (model.id === "writer") content = tool("mixture_control", { action: "report", report: "Inspected the attached image without changing files." });
-				else if (++leadCalls === 1 && delegate) content = tool("mixture_control", { action: "delegate", task: "Inspect the attached image", successCriteria: ["Preserve image evidence"] });
+				else if (++leadCalls % 2 === 1) content = tool("mixture_control", { action: "delegate", task: "Inspect the attached image", successCriteria: ["Preserve image evidence"] });
 				else content = [{ type: "text", text: "The image was inspected without changing files." }];
 				const stream = createAssistantMessageEventStream();
 				emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content,

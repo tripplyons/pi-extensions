@@ -31,6 +31,7 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		const requests: Array<{ id: string; context: Context }> = [];
 		const billed: Usage[] = [];
 		let leadCalls = 0;
+		let writerCalls = 0;
 		const provider: Provider = {
 			id: "fixture", name: "Fixture", auth: { apiKey: { name: "Fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
 			getModels: () => ["lead", "writer", "reviewer-a", "reviewer-b"].map(id => find("fixture", id)!),
@@ -56,9 +57,13 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 						const lastUser = context.messages.findLastIndex(message => message.role === "user");
 						const request = context.messages[lastUser];
 						const revision = Number(JSON.stringify(request).match(/Review requested at revision (\d+)/)?.[1]);
+						const tactical = context.tools?.every(tool => tool.name === "mixture_review");
 						const read = context.messages.slice(lastUser + 1).findLast(message => message.role === "toolResult" && message.toolName === "read");
-						if (!read) message.content = tool("read", { path: "answer.ts" });
-						else message.content = tool("mixture_review", { revision, findings: JSON.stringify(read).includes("(x) => x;") ? [{ id: "negative-input", severity: "concern", summary: "Negative numbers remain negative", path: "answer.ts", evidence: "abs(-2) returns -2" }] : [] });
+						if (!tactical && !read) message.content = tool("read", { path: "answer.ts" });
+						else {
+							const evidence = tactical ? JSON.stringify(context.messages) : JSON.stringify(read);
+							message.content = tool("mixture_review", { revision, findings: evidence.includes("(x) => x;") ? [{ id: "negative-input", severity: "concern", summary: "Negative numbers remain negative", path: "answer.ts", evidence: "abs(-2) returns -2" }] : [] });
+						}
 					}
 				} else if (model.id === "lead") {
 					leadCalls++;
@@ -66,9 +71,11 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 					else if (JSON.stringify(context.messages).includes("Negative numbers remain negative") && readFileSync(join(dir, "answer.ts"), "utf8") === bad) message.content = tool("mixture_control", { action: "delegate", task: "Correct the negative-input defect in answer.ts", successCriteria: ["abs(-2) is 2"] });
 					else message.content = [{ type: "text", text: "Implemented abs in answer.ts." }];
 				} else {
+					writerCalls++;
 					const file = existsSync(join(dir, "answer.ts")) ? readFileSync(join(dir, "answer.ts"), "utf8") : undefined;
 					if (!file) message.content = tool("write", { path: "answer.ts", content: mode === "correct" ? bad : good });
-					else if (file === bad && JSON.stringify(context.messages).includes("Correct the negative-input defect")) message.content = tool("write", { path: "answer.ts", content: good });
+					else if (file === bad && JSON.stringify(context.messages).includes("Negative numbers remain negative")) message.content = tool("write", { path: "answer.ts", content: good });
+					else if (mode === "correct" && writerCalls <= 3) message.content = tool("read", { path: "answer.ts" });
 					else message.content = [{ type: "text", text: "Wrote answer.ts. Ready for lead review." }];
 				}
 				if (message.content.some(block => block.type === "toolCall")) message.stopReason = "toolUse";
@@ -103,14 +110,14 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		if (mode !== "abort") {
 			const firstReviewer = requests.findIndex(request => request.id.startsWith("reviewer"));
 			expect(firstReviewer).toBeGreaterThanOrEqual(2);
-			expect(requests.slice(0, firstReviewer).filter(request => request.id === "writer")).toHaveLength(2);
+			expect(requests.slice(0, firstReviewer).filter(request => request.id === "writer")).toHaveLength(mode === "correct" ? 3 : 2);
 			const performance = session.messages.flatMap(message => message.role === "toolResult" ? [(message as any).details?.performanceStats] : []).filter(Boolean).at(-1);
 			expect(performance.requests.writer.count).toBeGreaterThan(0);
 			expect(performance.checkpoints["writer-report"].count).toBeGreaterThan(0);
 		}
 		if (mode === "correct") {
-			expect(leadCalls).toBeGreaterThan(2);
-			expect(JSON.stringify(requests.filter(request => request.id === "lead"))).toContain("Negative numbers remain negative");
+			expect(leadCalls).toBe(2);
+			expect(JSON.stringify(requests.filter(request => request.id === "writer"))).toContain("Negative numbers remain negative");
 		} else if (mode !== "abort") {
 			expect(JSON.stringify(final.content)).toContain("Incomplete review");
 			expect(JSON.stringify(final.content)).toContain(mode === "slow" ? "deadline" : "unavailable");

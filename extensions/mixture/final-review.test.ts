@@ -27,6 +27,7 @@ test("serious findings keep the final-correction loop active; rejected candidate
 		} }) as any,
 	};
 	const state = newState("default", preset);
+	state.delegations = 1;
 	const session = new MixtureSession(preset, registry, state, () => ({ available: true, sessionId: "root", jobs: [] }));
 	const context = { messages: [{ role: "user" as const, content: "Finish", timestamp: 1 }], tools: [controlTool] };
 	const visible: AssistantMessage[] = [];

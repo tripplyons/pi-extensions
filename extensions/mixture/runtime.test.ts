@@ -25,6 +25,7 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [
+			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Change fixture.txt and verify it", constraints: ["Preserve unrelated.txt"], successCriteria: ["fixture.txt contains after", "The verification command passes"] }) },
 			{ actor: "writer", content: tool("edit", "edit", { path: "fixture.txt", oldText: "before", newText: "after" }) },
 			{ actor: "writer", content: tool("read", "read", { path: "fixture.txt" }) },
 			{ actor: "writer", content: tool("verify", "bash", { command: `test "$(< fixture.txt)" = ${denied ? "before" : "after"} && printf verification-passed` }) },
@@ -72,10 +73,10 @@ for (const denied of [false, true]) test(`real Pi tool lifecycle preserves the c
 		expect(events).toContain("call:edit");
 		if (!denied) expect(events).toContain("result:edit:false");
 		expect(session.messages.find(message => message.role === "toolResult" && message.toolCallId === "edit")).toMatchObject({ isError: denied });
-		expect(JSON.stringify(requests[2].context.messages)).toContain(denied ? "Fixture permission denial" : "Successfully replaced");
+		expect(JSON.stringify(requests[3].context.messages)).toContain(denied ? "Fixture permission denial" : "Successfully replaced");
 		expect(session.messages.at(-1)).toMatchObject({ role: "assistant", model: "lead", stopReason: "stop" });
 		expect(JSON.stringify(session.messages.at(-1))).toContain(denied ? "denied" : "verified");
-		expect(session.getSessionStats().tokens.total).toBe(55);
+		expect(session.getSessionStats().tokens.total).toBe(66);
 		expect(JSON.stringify(session.messages)).toContain("verification-passed");
 		expect(existsSync(join(dir, ".git"))).toBe(false);
 		const callsBefore = requests.length;
@@ -100,6 +101,7 @@ test("context marker prevents stale nested usage from retriggering root compacti
 		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 250_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const steps = [
+			{ actor: "lead", content: tool("delegate", "mixture_control", { action: "delegate", task: "Complete the work", successCriteria: ["The request is complete"] }) },
 			{ actor: "writer", content: text("Inspected the request and completed the work.") },
 			{ actor: "lead", content: text("Work completed.") },
 		];
@@ -114,11 +116,11 @@ test("context marker prevents stale nested usage from retriggering root compacti
 				else {
 					const step = steps.shift();
 					if (!step || step.actor !== model.id) throw new Error(`Unexpected role ${model.id}; wanted ${step?.actor}`);
-					content = step.content; input = 225_000;
+					content = step.content; input = model.id === "writer" ? 225_000 : 100;
 				}
 				const stream = createAssistantMessageEventStream();
 				emitMessage(stream, { role: "assistant", api: "fixture", provider: "fixture", model: model.id, content,
-					stopReason: "stop", timestamp: Date.now(), usage: { ...emptyUsage(), input, totalTokens: input } });
+					stopReason: content.some(block => block.type === "toolCall") ? "toolUse" : "stop", timestamp: Date.now(), usage: { ...emptyUsage(), input, totalTokens: input } });
 				return stream;
 			},
 		};
@@ -140,8 +142,9 @@ test("context marker prevents stale nested usage from retriggering root compacti
 		await session.prompt("Complete a small task.");
 		expect(errors).toEqual([]);
 		expect(helpers).toBe(0);
+		expect(steps).toHaveLength(0);
 		expect(session.sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(1);
-		expect(session.getSessionStats().tokens.total - tokensBefore).toBe(450_000);
+		expect(session.getSessionStats().tokens.total - tokensBefore).toBe(225_200);
 		expect(session.getContextUsage()?.tokens).toBeLessThan(10_000);
 	} finally {
 		if (session) { await session.extensionRunner?.emit({ type: "session_shutdown" }); session.dispose(); }

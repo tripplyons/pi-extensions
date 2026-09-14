@@ -34,6 +34,7 @@ Trusted project `.pi/pi-codex-conversion.json` files can override the global pol
 - Local ask-user supplies `ask_user`; do not register npm `@howaboua/pi-ask` alongside it.
 - Code `exec`/`wait`, upstream file replacements, and Remote context management are disabled under this policy.
 - Subagents explicitly load conversion and bg-bash and inherit managed settings. Swarm workers receive private native settings and private shell state. Mixture uses the current session's effective providers and native tool loop.
+- When Mixture settles or detaches, this loader closes conversion's nested role sockets so print-mode processes can exit without waiting for cache expiry.
 - Autoresearch retains its native activation rules. Pi owns compaction.
 
 ## Optional upstream addons
