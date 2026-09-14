@@ -41,6 +41,7 @@ function harness(options: { model?: { reasoning: boolean; thinkingLevelMap?: Rec
 		choose: (value?: string) => {
 			choice = value;
 		},
+		press: (key: string) => component.handleInput(key),
 		confirmFocused: () => component.handleInput("\r"),
 		cancelFocused: () => component.handleInput("\x1b"),
 		options: () => optionsShown,
@@ -68,6 +69,18 @@ describe("thinking selector shortcut", () => {
 	] as const)("opens the TUI picker on the current %s level", async (_position, current, model, expected) => {
 		const run = harness({ mode: "tui", current, model });
 		const invocation = run.invoke();
+		run.confirmFocused();
+		await invocation;
+		expect(run.selected).toEqual([expected]);
+	});
+
+	test.each([
+		["j", "high"],
+		["k", "low"],
+	] as const)("moves with %s in the TUI picker", async (key, expected) => {
+		const run = harness({ mode: "tui", current: "medium", model: { reasoning: true } });
+		const invocation = run.invoke();
+		run.press(key);
 		run.confirmFocused();
 		await invocation;
 		expect(run.selected).toEqual([expected]);

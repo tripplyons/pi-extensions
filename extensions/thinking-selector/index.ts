@@ -1,5 +1,5 @@
 import { getSelectListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SelectList, Text } from "@earendil-works/pi-tui";
+import { matchesKey, SelectList, Text } from "@earendil-works/pi-tui";
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
@@ -45,7 +45,9 @@ async function selectThinkingLevel(
 				list.invalidate();
 			},
 			handleInput(data: string) {
-				list.handleInput(data);
+				if (matchesKey(data, "j")) list.handleInput("\x1b[B");
+				else if (matchesKey(data, "k")) list.handleInput("\x1b[A");
+				else list.handleInput(data);
 				tui.requestRender();
 			},
 		};
