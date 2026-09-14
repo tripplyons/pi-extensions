@@ -56,6 +56,8 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	h.session.newRequest("Fix this without changing unrelated files");
 	const delegated = await h.next();
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra"]);
+	const leadActions = (h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
+	expect(leadActions).toEqual(["delegate", "takeover"]);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
 	await h.finishControl(delegated);
 	expect(h.session.active).toBe("writer");
@@ -110,6 +112,8 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	expect(h.calls).toHaveLength(4);
 	expect(h.calls[0].context.tools?.map(tool => tool.name)).not.toContain("edit");
 	expect(h.calls[1].context.tools?.map(tool => tool.name)).toContain("edit");
+	const writerActions = (h.calls[1].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
+	expect(writerActions).toEqual(["report", "escalate"]);
 	expect(h.calls[1].context.systemPrompt).toContain("Run focused tests before reporting.");
 	expect(h.calls[0].context.systemPrompt).not.toContain("Run focused tests before reporting.");
 	expect(h.calls[1].context.tools?.map(tool => tool.name)).not.toContain("subagent");
@@ -261,17 +265,48 @@ test("lead-to-writer loops do not have a delegation cap", async () => {
 	expect(h.session.active).toBe("lead");
 });
 
-test("steering reaches both roles once without resetting the delegation count", async () => {
-	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })], [call("read1", "read", { path: "test" })], content("Done")]);
+test("the lead assesses steering before updating the persistent writer", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+		[call("update", CONTROL, { action: "update", message: "Preserve the public API while continuing the current plan." })],
+		[call("read1", "read", { path: "test" })],
+		content("Done"),
+	]);
 	await h.finishControl(await h.next());
 	h.context.messages.push({ role: "user", content: "Do not change the public API", timestamp: 2 });
+	const update = await h.next();
+	expect(h.calls.at(-1)?.model).toBe("gpt-6-astra");
+	const steeringActions = (h.calls.at(-1)?.context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
+	expect(steeringActions).toEqual(["update", "takeover"]);
+	expect(update.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "update" } });
+	expect(JSON.stringify(h.state.lead.messages)).toContain("user steering requires lead assessment");
+	await h.finishControl(update);
+	expect(h.session.active).toBe("writer");
+	expect(h.state.owner).toBe("writer");
+	const read = await h.next();
+	h.session.completeTurn([{ role: "toolResult", toolCallId: "read1", toolName: "read", content: content("fixture"), isError: false, timestamp: 1 }], read);
 	await h.next();
-	h.session.completeTurn([{ role: "toolResult", toolCallId: "read1", toolName: "read", content: content("fixture"), isError: false, timestamp: 1 }]);
-	await h.next();
-	for (const actor of ["lead", "writer"] as const) expect(h.state[actor].messages.filter(message => message.role === "user" && message.content === "Do not change the public API")).toHaveLength(1);
-	expect(h.state.brief).toContain("Do not change the public API");
+	expect(h.state.lead.messages.filter(message => message.role === "user" && message.content === "Do not change the public API")).toHaveLength(1);
+	expect(JSON.stringify(h.state.writer.messages)).toContain("Preserve the public API");
+	expect(h.state.writer.messages.some(message => message.role === "user" && message.content === "Do not change the public API")).toBeFalse();
+	expect(h.state.brief).toContain("Preserve the public API");
 	expect(h.state.delegations).toBe(1);
 });
+test("plain lead steering text is converted into an update instead of ending the writer phase", async () => {
+	const h = harness([content("Keep the current implementation, but preserve the public API."), content("Done")]);
+	h.state.initialized = true;
+	h.state.active = "lead";
+	h.state.owner = "writer";
+	h.state.delegations = 1;
+	h.state.task = "Edit";
+	const update = await h.next();
+	expect(update.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "update", message: "Keep the current implementation, but preserve the public API." } });
+	await h.finishControl(update);
+	expect(h.session.active).toBe("writer");
+	expect(h.state.owner).toBe("writer");
+	expect(JSON.stringify(h.state.writer.messages)).toContain("preserve the public API");
+});
+
 test("failed writer and exhausted writer return incomplete reports to the lead", async () => {
 	const failed = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })], []], ["toolUse", "error"]);
 	await failed.finishControl(await failed.next());
@@ -291,18 +326,20 @@ test("failed writer and exhausted writer return incomplete reports to the lead",
 	expect(limited.calls).toHaveLength(2);
 });
 test("a zero-output transient writer failure is retried once before lead escalation", async () => {
-	const h = harness([
-		[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
-		[],
-		content("Completed after retry."),
-	], ["toolUse", "error", "stop"], [undefined, "WebSocket error"]);
-	await h.finishControl(await h.next());
-	const report = await h.next();
-	expect(h.calls).toHaveLength(3);
-	expect(h.state.writerTurns).toBe(2);
-	expect(h.state.writerRetries).toBe(1);
-	expect(JSON.stringify(h.state.writer.messages)).toContain("Harness retry after transient provider failure");
-	expect(report.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "report" } });
+	for (const error of ["WebSocket error", "The operation was aborted due to timeout"]) {
+		const h = harness([
+			[call("delegate", CONTROL, { action: "delegate", task: "Edit", successCriteria: ["Pass"] })],
+			[],
+			content("Completed after retry."),
+		], ["toolUse", "error", "stop"], [undefined, error]);
+		await h.finishControl(await h.next());
+		const report = await h.next();
+		expect(h.calls).toHaveLength(3);
+		expect(h.state.writerTurns).toBe(2);
+		expect(h.state.writerRetries).toBe(1);
+		expect(JSON.stringify(h.state.writer.messages)).toContain("Harness retry after transient provider failure");
+		expect(report.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "report" } });
+	}
 });
 
 test("truncated tool batches and cancelled calls never grant a lease", async () => {

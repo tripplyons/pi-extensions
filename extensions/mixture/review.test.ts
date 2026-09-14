@@ -78,6 +78,8 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		expect(JSON.stringify(requests[0].context.messages)).toContain("tactical incremental review");
 		expect(requests[0].context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
 		expect(requests[0].context.systemPrompt).toContain("delta-only");
+		expect(requests[0].context.systemPrompt).toContain("merely because implementation or final verification is still underway");
+		expect(requests[0].context.systemPrompt).toContain("merely unfinished is neither a finding nor an incomplete review");
 		pool.prime(2, "Tests passed after the edit");
 		requests[0].result.resolve(report(1));
 		await new Promise(resolve => setTimeout(resolve, 0));

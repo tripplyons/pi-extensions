@@ -4,9 +4,10 @@ Mixture is a native Pi model with a lead, a writer and independent read-only
 reviewers. Select `mixture/default` through `/model`. Requires Pi 0.85.1 or newer.
 Selecting an ordinary model does not start collaborators.
 
-The lead receives each complete user request first, defines its constraints and
-acceptance criteria, and initiates the writer. The writer then plans, edits and
-tests in your current checkout, including uncommitted and untracked files. The
+The lead receives each complete user request first, settles consequential choices,
+defines a concrete plan, constraints and acceptance criteria, and initiates the
+writer. The writer then plans, edits and tests in your current checkout, including
+uncommitted and untracked files. The
 harness schedules read-only review during that work and delivers findings directly
 to the writer. It returns control to the lead less often for strategy, ambiguity,
 completion assessment and the user-facing answer. No Git repository, worktree or
@@ -63,9 +64,11 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
 
 Lead and writer calls use the normal Pi tool loop, including validation,
 permission hooks, visible tool output and recorded results. `mixture_control`
-coordinates delegation, reports and takeover; it is active only in Mixture.
-Controls cannot share a batch with other tools. Unknown effectful tools require
-the writer lease. Nested editing-agent launches and execution while attached to
+coordinates delegation, in-flight writer updates, reports and takeover; it is active only in Mixture.
+Controls cannot share a batch with other tools. Its schema exposes only actions
+valid for the current role and lease: writer report/escalation, lead steering
+update/takeover, or lead delegation/takeover. Unknown effectful tools require the
+writer lease. Nested editing-agent launches and execution while attached to
 a managed swarm are blocked.
 
 Reviewers have separate histories and only Pi's native `read`, `grep`, `find`
@@ -79,7 +82,10 @@ writer tool batches and coalesces newer evidence while a review is running.
 Incremental cycles focus on changed evidence and unresolved findings; completion
 and handoff checkpoints audit the full scope. Completed findings are inserted into
 the writer's private history automatically. The writer corrects supported findings
-without a lead round trip, and later review must explicitly recheck them.
+without a lead round trip, and later review must explicitly recheck them. New user
+steering pauses inference at a model boundary for lead assessment, then the lead
+injects one consolidated update into the existing writer context without starting
+a replacement phase.
 
 After `leadEveryReviews` completed scheduled review cycles, the harness snapshots
 current findings plus a bounded tool/status milestone digest at a safe tool
@@ -89,8 +95,8 @@ earlier checkpoint. A completion report with supported concerns is withheld so
 the reviewer can return them directly to the writer. After three rejected
 completion reports in one delegation, the harness forces lead assessment instead
 of allowing an unbounded local correction stall; a new delegation renews the
-counter. Models supply briefs, work and judgments, but cannot change the review
-cadence or bypass lease and handoff checks. If the lead takes over editing, each
+counter. Models supply briefs, work and judgments, but cannot change the review cadence or
+bypass lease and handoff checks. If the lead takes over editing, each
 mutation batch requests a review as well; requests coalesce while the reviewer is
 busy so final review can overlap the lead's correction work.
 
@@ -157,8 +163,8 @@ continue until completion or cancellation. In-flight estimated costs are reserve
 before admitting another request, including concurrent reviewers. Estimates use
 configured model prices; they are not guaranteed billing ceilings. A configured
 limit stops the affected operation with an explicit reason. A zero-output writer
-connection failure gets one same-role retry before the harness escalates it to the
-lead; other provider failures are not retried here.
+connection or request-timeout failure gets one same-role retry before the harness
+escalates it to the lead; other provider failures are not retried here.
 
 ## Sessions, context and usage
 
