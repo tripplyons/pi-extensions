@@ -102,6 +102,7 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls", "web_run", "get_goal"]
 const LEAD_SESSION_TOOLS = new Set(["ask_user", "create_goal", "update_goal"]);
 const CHECKOUT_NEUTRAL_TOOLS = new Set([...READ_TOOLS, ...LEAD_SESSION_TOOLS, "bg_process", "sleep"]);
 const NESTED_AGENT_TOOLS = new Set(["subagent", "subagent_process"]);
+const MAX_FINAL_CORRECTIONS_PER_REVISION = 2;
 
 export class MixtureSession {
 	readonly state: MixtureState;
@@ -579,7 +580,14 @@ export class MixtureSession {
 		switch (input.action) {
 			case "delegate": {
 				if (this.state.owner === "writer") throw new Error("The writer already holds the lease; assess steering with update or explicitly take over");
-				const delegated = delegatePhase(this.state.phase, input);
+				const previousPhase = this.state.phase;
+				const delegated = delegatePhase(previousPhase, input);
+				if (delegated.phase.id !== previousPhase?.id) {
+					await this.reviews.startPhase();
+					current();
+					this.state.reviewSummary = undefined;
+					this.state.finalCorrections = 0;
+				}
 				this.state.phase = delegated.phase;
 				this.state.delegations++;
 				this.state.writerTurns = 0;
@@ -685,7 +693,7 @@ export class MixtureSession {
 				this.state.reviewSummary = this.reviewSummary(review);
 				this.reviews.markAlerted(review.findings);
 				const serious = review.findings.filter(finding => finding.severity !== "nit");
-				if (serious.length) {
+				if (serious.length && this.state.finalCorrections < MAX_FINAL_CORRECTIONS_PER_REVISION) {
 					this.state.finalCorrections++;
 					this.state.receipts.find(receipt => receipt.id === pending.receipt)!.delivery = "nested";
 					this.state.final = undefined;
@@ -698,7 +706,7 @@ export class MixtureSession {
 						this.state.warning = [this.state.warning, this.state.reviewSummary].filter(Boolean).join("\n");
 						pending.message.content.push({ type: "text", text: `\n\n${this.state.warning}` });
 					}
-					result = `Final review complete${review.warnings.length ? " with incomplete-review warnings" : ""}.\n${this.state.reviewSummary}`;
+					result = `Final review complete${serious.length ? " with unresolved findings after repeated same-revision reassessment" : review.warnings.length ? " with incomplete-review warnings" : ""}.\n${this.state.reviewSummary}`;
 				}
 				break;
 			}
@@ -719,7 +727,10 @@ export class MixtureSession {
 			else if (result.isError) this.note(origin.actor, `[Mixture control failed] ${JSON.stringify(result.content)}. Reconcile this failure before continuing; do not blindly repeat it.`);
 			const job = result.details?.job;
 			if (job?.id && job.status === "running") this.state.jobs[job.id] = origin.actor;
-			if (result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName)) this.state.revision++;
+			if (result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName)) {
+				this.state.revision++;
+				this.state.finalCorrections = 0;
+			}
 			delete this.state.origins[result.toolCallId];
 		}
 		if (message && !this.signal.aborted && !this.requestOptions.signal?.aborted && results.some(result => result.toolName !== CONTROL)) {

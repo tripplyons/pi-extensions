@@ -101,6 +101,26 @@ export class ReviewPool {
 		this.reportOnly.clear();
 		for (const state of this.states) { state.requestCalls = 0; state.warning = undefined; state.imageWarning = undefined; state.status = "idle"; }
 	}
+	async startPhase() {
+		await this.freeze();
+		this.frozen = false;
+		this.scope = undefined;
+		this.requested.clear();
+		this.reportOnly.clear();
+		for (const state of this.states) {
+			state.messages = [];
+			state.pending = [];
+			state.findings = [];
+			state.revision = -1;
+			state.sequence = this.sequence;
+			state.requestCalls = 0;
+			state.batchCalls = 0;
+			state.status = "idle";
+			state.warning = undefined;
+			state.imageWarning = undefined;
+		}
+		this.notify();
+	}
 	private queue(revision: number, content: string, images: ImageContent[] | undefined, start: boolean, checkpoint = false) {
 		this.frozen = false;
 		const update = { sequence: ++this.sequence, revision, content, images, ...(checkpoint ? { checkpoint: true } : {}) };

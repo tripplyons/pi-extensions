@@ -5,7 +5,7 @@ import { addUsage, emitMessage, emptyUsage, type Registry, type RoleStreamOption
 import { CONTROL, controlTool, MixtureSession, newState } from "./session.ts";
 import { assessPhase, delegatePhase } from "./phase.ts";
 
-test("serious findings keep the final-correction loop active; rejected candidates stay hidden and are charged once", async () => {
+function fixture() {
 	const preset = defaultConfig().presets.default;
 	preset.lead = "openai-codex/lead"; preset.writer.model = "openai-codex/writer";
 	preset.reviewers = [{ model: "openai-codex/reviewer", thinking: "low" }];
@@ -38,31 +38,58 @@ test("serious findings keep the final-correction loop active; rejected candidate
 	const session = new MixtureSession(preset, registry, state, () => ({ available: true, sessionId: "root", jobs: [] }));
 	session.newRequest("Continue the same task");
 	const context = { messages: [{ role: "user" as const, content: "Finish", timestamp: 1 }], tools: [controlTool] };
+	return { state, session, context, brief, roleOptions, reviewContexts, counts: () => ({ leadCalls, reviewCalls }) };
+}
+
+async function finishControl(session: MixtureSession, message: AssistantMessage, billed = emptyUsage()) {
+	const call = message.content.find(block => block.type === "toolCall");
+	expect(call?.name).toBe(CONTROL);
+	const output = await session.control(call!.id, call!.arguments as any);
+	addUsage(billed, output.usage);
+	const result: ToolResultMessage = { role: "toolResult", toolName: CONTROL, toolCallId: call!.id, ...output, timestamp: Date.now(), isError: false };
+	session.completeTurn([result], message);
+	return output;
+}
+
+test("repeated serious findings at one checkout revision are disclosed instead of looping forever", async () => {
+	const h = fixture();
 	const visible: AssistantMessage[] = [];
 	const billed = emptyUsage();
 	try {
-		for (let turn = 0; turn < 4; turn++) {
-			const message = await session.next(context, { sessionId: "root", serviceTier: "priority" } as RoleStreamOptions);
+		for (let turn = 0; turn < 3; turn++) {
+			const message = await h.session.next(h.context, { sessionId: "root", serviceTier: "priority" } as RoleStreamOptions);
 			visible.push(message); addUsage(billed, message.usage);
-			const call = message.content.find(block => block.type === "toolCall");
-			expect(call?.name).toBe(CONTROL);
-			const output = await session.control(call!.id, call!.arguments as any);
-			addUsage(billed, output.usage);
-			const result: ToolResultMessage = { role: "toolResult", toolName: CONTROL, toolCallId: call!.id, ...output, timestamp: Date.now(), isError: false };
-			session.completeTurn([result], message);
+			const output = await finishControl(h.session, message, billed);
+			if (turn < 2) expect((output.content[0] as { text: string }).text).toContain("withheld");
+			else expect((output.content[0] as { text: string }).text).toContain("unresolved findings after repeated same-revision reassessment");
 		}
-		expect(leadCalls).toBe(4);
-		expect(reviewCalls).toBe(4);
-		expect(state.delegations).toBe(0);
-		expect(state.phase.failedCorrections).toBe(2);
-		expect(reviewContexts.every(context => context.includes(brief.successCriteria[0]))).toBe(true);
-		expect(roleOptions).toHaveLength(8);
-		expect(roleOptions.every(options => options.serviceTier === "priority")).toBe(true);
-		expect(state.finalCorrections).toBe(4);
+		const released = await h.session.next(h.context, { sessionId: "root", serviceTier: "priority" } as RoleStreamOptions);
+		const { leadCalls, reviewCalls } = h.counts();
+		expect(leadCalls).toBe(3);
+		expect(reviewCalls).toBe(3);
+		expect(h.reviewContexts.every(context => context.includes(h.brief.successCriteria[0]))).toBe(true);
+		expect(h.roleOptions).toHaveLength(6);
+		expect(h.roleOptions.every(options => options.serviceTier === "priority")).toBe(true);
+		expect(h.state.finalCorrections).toBe(2);
 		expect(visible.every(message => message.content.every(block => block.type === "toolCall"))).toBe(true);
-		expect(JSON.stringify(state.lead.messages)).toContain("Verification is still missing");
-		expect(billed.totalTokens).toBe(8);
-		expect(session.usage.totalTokens).toBe(8);
-		expect(state.receipts.every(receipt => receipt.delivery === "reported")).toBe(true);
-	} finally { await session.abort(); }
+		expect(JSON.stringify(released)).toContain("Candidate 3");
+		expect(JSON.stringify(released)).toContain("Verification is still missing");
+		expect(JSON.stringify(h.state.lead.messages)).toContain("Verification is still missing");
+		expect(billed.totalTokens).toBe(6);
+		expect(h.session.usage.totalTokens).toBe(6);
+		expect(h.state.receipts.every(receipt => receipt.delivery === "reported")).toBe(true);
+	} finally { await h.session.abort(); }
+});
+
+test("new effectful-tool evidence renews final-review corrections", async () => {
+	const h = fixture();
+	try {
+		for (let turn = 0; turn < 2; turn++) await finishControl(h.session, await h.session.next(h.context, { sessionId: "root" }));
+		expect(h.state.finalCorrections).toBe(2);
+		h.state.owner = "lead";
+		h.state.origins.fix = { actor: "lead", synthetic: false };
+		h.session.completeTurn([{ role: "toolResult", toolName: "edit", toolCallId: "fix", content: [{ type: "text", text: "fixed" }], isError: false, timestamp: 1 }]);
+		expect(h.state.revision).toBe(1);
+		expect(h.state.finalCorrections).toBe(0);
+	} finally { await h.session.abort(); }
 });

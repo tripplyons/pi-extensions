@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { defaultConfig } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { newReviewer } from "./review.ts";
-import { delegatePhase } from "./phase.ts";
+import { assessPhase, delegatePhase } from "./phase.ts";
 import { CONTROL, MixtureSession, controlTool, newState } from "./session.ts";
 
 const call = (id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"][number] => ({ type: "toolCall", id, name, arguments: args });
@@ -282,6 +282,49 @@ test("running jobs and unknown background status block writer handoff", async ()
 	await h.finishControl(message);
 	expect(h.state.owner).toBe("writer");
 });
+test("a fresh phase drops findings from the closed phase but preserves reviewer accounting", async () => {
+	const h = harness([]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	const reviewer = newReviewer();
+	reviewer.calls = 3;
+	reviewer.usage = { ...emptyUsage(), output: 7, totalTokens: 7 };
+	reviewer.messages.push({ role: "user", content: "Old phase review", timestamp: 1 });
+	reviewer.findings.push({ id: "old-scope", reviewer: 0, model: "fixture/reviewer", severity: "concern", summary: "Only applies to the completed phase", revision: 4, alerted: true });
+	h.state.reviewers.push(reviewer);
+	const oldPhase = delegatePhase(undefined, { task: "Old phase", nextAction: "Finish old work", successCriteria: ["Old work passes"] }).phase;
+	h.state.phase = assessPhase(oldPhase, { phaseId: oldPhase.id, assessment: "complete", evidence: "Old work passed" });
+	h.state.reviewSummary = "Old unresolved review advice";
+	h.state.finalCorrections = 2;
+	h.state.origins.fresh = { actor: "lead", synthetic: false };
+
+	await h.session.control("fresh", { action: "delegate", task: "New phase", nextAction: "Inspect the new request", successCriteria: ["New request is reported"] });
+
+	expect(h.state.phase?.id).not.toBe(oldPhase.id);
+	expect(reviewer.findings).toEqual([]);
+	expect(reviewer.messages).toEqual([]);
+	expect(reviewer.pending).toHaveLength(1);
+	expect(reviewer.calls).toBe(3);
+	expect(reviewer.usage.totalTokens).toBe(7);
+	expect(h.state.reviewSummary).toBeUndefined();
+	expect(h.state.finalCorrections).toBe(0);
+});
+
+test("a continuation retains findings from its current phase", async () => {
+	const h = harness([]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	const reviewer = newReviewer();
+	reviewer.findings.push({ id: "current-scope", reviewer: 0, model: "fixture/reviewer", severity: "concern", summary: "Still applies", revision: 1, alerted: true });
+	h.state.reviewers.push(reviewer);
+	const phase = delegatePhase(undefined, { task: "Current phase", nextAction: "Inspect it", successCriteria: ["It passes"] }).phase;
+	h.state.phase = assessPhase(phase, { phaseId: phase.id, assessment: "progress", evidence: "The failure was reproduced" });
+	h.state.origins.continue = { actor: "lead", synthetic: false };
+
+	await h.session.control("continue", { action: "delegate", phaseId: phase.id, task: "Continue current phase", nextAction: "Apply the correction", successCriteria: ["It passes"] });
+
+	expect(h.state.phase?.id).toBe(phase.id);
+	expect(reviewer.findings.map(finding => finding.id)).toEqual(["current-scope"]);
+});
+
 test("verified phase completions do not have a delegation cap", async () => {
 	const h = harness([]);
 	for (let index = 0; index < 12; index++) {

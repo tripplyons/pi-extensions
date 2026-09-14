@@ -112,13 +112,21 @@ not inflate later cycles. Findings carry model identity, severity, evidence and 
 execution revision. Reviewers audit each explicit criterion but treat optional
 generality outside the task as a nit at most. Review is advice, not a vote or user
 authority. The default preset uses one reviewer. A candidate final answer is
-withheld until bounded final review completes. When the checkout revision already
+withheld until bounded final review completes. When the execution revision already
 has a clean completed review, writer-completion and candidate reviews use a single
 report-only request rather than another file-reading batch.
 Failed or incomplete review is disclosed, never counted as clean. A structured
 incomplete report may explicitly resolve an earlier finding it rechecked; findings
-without an explicit disposition remain open. This prevents an unrelated missing
-check from pinning already-corrected advice forever.
+without an explicit disposition remain open within the current phase. Starting a
+fresh phase clears the closed phase's findings and private review context while
+preserving cumulative usage and request accounting. Continuations of the same
+phase keep their findings.
+
+A serious final-review result can trigger two lead reassessments at the same
+execution revision. If serious findings remain after both, the harness releases the
+next candidate with those findings attached instead of spending indefinitely
+without new execution evidence. A new effectful-tool revision renews the
+reassessment allowance, so productive correction work remains unbounded.
 
 Images remain available to roles that support them. Text-only roles receive an
 explicit omitted-image warning; their review must not be treated as visual
@@ -222,9 +230,11 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 
 Output limits are clamped to each provider's model limit. Steering does not reset
 request limits. Writer stream activity renews only the idle deadline; the absolute
-writer ceiling and outer cancellation remain authoritative. Lead-to-writer delegations, reviewer batches across checkpoints,
-and final-answer correction cycles have no cumulative cap. Productive iterations
-can continue, but equivalent stalled delegations are subject to the phase gate. In-flight estimated costs are reserved
+writer ceiling and outer cancellation remain authoritative. Lead-to-writer
+delegations and reviewer batches across checkpoints have no cumulative cap.
+Productive iterations can continue, but equivalent stalled delegations are subject
+to the phase gate and unchanged-revision final reassessment is bounded as described
+above. In-flight estimated costs are reserved
 before admitting another request, including concurrent reviewers. Estimates use
 configured model prices; they are not guaranteed billing ceilings. A configured
 limit stops the affected operation with an explicit reason. A zero-output writer
