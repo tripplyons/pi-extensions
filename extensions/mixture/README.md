@@ -101,6 +101,8 @@ the latest eight remain in phase state and later continuation briefs.
 After `leadEveryReviews` completed scheduled review cycles, the harness snapshots
 current findings plus a bounded tool/status milestone digest at a safe tool
 boundary and transfers control to the lead without starting a redundant review.
+When reviewers are disabled, the same checkpoint timing is preserved: each
+`reviewEveryBatches` effectful writer batches counts as one cadence interval.
 Completion reports, unresolved escalations and review failures can cause an
 earlier checkpoint. Completion and escalation handoffs include a bounded tail of
 recorded tool outcomes alongside the writer's report, so lead assessment does not

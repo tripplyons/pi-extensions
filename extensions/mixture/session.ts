@@ -503,20 +503,30 @@ export class MixtureSession {
 		return `[Recorded writer execution evidence]\n${this.progressEvidence() || "- No completed writer tool batches were recorded."}`;
 	}
 	private prepareWriterTurn() {
-		if (this.state.active !== "writer" || !this.state.reviewers.length) return;
+		if (this.state.active !== "writer") return;
 		const sequences = this.state.writerReviewSequences ?? [];
-		const delivered = this.state.writerReviewsDelivered ?? 0;
-		const completed = sequences.filter(sequence => this.state.reviewers.every(state => state.sequence >= sequence)).length;
-		const incomplete = delivered < sequences.length && this.state.reviewers.some(state => state.status === "incomplete");
-		if (completed <= delivered && !incomplete) return;
-		this.state.writerReviewsDelivered = incomplete ? sequences.length : completed;
-		const newlyDelivered = this.state.writerReviewsDelivered - delivered;
-		this.recordCoordination("feedback-delivered", sequences[this.state.writerReviewsDelivered - 1], newlyDelivered);
-		const review = { revision: this.state.revision, findings: this.reviews.findings, warnings: this.reviewWarnings() };
-		const summary = this.reviewSummary(review);
-		this.state.reviewSummary = summary;
-		this.replaceNote("writer", "[Harness reviewer feedback", `[Harness reviewer feedback after ${this.state.writerReviewsDelivered} scheduled review cycle(s)]\n${summary}\nAddress supported findings within the writer phase. Routine review does not require a lead check-in.`);
-		if (!incomplete && completed < this.preset.limits.leadEveryReviews) return;
+		let checkpointCount: number;
+		let checkpointLabel: string;
+		if (this.state.reviewers.length) {
+			const delivered = this.state.writerReviewsDelivered ?? 0;
+			const completed = sequences.filter(sequence => this.state.reviewers.every(state => state.sequence >= sequence)).length;
+			const incomplete = delivered < sequences.length && this.state.reviewers.some(state => state.status === "incomplete");
+			if (completed <= delivered && !incomplete) return;
+			this.state.writerReviewsDelivered = incomplete ? sequences.length : completed;
+			const newlyDelivered = this.state.writerReviewsDelivered - delivered;
+			this.recordCoordination("feedback-delivered", sequences[this.state.writerReviewsDelivered - 1], newlyDelivered);
+			const review = { revision: this.state.revision, findings: this.reviews.findings, warnings: this.reviewWarnings() };
+			const summary = this.reviewSummary(review);
+			this.state.reviewSummary = summary;
+			this.replaceNote("writer", "[Harness reviewer feedback", `[Harness reviewer feedback after ${this.state.writerReviewsDelivered} scheduled review cycle(s)]\n${summary}\nAddress supported findings within the writer phase. Routine review does not require a lead check-in.`);
+			if (!incomplete && completed < this.preset.limits.leadEveryReviews) return;
+			checkpointCount = this.state.writerReviewsDelivered;
+			checkpointLabel = "scheduled review cycles";
+		} else {
+			checkpointCount = Math.floor((this.state.writerBatches ?? 0) / this.preset.limits.reviewEveryBatches);
+			if (checkpointCount < this.preset.limits.leadEveryReviews) return;
+			checkpointLabel = "review-cadence intervals";
+		}
 		try { this.requireNoJobs(); }
 		catch (error) {
 			const warning = `Harness lead checkpoint deferred until writer jobs are reconciled: ${String(error)}`;
@@ -529,7 +539,7 @@ export class MixtureSession {
 		this.recordCoordination("lead-checkpoint", sequences[this.state.writerReviewsDelivered - 1]);
 		this.state.reviewSummary = this.reviewSummary(checkpoint);
 		this.reviews.markAlerted(checkpoint.findings);
-		this.replaceNote("lead", "[Harness writer-progress checkpoint", `[Harness writer-progress checkpoint, execution revision ${this.state.revision}]\nThe writer has not claimed completion. The harness paused it after ${this.state.writerReviewsDelivered} scheduled review cycles and ${this.state.writerTurns} writer responses in this phase.\n\n${this.progressEvidence()}\n\n${this.state.reviewSummary}\n\nAssess this attempt once with phaseId and evidence before delegating a continuation. Preserve the failed-correction count; do not rename the phase to reset it. Take over, ask for a required decision, or finish only if the task is actually complete.`);
+		this.replaceNote("lead", "[Harness writer-progress checkpoint", `[Harness writer-progress checkpoint, execution revision ${this.state.revision}]\nThe writer has not claimed completion. The harness paused it after ${checkpointCount} ${checkpointLabel} and ${this.state.writerTurns} writer responses in this phase.\n\n${this.progressEvidence()}\n\n${this.state.reviewSummary}\n\nAssess this attempt once with phaseId and evidence before delegating a continuation. Preserve the failed-correction count; do not rename the phase to reset it. Take over, ask for a required decision, or finish only if the task is actually complete.`);
 		this.state.active = "lead";
 		this.state.owner = undefined;
 	}

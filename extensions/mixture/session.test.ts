@@ -261,6 +261,32 @@ test("a direct status question is answered without converting it into writer ste
 	expect(h.state.writer.messages).toEqual([]);
 });
 
+test("the harness keeps the lead checkpoint cadence without reviewers", async () => {
+	const h = harness([content("Continue with a narrower phase.")]);
+	h.preset.limits.reviewEveryBatches = 2;
+	h.preset.limits.leadEveryReviews = 3;
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	h.state.delegations = 1;
+	h.state.task = "Complete the fixture";
+	h.state.phase = delegatePhase(undefined, { task: "Complete the fixture", nextAction: "Edit the fixture", successCriteria: ["Fixture passes"] }).phase;
+	const result = (id: string): ToolResultMessage => ({ role: "toolResult", toolCallId: id, toolName: "edit", content: content("ok"), isError: false, timestamp: 1 });
+	for (let batch = 1; batch <= 6; batch++) {
+		const id = `edit-${batch}`;
+		h.state.origins[id] = { actor: "writer", synthetic: false };
+		h.session.completeTurn([result(id)], { role: "assistant", provider: "fixture", model: "writer", api: "fixture", content: [call(id, "edit", {})], stopReason: "toolUse", usage: emptyUsage(), timestamp: 1 });
+		if (batch === 5) expect(h.session.active).toBe("writer");
+	}
+	const checkpoint = await h.next();
+	expect(h.calls.map(request => request.model)).toEqual(["gpt-6-astra"]);
+	expect(h.session.active).toBe("lead");
+	expect(h.state.owner).toBeUndefined();
+	expect(checkpoint.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "checkpoint" } });
+	expect(JSON.stringify(h.state.lead.messages)).toContain("after 3 review-cadence intervals");
+	expect(JSON.stringify(h.state.lead.messages)).toContain("Independent reviewers disabled");
+	expect(h.session.performanceStats().coordination).toMatchObject({ deliveredReviews: 0, leadCheckpoints: 1 });
+});
+
 test("the harness forces a lead checkpoint after three completed review cycles", async () => {
 	const h = harness([
 		content("Continue with a narrower phase."),
