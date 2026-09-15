@@ -234,6 +234,30 @@ test("the lead answers requests that require no writer work", async () => {
 	expect(h.state.delegations).toBe(0);
 });
 
+test("a direct status question is answered without converting it into writer steering", async () => {
+	const answer = "Nothing external is blocking; only the diagnostic handoff is pending.";
+	const h = harness([content(answer)]);
+	h.context.messages = [{ role: "user", content: "what is being waited on right now?", timestamp: 2 }];
+	h.state.initialized = true;
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	h.state.delegations = 1;
+	h.state.task = "Finish the existing writer task";
+	const checkpoint = await h.next();
+	const actions = (h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
+	expect(actions).toEqual(["takeover"]);
+	expect(checkpoint.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "checkpoint" } });
+	expect(JSON.stringify(h.state.lead.messages)).toContain("answer a direct question or status request yourself");
+	expect(JSON.stringify(h.state.lead.messages)).not.toContain('"action":"update"');
+	expect(h.state.owner).toBe("writer");
+	expect(h.state.task).toBe("Finish the existing writer task");
+	expect(h.state.delegations).toBe(1);
+	expect(h.state.writer.messages).toEqual([]);
+	await h.finishControl(checkpoint);
+	expect((await h.next()).content).toEqual(content(answer));
+	expect(h.state.writer.messages).toEqual([]);
+});
+
 test("the harness forces a lead checkpoint after three completed review cycles", async () => {
 	const h = harness([
 		content("Continue with a narrower phase."),
