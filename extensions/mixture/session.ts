@@ -5,23 +5,32 @@ import { compactRole, estimateContextTokens, forModel, imageContent, interruptPe
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import type { Preset } from "./config.ts";
 import { addUsage, callRole, emptyUsage, failureMessage, resolveModel, type Registry } from "./provider.ts";
-import { adoptLegacyPhase, assessPhase, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
+import { adoptLegacyPhase, assessPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
 import { drainReceipts, receipt, receiptIds, tagReceipts, type UsageReceipt } from "./usage.ts";
 
 export const CONTROL = "mixture_control";
-const controlParams = (actions: string[]) => Type.Object({
-	action: StringEnum(actions),
-	...phaseFields,
-	message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
-	report: Type.Optional(Type.String()),
-	checkpoint: Type.Optional(Type.String()),
-});
+const controlParams = (actions: string[]) => {
+	const nonDelegateActions = actions.filter(action => action !== "delegate");
+	const anyOf = actions.includes("delegate")
+		? [
+			Type.Object({ action: StringEnum(["delegate"] as const), ...delegateFields }),
+			...(nonDelegateActions.length ? [Type.Object({ action: StringEnum(nonDelegateActions) })] : []),
+		]
+		: undefined;
+	return Type.Object({
+		action: StringEnum(actions),
+		...phaseFields,
+		message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
+		report: Type.Optional(Type.String()),
+		checkpoint: Type.Optional(Type.String()),
+	}, anyOf ? { anyOf } : undefined);
+};
 export const ControlParams = controlParams(["delegate", "assess", "update", "report", "escalate", "takeover", "checkpoint", "pause"]);
 export type ControlInput = Static<typeof ControlParams>;
 export const controlTool: Tool = {
 	name: CONTROL,
-	description: "Mixture role coordination. Lead: delegate a bounded task with nextAction, acceptedEvidence, constraints and successCriteria. At handoffs, assess the current phaseId with evidence before continuing it. Two failed corrective attempts block equivalent delegation; reopening requires changedPrerequisite evidence. Update an active writer after user steering, or explicitly take over after the writer stops. Writer: report only when the delegated work is complete, or escalate an ambiguity, blocker, failure, or required user decision. The harness schedules reviews and decides handoff timing. Never combine a control with other tool calls. Checkpoint and pause are reserved for the harness.",
+	description: "Mixture role coordination. Lead: delegate a bounded current step with task, successCriteria, nextAction, acceptedEvidence and constraints. Every delegate, including continuations, must resupply the current-step task, completion checks and next action; these do not replace the stored phase outcome or acceptance. At handoffs, assess the current phaseId with evidence before continuing it. Assess and takeover do not need delegate-only fields. Two failed corrective attempts block equivalent delegation; reopening requires changedPrerequisite evidence. Update an active writer after user steering, or explicitly take over after the writer stops. Writer: report only when the delegated work is complete, or escalate an ambiguity, blocker, failure, or required user decision. The harness schedules reviews and decides handoff timing. Never combine a control with other tool calls. Checkpoint and pause are reserved for the harness.",
 	parameters: ControlParams,
 };
 export type Actor = "lead" | "writer";
@@ -372,7 +381,7 @@ export class MixtureSession {
 					? "Finish or escalate the current writer phase. The harness owns routine review and checkpoints."
 					: this.state.owner === "writer"
 						? "The existing writer retains its lease. Send one assessed user update into that context, or take over."
-						: "Assess the previous attempt once with phaseId and evidence before continuing it. Delegate with nextAction and acceptedEvidence, preserving the phaseId; or explicitly take over. Two failed corrections block equivalent delegation.",
+						: "Assess the previous attempt once with phaseId and evidence before continuing it. Delegate the next current step with task, successCriteria, nextAction and acceptedEvidence, resupplying all three current-step fields and preserving the stored phase acceptance; or explicitly take over. Two failed corrections block equivalent delegation.",
 				parameters: controlParams(actions),
 			});
 	}

@@ -142,6 +142,21 @@ test("missing, malformed, and oversized fields fail without mutating phase state
 	expect(phase).toEqual(before);
 });
 
+test("continuations require every current-step delegation field without mutating phase state", () => {
+	const initial = delegatePhase(undefined, brief).phase;
+	const progressed = assess(initial, "progress");
+	const before = structuredClone(progressed);
+	for (const extra of [
+		{ task: undefined }, { task: " " }, { nextAction: undefined }, { nextAction: " " },
+		{ successCriteria: undefined }, { successCriteria: [] }, { successCriteria: [""] }, { successCriteria: [" "] },
+	]) {
+		expect(() => delegatePhase(progressed, { ...brief, phaseId: progressed.id, ...extra })).toThrow("Delegation");
+	}
+	expect(() => delegatePhase(progressed, brief)).toThrow("current phaseId");
+	expect(() => delegatePhase(progressed, { ...brief, phaseId: "wrong" })).toThrow("current phaseId");
+	expect(progressed).toEqual(before);
+});
+
 test("real control transitions persist assessment before blocked delegation and retain takeover", async () => {
 	const preset = defaultConfig().presets.default; preset.reviewers = [];
 	const state = newState("default", preset);

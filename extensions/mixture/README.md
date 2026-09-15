@@ -144,15 +144,20 @@ verification. Composite input metadata reflects the whole roster conservatively.
 
 ## Handoffs and stalled work
 
-Each delegation separates the concrete `nextAction` from `acceptedEvidence`
-(facts and checks not to repeat), standing `constraints`, and `successCriteria`.
-A phase retains at most 16 normalized standing constraints; continuations inherit
-them and add only distinct entries. An optional `immediateAction` names the first
-writer tool and explains why it must run before other tool exploration. A mismatched
-tool call is blocked, while writer reporting and escalation remain available.
-The original phase outcome and acceptance remain in every continuation brief,
-even when the next step is smaller. User steering is retained across continuations
-as bounded attempt-tagged updates, not promoted into permanent constraints.
+Each delegation requires a current-step `task`, `successCriteria`, and concrete
+`nextAction`. This applies to initial delegates and continuations. A continuation
+must resupply all three fields for its current step; do not expect them to be
+inherited from the phase. The stored phase outcome and acceptance remain in every
+continuation brief and are not replaced by the current-step fields.
+
+Each delegation also separates `nextAction` from `acceptedEvidence` (facts and
+checks not to repeat) and standing `constraints`. A phase retains at most 16
+normalized standing constraints; continuations inherit them and add only distinct
+entries. An optional `immediateAction` names the first writer tool and explains why
+it must run before other tool exploration. A mismatched tool call is blocked, while
+writer reporting and escalation remain available. `assess` and `takeover` do not
+need the delegate-only fields. User steering is retained across continuations as
+bounded attempt-tagged updates, not promoted into permanent constraints.
 
 For example, the lead can start with:
 
@@ -168,7 +173,9 @@ For example, the lead can start with:
 ```
 
 At a writer handoff, the lead calls `assess` with the harness's `phaseId`, an
-`assessment`, and concrete `evidence` before delegating again:
+`assessment`, and concrete `evidence` before delegating again. The continuation
+must resupply its current-step `task`, `successCriteria`, and `nextAction`; the
+`assess` call itself does not need those delegate fields:
 
 - `progress`: a criterion advanced or an uncertainty was resolved. Useful
   read-only diagnosis counts; repeated reads or edits alone do not prove progress.
@@ -200,11 +207,22 @@ judge whether evidence actually shows progress or a changed prerequisite. It can
 still make that judgment incorrectly. This policy does not guarantee faster or
 better live-model execution.
 
-`nextAction` is required and limited to 4,000 characters. Evidence, blocker and
-prerequisite strings are limited to 2,000 characters each. `acceptedEvidence`
+For every delegate, `task`, `successCriteria`, and `nextAction` are required.
+`nextAction` is limited to 4,000 characters. Success criteria must contain at least
+one nonempty item, with each item limited to 2,000 characters. Evidence, blocker
+and prerequisite strings are limited to 2,000 characters each. `acceptedEvidence`
 allows up to eight nonempty entries. Oversized or blank supplied values are
 rejected. Phase state retains the latest eight assessment/prerequisite records
 plus independent counters, so trimming history cannot grant more retries.
+
+The control schema keeps one root object so all actions retain their properties.
+Providers that preserve JSON Schema conditionals receive action-aware requiredness:
+the delegate branch requires the three current-step fields, while other actions
+require only `action` at this schema boundary. The Anthropic adapter drops the root
+conditional when it serializes `input_schema`; its usable fallback retains all
+properties, descriptions, and nonempty bounds, while Mixture runtime validation
+still rejects missing or blank delegate fields. This is serialization evidence, not
+live provider acceptance.
 
 ## Background jobs and cancellation
 

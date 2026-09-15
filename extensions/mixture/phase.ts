@@ -12,17 +12,22 @@ const immediateActionSchema = Type.Object({
 	description: Type.String({ minLength: 1, maxLength: 1_000 }),
 });
 export const phaseFields = {
-	task: Type.Optional(Type.String()),
+	task: Type.Optional(Type.String({ minLength: 1, description: "For delegate: the current-step task. Required on initial delegates and continuations; does not replace the stored phase outcome." })),
 	constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2_000 }), { maxItems: MAX_CONSTRAINTS })),
 	immediateAction: Type.Optional(immediateActionSchema),
-	successCriteria: Type.Optional(Type.Array(Type.String())),
-	nextAction: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Required for delegate: concrete next implementation or diagnostic step." })),
+	successCriteria: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2_000 }), { minItems: 1, description: "For delegate: current-step completion checks. Required on initial delegates and continuations; do not use them to replace stored phase acceptance." })),
+	nextAction: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "For delegate: the current-step concrete next implementation or diagnostic step. Required on initial delegates and continuations." })),
 	acceptedEvidence: Type.Optional(Type.Array(evidenceSchema(), { maxItems: 8, description: "Accepted facts and checks the writer should not repeat without conflicting evidence." })),
 	phaseId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Required for assess and continuing an existing phase. Use the harness phase ID." })),
 	assessment: Type.Optional(StringEnum(ASSESSMENTS)),
 	evidence: Type.Optional(evidenceSchema()),
 	blocker: Type.Optional(evidenceSchema()),
 	changedPrerequisite: Type.Optional(Type.Object({ change: evidenceSchema(), evidence: evidenceSchema() })),
+};
+export const delegateFields = {
+	task: Type.String({ minLength: 1, description: "Current-step task. Required on initial delegates and continuations; does not replace the stored phase outcome." }),
+	nextAction: Type.String({ minLength: 1, maxLength: 4_000, description: "Current-step concrete next implementation or diagnostic step. Required on initial delegates and continuations." }),
+	successCriteria: Type.Array(Type.String({ minLength: 1, maxLength: 2_000 }), { minItems: 1, description: "Current-step completion checks. Required on initial delegates and continuations; do not replace the stored phase acceptance criteria." }),
 };
 const PhaseParams = Type.Object(phaseFields);
 export type PhaseInput = Static<typeof PhaseParams>;

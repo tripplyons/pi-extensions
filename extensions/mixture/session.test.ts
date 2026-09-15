@@ -74,6 +74,25 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	expect(h.calls[1].options.serviceTier).toBe("priority");
 });
 
+test("role-filtered control schemas require delegate fields without burdening other actions", async () => {
+	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Complete the current step", nextAction: "Run the focused check", successCriteria: ["The check passes"] })], content("Writer report")]);
+	h.session.newRequest("Complete the current step");
+	const lead = await h.next();
+	const leadSchema = h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any;
+	expect(leadSchema).toMatchObject({ type: "object", required: ["action"] });
+	expect(leadSchema.anyOf.find((branch: any) => branch.properties.action.enum.includes("delegate")).required).toEqual(["action", "task", "nextAction", "successCriteria"]);
+	expect(leadSchema.anyOf.find((branch: any) => branch.properties.action.enum.includes("assess")).required).toEqual(["action"]);
+	await h.finishControl(lead);
+	await h.next();
+	const writerSchema = h.calls[1].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any;
+	expect(writerSchema).toMatchObject({ type: "object", required: ["action"] });
+	expect(writerSchema.anyOf).toBeUndefined();
+	expect(writerSchema.properties.action.enum).toEqual(["report", "escalate"]);
+	expect((writerSchema.required as string[])).not.toContain("task");
+	expect((writerSchema.required as string[])).not.toContain("nextAction");
+	expect((writerSchema.required as string[])).not.toContain("successCriteria");
+});
+
 test("routes session controls to the lead and arbitrary effectful tools to the lease holder", async () => {
 	const h = harness([
 		[call("delegate", CONTROL, { action: "delegate", task: "Optimize", nextAction: "Run the benchmark and measure a bounded change", successCriteria: ["Benchmark improves"] })],
