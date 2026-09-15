@@ -91,7 +91,7 @@ A node launched with `mixture/<preset>` loads the Mixture extension after Agent 
 
 The checkout is the current node's assigned worktree. Mixture's lead may use active, known `swarm_*` tools to read state and coordinate the node. The Mixture writer cannot spawn, complete, integrate, or otherwise coordinate Swarm nodes. The lead must take over the Mixture writer lease before any mutating Swarm operation. Agent Swarm remains the owner of child processes, worktrees, and controller Git; standalone Mixture still blocks nested editing-agent launches.
 
-Large task, message, result, feedback, and verification strings use private request artifacts, capped at 10 MiB each. Tool previews point to full output files. Recipient snapshots expose only that recipient's artifact copies.
+Large task, message, result, feedback, and verification strings use private request artifacts, capped at 10 MiB each. Collapsed swarm call and result cards are width-truncated and capped at five rendered lines; expanding a card removes that line cap. Tool previews point to full output files. Recipient snapshots expose only that recipient's artifact copies.
 
 ## Recovery and storage
 

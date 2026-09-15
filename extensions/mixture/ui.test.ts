@@ -56,11 +56,20 @@ test("collapsed lead cards show one bounded message line and expand the full han
 test("lead updates and assessments preview safely while streaming and on restored legacy calls", () => {
 	expect(controlCall({ action: "update", message: "Keep\n\tthe existing design" }, false, theme).render(80)).toEqual(["Mixture update", "Keep the existing design"]);
 	expect(controlCall({ action: "assess", assessment: "stalled", evidence: "Only the same reads were repeated" }, false, theme).render(80)).toEqual(["Mixture assess", "stalled: Only the same reads were repeated"]);
+	const longReport = `Writer report\n\t${"preserve this evidence ".repeat(20)}`;
+	for (const action of ["report", "escalate", "pause"] as const) {
+		const lines = controlCall({ action, report: longReport }, false, theme).render(80);
+		const plainLines = lines.map(stripVTControlCharacters);
+		expect(lines).toHaveLength(2);
+		expect(lines.every(line => visibleWidth(line) <= 80)).toBe(true);
+		expect(plainLines[1]).toStartWith("Writer report preserve this evidence");
+		expect(plainLines[1]).toEndWith("…");
+	}
 	expect(controlCall({ action: "delegate", task: "Legacy task without nextAction" }, false, theme).render(80)).toEqual(["Mixture delegate", "Legacy task without nextAction"]);
 	expect(controlCall({}, false, theme).render(80)).toEqual(["Mixture coordination"]);
 	expect(controlCall({ action: "delegate", nextAction: "  " }, false, theme).render(80)).toEqual(["Mixture delegate"]);
 	expect(controlCall({ action: "delegate", nextAction: { incomplete: true }, constraints: [null, "Keep this"] } as any, true, theme).render(80).join("\n")).toContain("Keep this");
-	expect(controlCall({ action: "report", report: "Writer report" }, false, theme).render(80)).toEqual(["Mixture report"]);
+	expect(controlCall({ action: "report", report: "Writer report" }, false, theme).render(80)).toEqual(["Mixture report", "Writer report"]);
 	expect(controlCall({ action: "report", report: "Writer report" }, true, theme).render(80).join("\n")).toContain("Writer report");
 	const message = "\x1b]0;hidden title\x07\x1b[31m检查👩‍💻 café\x1b[0m";
 	for (const expanded of [false, true]) for (const width of [1, 8, 24, 80]) {

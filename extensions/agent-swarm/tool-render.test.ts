@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderSwarmCall, renderSwarmResult } from "./tool-render.ts";
 
 const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `**${text}**` } as any;
@@ -24,6 +25,27 @@ test("renders tree results with roles, statuses, hierarchy, messages, and commit
 	expect(rendered).toContain("└─ ");
 	expect(rendered).toContain("<dim>commit:</dim> <success>abcdef123456</success>");
 	expect(rendered).toContain("<muted>Done</muted>");
+});
+
+test("bounds collapsed result cards by rendered lines and preserves expanded rows", () => {
+	const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
+	const payload = {
+		nodes: Array.from({ length: 8 }, (_, index) => ({ nodeId: `node_${String(index).padStart(16, "0")}`, parentId: null, role: "worker", status: "running" })),
+		messages: [{ fromNodeId: "node_0000000000000000", toNodeId: "node_0000000000000007", body: "important message ".repeat(20) }],
+	};
+	const result = { content: [{ type: "text", text: JSON.stringify(payload) }] };
+	const collapsed = renderSwarmResult("swarm_tree", result, plainTheme);
+	for (const width of [12, 80, 200]) {
+		const lines = collapsed.render(width);
+		expect(lines.length).toBeLessThanOrEqual(5);
+		expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
+	}
+	expect(collapsed.render(80).join("\n")).toContain("00000007");
+	const expanded = renderSwarmResult("swarm_tree", result, plainTheme, true).render(80);
+	expect(expanded.length).toBeGreaterThan(5);
+	expect(expanded.join("\n")).toContain("00000000");
+	expect(expanded.join("\n")).toContain("00000007");
+	expect(expanded.every(line => visibleWidth(line) <= 80)).toBe(true);
 });
 
 test("renders malformed and error results safely", () => {

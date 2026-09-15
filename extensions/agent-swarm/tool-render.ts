@@ -1,9 +1,29 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./output-format.ts";
 
 type ToolResult = { content?: Array<{ type?: string; text?: string }>; details?: unknown };
 type Paint = Pick<Theme, "fg" | "bold">;
+const COLLAPSED_PREVIEW_LINES = 5;
+
+class BoundedText implements Component {
+	private readonly content: Text;
+	constructor(text: string, private readonly expanded: boolean, private readonly theme: Paint) {
+		this.content = new Text(text, 0, 0);
+	}
+	render(width: number): string[] {
+		const safeWidth = Math.max(0, width);
+		const lines = this.content.render(Math.max(1, width));
+		const visibleLineCount = COLLAPSED_PREVIEW_LINES - 1;
+		const visible = this.expanded || lines.length <= COLLAPSED_PREVIEW_LINES
+			? lines
+			: [this.theme.fg("muted", `… ${lines.length - visibleLineCount} lines hidden`), ...lines.slice(-visibleLineCount)];
+		return visible.map(line => truncateToWidth(line, safeWidth, ""));
+	}
+	invalidate() { this.content.invalidate(); }
+}
+
+const boundedText = (text: string, theme: Paint, expanded: boolean) => new BoundedText(text, expanded, theme);
 
 // Tool arguments and controller errors are untrusted terminal input. Strip both
 // terminal commands and invisible direction/format characters before styling.
@@ -13,7 +33,7 @@ const id = (value: unknown) => { const text = clean(value); return text.startsWi
 const colorForStatus = (status: string): ThemeColor => ["running", "completed", "active", "accepted", "accept", "integrated", "cleared"].includes(status) ? "success" : ["failed", "rejected", "reject", "error"].includes(status) ? "error" : ["starting", "awaiting-review", "rework", "request-changes", "paused"].includes(status) ? "warning" : "muted";
 const value = (theme: Paint, label: string, text: unknown, color: ThemeColor = "muted") => `${theme.fg("dim", `${label}:`)} ${theme.fg(color, preview(text))}`;
 
-export function renderSwarmCall(name: string, args: unknown, theme: Paint) {
+export function renderSwarmCall(name: string, args: unknown, theme: Paint, expanded = false) {
 	const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
 	const action = name.replace(/^swarm_/, "");
 	const fields: string[] = [];
@@ -30,7 +50,7 @@ export function renderSwarmCall(name: string, args: unknown, theme: Paint) {
 	if (input.text) fields.push(value(theme, "result", input.text));
 	if (input.feedback) fields.push(value(theme, "feedback", input.feedback));
 	if (input.verification) fields.push(value(theme, "verified", input.verification));
-	return new Text(`${theme.fg("toolTitle", theme.bold(`swarm ${action}`))}${fields.length ? ` ${fields.join(" · ")}` : ""}`, 0, 0);
+	return boundedText(`${theme.fg("toolTitle", theme.bold(`swarm ${action}`))}${fields.length ? ` ${fields.join(" · ")}` : ""}`, theme, expanded);
 }
 
 function parse(result: ToolResult): unknown {
@@ -39,12 +59,12 @@ function parse(result: ToolResult): unknown {
 	try { return JSON.parse(text); } catch { return text; }
 }
 
-function renderResult(name: string, result: ToolResult, theme: Paint) {
+function renderResult(name: string, result: ToolResult, theme: Paint, expanded: boolean) {
 	const data = parse(result);
-	if (typeof data === "string") return new Text(theme.fg("error", preview(data, 180) || "No result"), 0, 0);
-	if (!data || typeof data !== "object") return new Text(theme.fg("error", "Invalid swarm result"), 0, 0);
+	if (typeof data === "string") return boundedText(theme.fg("error", preview(data, 180) || "No result"), theme, expanded);
+	if (!data || typeof data !== "object") return boundedText(theme.fg("error", "Invalid swarm result"), theme, expanded);
 	let object = data as Record<string, any>;
-	if (object.error || object.ok === false) return new Text(`${theme.fg("error", "error")} ${theme.fg("muted", preview(object.error ?? "operation failed", 180))}`, 0, 0);
+	if (object.error || object.ok === false) return boundedText(`${theme.fg("error", "error")} ${theme.fg("muted", preview(object.error ?? "operation failed", 180))}`, theme, expanded);
 	// Controller operations are transported in a response envelope. The envelope is
 	// intentionally retained for the model, while the UI shows its useful payload.
 	if (object.ok === true && object.result && typeof object.result === "object") object = object.result;
@@ -68,17 +88,17 @@ function renderResult(name: string, result: ToolResult, theme: Paint) {
 	if (object.integrationCommit) lines.push(value(theme, "integrated", String(object.integrationCommit).slice(0, 12), "success"));
 	if (object.result && !nodes.length) lines.push(theme.fg("muted", preview(typeof object.result === "string" ? object.result : JSON.stringify(object.result), 180)));
 	if (!lines.length) lines.push(theme.fg("success", `${name.replace(/^swarm_/, "")} succeeded`));
-	return new Text(lines.join("\n"), 0, 0);
+	return boundedText(lines.join("\n"), theme, expanded);
 }
 
-export function renderSwarmResult(name: string, result: ToolResult, theme: Paint) {
+export function renderSwarmResult(name: string, result: ToolResult, theme: Paint, expanded = false) {
 	try {
-		return renderResult(name, result, theme);
+		return renderResult(name, result, theme, expanded);
 	} catch {
 		// Pi can briefly redraw restored tool results while a reloaded theme is
 		// being replaced. A renderer exception makes a successful tool look like
 		// a red failure, so fall back to unstyled content for that redraw.
 		const data = parse(result);
-		return new Text(preview(typeof data === "string" ? data : JSON.stringify(data), 180) || `${name.replace(/^swarm_/, "")} succeeded`, 0, 0);
+		return boundedText(preview(typeof data === "string" ? data : JSON.stringify(data), 180) || `${name.replace(/^swarm_/, "")} succeeded`, theme, expanded);
 	}
 }

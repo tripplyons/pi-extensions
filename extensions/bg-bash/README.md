@@ -12,4 +12,8 @@ Job metadata and output live under `${XDG_CACHE_HOME:-~/.cache}/pi/bg-bash`, out
 
 Each new shell receives current environment values rather than relying only on the persistent tmux server's initial environment. Worker cache paths stay in worker temporary storage. Detached jobs can outlive process-group stop or timeout; stop or clear only jobs you own.
 
+Tool results use a status card. Collapsed cards show at most five rendered,
+width-safe lines and indicate omitted result lines; expansion removes the
+collapsed line cap.
+
 Run `bun test extensions/bg-bash/index.test.ts`. Tests use a private tmux server, including a long socket-directory path, and clean up only their own server and files.

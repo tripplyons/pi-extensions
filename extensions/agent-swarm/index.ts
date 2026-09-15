@@ -144,8 +144,8 @@ export default async function (pi: ExtensionAPI) {
 		})),
 	];
 	for (const tool of tools) Object.assign(tool, {
-		renderCall: (args: unknown, theme: any) => renderSwarmCall(tool.name, args, theme),
-		renderResult: (output: any, _options: unknown, theme: any) => renderSwarmResult(tool.name, output, theme),
+		renderCall: (args: unknown, theme: any, context: any) => renderSwarmCall(tool.name, args, theme, context.expanded),
+		renderResult: (output: any, options: any, theme: any) => renderSwarmResult(tool.name, output, theme, options.expanded),
 	});
 	for (const tool of tools) pi.registerTool(tool);
 
@@ -431,7 +431,7 @@ export default async function (pi: ExtensionAPI) {
 		});
 		const name = `swarm_${action}`;
 		const tool = { name, label: `Swarm ${action}`, description: `Root only: ${action} the swarm. Clear requires active children to be killed first, refuses dirty worktrees, removes private run data, and retains generated branches and a cleared-run marker. Detached descendants may survive.`, parameters: Type.Object({}), execute,
-			renderCall: (args: unknown, theme: any) => renderSwarmCall(name, args, theme), renderResult: (output: any, _options: unknown, theme: any) => renderSwarmResult(name, output, theme) };
+			renderCall: (args: unknown, theme: any, context: any) => renderSwarmCall(name, args, theme, context.expanded), renderResult: (output: any, options: any, theme: any) => renderSwarmResult(name, output, theme, options.expanded) };
 		pi.registerTool(tool);
 		tools.push(tool);
 	}

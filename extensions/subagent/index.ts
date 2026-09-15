@@ -17,6 +17,7 @@ import {
 	isSwarmAttached,
 	SWARM_ATTACHMENT_CHANGED_EVENT,
 } from "../agent-swarm/events.ts";
+import { withStatusCard } from "../tool-status-style/style.ts";
 
 const MAX_DELIVERY_CHARS = 12_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
@@ -343,8 +344,8 @@ export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild
 		},
 	});
 
-	pi.registerTool(subagent);
-	pi.registerTool(subagentProcess);
+	pi.registerTool(withStatusCard(subagent));
+	pi.registerTool(withStatusCard(subagentProcess));
 	pi.on("session_shutdown", () => {
 		sessionStarted = false;
 		stopSwarmGate();

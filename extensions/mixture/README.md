@@ -63,6 +63,14 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
   There is no automatic migration. Version 3 renamed the cadence limits; run
   `/mixture configure` to replace a version-2 file explicitly.
 
+## Tool previews
+
+`mixture_control` shows one compact excerpt in collapsed cards: the next action
+or task for delegation, messages for updates, evidence for assessments, and
+reports for writer reports, escalations, and pauses. Harness checkpoints show
+their checkpoint text. Whitespace is flattened and excerpts are capped at 160
+visible columns; expanded cards retain all control fields.
+
 ## Execution and review
 
 Lead and writer calls use the normal Pi tool loop, including validation,

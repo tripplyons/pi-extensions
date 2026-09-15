@@ -6,7 +6,9 @@ import type {
 import { Box, Container, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 
-const PREVIEW_LINES = 6;
+// The status line is the first collapsed line. Keep four result lines so the
+// complete status card stays within the five-line preview budget.
+const COLLAPSED_BODY_LINES = 4;
 
 interface StatusRendererState {
 	shell: Box;
@@ -23,6 +25,7 @@ class StatusHeader implements Component {
 	constructor(
 		private readonly prefix: string,
 		private readonly content: Component,
+		private readonly expanded: boolean,
 	) {}
 
 	render(width: number): string[] {
@@ -30,7 +33,8 @@ class StatusHeader implements Component {
 
 		const prefixWidth = visibleWidth(this.prefix);
 		const lines = this.content.render(Math.max(1, width - prefixWidth));
-		return lines.map((line, index) =>
+		const visibleLines = this.expanded ? lines : lines.slice(0, 1);
+		return visibleLines.map((line, index) =>
 			truncateToWidth(`${index === 0 ? this.prefix : " ".repeat(prefixWidth + 2)}${line}`, width, ""),
 		);
 	}
@@ -66,12 +70,13 @@ class LimitedResult implements Component {
 
 	render(width: number): string[] {
 		const lines = this.content.render(width);
-		if (this.expanded || lines.length <= PREVIEW_LINES) return lines;
+		if (this.expanded || lines.length <= COLLAPSED_BODY_LINES) return lines;
 
-		const hiddenLineCount = lines.length - PREVIEW_LINES;
+		const visibleLineCount = COLLAPSED_BODY_LINES - 1;
+		const hiddenLineCount = lines.length - visibleLineCount;
 		return [
 			this.theme.fg("muted", `… ${hiddenLineCount} lines hidden`),
-			...lines.slice(-PREVIEW_LINES),
+			...lines.slice(-visibleLineCount),
 		];
 	}
 
@@ -122,7 +127,7 @@ export const withStatusCard = <TParams extends TSchema, TDetails, TState>(
 			? originalCall(args, theme, { ...context, lastComponent: state.call })
 			: new Text(theme.fg("toolTitle", theme.bold(definition.name)), 0, 0);
 		const prefix = statusPrefix(theme, context.isPartial, context.isError);
-		state.shell.addChild(new StatusHeader(prefix, state.call));
+		state.shell.addChild(new StatusHeader(prefix, state.call, context.expanded));
 		state.shell.addChild(new StatusBody(prefix, state.resultShell));
 		return state.shell;
 	};
@@ -265,7 +270,7 @@ export const installGlobalStatusCards = (componentClass: ToolExecutionComponentC
 				? original(args, theme, { ...context, lastComponent: state.call })
 				: new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
 			const prefix = statusPrefix(theme, context.isPartial, context.isError);
-			state.shell.addChild(new StatusHeader(prefix, state.call));
+			state.shell.addChild(new StatusHeader(prefix, state.call, context.expanded));
 			state.shell.addChild(new StatusBody(prefix, state.resultShell));
 			return state.shell;
 		};

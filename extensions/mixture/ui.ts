@@ -65,6 +65,8 @@ export function controlCall(args: Partial<ControlInput>, expanded: boolean, them
 	}
 	const message = action === "delegate" ? value(args.nextAction) || value(args.task)
 		: action === "update" || action === "takeover" ? value(args.message)
+		: ["report", "escalate", "pause"].includes(action) ? value(args.report)
+		: action === "checkpoint" ? value(args.checkpoint)
 		: action === "assess" ? [value(args.assessment), value(args.evidence)].filter(Boolean).join(": ") : "";
 	const preview = message.replace(/\s+/g, " ");
 	return { invalidate() {}, render(width: number) {

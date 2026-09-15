@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 class MockBox {
 	children: any[] = [];
@@ -81,11 +82,11 @@ describe("withStatusCard", () => {
 		expect(colors).toContain("warning");
 		tool.renderResult?.({ content: [] }, { expanded: false, isPartial: true }, theme as any, renderContext(state, true, false) as any);
 		tool.renderResult?.({ content: [] }, { expanded: false, isPartial: true }, theme as any, renderContext(state, true, false) as any);
-		expect(pending.render(80)).toEqual(["● demo", "    arguments", "    result", "    more"]);
+		expect(pending.render(80)).toEqual(["● demo", "    result", "    more"]);
 
 		const successful = tool.renderCall?.({}, theme as any, renderContext(state, false, false, pending) as any) as MockBox;
 		tool.renderResult?.({ content: [] }, { expanded: false, isPartial: false }, theme as any, renderContext(state, false, false) as any);
-		expect(successful.render(80)).toEqual(["✓ demo", "    arguments", "    result", "    more"]);
+		expect(successful.render(80)).toEqual(["✓ demo", "    result", "    more"]);
 		expect(colors).not.toContain("toolPendingBg");
 		expect(colors).toContain("success");
 
@@ -123,14 +124,12 @@ describe("withStatusCard", () => {
 		tool.renderResult?.({ content: [] }, { expanded: false, isPartial: false }, theme as any, renderContext(state, false, false) as any);
 		expect(card.render(80)).toEqual([
 			"✓ demo",
-			"    … 2 lines hidden",
-			"    line 3",
-			"    line 4",
-			"    line 5",
+			"    … 5 lines hidden",
 			"    line 6",
 			"    line 7",
 			"    line 8",
 		]);
+		expect(card.render(80)).toHaveLength(5);
 
 		tool.renderResult?.({ content: [] }, { expanded: true, isPartial: false }, theme as any, renderContext(state, false, false, undefined, true) as any);
 		expect(card.render(80)).toEqual([
@@ -144,6 +143,40 @@ describe("withStatusCard", () => {
 			"    line 7",
 			"    line 8",
 		]);
+	});
+
+	test("caps collapsed cards at five width-safe lines and keeps expanded content available", () => {
+		const longLine = `line 8 ${"x".repeat(80)}`;
+		const tool = withStatusCard({
+			name: "demo",
+			label: "demo",
+			description: "demo",
+			parameters: {} as any,
+			async execute() { return { content: [] }; },
+			renderCall: () => new MockText("demo"),
+			renderResult: () => new MockText(`line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\n${longLine}`),
+		});
+		const state = {};
+		const theme = { bold: (text: string) => text, fg: (_role: string, text: string) => text };
+		const card = tool.renderCall?.({}, theme as any, renderContext(state, false, false) as any) as MockBox;
+
+		tool.renderResult?.({ content: [] }, { expanded: false, isPartial: false }, theme as any, renderContext(state, false, false) as any);
+		for (const width of [8, 24, 80]) {
+			const collapsed = card.render(width);
+			expect(collapsed.length).toBeLessThanOrEqual(5);
+			expect(collapsed.every(line => visibleWidth(line) <= width)).toBe(true);
+			expect(collapsed.join("\n")).not.toContain("x".repeat(80));
+		}
+		expect(card.render(24).join("\n")).toContain("line 8");
+
+		const expandedCard = tool.renderCall?.({}, theme as any, renderContext(state, false, false, card, true) as any) as MockBox;
+		tool.renderResult?.({ content: [] }, { expanded: true, isPartial: false }, theme as any, renderContext(state, false, false, undefined, true) as any);
+		const expanded = expandedCard.render(24);
+		expect(expanded.length).toBeGreaterThan(5);
+		expect(expanded.join("\n")).toContain("line 1");
+		expect(expanded.join("\n")).toContain("line 7");
+		expect(expanded.join("\n")).toContain("line 8");
+		expect(expanded.every(line => visibleWidth(line) <= 24)).toBe(true);
 	});
 });
 
@@ -216,14 +249,12 @@ describe("installGlobalStatusCards", () => {
 		);
 		expect(box.render(80)).toEqual([
 			"✓ read",
-			"    … 2 lines hidden",
-			"    line 3",
-			"    line 4",
-			"    line 5",
+			"    … 5 lines hidden",
 			"    line 6",
 			"    line 7",
 			"    line 8",
 		]);
+		expect(box.render(80)).toHaveLength(5);
 	});
 
 	test("does not double-wrap tools that already render themselves", () => {
