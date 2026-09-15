@@ -7,7 +7,6 @@
 ```sh
 git clone https://github.com/tripplyons/pi-extensions.git
 cd pi-extensions
-git switch pi-codex-conversion
 npm ci --omit=dev
 npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.33
 pi install "$PWD"
