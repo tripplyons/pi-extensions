@@ -21,6 +21,7 @@ const harness = async (config?: string, fast?: boolean) => {
 	const commands = new Map<string, any>(); const handlers = new Map<string, any>(); const providers: Provider[] = []; const tools: string[] = [];
 	const roleOptions: Array<SimpleStreamOptions & { serviceTier?: string }> = [];
 	const definitions = new Map<string, any>();
+	const releasedIds: string[] = [];
 	let calls = 0;
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost }),
@@ -39,10 +40,13 @@ const harness = async (config?: string, fast?: boolean) => {
 		unregisterProvider: (id: string) => { const index = providers.findIndex(provider => provider.id === id); if (index >= 0) providers.splice(index, 1); },
 		getActiveTools: () => ["read", "write", "edit", "bash"],
 		setActiveTools: () => {},
-		events: { emit(name: string, value: { enabled?: boolean }) { if (name === "fast:query" && fast !== undefined) value.enabled = fast; } },
+		events: { emit(name: string, value: { enabled?: boolean; sessionIds?: string[] }) {
+			if (name === "fast:query" && fast !== undefined) value.enabled = fast;
+			if (name === "tripp:mixture-session-release/v1") releasedIds.push(...value.sessionIds!);
+		} },
 	};
 	await createMixtureExtension(pi as any, registry);
-	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, get calls() { return calls; } };
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -116,6 +120,7 @@ test("helper calls use the lead only and return an ordinary assistant result", a
 	expect(h.calls).toBe(1);
 	expect(h.roleOptions[0].serviceTier).toBeUndefined();
 	expect(result.provider).toBe("openai-codex");
+	expect(h.releasedIds).toEqual([h.roleOptions[0].sessionId!]);
 });
 test("role requests inherit explicit session fast mode", async () => {
 	for (const [fast, serviceTier] of [[true, "priority"], [false, "default"]] as const) {

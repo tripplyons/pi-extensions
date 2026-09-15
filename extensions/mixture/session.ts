@@ -5,10 +5,12 @@ import { compactRole, estimateContextTokens, forModel, imageContent, interruptPe
 import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import type { Preset } from "./config.ts";
-import { addUsage, callRole, emptyUsage, failureMessage, resolveModel, type Registry } from "./provider.ts";
+import { addUsage, callRole, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RequestLane } from "./provider.ts";
 import { ASSESSMENTS, adoptLegacyPhase, assessPhase, closedPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
 import { drainReceipts, receipt, receiptIds, tagReceipts, type UsageReceipt } from "./usage.ts";
+import { appendActiveMessage, commitContextTransition, createLocalContext, reconcileLocalContext, replaceActiveMessages, scheduleContextTransition, type LocalContextState } from "../pi-codex-conversion/local-context.ts";
+import { LOCAL_CONTEXT_TOOLS, type LocalContextTarget } from "../pi-codex-conversion/local-context-tools.ts";
 
 export const CONTROL = "mixture_control";
 const reportField = Type.String({ minLength: 1, maxLength: 12_000 });
@@ -41,7 +43,7 @@ export const controlTool: Tool = {
 };
 export type Actor = "lead" | "writer";
 interface Origin { actor: Actor; synthetic: boolean }
-export interface RoleState { messages: Message[]; usage: Usage; calls: number; summaries?: number; contextTokens?: number }
+export interface RoleState { messages: Message[]; usage: Usage; calls: number; summaries?: number; contextTokens?: number; localContext?: LocalContextState }
 export interface TimingAggregate { count: number; totalMs: number; maxMs: number; lastMs: number }
 export interface PerformanceStats {
 	requests: Record<string, TimingAggregate>;
@@ -134,7 +136,7 @@ const LEAD_SESSION_TOOLS = new Set(["ask_user", "create_goal", "update_goal"]);
 const SWARM_TOOL_SET = new Set<string>(SWARM_TOOL_NAMES);
 const SWARM_READ_TOOLS = new Set(["swarm_task", "swarm_tree", "swarm_observe"]);
 const swarmTaskMutates = (args?: Record<string, unknown>) => Array.isArray(args?.acknowledge) && args.acknowledge.length > 0;
-const CHECKOUT_NEUTRAL_TOOLS = new Set([...READ_TOOLS, ...LEAD_SESSION_TOOLS, ...SWARM_READ_TOOLS, "bg_process", "sleep"]);
+const CHECKOUT_NEUTRAL_TOOLS = new Set([...READ_TOOLS, ...LEAD_SESSION_TOOLS, ...SWARM_READ_TOOLS, "bg_process", "sleep", "history", "notes", "new_context", "get_context_remaining"]);
 const NESTED_AGENT_TOOLS = new Set(["subagent", "subagent_process"]);
 const MAX_FINAL_CORRECTIONS_PER_REVISION = 2;
 const DOCUMENT_PATH = /\.(?:md|markdown|txt)$/i;
@@ -151,6 +153,7 @@ export class MixtureSession {
 	private running = false;
 	private reviewing = false;
 	private requestOptions: SimpleStreamOptions = {};
+	private acquiredSessionIds = new Set<string>();
 	private leadThinking?: ModelThinkingLevel;
 	lastDrained: string[] = [];
 	private systemPrompt = "";
@@ -161,7 +164,7 @@ export class MixtureSession {
 	readonly reviews: ReviewPool;
 	constructor(readonly preset: Preset, readonly registry: Registry, state: MixtureState,
 		private readonly jobs: () => BackgroundJobQuery,
-		private readonly changed: () => void = () => {}, cwd = process.cwd()) {
+		private readonly changed: () => void = () => {}, cwd = process.cwd(), private readonly branchId = state.id) {
 		this.state = state;
 		this.state.writerRetries ??= 0;
 		this.state.writerRetryDelegation ??= 0;
@@ -173,11 +176,20 @@ export class MixtureSession {
 		if (!this.state.phase && this.state.brief.trim()) this.state.phase = adoptLegacyPhase(this.state.brief);
 		this.state.coordination ??= { scheduledReviews: 0, deliveredReviews: 0, leadCheckpoints: 0, escalations: 0, recent: [] };
 		this.state.diagnostics ??= freshDiagnostics();
+		for (const [role, roleState] of [["lead", this.state.lead], ["writer", this.state.writer]] as const) {
+			roleState.localContext ??= createLocalContext({ branchId, preset: state.preset, role }, roleState.messages);
+			roleState.localContext.identity.branchId = branchId;
+		}
+		for (const [index, reviewer] of this.state.reviewers.entries()) {
+			reviewer.localContext ??= createLocalContext({ branchId, preset: state.preset, role: `reviewer-${index + 1}` }, reviewer.messages);
+			reviewer.localContext.identity.branchId = branchId;
+		}
 		this.reviews = new ReviewPool(preset, state.reviewers, cwd, async (index, context, signal) => {
 			const result = await this.call(index, context, { ...this.requestOptions,
 				signal: AbortSignal.any([signal, ...(this.requestOptions.signal ? [this.requestOptions.signal] : [])]) });
 			return result.message;
-		}, id => resolveModel(id, registry.find.bind(registry)).input.includes("image"), changed);
+		}, id => resolveModel(id, registry.find.bind(registry)).input.includes("image"), changed,
+		id => resolveModel(id, registry.find.bind(registry)).contextWindow);
 		if (state.task || state.brief) this.reviews.configureScope(this.currentScope(), state.attachments);
 	}
 
@@ -197,6 +209,23 @@ export class MixtureSession {
 		return phase && !["complete", "superseded"].includes(phase.assessment ?? "") ? "assessing" : "planning";
 	}
 	get modelId() { return this.active === "lead" ? this.preset.lead : this.preset.writer.model; }
+	private ensureRoleLocalContext(actor: Actor | number): LocalContextState {
+		const role = typeof actor === "number" ? this.state.reviewers[actor] : this.state[actor];
+		if (!role.localContext) role.localContext = createLocalContext({ branchId: this.branchId, preset: this.state.preset, role: typeof actor === "number" ? `reviewer-${actor + 1}` : actor }, role.messages);
+		if (!role.localContext.archives.length && !role.localContext.activeMessages.length && role.messages.length) replaceActiveMessages(role.localContext, role.messages);
+		return role.localContext;
+	}
+	localContextTarget(): LocalContextTarget {
+		const role = this.state[this.active];
+		this.ensureRoleLocalContext(this.active);
+		return {
+			state: role.localContext!,
+			contextWindow: resolveModel(this.modelId, this.registry.find.bind(this.registry)).contextWindow,
+			reserveTokens: this.active === "lead" ? this.preset.limits.leadMaxTokens : this.preset.limits.writerMaxTokens,
+			usedTokens: role.contextTokens,
+			changed: () => this.changed(),
+		};
+	}
 	performanceStats(): PerformanceStats & { diagnostics: MixtureDiagnostics } { return { ...structuredClone(this.timings), coordination: structuredClone(this.state.coordination), diagnostics: structuredClone(this.state.diagnostics!) }; }
 	recordControlFailure(error: unknown) {
 		const message = String(error);
@@ -258,15 +287,21 @@ export class MixtureSession {
 		return total;
 	}
 	rootContextTokens() {
-		return Math.max(1, estimateContextTokens({ systemPrompt: this.prompt("lead"), messages: this.state.lead.messages, tools: this.tools("lead") }).tokens);
+		this.ensureRoleLocalContext("lead");
+		return Math.max(1, estimateContextTokens({ systemPrompt: this.prompt("lead"), messages: this.state.lead.localContext!.activeMessages, tools: this.tools("lead") }).tokens);
 	}
-	resourceSessionIds(rootSessionId: string) {
-		const base = `${rootSessionId}/mixture/${this.state.id}`;
-		return [`${rootSessionId}/summary`, `${base}/lead`, `${base}/writer`, ...this.state.reviewers.map((_reviewer, index) => `${base}/reviewer-${index + 1}`)];
+	resourceSessionIds() {
+		const ids = [...this.acquiredSessionIds];
+		this.acquiredSessionIds.clear();
+		return ids;
 	}
 
 	rebaseLeadAfterCompaction(compactionId: string) {
 		this.state.rootCompactionId = compactionId;
+		const localContext = this.ensureRoleLocalContext("lead");
+		reconcileLocalContext(localContext);
+		scheduleContextTransition(localContext);
+		commitContextTransition(localContext);
 		this.state.lead.messages = [];
 		this.state.lead.contextTokens = undefined;
 		this.state.seenUsers = [];
@@ -313,7 +348,12 @@ export class MixtureSession {
 		this.reviewing = false;
 		this.answerUserDirectly = false;
 		let interrupted = this.state.active === "writer" || !!this.state.final || !!Object.keys(this.state.origins).length;
-		for (const role of [this.state.lead, this.state.writer, ...this.state.reviewers]) interrupted = interruptPending(role.messages) || interrupted;
+		for (const role of [this.state.lead, this.state.writer, ...this.state.reviewers]) {
+			interrupted = interruptPending(role.messages) || interrupted;
+			if (role.localContext) {
+				interrupted = reconcileLocalContext(role.localContext, { role: "user", content: this.currentScope(), timestamp: Date.now() }) || interrupted;
+			}
+		}
 		if (this.state.final) {
 			const receipt = this.state.receipts.find(receipt => receipt.id === this.state.final!.receipt)!;
 			if (receipt.delivery === "held") receipt.delivery = "nested";
@@ -345,13 +385,19 @@ export class MixtureSession {
 		}
 		return this.takeUsage();
 	}
-	private note(actor: Actor, content: string) { this.state[actor].messages.push(user(content)); }
+	private appendRoleMessage(actor: Actor, message: Message) {
+		this.state[actor].messages.push(message);
+		appendActiveMessage(this.state[actor].localContext!, message);
+	}
+	private note(actor: Actor, content: string) { this.appendRoleMessage(actor, user(content)); }
 	private removeNotes(actor: Actor, ...prefixes: string[]) {
-		this.state[actor].messages = this.state[actor].messages.filter(message => {
+		const keep = (message: Message) => {
 			if (message.role !== "user" || typeof message.content !== "string") return true;
-			const content = message.content;
-			return !prefixes.some(prefix => content.startsWith(prefix));
-		});
+			return !prefixes.some(prefix => message.content.startsWith(prefix));
+		};
+		this.state[actor].messages = this.state[actor].messages.filter(keep);
+		const local = this.state[actor].localContext!;
+		replaceActiveMessages(local, local.activeMessages.filter(keep));
 	}
 	private replaceNote(actor: Actor, prefix: string, content: string) {
 		this.removeNotes(actor, prefix);
@@ -371,10 +417,11 @@ export class MixtureSession {
 		if (!this.state.initialized) {
 			const recoveryNotes = this.state.lead.messages;
 			this.state.lead.messages = [...structuredClone(context.messages), ...recoveryNotes];
+			replaceActiveMessages(this.state.lead.localContext!, this.state.lead.messages);
 			this.state.initialized = true;
 		} else {
 			const writerWasActive = this.active === "writer";
-			for (const [index, message] of users.entries()) if (!seen.has(ids[index])) this.state.lead.messages.push(structuredClone(message));
+			for (const [index, message] of users.entries()) if (!seen.has(ids[index])) this.appendRoleMessage("lead", structuredClone(message));
 			if (writerWasActive && freshUsers.length) {
 				this.state.active = "lead";
 				this.replaceNote("lead", "[Harness user steering requires lead assessment", "[Harness user steering requires lead assessment]\nThe writer is paused at a model boundary and retains its lease. Assess the new user message: answer a direct question or status request yourself; use mixture_control: update only for writer-relevant steering. Do not delegate a second phase over the active lease. Take over only if the writer should stop executing.");
@@ -391,7 +438,7 @@ export class MixtureSession {
 	}
 
 	allowed(actor: Actor, name: string, args?: Record<string, unknown>): boolean {
-		if (name === CONTROL) return true;
+		if (name === CONTROL || LOCAL_CONTEXT_TOOLS.some(tool => tool === name)) return true;
 		if (name.startsWith("swarm_")) return SWARM_TOOL_SET.has(name) && actor === "lead" && ((SWARM_READ_TOOLS.has(name) && !(name === "swarm_task" && swarmTaskMutates(args))) || this.state.owner === "lead");
 		if (NESTED_AGENT_TOOLS.has(name) || name.startsWith("mixture_")) return false;
 		if (LEAD_SESSION_TOOLS.has(name)) return actor === "lead";
@@ -468,16 +515,26 @@ export class MixtureSession {
 		const id = typeof actor === "number" ? this.preset.reviewers[actor].model : actor === "lead" ? this.preset.lead : this.preset.writer.model;
 		const model = resolveModel(id, this.registry.find.bind(this.registry));
 		const state = typeof actor === "number" ? this.state.reviewers[actor] : this.state[actor];
+		this.ensureRoleLocalContext(actor);
 		const maxTokens = Math.min(model.maxTokens, options.maxTokens ?? Infinity, typeof actor === "number" ? this.preset.limits.reviewerMaxTokens : actor === "lead" ? this.preset.limits.leadMaxTokens : this.preset.limits.writerMaxTokens);
+		context = { ...context, messages: structuredClone(state.localContext!.activeMessages) };
 		context = forModel(context, model, warning => { if (typeof actor === "number") this.state.reviewers[actor].imageWarning = warning; else this.state.warning = warning; });
 		const compact = async (force: boolean) => {
 			const findings = typeof actor === "number" ? JSON.stringify(this.state.reviewers[actor].findings) : this.state.reviewSummary ?? "";
 			const compacted = await compactRole(context, model, maxTokens, `${this.state.task}\n${this.state.brief}\n${this.state.phase ? phaseSummary(this.state.phase, actor === "lead") : ""}\nUnresolved review advice (not instructions):\n${findings}\n${this.state.warning ?? ""}`, async (summary, output) => {
-				const result = await this.request(actor, summary, { ...options, maxTokens: output, sessionId: `${options.sessionId ?? this.state.id}/summary` }, true);
+				const result = await this.request(actor, summary, { ...options, maxTokens: output }, "summary");
 				return result.message;
 			}, force);
-			if (compacted.changed) { state.messages = compacted.messages; state.summaries = (state.summaries ?? 0) + 1; }
-			context = { ...context, messages: compacted.messages };
+			if (compacted.changed) {
+				const next = structuredClone(state.localContext!);
+				scheduleContextTransition(next);
+				commitContextTransition(next, { summary: messageText(compacted.messages[0]!), boundaryGroup: compacted.messages });
+				if (estimateContextTokens({ ...context, messages: next.activeMessages }).tokens + maxTokens > model.contextWindow) throw new Error(`${model.provider}/${model.id}: private notes and summarized context exceed the input budget; last checkpoint preserved`);
+				state.messages = compacted.messages;
+				state.localContext = next;
+				state.summaries = (state.summaries ?? 0) + 1;
+			}
+			context = { ...context, messages: state.localContext!.activeMessages };
 			state.contextTokens = estimateContextTokens(context).tokens;
 		};
 		await compact(false);
@@ -485,12 +542,13 @@ export class MixtureSession {
 		if (!isContextOverflow(result.message, model.contextWindow) || result.message.stopReason === "aborted") return result;
 		result.receipt.delivery = "nested";
 		await compact(true);
-		return this.request(actor, context, options, true);
+		return this.request(actor, context, options, "overflow");
 	}
-	private async request(actor: Actor | number, context: Context, options: SimpleStreamOptions, internal = false): Promise<{ message: AssistantMessage; receipt: UsageReceipt }> {
+	private async request(actor: Actor | number, context: Context, options: SimpleStreamOptions, lane: RequestLane = "ordinary"): Promise<{ message: AssistantMessage; receipt: UsageReceipt }> {
 		const role = typeof actor === "number" ? this.preset.reviewers[actor] : actor === "writer" ? this.preset.writer : undefined;
 		const id = role?.model ?? this.preset.lead;
 		const state = typeof actor === "number" ? this.state.reviewers[actor] : this.state[actor];
+		this.ensureRoleLocalContext(actor);
 		const label = typeof actor === "number" ? `reviewer-${actor + 1}` : actor;
 		this.signal.throwIfAborted();
 		options.signal?.throwIfAborted();
@@ -498,7 +556,7 @@ export class MixtureSession {
 			if (this.state.writerTurns >= this.preset.limits.writerTurns) throw new Error("Writer response limit reached");
 			this.state.writerTurns++;
 		}
-		if (typeof actor === "number" && internal) {
+		if (typeof actor === "number" && lane !== "ordinary") {
 			const reviewer = this.state.reviewers[actor];
 			if (reviewer.batchCalls >= this.preset.limits.reviewerBatchTurns) throw new Error("Reviewer batch limit reached during context recovery");
 			reviewer.requestCalls++; reviewer.batchCalls++;
@@ -519,8 +577,8 @@ export class MixtureSession {
 				...options, signal: AbortSignal.any([this.signal, ...(options.signal ? [options.signal] : [])]),
 				timeoutMs: actor === "writer" ? this.preset.limits.writerRequestTimeoutMs : this.preset.limits.requestTimeoutMs,
 				...(actor === "writer" ? { idleTimeoutMs: this.preset.limits.writerIdleTimeoutMs } : {}), maxTokens,
-				sessionId: `${options.sessionId ?? this.state.id}/mixture/${this.state.id}/${label}`,
-			});
+				sessionId: requestLaneId(options.sessionId ?? this.branchId, this.state.id, label, lane),
+			}, undefined, sessionId => this.acquiredSessionIds.add(sessionId));
 			addUsage(state.usage, message.usage);
 			state.calls++;
 			const recorded = receipt(label, id, message, "nested");
@@ -644,7 +702,7 @@ export class MixtureSession {
 				this.state.writerRetries = (this.state.writerRetries ?? 0) + 1;
 				this.state.writerRetryDelegation = this.state.delegations;
 				this.note("writer", `[Harness retry after transient provider failure: ${result.message.errorMessage ?? "network error"}. The failed request produced no tool call, so no tool ran and no checkout changes or completed writer history were reverted.]`);
-				result = await this.call(actor, { ...context, messages: this.state.writer.messages }, options);
+				result = await this.call(actor, { ...context, messages: this.state.writer.localContext!.activeMessages }, options);
 			}
 			message = result.message;
 			recorded = result.receipt;
@@ -661,7 +719,10 @@ export class MixtureSession {
 			if (message.content.some(block => block.type === "toolCall" && block.name === CONTROL)) this.recordControlFailure(error);
 			return this.terminal({ ...failureMessage(resolveModel(this.modelId, this.registry.find.bind(this.registry)), error), usage: message.usage, mixtureReceiptIds: receiptIds(message) } as AssistantMessage);
 		}
-		this.state[actor].messages.push(structuredClone(message));
+		if (typeof actor === "number") {
+			appendActiveMessage(this.state.reviewers[actor].localContext!, message);
+			this.state.reviewers[actor].messages.push(structuredClone(message));
+		} else this.appendRoleMessage(actor, structuredClone(message));
 		const calls = message.content.filter(block => block.type === "toolCall");
 		if (calls.length) {
 			for (const call of calls) this.state.origins[call.id] = { actor, synthetic: false };
@@ -723,7 +784,7 @@ export class MixtureSession {
 				this.reviews.configureScope(`[User request and lead direction]\n${this.currentScope()}`, this.state.attachments);
 				const seenImages = new Set(imageContent(this.state.writer.messages).map(fingerprint));
 				const attachments = this.state.attachments.filter(image => !seenImages.has(fingerprint(image)));
-				this.state.writer.messages.push({ role: "user", timestamp: Date.now(), content: attachments.length ? [{ type: "text", text: this.state.brief }, ...attachments] : this.state.brief });
+				this.appendRoleMessage("writer", { role: "user", timestamp: Date.now(), content: attachments.length ? [{ type: "text", text: this.state.brief }, ...attachments] : this.state.brief });
 				this.state.owner = "writer";
 				this.state.active = "writer";
 				this.reviews.prime(this.state.revision, `[Pre-execution context]\nThe writer has only just received this task. Unchanged files and missing verification are not defects at this stage.\n[User request]\n${this.state.task}\n[Delegation]\n${this.state.brief}`, this.state.attachments);
@@ -745,7 +806,7 @@ export class MixtureSession {
 				this.removeNotes("lead", "[Harness user steering requires lead assessment");
 				const seenImages = new Set(imageContent(this.state.writer.messages).map(fingerprint));
 				const attachments = this.state.attachments.filter(image => !seenImages.has(fingerprint(image)));
-				this.state.writer.messages.push({ role: "user", timestamp: Date.now(), content: attachments.length ? [{ type: "text", text: update }, ...attachments] : update });
+				this.appendRoleMessage("writer", { role: "user", timestamp: Date.now(), content: attachments.length ? [{ type: "text", text: update }, ...attachments] : update });
 				this.reviews.configureScope(`[User request and lead direction]\n${this.currentScope()}`, this.state.attachments);
 				this.reviews.prime(this.state.revision, update, attachments);
 				this.state.active = "writer";
@@ -852,10 +913,15 @@ export class MixtureSession {
 		const writerBatch = results.some(result => this.state.origins[result.toolCallId]?.actor === "writer" && result.toolName !== CONTROL);
 		const effectfulWriterBatch = results.some(result => this.state.origins[result.toolCallId]?.actor === "writer" && result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName));
 		const leadTakeoverBatch = this.state.owner === "lead" && results.some(result => this.state.origins[result.toolCallId]?.actor === "lead" && result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName));
+		const transitions = new Set<Actor>();
 		for (const result of results) {
 			const origin = this.state.origins[result.toolCallId];
 			if (!origin) continue;
-			if (!origin.synthetic) this.state[origin.actor].messages.push(structuredClone(result));
+			if (!origin.synthetic) {
+				this.state[origin.actor].messages.push(structuredClone(result));
+				appendActiveMessage(this.state[origin.actor].localContext!, result);
+				if (result.toolName === "new_context" && !result.isError) transitions.add(origin.actor);
+			}
 			else if (result.isError) this.note(origin.actor, `[Mixture control failed] ${JSON.stringify(result.content)}. Reconcile this failure before continuing; do not blindly repeat it.`);
 			const job = result.details?.job;
 			if (job?.id && job.status === "running") this.state.jobs[job.id] = origin.actor;
@@ -866,19 +932,29 @@ export class MixtureSession {
 			}
 			delete this.state.origins[result.toolCallId];
 		}
-		if (message && !this.signal.aborted && !this.requestOptions.signal?.aborted && results.some(result => result.toolName !== CONTROL)) {
-			const delta = executionDelta(message, results, this.state.revision);
+		for (const actor of transitions) {
+			const local = this.state[actor].localContext!;
+			commitContextTransition(local, {
+				currentTask: { role: "user", timestamp: Date.now(), content: this.state.attachments.length
+					? [{ type: "text", text: this.currentScope() }, ...this.state.attachments] : this.currentScope() },
+				boundaryGroup: message ? [message, ...results] : results,
+			});
+		}
+		const sharedResults = results.filter(result => !LOCAL_CONTEXT_TOOLS.some(tool => tool === result.toolName));
+		if (message && !this.signal.aborted && !this.requestOptions.signal?.aborted && sharedResults.some(result => result.toolName !== CONTROL)) {
+			const sharedMessage = { ...message, content: message.content.filter(block => block.type !== "toolCall" || !LOCAL_CONTEXT_TOOLS.some(tool => tool === block.name)) };
+			const delta = executionDelta(sharedMessage, sharedResults, this.state.revision);
 			if (writerBatch) {
 				if (effectfulWriterBatch) this.state.writerBatches = (this.state.writerBatches ?? 0) + 1;
 				const progress = this.state.writerProgress ??= [];
-				progress.push(executionProgress(message, results, this.state.revision));
+				progress.push(executionProgress(sharedMessage, sharedResults, this.state.revision));
 				while (progress.length > 1 && progress.reduce((length, item) => length + item.length, 0) > 24_000) progress.shift();
 				const interval = effectfulWriterBatch && this.state.writerBatches % this.preset.limits.progressEveryBatches === 0;
 				const documentationOnly = effectfulWriterBatch && documentationMutation(message);
 				const leadBoundary = interval && this.state.writerBatches / this.preset.limits.progressEveryBatches >= this.preset.limits.leadEveryProgressIntervals;
 				const requestReview = this.state.reviewers.length && effectfulWriterBatch && (leadBoundary || !documentationOnly && (interval || this.state.pendingDocumentationReview));
 				if (requestReview) {
-					const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(results));
+					const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(sharedResults));
 					(this.state.writerReviewSequences ??= []).push(sequence);
 					this.state.pendingDocumentationReview = false;
 					this.recordCoordination("review-scheduled", sequence);
@@ -887,12 +963,12 @@ export class MixtureSession {
 						this.state.pendingDocumentationReview = true;
 						this.state.diagnostics!.tacticalReviewsSkipped = increment(this.state.diagnostics!.tacticalReviewsSkipped);
 					}
-					this.reviews.prime(this.state.revision, delta, imageContent(results));
+					this.reviews.prime(this.state.revision, delta, imageContent(sharedResults));
 				}
 			} else if (leadTakeoverBatch && this.state.reviewers.length) {
-				const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(results));
+				const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(sharedResults));
 				this.recordCoordination("review-scheduled", sequence);
-			} else this.reviews.prime(this.state.revision, delta, imageContent(results));
+			} else this.reviews.prime(this.state.revision, delta, imageContent(sharedResults));
 		}
 		this.changed();
 	}

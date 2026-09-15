@@ -1,6 +1,6 @@
-# Codex without tool overrides
+# Codex with local context
 
-This directory loads pinned `@howaboua/pi-codex-conversion@3.0.33` without a local fork. Use its supported voice-only mode to leave Pi's tools intact. Normal execution mode alone does not disable upstream tool replacements.
+This wrapper loads pinned `@howaboua/pi-codex-conversion@3.0.33` without a fork. It owns local history, notes, and context windows while retaining upstream voice support and Pi's native tools. Upstream voice-only mode does not disable the wrapper's local context engine.
 
 ## Configuration
 
@@ -18,14 +18,22 @@ Merge these fields into `pi-codex-conversion.json` under `${PI_CODING_AGENT_DIR:
   "compaction": {
     "contextManagement": "off",
     "hybridCompaction": false,
-    "responsesCompaction": false
+    "responsesCompaction": false,
+    "portableSummary": false
+  },
+  "openai": {
+    "forceCachedWebSockets": false,
+    "proxyResponsesLite": false,
+    "cacheKeepalive": false,
+    "lunaCacheKeepaliveMinutes": 0,
+    "cacheDiagnostics": "off"
   }
 }
 ```
 
 Keep native Pi compaction enabled in `settings.json`, with `reserveTokens: 60000`. Preserve unrelated preferences, voice settings, and provider scope. The dotfiles settings hook owns this merge; do not store runtime settings in this repository.
 
-Trusted project `.pi/pi-codex-conversion.json` files can override the global policy. Check effective settings if upstream tools reappear. This package does not rewrite project overrides.
+The wrapper refuses incompatible explicit remote-context, hybrid-compaction, Responses Lite, and cached-WebSocket settings before dispatch. Check both the global file and trusted project `.pi/pi-codex-conversion.json`. It does not rewrite either file.
 
 ## Tools and child sessions
 
@@ -34,8 +42,22 @@ Trusted project `.pi/pi-codex-conversion.json` files can override the global pol
 - Local ask-user supplies `ask_user`; do not register npm `@howaboua/pi-ask` alongside it.
 - Code `exec`/`wait`, upstream file replacements, and Remote context management are disabled under this policy.
 - Subagents explicitly load conversion and bg-bash and inherit managed settings. Swarm workers receive private native settings and private shell state. Mixture uses the current session's effective providers and native tool loop.
-- When Mixture settles or detaches, this loader closes conversion's nested role sockets so print-mode processes can exit without waiting for cache expiry.
+- Mixture tracks acquired role and summary request IDs. Helpers release their acquired ID when they finish. The wrapper cancels released local Codex requests without sweeping unrelated sockets.
 - Autoresearch retains its native activation rules. Pi owns compaction.
+
+## Local state and transport
+
+`history`, `notes`, `new_context`, and `get_context_remaining` operate on local session state. Mixture lead, writer, and reviewer stores are separate. Reviewers can change their own notes and windows, not another role's notes or checkout files. Helper and summary inference has no tools.
+
+A window change waits for the complete tool batch. Archived windows retain complete messages, including images, and remain searchable after leaving the active prompt. Notes are virtual files, limited to 1 MB per file and 10 MB per snapshot. Standalone stores use Pi custom entries and survive restart, compaction, forks, and tree navigation; sibling branches diverge independently. Mixture stores use its checkpoint/blob chain. Runtime state stays outside this repository.
+
+Codex requests use SSE with the full local projection. The wrapper rejects injected continuation, remote history, and compaction fields after the payload callback and filters prohibited headers case-insensitively. Opaque correlation IDs are routing hints, not stored conversation history. Non-Codex Mixture providers bypass the Codex wire adapter.
+
+`/codex-local` reports the active actor's window, archive and note counts, note bytes, and active Codex request count. It does not capture prompts, note paths or contents, branch IDs, headers, or credentials. Mixture's existing status/performance view retains its per-role request and usage accounting.
+
+Responses Lite, remote compaction, cached WebSocket continuation, upstream prepared-prompt capture, and upstream cache diagnostics are not used by this adapter. Native Pi compaction remains available. The adapter reuses the pinned exported transport and transforms; its minimal request preparation is maintained here rather than in an upstream fork.
+
+Existing upstream notes are left intact and are not imported automatically. Legacy Mixture checkpoints without local state initialize from role history. Malformed new local state is rejected rather than silently dropping notes.
 
 ## Optional upstream addons
 

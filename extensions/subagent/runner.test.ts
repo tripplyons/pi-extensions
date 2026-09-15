@@ -45,7 +45,7 @@ test("real Pi child activates native files and bg-bash before prompting and can 
     expect(snapshot.stderr).not.toContain("Failed to load extension");
     expect(snapshot.output).not.toBe("");
     const tools = JSON.parse(snapshot.output);
-    expect(tools.sort()).toEqual(["bash", "bg_process", "edit", "read", "sleep", "write"].sort());
+    expect(tools.sort()).toEqual(["bash", "bg_process", "edit", "get_context_remaining", "history", "new_context", "notes", "read", "sleep", "write"].sort());
     const stopped = await run.kill();
     expect(stopped.status).toBe("killed");
     expect(() => process.kill(snapshot.pid, 0)).toThrow();

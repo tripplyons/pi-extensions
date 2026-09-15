@@ -6,7 +6,17 @@ import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { normalizeCodexConversionConfig } from "@howaboua/pi-codex-conversion/src/adapter/activation/config.ts";
 import { registerCodexVoiceShortcuts } from "@howaboua/pi-codex-conversion/src/voice/shortcuts.ts";
-import { closeMixtureCodexSessions, preserveNativeFollowUpShortcut } from "./index.ts";
+import { closeMixtureCodexSessions, localContextDiagnostics, localPolicyViolations, preserveNativeFollowUpShortcut, suppressUpstreamLocalContextHooks } from "./index.ts";
+
+import { createLocalContext } from "./local-context.ts";
+
+test("local diagnostics expose counts, not prompts, note paths, branch IDs or note contents", () => {
+	const state = createLocalContext({ branchId: "private-branch", preset: "fixture", role: "writer" }, [{ role: "user", content: "private-prompt", timestamp: 1 }]);
+	state.notes.push({ path: "/writer/notes/private-path", text: "private-note", createdAt: 1, updatedAt: 1 });
+	const diagnostics = localContextDiagnostics(state, 2);
+	expect(diagnostics).toMatchObject({ codexTransport: "sse", activeCodexRequests: 2, role: "writer", activeItems: 1, archivedWindows: 0, noteFiles: 1, noteBytes: 12 });
+	for (const privateValue of ["private-branch", "private-prompt", "private-path", "private-note"]) expect(JSON.stringify(diagnostics)).not.toContain(privateValue);
+});
 
 type Shortcut = {
 	key: string;
@@ -18,6 +28,39 @@ test("Mixture session cleanup closes only validated nested role sessions", () =>
 	closeMixtureCodexSessions({ sessionIds: ["root/mixture/run/lead", "root/mixture/run/writer"] }, id => closed.push(id));
 	closeMixtureCodexSessions({ sessionIds: ["", 3] }, id => closed.push(id));
 	expect(closed).toEqual(["root/mixture/run/lead", "root/mixture/run/writer"]);
+});
+
+test("local policy diagnoses explicit upstream remote settings", () => {
+	expect(localPolicyViolations({ compaction: { contextManagement: "remote", hybridCompaction: true }, openai: { proxyResponsesLite: true, forceCachedWebSockets: true, cacheKeepalive: true, cacheDiagnostics: "on" } })).toEqual([
+		"compaction.contextManagement=remote", "compaction.hybridCompaction=true", "openai.proxyResponsesLite=true", "openai.forceCachedWebSockets=true", "openai.cacheKeepalive=true", "openai.cacheDiagnostics=on",
+	]);
+	expect(localPolicyViolations({ compaction: { contextManagement: "off" }, openai: { forceCachedWebSockets: false, cacheDiagnostics: "off" } })).toEqual([]);
+});
+
+test("the Codex wrapper suppresses only conflicting upstream context hooks", () => {
+	const registered: string[] = [];
+	const tools: string[] = [];
+	const pi = { on(event: string, handler: (...args: any[]) => unknown) { registered.push(event); return handler; }, registerTool(tool: { name: string }) { tools.push(tool.name); } };
+	const wrapped = suppressUpstreamLocalContextHooks(pi as any);
+	for (const event of ["context", "turn_end", "session_before_compact", "session_compact", "session_before_tree", "before_provider_request", "message_end"]) wrapped.on(event as any, () => undefined);
+	for (const name of ["history", "notes", "new_context", "get_context_remaining", "voice"]) wrapped.registerTool({ name });
+	expect(registered).toEqual(["turn_end", "before_provider_request", "message_end"]);
+	expect(tools).toEqual(["voice"]);
+});
+
+test("upstream activation cannot remove the wrapper's active local tools", async () => {
+	let active = ["read", "history", "notes", "new_context", "get_context_remaining"];
+	let handler: (...args: any[]) => unknown = () => undefined;
+	const pi = { getActiveTools: () => active, setActiveTools: (names: string[]) => { active = names; }, on(_event: string, callback: typeof handler) { handler = callback; } };
+	const wrapped = suppressUpstreamLocalContextHooks(pi as any);
+	for (const event of ["input", "before_agent_start"] as const) {
+		wrapped.on(event, (_event, context) => {
+			expect(context.model).toBeUndefined();
+			wrapped.setActiveTools(["read", "exec", "history"]);
+		});
+		await handler({}, { model: { provider: "openai-codex" } });
+		expect(active).toEqual(["read", "history", "notes", "new_context", "get_context_remaining"]);
+	}
 });
 
 test("Codex wrapper reserves Alt+Enter for native Pi follow-up", () => {

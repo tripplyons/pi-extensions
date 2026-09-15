@@ -91,7 +91,8 @@ export function createWorkerProcesses(entryPoint: string, dependencies: WorkerPr
 			writeJson(join(agentDir, "pi-codex-conversion.json"), {
 				executionMode: "normal", voiceFeaturesOnly: true,
 				tools: { applyPatchOnly: false, viewImageOnly: false, autoReasoning: false },
-				compaction: { contextManagement: "off", hybridCompaction: false, responsesCompaction: false },
+				compaction: { contextManagement: "off", hybridCompaction: false, responsesCompaction: false, portableSummary: false },
+				openai: { fast: false, proxyResponsesLite: false, forceCachedWebSockets: false, cacheDiagnostics: "off", harnessIdentifierHeader: false },
 				scope: { allProviders: "on" },
 			});
 			const control = controlDirectory(node);

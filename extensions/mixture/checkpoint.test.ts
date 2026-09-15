@@ -6,6 +6,7 @@ import { defaultConfig } from "./config.ts";
 import { emptyUsage } from "./provider.ts";
 import { MixtureSession, newState } from "./session.ts";
 import { receipt, tagReceipts } from "./usage.ts";
+import { commitContextTransition, createLocalContext, scheduleContextTransition } from "../pi-codex-conversion/local-context.ts";
 
 const cwd = process.cwd();
 const preset = defaultConfig().presets.default;
@@ -22,6 +23,31 @@ function fixture() {
 	state.owner = "lead"; state.origins.write = { actor: "lead", synthetic: false };
 	return { manager, state, message, row };
 }
+
+for (const kind of ["snapshot", "delta"] as const) test(`malformed local state in a ${kind} refuses restore instead of falling back`, () => {
+	const { manager, state } = fixture();
+	state.lead.messages.unshift({ role: "user", content: "padding".repeat(10_000), timestamp: 0 });
+	manager.appendCustomEntry(CHECKPOINT, encodeCheckpoint(cwd, "response", state));
+	const malformed = structuredClone(state);
+	malformed.writer.localContext = { version: 1, notes: "do-not-drop-this" } as any;
+	const next = encodeCheckpoint(cwd, "turn", malformed, kind === "delta" ? state : undefined);
+	expect(next.kind).toBe(kind);
+	manager.appendCustomEntry(CHECKPOINT, next);
+	const original = structuredClone(manager.getEntries());
+	expect(() => restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd)).toThrow("Mixture local context restore refused");
+	expect(manager.getEntries()).toEqual(original);
+});
+
+for (const mismatch of ["role", "preset", "branchId"] as const) test(`restore rejects a foreign local ${mismatch} identity without replacing entries`, () => {
+	const { manager, state } = fixture();
+	state.lead.localContext = createLocalContext({ branchId: "branch", preset: "default", role: "lead" });
+	state.writer.localContext = createLocalContext({ branchId: "branch", preset: "default", role: "writer" });
+	state.writer.localContext.identity[mismatch] = "foreign";
+	manager.appendCustomEntry(CHECKPOINT, encodeCheckpoint(cwd, "response", state));
+	const entries = structuredClone(manager.getEntries());
+	expect(() => restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd)).toThrow("Mixture local context restore refused");
+	expect(manager.getEntries()).toEqual(entries);
+});
 
 test("version 3 checkpoints store small deltas and restore their full state", () => {
 	const manager = SessionManager.inMemory(cwd);
@@ -64,6 +90,22 @@ test("image blobs are stored once while snapshots, deltas and markers keep refer
 	expect(JSON.stringify(snapshot)).not.toContain("image-data");
 	expect(JSON.stringify(marker).length).toBeLessThan(300);
 	expect(restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd).state?.attachments).toEqual([image]);
+});
+
+test("image bytes remain in checkpoint blobs after leaving the active window", () => {
+	const { manager, state } = fixture();
+	const image = { type: "image" as const, mimeType: "image/png", data: "archive-only-pixel" };
+	state.writer.localContext = createLocalContext({ branchId: "branch", preset: "default", role: "writer" }, [{ role: "user", content: [image], timestamp: 1 }]);
+	scheduleContextTransition(state.writer.localContext);
+	commitContextTransition(state.writer.localContext);
+	const blobs = checkpointBlobs(state);
+	expect(blobs).toHaveLength(1);
+	manager.appendCustomEntry(CHECKPOINT_BLOB, blobs[0]);
+	const snapshot = encodeCheckpoint(cwd, "response", state);
+	expect(JSON.stringify(snapshot)).not.toContain(image.data);
+	manager.appendCustomEntry(CHECKPOINT, snapshot);
+	const restored = restoreCheckpoint(manager.getBranch(), manager.getEntries(), "default", preset, cwd).state!;
+	expect(restored.writer.localContext!.archives[0].messages[0].content).toEqual([image]);
 });
 
 test("missing image blobs reject a referenced checkpoint visibly", () => {

@@ -6,6 +6,7 @@ import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { defaultConfig } from "./config.ts";
 import { abortable, emptyUsage } from "./provider.ts";
 import { executionDelta, newReviewer, ReviewPool } from "./review.ts";
+import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
 
 const reply = (name: string, args: Record<string, unknown>): AssistantMessage => ({ role: "assistant", provider: "fixture", model: "reviewer", api: "fixture", timestamp: 1,
 	content: [{ type: "toolCall", id: `call_${Math.random().toString(36).slice(2)}`, name, arguments: args }], stopReason: "toolUse", usage: emptyUsage() });
@@ -16,6 +17,25 @@ const deferred = <T>() => {
 	const promise = new Promise<T>(done => { resolve = done; });
 	return { promise, resolve };
 };
+
+test("new reviewer phases archive the previous projection and preserve private notes", async () => {
+	const preset = defaultConfig().presets.default;
+	const states = preset.reviewers.map(newReviewer);
+	for (const [index, state] of states.entries()) {
+		state.localContext = createLocalContext({ branchId: "branch", preset: "default", role: `reviewer-${index + 1}` }, [
+			{ role: "user", content: `phase-sentinel-${index}`, timestamp: 1 },
+		]);
+		state.localContext.notes.push({ path: `/reviewer-${index + 1}/notes/private`, text: `note-${index}`, createdAt: 1, updatedAt: 1 });
+	}
+	const pool = new ReviewPool(preset, states, process.cwd(), async () => { throw new Error("Unexpected inference"); }, () => true);
+	await pool.startPhase();
+	for (const [index, state] of states.entries()) {
+		expect(JSON.stringify(state.localContext!.activeMessages)).not.toContain(`phase-sentinel-${index}`);
+		expect(JSON.stringify(state.localContext!.activeMessages)).toContain(`note-${index}`);
+		expect(JSON.stringify(state.localContext!.archives)).toContain(`phase-sentinel-${index}`);
+		expect(state.localContext!.notes[0].text).toBe(`note-${index}`);
+	}
+});
 
 test("reviewers run concurrently and serialize repeated scheduled review cycles", async () => {
 	const preset = defaultConfig().presets.default;
@@ -55,8 +75,8 @@ test("reviewers run concurrently and serialize repeated scheduled review cycles"
 		expect(result.findings).toEqual([]);
 		expect(result.warnings).toEqual([]);
 		expect(peak).toEqual([1, 1]);
-		for (const request of requests.slice(0, 4)) expect(request.context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
-		for (const request of requests.slice(4)) expect(request.context.tools?.map(tool => tool.name).sort()).toEqual(["find", "grep", "ls", "mixture_review", "read"]);
+		for (const request of requests.slice(0, 4)) expect(request.context.tools?.map(tool => tool.name)).toEqual(["history", "notes", "new_context", "get_context_remaining", "mixture_review"]);
+		for (const request of requests.slice(4)) expect(request.context.tools?.map(tool => tool.name).sort()).toEqual(["find", "get_context_remaining", "grep", "history", "ls", "mixture_review", "new_context", "notes", "read"]);
 	} finally { await pool.freeze(); }
 });
 
@@ -76,7 +96,7 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		expect(requests).toHaveLength(1);
 		expect(JSON.stringify(requests[0].context.messages)).toContain("Initial delegation");
 		expect(JSON.stringify(requests[0].context.messages)).toContain("tactical incremental review");
-		expect(requests[0].context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(requests[0].context.tools?.map(tool => tool.name)).toEqual(["history", "notes", "new_context", "get_context_remaining", "mixture_review"]);
 		expect(requests[0].context.systemPrompt).toContain("delta-only");
 		expect(requests[0].context.systemPrompt).toContain("merely because implementation or final verification is still underway");
 		expect(requests[0].context.systemPrompt).toContain("merely unfinished is neither a finding nor an incomplete review");
@@ -95,7 +115,7 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		const candidate = pool.checkpoint(2, "Lead final-answer candidate", undefined, undefined, true);
 		await new Promise(resolve => setTimeout(resolve, 0));
 		expect(requests).toHaveLength(3);
-		expect(requests[2].context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(requests[2].context.tools?.map(tool => tool.name)).toEqual(["history", "notes", "new_context", "get_context_remaining", "mixture_review"]);
 		expect(requests[2].context.systemPrompt).toContain("Do not repeat that audit");
 		expect(JSON.stringify(requests[2].context.messages.at(-1))).toContain("Assess only whether the supplied completion or final claim conflicts");
 		expect(JSON.stringify(requests[2].context.messages.at(-1))).not.toContain("Audit the complete task scope");
@@ -139,7 +159,7 @@ test("report-only checkpoints require a clean current review", async () => {
 		expect(contexts[1].systemPrompt).not.toContain("Do not repeat that audit");
 		const reused = await pool.checkpoint(1, "Unchanged candidate", undefined, undefined, true);
 		expect(reused.reused).toBe(true);
-		expect(contexts[2].tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(contexts[2].tools?.map(tool => tool.name)).toEqual(["history", "notes", "new_context", "get_context_remaining", "mixture_review"]);
 		expect(contexts[2].systemPrompt).toContain("Do not repeat that audit");
 	} finally { await pool.freeze(); }
 });
@@ -153,7 +173,7 @@ test("native read-only tools inspect files and retain bounded authoritative stat
 		count++;
 		if (count === 1) return reply("read", { path: "fixture.txt" });
 		expect(JSON.stringify(context.messages)).toContain("before\\nafter");
-		expect(context.tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(context.tools?.map(tool => tool.name)).toEqual(["history", "notes", "new_context", "get_context_remaining", "mixture_review"]);
 		return report(3, [issue]);
 	}, () => true);
 	try {

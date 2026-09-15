@@ -1,5 +1,7 @@
 import type { AssistantMessage, Context, ImageContent, Message, Model } from "@earendil-works/pi-ai";
 import { estimateTokens as estimateMessageTokens } from "@earendil-works/pi-coding-agent";
+import { messageGroups } from "../pi-codex-conversion/local-context.ts";
+export { messageGroups, interruptPending } from "../pi-codex-conversion/local-context.ts";
 
 // Root exports also work with Pi's Node extension loader, which aliases pi-ai.
 export function estimateContextTokens(context: Context): { tokens: number } {
@@ -16,33 +18,6 @@ export function forModel(context: Context, model: Model<any>, warn: (warning: st
 	warn(`${model.provider}/${model.id}: image evidence omitted because this model supports text only`);
 	return { ...context, messages: context.messages.map(message => message.role !== "assistant" && Array.isArray(message.content)
 		? { ...message, content: message.content.map(block => block.type === "image" ? { type: "text" as const, text: "[Image evidence omitted: this model supports text only.]" } : block) } : message) };
-}
-
-// Keep full tool batches together. A pending call is never silently dropped or replayed.
-export function messageGroups(messages: readonly Message[]): Message[][] {
-	const groups: Message[][] = [];
-	for (const message of messages) {
-		if (message.role === "toolResult" && groups.length) groups.at(-1)!.push(message);
-		else groups.push([message]);
-	}
-	return groups;
-}
-export function interruptPending(messages: Message[]): boolean {
-	let changed = false;
-	const paired: Message[] = [];
-	for (const group of messageGroups(messages)) {
-		paired.push(...group);
-		const assistant = group[0];
-		if (assistant.role !== "assistant") continue;
-		for (const call of assistant.content.filter(block => block.type === "toolCall")) {
-			if (group.some(message => message.role === "toolResult" && message.toolCallId === call.id)) continue;
-			paired.push({ role: "toolResult", toolName: call.name, toolCallId: call.id, timestamp: Date.now(), isError: true,
-				content: [{ type: "text", text: "Interrupted: no result was recorded. The operation may have changed files. Inspect the current checkout before continuing; never replay this call automatically." }] });
-			changed = true;
-		}
-	}
-	if (changed) messages.splice(0, messages.length, ...paired);
-	return changed;
 }
 
 export interface CompactedContext { messages: Message[]; changed: boolean }

@@ -33,7 +33,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 
 | Extension | What it does |
 | --- | --- |
-| [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Loads pinned upstream conversion with its tool overrides disabled by configuration. |
+| [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Owns local Codex context, history, and notes while preserving native tools and upstream voice. |
 | [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; swarm tools are active only while attached, and Mixture nodes receive a selected private roster. |
 | ask-user | Collects choices and free-text answers in an interactive form. |
 | auto-rename | Names sessions automatically. |

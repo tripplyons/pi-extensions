@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	createAssistantMessageEventStream, getSupportedThinkingLevels,
 	type Api, type AssistantMessage, type AssistantMessageEventStream, type Context,
@@ -10,6 +11,10 @@ export type Registry = Pick<ModelRegistry, "find" | "getProvider" | "getApiKeyAn
 export type Lookup = (provider: string, model: string) => Model<Api> | undefined;
 export type MixtureStream = (preset: string, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 export type RoleStreamOptions = SimpleStreamOptions & { serviceTier?: "priority" | "default" };
+export type RequestLane = "ordinary" | "summary" | "overflow" | "helper";
+export function requestLaneId(root: string, run: string, role: string, lane: RequestLane): string {
+	return `mixture-lane/${createHash("sha256").update(JSON.stringify([root, run, role, lane])).digest("hex")}`;
+}
 export const emptyUsage = (): Usage => ({
 	input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -129,7 +134,8 @@ export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 }
 
 export async function callRole(registry: Registry, id: string, context: Context, thinking: ModelThinkingLevel,
-	options: RoleStreamOptions & { timeoutMs: number; idleTimeoutMs?: number }, onPartial?: (message: AssistantMessage) => void): Promise<AssistantMessage> {
+	options: RoleStreamOptions & { timeoutMs: number; idleTimeoutMs?: number }, onPartial?: (message: AssistantMessage) => void,
+	onAcquire?: (sessionId: string) => void): Promise<AssistantMessage> {
 	const model = resolveModel(id, registry.find.bind(registry));
 	if (!getSupportedThinkingLevels(model).includes(thinking)) throw new Error(`${id} does not support thinking ${thinking}`);
 	const idle = options.idleTimeoutMs === undefined ? undefined : new AbortController();
@@ -161,6 +167,7 @@ export async function callRole(registry: Registry, id: string, context: Context,
 			sessionId: options.sessionId, cacheRetention: options.cacheRetention,
 			onPayload: options.onPayload, onResponse: options.onResponse,
 		};
+		if (request.sessionId) onAcquire?.(request.sessionId);
 		const source = provider.streamSimple(auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model, context, request);
 		const consume = async () => {
 			let terminal: AssistantMessage | undefined;

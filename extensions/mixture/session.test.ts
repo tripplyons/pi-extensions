@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
+import { appendActiveMessage } from "../pi-codex-conversion/local-context.ts";
 import { defaultConfig } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { newReviewer } from "./review.ts";
 import { assessPhase, delegatePhase } from "./phase.ts";
-import { CONTROL, MixtureSession, controlTool, newState } from "./session.ts";
+import { CONTROL, MixtureSession, controlTool, fingerprint, newState } from "./session.ts";
 
 const call = (id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"][number] => ({ type: "toolCall", id, name, arguments: args });
 const content = (value: string): AssistantMessage["content"] => [{ type: "text", text: value }];
@@ -49,11 +50,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 		[call("delegate", CONTROL, { action: "delegate", task: "Fix this without changing unrelated files", nextAction: "Inspect the failing behavior, fix it, and run focused checks", successCriteria: ["Relevant checks pass"] })],
 		content("Implemented and verified."),
 	]);
-	expect(h.session.resourceSessionIds("root")).toEqual([
-		"root/summary",
-		`root/mixture/${h.state.id}/lead`,
-		`root/mixture/${h.state.id}/writer`,
-	]);
+	expect(h.session.resourceSessionIds()).toEqual([]);
 	h.preset.writer.model = "openai-codex/gpt-5.6-luna";
 	h.preset.limits.requestTimeoutMs = 111_000;
 	h.preset.limits.writerRequestTimeoutMs = 222_000;
@@ -75,6 +72,22 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	expect(h.calls[0].options.timeoutMs).toBe(111_000);
 	expect(h.calls[1].options.timeoutMs).toBe(222_000);
 	expect(h.calls[1].options.serviceTier).toBe("priority");
+	expect(h.session.resourceSessionIds()).toEqual([h.calls[0].options.sessionId!, h.calls[1].options.sessionId!]);
+	expect(h.session.resourceSessionIds()).toEqual([]);
+});
+
+test("oversized private-note projection preserves the previous role checkpoint", async () => {
+	const h = harness([content("summary")]);
+	h.session.newRequest("Fix this");
+	h.state.initialized = true;
+	h.state.seenUsers = [fingerprint(h.context.messages[0])];
+	const local = h.session.localContextTarget().state;
+	local.notes.push({ path: "lead/notes/large", text: "x".repeat(900_000), createdAt: 1, updatedAt: 1 });
+	for (const message of Array.from({ length: 4 }, (_, index) => ({ role: "user" as const, content: `old-${index}-${"y".repeat(70_000)}`, timestamp: index + 2 }))) appendActiveMessage(local, message);
+	const before = structuredClone(local);
+	const failure = await h.next();
+	expect(failure).toMatchObject({ stopReason: "error", errorMessage: expect.stringContaining("private notes and summarized context exceed the input budget; last checkpoint preserved") });
+	expect(h.state.lead.localContext).toEqual(before);
 });
 
 test("role-filtered control schemas require delegate fields without burdening other actions", async () => {
@@ -215,13 +228,47 @@ test("a context reset removes stale phase notes and records one authoritative re
 	expect(messages[0].content).toContain("fresh delegate without phaseId");
 });
 
+test("forked role stores inherit a snapshot under the new branch identity", () => {
+	const h = harness([]);
+	h.state.writer.localContext!.notes.push({ path: "/writer/notes/private", text: "parent-note", createdAt: 1, updatedAt: 1 });
+	const parent = structuredClone(h.state);
+	const fork = new MixtureSession(h.preset, h.session.registry, structuredClone(h.state), () => h.jobs, () => {}, process.cwd(), "fork-branch");
+	for (const role of [fork.state.lead, fork.state.writer]) expect(role.localContext!.identity.branchId).toBe("fork-branch");
+	expect(fork.state.writer.localContext!.notes[0].text).toBe("parent-note");
+	fork.state.writer.localContext!.notes[0].text = "fork-note";
+	expect(h.state).toEqual(parent);
+});
+
+test("restore reconciles pending tools in every authoritative local store", () => {
+	const h = harness([]);
+	for (const role of [h.state.lead, h.state.writer]) {
+		const pending: AssistantMessage = { role: "assistant", content: [call("interrupted", "read", { path: "fixture" })],
+			provider: "fixture", model: "fixture", api: "fixture", usage: emptyUsage(), timestamp: 1, stopReason: "toolUse" };
+		role.messages = [structuredClone(pending)];
+		role.localContext!.activeMessages = [structuredClone(pending)];
+	}
+	h.session.reconcile("session restored");
+	for (const role of [h.state.lead, h.state.writer]) {
+		const results = role.localContext!.activeMessages.filter(message => message.role === "toolResult");
+		expect(results).toHaveLength(1);
+		expect(results[0]).toMatchObject({ toolCallId: "interrupted", isError: true });
+	}
+	h.session.reconcile("session restored");
+	for (const role of [h.state.lead, h.state.writer]) {
+		expect(role.localContext!.activeMessages.filter(message => message.role === "toolResult")).toHaveLength(1);
+	}
+});
+
 test("root compaction rebases only the lead context and preserves usage accounting", async () => {
 	const h = harness([content("Continued from compacted context.")]);
 	h.state.initialized = true;
 	h.state.seenUsers = ["stale-user"];
 	h.state.lead.messages = [{ role: "user", content: "raw history that root compaction removed", timestamp: 1 }];
 	h.state.lead.usage = { ...emptyUsage(), input: 123, totalTokens: 123 };
+	const writerBefore = structuredClone(h.state.writer.localContext);
 	h.session.rebaseLeadAfterCompaction("compact-1");
+	expect(JSON.stringify(h.state.lead.localContext!.archives)).toContain("raw history that root compaction removed");
+	expect(h.state.writer.localContext).toEqual(writerBefore);
 	h.session.reconcile("session restored");
 	h.context.messages = [{ role: "user", content: "Compacted root context", timestamp: 2 }];
 	await h.next();

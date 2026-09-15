@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -6,10 +7,12 @@ import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeM
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
 import { releaseProviderSessions } from "./events.ts";
-import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
+import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, newState } from "./session.ts";
 import { compactStatus, configure, controlCall, controlCard, inspection, Inspector } from "./ui.ts";
 import { receiptIds, tagReceipts } from "./usage.ts";
+import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
+import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
 
 export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry) {
 	let registry = initialRegistry ?? new ModelRegistry(await ModelRuntime.create({ allowModelNetwork: false }));
@@ -29,14 +32,16 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	let pending: Promise<AssistantMessage> | undefined;
 	let requesting = false;
 	let compacting = false;
+	const helpers = new Set<AbortController>();
 	try { config = loadConfig(); }
 	catch (error) { diagnostic = String(error); }
 	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
 	const status = () => diagnostic ?? (session ? inspection(session) : `Mixture presets: ${Object.keys(config!.presets).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`);
 	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : "lead · unavailable · $?" : undefined); };
 	const releaseRoleResources = (target = session) => {
-		if (!target || !rootId) return;
-		releaseProviderSessions(pi, target.resourceSessionIds(rootId));
+		for (const helper of helpers) helper.abort(new Error("Mixture helper released"));
+		if (!target) return;
+		releaseProviderSessions(pi, target.resourceSessionIds());
 	};
 	const persist = (stage: CheckpointStage) => {
 		if (!ctx || !session || ctx.sessionManager.getSessionId() !== rootId) return;
@@ -61,6 +66,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		deltaChain = checkpoint.kind === "delta" ? deltaChain + 1 : 0;
 	};
 	const detach = async (reason: string, warn = false) => {
+		for (const helper of helpers) helper.abort(new Error(`Mixture ${reason}`));
 		const old = session;
 		if (!old) return;
 		await old.abort();
@@ -111,7 +117,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				if (session !== created || ctx?.sessionManager.getSessionId() !== owner) return;
 				stateGeneration++;
 				render(); persist("response");
-			}, ctx.cwd);
+			}, ctx.cwd, owner);
 			session = created;
 			if (rootCompaction && created.state.rootCompactionId !== rootCompaction.id) {
 				if (restored.state) created.rebaseLeadAfterCompaction(rootCompaction.id);
@@ -146,16 +152,32 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				}
 				// Pi helper requests have a separate routing ID and never join a run.
 				const model = resolveModel(preset.lead, registry.find.bind(registry));
-				emitMessage(stream, await callRole(registry, preset.lead, context, inheritedOptions?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off"), {
-					...inheritedOptions, timeoutMs: preset.limits.requestTimeoutMs,
-					maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
-				}));
+				const helperState = createLocalContext({ branchId: options?.sessionId ?? `helper-${randomUUID()}`, preset: name, role: "/helper" }, context.messages);
+				const helperContext = { ...context, messages: helperState.activeMessages, tools: [] };
+				const controller = new AbortController();
+				helpers.add(controller);
+				let acquiredId: string | undefined;
+				try {
+					emitMessage(stream, await callRole(registry, preset.lead, helperContext, inheritedOptions?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off"), {
+						...inheritedOptions, sessionId: requestLaneId(options?.sessionId ?? "detached", randomUUID(), `${name}/lead`, "helper"), timeoutMs: preset.limits.requestTimeoutMs,
+						signal: AbortSignal.any([controller.signal, ...(options?.signal ? [options.signal] : [])]),
+						maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
+					}, undefined, id => { acquiredId = id; }));
+				} finally {
+					helpers.delete(controller);
+					if (acquiredId) releaseProviderSessions(pi, [acquiredId]);
+				}
 			} catch (error) {
 				if (options?.sessionId === rootId) { pending = undefined; requesting = false; }
 				emitMessage(stream, failureMessage({ api: "mixture", provider: "mixture", id: name } as Model<any>, error, options?.signal?.aborted));
 			}
 		})();
 		return stream;
+	});
+	pi.events?.on?.(LOCAL_CONTEXT_QUERY_EVENT, (value: unknown) => {
+		const query = value as LocalContextQuery;
+		if (!selected() || !session || query.sessionId !== rootId) return;
+		query.target = session.localContextTarget();
 	});
 	pi.registerTool({
 		name: CONTROL, label: "Mixture", description: controlTool.description, parameters: ControlParams,

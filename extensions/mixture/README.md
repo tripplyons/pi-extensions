@@ -140,9 +140,9 @@ report-only request rather than another file-reading batch.
 Failed or incomplete review is disclosed, never counted as clean. A structured
 incomplete report may explicitly resolve an earlier finding it rechecked; findings
 without an explicit disposition remain open within the current phase. Starting a
-fresh phase clears the closed phase's findings and private review context while
-preserving cumulative usage and request accounting. Continuations of the same
-phase keep their findings.
+fresh phase clears the closed phase's findings and resets the reviewer's active
+prompt while preserving its searchable local archive, private notes, cumulative
+usage, and request accounting. Continuations of the same phase keep their findings.
 
 A serious final-review result can trigger two lead reassessments at the same
 execution revision. If serious findings remain after both, the harness releases the
@@ -343,14 +343,27 @@ brief as unresolved work with explicitly unknown earlier correction history;
 counting starts from the observed boundary. Different cwd/preset restoration still
 starts fresh contexts under the existing compatibility checks.
 
+Each lead, writer, and reviewer has a private local context store with `history`,
+`notes`, `new_context`, and `get_context_remaining`. These tools also work for
+non-Codex actors. Reviewers can change their own notes and windows but retain
+read-only checkout access. Local state is saved in `role.localContext` through the
+existing checkpoint chain. Missing legacy fields initialize from role history;
+malformed new fields reject restore. Upstream notes are not imported.
+
 Each role compacts its own context with the same model, preserving task facts,
 unresolved advice, images and recent complete tool batches. Recognized context
 overflow gets one bounded recovery attempt. Failed summaries preserve the last
-valid history. After Pi compacts the root session, Mixture rebases the lead on
-that compacted context instead of retaining the larger pre-compaction history.
-Pi's own compaction and other helper requests use the lead alone, without
-starting collaborators. When the root request settles or detaches, Mixture
-releases each nested native provider session resource while retaining role history.
+valid history. Successful window changes retain the outgoing window in the local
+archive. Root Pi compaction archives and rebases only the lead; writer and reviewer
+stores remain independent.
+
+Pi's own compaction and other helper requests use the lead alone, with detached
+messages and no tools. Role summaries are also tool-free. Helpers release their
+acquired request ID when they finish. When the root request settles or detaches,
+Mixture drains the actual acquired role/summary IDs rather than guessing a list.
+Durable history is retained. Codex wire policy is owned by the
+[local conversion wrapper](../pi-codex-conversion/README.md), not remote history
+or server continuation.
 
 Usage receipts preserve underlying model identities and charge completed calls
 once, including summaries, failed calls that report usage and rejected final

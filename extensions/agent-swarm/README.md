@@ -6,6 +6,8 @@ A worker whose model is `mixture/<preset>` explicitly loads Mixture. The launche
 
 Workers snapshot the coordinator session's current `/fast` setting when they are spawned and use the same Codex service tier without changing the active swarm system prompt.
 
+Private worker configuration loads the [local Codex wrapper](../pi-codex-conversion/README.md). The wrapper owns local windows, history, and notes; upstream context management stays disabled internally. Mixture worker roles use separate local stores. This provisioning does not rewrite the coordinator's configuration or import old upstream notes.
+
 ## Security boundary
 
 Every worker runs under `/usr/bin/sandbox-exec` in a linked Git worktree. File reads are unrestricted. A worker can read every file available to the host user, including credentials, other repositories, the coordinator checkout, sibling worktrees, and swarm control state.

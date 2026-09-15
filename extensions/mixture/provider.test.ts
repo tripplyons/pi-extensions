@@ -1,7 +1,23 @@
 import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { defaultConfig } from "./config.ts";
-import { abortable, callRole, createMixtureProvider, emitMessage, emptyUsage, modelDefinition, validatePreset, type Registry } from "./provider.ts";
+import { abortable, callRole, createMixtureProvider, emitMessage, emptyUsage, modelDefinition, requestLaneId, validatePreset, type Registry } from "./provider.ts";
+
+test("one request-lane constructor separates roots, runs, actors, summaries, overflow and helpers", () => {
+	const ids = new Set<string>();
+	for (const root of ["root-a", "root-b"]) for (const run of ["run-a", "run-b"]) {
+		for (const role of ["lead", "writer", "reviewer-1", "reviewer-2", "reviewer-3", "reviewer-4"]) {
+			for (const lane of ["ordinary", "summary", "overflow", "helper"] as const) {
+				const id = requestLaneId(root, run, role, lane);
+				expect(id).toBe(requestLaneId(root, run, role, lane));
+				expect(id).not.toContain(root);
+				ids.add(id);
+			}
+		}
+	}
+	expect(ids.size).toBe(96);
+	expect(requestLaneId("a/b", "c", "lead", "ordinary")).not.toBe(requestLaneId("a", "b/c", "lead", "ordinary"));
+});
 
 export const model = (provider = "test", id = "lead"): Model<any> => ({
 	provider, id, api: "test-api", name: id, baseUrl: "https://test.invalid", reasoning: true,
