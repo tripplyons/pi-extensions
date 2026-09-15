@@ -222,12 +222,15 @@ test("delegates through normal tool calls, keeps distinct histories, and holds t
 	expect(performance.checkpoints["final-answer"].count).toBe(1);
 });
 
-test("the harness rejects a lead final answer before the required writer phase", async () => {
-	const h = harness([content("I skipped the writer.")]);
-	h.session.newRequest("Complete the task");
+test("the lead answers requests that require no writer work", async () => {
+	const h = harness([content("Hi!")]);
+	h.session.newRequest("hi");
+	const checkpoint = await h.next();
+	expect(checkpoint.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "checkpoint" } });
+	await h.finishControl(checkpoint);
 	const result = await h.next();
-	expect(result.stopReason).toBe("error");
-	expect(result.errorMessage).toContain("required writer phase");
+	expect(result.content).toEqual(content("Hi!"));
+	expect(result.stopReason).toBe("stop");
 	expect(h.state.delegations).toBe(0);
 });
 
