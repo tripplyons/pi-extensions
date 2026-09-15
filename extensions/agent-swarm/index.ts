@@ -15,6 +15,12 @@ import { defaultConfig, WORKER_ENV, type RequestKind } from "./types.ts";
 import { WorkerMailbox } from "./worker.ts";
 import { renderSwarmCall, renderSwarmResult } from "./tool-render.ts";
 
+export const SWARM_TOOL_NAMES = [
+	"swarm_task", "swarm_tree", "swarm_observe", "swarm_spawn", "swarm_send", "swarm_complete", "swarm_review",
+	"swarm_integrate", "swarm_restart", "swarm_stop", "swarm_cleanup", "swarm_kill", "swarm_clear",
+] as const;
+const swarmToolNames = new Set<string>(SWARM_TOOL_NAMES);
+
 export default async function (pi: ExtensionAPI) {
 	let runtime: SwarmRuntime | undefined;
 	let mailbox: WorkerMailbox | undefined;
@@ -39,6 +45,13 @@ export default async function (pi: ExtensionAPI) {
 	const requireRuntime = () => {
 		if (!runtime) throw new Error("No swarm attached. Use /swarm:start <objective> first.");
 		return runtime;
+	};
+	const syncActiveTools = (enabled: boolean) => {
+		const active = pi.getActiveTools();
+		const next = enabled
+			? [...active.filter(name => !swarmToolNames.has(name)), ...SWARM_TOOL_NAMES]
+			: active.filter(name => !swarmToolNames.has(name));
+		if (active.length !== next.length || active.some((name, index) => name !== next[index])) pi.setActiveTools(next);
 	};
 	const liveDefaults = (ctx: ExtensionContext): LiveDefaults => {
 		if (!ctx.model) throw new Error("Select a model before using a swarm");
@@ -159,88 +172,95 @@ export default async function (pi: ExtensionAPI) {
 				}
 			}
 		}
-		catch (error) { stopped = true; ctx.ui.notify(`Swarm controller stopped polling: ${error}`, "error"); }
+		catch (error) {
+			stopped = true;
+			attachment?.set(false);
+			syncActiveTools(false);
+			ctx.ui.notify(`Swarm controller stopped polling: ${error}`, "error");
+		}
 		if (!stopped && runtime === active) timer = setTimeout(() => void poll(ctx), pollInterval);
 	};
 	const attach = (ctx: ExtensionContext) => {
-		attachment?.set(runtime?.run.status !== "stopped");
-		pollInterval = runtime?.run.config.pollIntervalMs ?? 250;
+		const live = !!runtime && runtime.run.status !== "stopped";
+		attachment?.set(live);
+		syncActiveTools(live);
+		if (!live) {
+			stopped = true;
+			if (timer) clearTimeout(timer);
+			timer = undefined;
+			return;
+		}
+		pollInterval = runtime!.run.config.pollIntervalMs;
 		stopped = false;
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => void poll(ctx), 250);
 	};
 	const startSession = async (ctx: ExtensionContext) => {
+		syncActiveTools(false);
 		taskCursor = undefined;
 		context = ctx;
 		const previousWake = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "custom" && entry.message.customType === "swarm-monitor").at(-1);
 		if (previousWake?.type === "message" && previousWake.message.role === "custom") lastWake = (previousWake.message.details as { fingerprint?: string })?.fingerprint ?? "";
 		attachment ??= publishSwarmAttachment(pi);
 		if (process.env[WORKER_ENV] === "1") {
-			mailbox = new WorkerMailbox();
-			attachment.set(true);
-			await mailbox.request("ready", { sessionId: ctx.sessionManager.getSessionId() });
-			const worker = mailbox;
-			const wakeWorker = () => {
-				if (mailbox !== worker) return;
-				try {
-					const view = worker.snapshot();
-					const ids = view.messages.filter((message) => !delivered.has(message.messageId)).map((message) => message.messageId);
-					const fingerprint = JSON.stringify(ids);
-					if (view.status === "active" && ids.length && fingerprint !== lastActivity) {
-						lastActivity = fingerprint;
-						pi.events.emit("tripp:agent-swarm-activity", { runId: worker.runId, fingerprint });
-					}
-					if (!ids.length) lastActivity = "";
-				} catch (error) { ctx.ui.notify(`Swarm activity: ${error}`, "error"); }
-				if (mailbox === worker) timer = setTimeout(wakeWorker, 250);
-			};
-			timer = setTimeout(wakeWorker, 250);
-			const heartbeat = async () => {
-				const current = mailbox;
-				if (!current || ["completed", "rejected", "failed", "stopped"].includes(current.snapshot().node.status)) return;
-				try { await current.request("heartbeat", {}); }
-				catch (error) { ctx.ui.notify(`Swarm heartbeat: ${error}`, "error"); }
-				if (mailbox === current) heartbeatTimer = setTimeout(() => void heartbeat(), 5000);
-			};
-			heartbeatTimer = setTimeout(() => void heartbeat(), 5000);
+			try {
+				const worker = new WorkerMailbox();
+				mailbox = worker;
+				await worker.request("ready", { sessionId: ctx.sessionManager.getSessionId() });
+				attachment.set(true);
+				syncActiveTools(true);
+				const wakeWorker = () => {
+					if (mailbox !== worker) return;
+					try {
+						const view = worker.snapshot();
+						const ids = view.messages.filter((message) => !delivered.has(message.messageId)).map((message) => message.messageId);
+						const fingerprint = JSON.stringify(ids);
+						if (view.status === "active" && ids.length && fingerprint !== lastActivity) {
+							lastActivity = fingerprint;
+							pi.events.emit("tripp:agent-swarm-activity", { runId: worker.runId, fingerprint });
+						}
+						if (!ids.length) lastActivity = "";
+					} catch (error) { ctx.ui.notify(`Swarm activity: ${error}`, "error"); }
+					if (mailbox === worker) timer = setTimeout(wakeWorker, 250);
+				};
+				timer = setTimeout(wakeWorker, 250);
+				const heartbeat = async () => {
+					const current = mailbox;
+					if (!current || ["completed", "rejected", "failed", "stopped"].includes(current.snapshot().node.status)) return;
+					try { await current.request("heartbeat", {}); }
+					catch (error) { ctx.ui.notify(`Swarm heartbeat: ${error}`, "error"); }
+					if (mailbox === current) heartbeatTimer = setTimeout(() => void heartbeat(), 5000);
+				};
+				heartbeatTimer = setTimeout(() => void heartbeat(), 5000);
+			} catch (error) {
+				mailbox = undefined;
+				attachment.set(false);
+				syncActiveTools(false);
+				throw error;
+			}
 			return;
 		}
 		const saved = readJson<{ runId: string }>(sessionFile(ctx.sessionManager.getSessionId()));
 		if (saved) {
-			attachment.set(true);
 			try {
 				runtime = await SwarmRuntime.resume(saved.runId, processes);
 				attach(ctx);
 			} catch (error) {
+				runtime = undefined;
 				attachment.set(false);
+				syncActiveTools(false);
 				throw error;
 			}
 		}
 	};
 	pi.on("session_start", async (_event, ctx) => startSession(ctx));
-	pi.on("session_switch", async (_event, ctx) => {
-		stopped = true;
-		if (timer) clearTimeout(timer);
-		if (heartbeatTimer) clearTimeout(heartbeatTimer);
-		await runtime?.close();
-		runtime = undefined;
-		mailbox = undefined;
-		attachment?.set(false);
-		ctx.ui.setStatus("agent-swarm", undefined);
-		context = undefined;
-		lastWake = "";
-		lastActivity = "";
-		attachedSystemPrompt = undefined;
-		taskCursor = undefined;
-		await startSession(ctx);
-	});
 	pi.on("agent_start", async () => {
 		if (!mailbox || !pendingAcknowledgements.length) return;
 		await mailbox.request("heartbeat", { ackIds: pendingAcknowledgements });
 		pendingAcknowledgements = [];
 	});
 	pi.on("before_agent_start", async (event) => {
-		const attached = mailbox || (runtime && runtime.run.status !== "stopped");
+		const attached = mailbox || (runtime && !stopped && runtime.run.status !== "stopped");
 		if (!attached) return;
 		if (!attachedSystemPrompt) {
 			const node = snapshot().node;
@@ -276,6 +296,7 @@ export default async function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
+		syncActiveTools(false);
 		stopped = true;
 		mailbox = undefined;
 		if (timer) clearTimeout(timer);
@@ -295,8 +316,15 @@ export default async function (pi: ExtensionAPI) {
 			if (!ctx.model) throw new Error("Select a model before starting a swarm");
 			const fast: { enabled?: boolean } = {};
 			pi.events.emit("fast:query", fast);
-			runtime = await SwarmRuntime.create({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), objective, model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel(), config: { ...defaultConfig, fastMode: fast.enabled === true } }, processes);
-			attach(ctx);
+			try {
+				runtime = await SwarmRuntime.create({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), objective, model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel(), config: { ...defaultConfig, fastMode: fast.enabled === true } }, processes);
+				attach(ctx);
+			} catch (error) {
+				runtime = undefined;
+				attachment?.set(false);
+				syncActiveTools(false);
+				throw error;
+			}
 			ctx.ui.notify(`Swarm ${runtime.runId} started. Detached descendants are outside lifecycle control.`, "info");
 		},
 	});
@@ -305,13 +333,31 @@ export default async function (pi: ExtensionAPI) {
 		async handler(args, ctx) {
 			if (mailbox) throw new Error("Root-only command");
 			if (!paused && !runtime && args.trim()) {
-				runtime = await SwarmRuntime.resume(args.trim(), processes);
-				try { await runtime.bindSession(ctx.sessionManager.getSessionId()); }
-				catch (error) { await runtime.close(); runtime = undefined; throw error; }
-				attach(ctx);
+				const resumed = await SwarmRuntime.resume(args.trim(), processes);
+				try {
+					await resumed.bindSession(ctx.sessionManager.getSessionId());
+					runtime = resumed;
+					attach(ctx);
+				} catch (error) {
+					await resumed.close();
+					runtime = undefined;
+					attachment?.set(false);
+					syncActiveTools(false);
+					throw error;
+				}
 			}
-			await requireRuntime().setPaused(paused);
-			attachment?.set(true);
+			try { await requireRuntime().setPaused(paused); }
+			catch (error) {
+				stopped = true;
+				if (timer) clearTimeout(timer);
+				attachment?.set(false);
+				syncActiveTools(false);
+				throw error;
+			}
+			if (paused) {
+				attachment?.set(true);
+				syncActiveTools(true);
+			} else attach(ctx);
 			ctx.ui.notify(paused ? "Swarm paused; detached descendants may continue." : "Swarm resumed.", "info");
 		},
 	});
@@ -372,8 +418,12 @@ export default async function (pi: ExtensionAPI) {
 				await runtime!.close();
 				runtime = undefined;
 				context?.ui.setStatus("agent-swarm", undefined);
+			} else {
+				stopped = true;
+				if (timer) clearTimeout(timer);
 			}
 			attachment?.set(false);
+			syncActiveTools(false);
 			attachedSystemPrompt = undefined;
 			return result({ status: action === "clear" ? "cleared" : "stopped" });
 		};

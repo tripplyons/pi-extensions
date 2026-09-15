@@ -50,6 +50,8 @@ New workers at every depth inherit the coordinator session's current model, thin
 ## Commands
 
 - `/swarm:start <objective>` activates the current session as coordinator.
+
+Swarm definitions stay registered for Pi discovery, but all 13 swarm tools are removed from the active model tool list at session start. They become active only after a live coordinator attachment or a worker's ready handshake, and are removed on shutdown, failed restoration, kill, and clear. Pausing keeps the session attached and the swarm tools active; it pauses worker process groups until `/swarm:resume`.
 - `/swarm:status` shows compact run, lifecycle, role, coordinator-inbox, elapsed-time,
   and total estimated-cost metrics. Cost uses Pi's recorded usage for the full
   coordinator session and every retained or durably snapshotted worker session.

@@ -3,28 +3,47 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension from "./index.ts";
+import extension, { SWARM_TOOL_NAMES } from "./index.ts";
 import { isSwarmAttached } from "./events.ts";
 import { makeNode, SwarmRuntime } from "./runtime.ts";
 import { sessionFile, workerHome, writeJson } from "./state.ts";
+import { WorkerMailbox } from "./worker.ts";
 
-function harness(entries: any[] = []) {
+function harness(entries: any[] = [], initialActiveTools = ["read", "bash", "edit", "write"]) {
 	const bus = new EventEmitter();
 	const tools = new Map<string, any>();
+	const activeTools = new Set(initialActiveTools);
 	const handlers = new Map<string, Function>();
 	const commands = new Map<string, any>();
 	const messages: any[] = [];
 	const pi = {
 		events: { emit: (name: string, value: unknown) => bus.emit(name, value), on(name: string, listener: (...args: any[]) => void) { bus.on(name, listener); return () => bus.off(name, listener); } },
-		registerTool(tool: any) { tools.set(tool.name, tool); },
+		registerTool(tool: any) { tools.set(tool.name, tool); activeTools.add(tool.name); },
 		registerCommand(name: string, command: any) { commands.set(name, command); },
+		getActiveTools: () => [...activeTools],
 		getAllTools: () => [...tools.values()],
+		setActiveTools(names: string[]) { activeTools.clear(); for (const name of names) activeTools.add(name); },
 		getThinkingLevel: () => "low",
 		on(name: string, handler: Function) { handlers.set(name, handler); },
 		sendMessage(message: any) { messages.push(message); entries.push({ type: "message", message: { role: "custom", ...message } }); },
 	};
-	return { pi, bus, handlers, tools, commands, messages };
+	return { pi, bus, handlers, tools, commands, messages, activeTools };
 }
+
+const activeSwarmTools = (active: ReturnType<typeof harness>) => active.pi.getActiveTools().filter(name => name.startsWith("swarm_"));
+
+test("swarm tools stay inactive in a fresh session while unrelated tools survive", async () => {
+	const unrelated = ["read", "bash", "edit", "write", "unrelated_tool"];
+	const active = harness([], unrelated);
+	const ctx = { sessionManager: { getSessionId: () => "fresh", getBranch: () => [] }, ui: { setStatus() {} } };
+	try {
+		await extension(active.pi as any);
+		await active.handlers.get("session_start")!({}, ctx);
+		expect(activeSwarmTools(active)).toEqual([]);
+		expect(active.pi.getActiveTools()).toEqual(unrelated);
+		expect(active.pi.getAllTools().map(tool => tool.name).filter(name => name.startsWith("swarm_"))).toEqual([...SWARM_TOOL_NAMES]);
+	} finally { await active.handlers.get("session_shutdown")?.({}, ctx); }
+});
 
 test("swarm start snapshots both enabled and disabled coordinator fast mode", async () => {
 	for (const enabled of [true, false]) {
@@ -38,12 +57,94 @@ test("swarm start snapshots both enabled and disabled coordinator fast mode", as
 		const ctx = { cwd: "/tmp", model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "fast", getBranch: () => [] }, ui: { notify() {}, setStatus() {} } };
 		try {
 			await extension(active.pi as any);
+			await active.handlers.get("session_start")!({}, ctx);
+			expect(activeSwarmTools(active)).toEqual([]);
 			await active.commands.get("swarm:start").handler("objective", ctx);
 			expect(created[0].config.fastMode).toBe(enabled);
+			expect(activeSwarmTools(active)).toEqual([...SWARM_TOOL_NAMES]);
 		} finally {
 			await active.handlers.get("session_shutdown")?.({}, ctx);
 			create.mockRestore();
 		}
+	}
+});
+
+test("session replacement disables swarm tools while live restore re-enables them", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-availability-"));
+	const previous = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = directory;
+	const root = makeNode("run_restore", "node_root", "coordinator", "Restore", directory, null);
+	const activeRuntime = { runId: root.runId, root, run: { status: "active", config: { pollIntervalMs: 50, maxInlineBytes: 65536 } }, view: () => ({ status: "active", node: root, nodes: [], messages: [] }), async poll() {}, async close() {} };
+	const stoppedRuntime = { ...activeRuntime, run: { ...activeRuntime.run, status: "stopped" } };
+	const resume = spyOn(SwarmRuntime, "resume").mockImplementation(async (runId: string) => (runId === "run_stopped" ? stoppedRuntime : activeRuntime) as any);
+	const unrelated = ["read", "bash", "edit", "write", "unrelated_tool"];
+	const old = harness([], unrelated);
+	const replacement = harness([], unrelated);
+	const stopped = harness([], unrelated);
+	const oldCtx = { sessionManager: { getSessionId: () => "restored", getBranch: () => [] }, ui: { setStatus() {} } };
+	const replacementCtx = { sessionManager: { getSessionId: () => "fresh_replacement", getBranch: () => [] }, ui: { setStatus() {} } };
+	const stoppedCtx = { sessionManager: { getSessionId: () => "stopped", getBranch: () => [] }, ui: { setStatus() {} } };
+	try {
+		writeJson(sessionFile("restored"), { runId: root.runId });
+		await extension(old.pi as any);
+		await old.handlers.get("session_start")!({}, oldCtx);
+		expect(activeSwarmTools(old)).toEqual([...SWARM_TOOL_NAMES]);
+		await old.handlers.get("session_shutdown")!({}, oldCtx);
+		expect(activeSwarmTools(old)).toEqual([]);
+
+		await extension(replacement.pi as any);
+		await replacement.handlers.get("session_start")!({}, replacementCtx);
+		expect(activeSwarmTools(replacement)).toEqual([]);
+		expect(replacement.pi.getActiveTools()).toEqual(unrelated);
+
+		writeJson(sessionFile("stopped"), { runId: "run_stopped" });
+		await extension(stopped.pi as any);
+		await stopped.handlers.get("session_start")!({}, stoppedCtx);
+		expect(activeSwarmTools(stopped)).toEqual([]);
+	} finally {
+		await old.handlers.get("session_shutdown")?.({}, oldCtx);
+		await replacement.handlers.get("session_shutdown")?.({}, replacementCtx);
+		await stopped.handlers.get("session_shutdown")?.({}, stoppedCtx);
+		resume.mockRestore();
+		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("worker tools activate only after a successful ready handshake", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-worker-availability-"));
+	const previousHome = process.env.PI_SWARM_HOME;
+	const keys = ["PI_SWARM_WORKER", "PI_SWARM_RUN", "PI_SWARM_NODE", "PI_SWARM_TOKEN"];
+	const previous = keys.map(key => process.env[key]);
+	process.env.PI_SWARM_HOME = directory;
+	Object.assign(process.env, { PI_SWARM_WORKER: "1", PI_SWARM_RUN: "run_worker", PI_SWARM_NODE: "node_worker", PI_SWARM_TOKEN: "token" });
+	const success = harness();
+	const failed = harness();
+	const successCtx = { sessionManager: { getSessionId: () => "worker_success", getBranch: () => [] }, ui: { setStatus() {} } };
+	const failedCtx = { sessionManager: { getSessionId: () => "worker_failed", getBranch: () => [] }, ui: { setStatus() {} } };
+	const request = spyOn(WorkerMailbox.prototype, "request").mockResolvedValue({});
+	try {
+		await extension(success.pi as any);
+		await success.handlers.get("session_start")!({}, successCtx);
+		expect(request).toHaveBeenCalledWith("ready", { sessionId: "worker_success" });
+		expect(activeSwarmTools(success)).toEqual([...SWARM_TOOL_NAMES]);
+		await success.handlers.get("session_shutdown")!({}, successCtx);
+		expect(activeSwarmTools(success)).toEqual([]);
+
+		request.mockRejectedValueOnce(new Error("controller unavailable"));
+		await extension(failed.pi as any);
+		await expect(failed.handlers.get("session_start")!({}, failedCtx)).rejects.toThrow("controller unavailable");
+		expect(activeSwarmTools(failed)).toEqual([]);
+		expect(isSwarmAttached(failed.pi as any)).toBe(false);
+	} finally {
+		await success.handlers.get("session_shutdown")?.({}, successCtx);
+		await failed.handlers.get("session_shutdown")?.({}, failedCtx);
+		request.mockRestore();
+		for (const [index, key] of keys.entries()) {
+			if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+		}
+		if (previousHome === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previousHome;
+		rmSync(directory, { recursive: true, force: true });
 	}
 });
 
@@ -127,7 +228,34 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		expect(second.systemPrompt).toBe(first.systemPrompt);
 		expect(third.systemPrompt).toBe(first.systemPrompt);
 		await active.commands.get("swarm:kill").handler("", ctx);
+		expect(activeSwarmTools(active)).toEqual([]);
 		expect(await active.handlers.get("before_agent_start")!({ systemPrompt: "after stop" }, ctx)).toBeUndefined();
+	} finally {
+		await active.handlers.get("session_shutdown")?.({}, ctx);
+		resume.mockRestore();
+		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("kill and clear deactivate swarm tools", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-stop-"));
+	const previous = process.env.PI_SWARM_HOME;
+	process.env.PI_SWARM_HOME = directory;
+	const root = makeNode("run_stop", "node_root", "coordinator", "Stop", directory, null);
+	const runtime: any = { runId: root.runId, root, run: { status: "active", config: { pollIntervalMs: 50, maxInlineBytes: 65536 } }, view: () => ({ status: runtime.run.status, node: root, nodes: [], messages: [] }), async poll() {}, async close() {}, async kill() { runtime.run.status = "stopped"; }, async clear() { runtime.run.status = "stopped"; } };
+	const resume = spyOn(SwarmRuntime, "resume").mockResolvedValue(runtime);
+	const active = harness();
+	const ctx = { sessionManager: { getSessionId: () => "stop", getBranch: () => [] }, ui: { notify() {}, setStatus() {} } };
+	try {
+		writeJson(sessionFile("stop"), { runId: root.runId });
+		await extension(active.pi as any);
+		await active.handlers.get("session_start")!({}, ctx);
+		expect(activeSwarmTools(active)).toEqual([...SWARM_TOOL_NAMES]);
+		await active.commands.get("swarm:kill").handler("", ctx);
+		expect(activeSwarmTools(active)).toEqual([]);
+		await active.commands.get("swarm:clear").handler("", ctx);
+		expect(activeSwarmTools(active)).toEqual([]);
 	} finally {
 		await active.handlers.get("session_shutdown")?.({}, ctx);
 		resume.mockRestore();
@@ -180,7 +308,10 @@ test("swarm_task returns a full view followed by versioned deltas and can refres
 		expect(await invoke({ full: true })).toEqual(view);
 		expect(await invoke()).toEqual({ schemaVersion: 2, runId: root.runId, full: false, changed: false });
 
-		await active.handlers.get("session_switch")!({}, ctx);
+		await active.handlers.get("session_shutdown")!({}, ctx);
+		expect(active.pi.getActiveTools().filter(name => name.startsWith("swarm_"))).toEqual([]);
+		await active.handlers.get("session_start")!({}, ctx);
+		expect(active.pi.getActiveTools().filter(name => name.startsWith("swarm_"))).toEqual([...SWARM_TOOL_NAMES]);
 		expect(await invoke()).toEqual(view);
 	} finally {
 		await active.handlers.get("session_shutdown")?.({}, ctx);
@@ -264,6 +395,8 @@ test("failed automatic reconnect restores detached sibling-tool state", async ()
 		writeJson(sessionFile("reconnect"), { runId: "run_saved" });
 		await extension(active.pi as any);
 		await expect(active.handlers.get("session_start")!({}, ctx)).rejects.toThrow("ownership unavailable");
+		expect(activeSwarmTools(active)).toEqual([]);
+		expect(active.pi.getActiveTools()).toEqual(["read", "bash", "edit", "write"]);
 		expect(isSwarmAttached(active.pi as any)).toBe(false);
 	} finally {
 		await active.handlers.get("session_shutdown")?.({}, ctx);

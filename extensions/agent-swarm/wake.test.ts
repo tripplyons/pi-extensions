@@ -20,11 +20,14 @@ for (const worker of [false, true]) test(`${worker ? "worker mailbox" : "coordin
 	const { default: bg } = await import("../bg-bash/index.ts");
 	const bus = new EventEmitter();
 	const tools = new Map<string, any>();
+	const activeTools = new Set(["read", "bash", "edit", "write"]);
 	const handlers = new Map<string, Function[]>();
 	const pi: any = {
 		events: { on(n: string, f: any) { bus.on(n, f); return () => bus.off(n, f); }, emit(n: string, v: any) { bus.emit(n, v); } },
 		on(n: string, f: Function) { handlers.set(n, [...(handlers.get(n) ?? []), f]); },
-		registerTool(t: any) { tools.set(t.name, t); }, registerCommand() {},
+		registerTool(t: any) { tools.set(t.name, t); activeTools.add(t.name); }, registerCommand() {},
+		getActiveTools: () => [...activeTools],
+		setActiveTools(names: string[]) { activeTools.clear(); for (const name of names) activeTools.add(name); },
 		getThinkingLevel: () => "low",
 		sendMessage() { throw new Error("Busy coordinator must not deliver idle messages"); },
 	};

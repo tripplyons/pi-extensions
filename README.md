@@ -34,7 +34,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | Extension | What it does |
 | --- | --- |
 | [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Loads pinned upstream conversion with its tool overrides disabled by configuration. |
-| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies with review and controller-owned integration. |
+| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; swarm tools are active only while this session is attached to a live swarm. |
 | ask-user | Collects choices and free-text answers in an interactive form. |
 | auto-rename | Names sessions automatically. |
 | autocomplete | Adds editor completions for files, skills, and commands. |
