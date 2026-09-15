@@ -180,13 +180,16 @@ test("real control transitions persist assessment before blocked delegation and 
 	expect(state.phase!.failedCorrections).toBe(2);
 	const before = structuredClone(state.phase);
 	const changedBefore = changes;
+	const retriesBefore = state.diagnostics!.invalidControlRetries;
 	await expect(control({ action: "delegate", ...brief, phaseId: state.phase!.id })).rejects.toThrow("two corrective attempts");
-	expect(changes).toBe(changedBefore);
+	expect(changes).toBe(changedBefore + 1);
+	expect(state.diagnostics?.invalidControlRetries).toBe(retriesBefore + 1);
 	expect(state.phase).toEqual(before);
 	expect(state.owner).toBeUndefined();
 	session.newRequest("Continue the same goal");
 	expect(state.phase).toEqual(before);
 	jobs.jobs.push({ id: "persistent", status: "running" });
+	state.jobs.persistent = "writer";
 	await expect(control({ action: "takeover" })).rejects.toThrow("persistent");
 	jobs.jobs = [];
 	await control({ action: "takeover" });

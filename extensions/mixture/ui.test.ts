@@ -109,6 +109,9 @@ test("compact status follows handoffs, recorded blockers, takeover and idle with
 	preset.reviewers.push({ model: "fixture/reviewer", thinking: "off" });
 	expect(inspection(session)).toContain("Review incomplete");
 	expect(inspection(session)).toContain("queued reviews:");
+	session.recordControlFailure(new Error("Writer report is required"));
+	expect(inspection(session)).toContain("Diagnostics: 1 invalid controls");
+	expect(session.state.diagnostics?.controlFailures.missingPayload).toBe(1);
 	expect(inspection(session)).toContain("Phase ID:");
 	await control({ action: "assess", phaseId: session.state.phase!.id, assessment: "complete", evidence: "Repair verified under the approved lead takeover" });
 	await session.abort();

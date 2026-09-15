@@ -1,32 +1,37 @@
 import { createHash, randomUUID } from "node:crypto";
-import { StringEnum, isContextOverflow, type AssistantMessage, type Context, type ImageContent, type Message, type ModelThinkingLevel, type SimpleStreamOptions, type Tool, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
+import { StringEnum, isContextOverflow, validateToolArguments, type AssistantMessage, type Context, type ImageContent, type Message, type ModelThinkingLevel, type SimpleStreamOptions, type Tool, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { compactRole, estimateContextTokens, forModel, imageContent, interruptPending } from "./context.ts";
 import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import type { Preset } from "./config.ts";
 import { addUsage, callRole, emptyUsage, failureMessage, resolveModel, type Registry } from "./provider.ts";
-import { adoptLegacyPhase, assessPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
+import { ASSESSMENTS, adoptLegacyPhase, assessPhase, closedPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
 import { drainReceipts, receipt, receiptIds, tagReceipts, type UsageReceipt } from "./usage.ts";
 
 export const CONTROL = "mixture_control";
-const controlParams = (actions: string[]) => {
-	const nonDelegateActions = actions.filter(action => action !== "delegate");
-	const anyOf = actions.includes("delegate")
-		? [
-			Type.Object({ action: StringEnum(["delegate"] as const), ...delegateFields }),
-			...(nonDelegateActions.length ? [Type.Object({ action: StringEnum(nonDelegateActions) })] : []),
-		]
-		: undefined;
-	return Type.Object({
-		action: StringEnum(actions),
-		...phaseFields,
-		message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
-		report: Type.Optional(Type.String()),
-		checkpoint: Type.Optional(Type.String()),
-	}, anyOf ? { anyOf } : undefined);
+const reportField = Type.String({ minLength: 1, maxLength: 12_000 });
+const actionBranch = (action: string, phaseId?: string) => {
+	const id = phaseId ? Type.Literal(phaseId, { description: "The current harness phase ID." }) : undefined;
+	switch (action) {
+		case "delegate": return Type.Object({ action: StringEnum(["delegate"] as const), ...delegateFields, ...(id ? { phaseId: id } : {}) });
+		case "assess": return Type.Object({ action: StringEnum(["assess"] as const), phaseId: id ?? Type.String({ minLength: 1, maxLength: 128 }), assessment: StringEnum(ASSESSMENTS), evidence: Type.String({ minLength: 1, maxLength: 2_000 }), blocker: phaseFields.blocker });
+		case "update": return Type.Object({ action: StringEnum(["update"] as const), message: Type.String({ minLength: 1, maxLength: 4_000 }) });
+		case "report": return Type.Object({ action: StringEnum(["report"] as const), report: reportField });
+		case "escalate": return Type.Object({ action: StringEnum(["escalate"] as const), report: reportField });
+		case "checkpoint": return Type.Object({ action: StringEnum(["checkpoint"] as const), checkpoint: Type.String({ minLength: 1 }) });
+		case "pause": return Type.Object({ action: StringEnum(["pause"] as const), report: reportField });
+		default: return Type.Object({ action: StringEnum(["takeover"] as const) });
+	}
 };
+const controlParams = (actions: string[], phaseId?: string) => Type.Object({
+	action: StringEnum(actions),
+	...phaseFields,
+	message: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
+	report: Type.Optional(reportField),
+	checkpoint: Type.Optional(Type.String()),
+}, { anyOf: actions.map(action => actionBranch(action, phaseId)) });
 export const ControlParams = controlParams(["delegate", "assess", "update", "report", "escalate", "takeover", "checkpoint", "pause"]);
 export type ControlInput = Static<typeof ControlParams>;
 export const controlTool: Tool = {
@@ -46,6 +51,14 @@ export interface PerformanceStats {
 export type CoordinationEventKind = "review-scheduled" | "feedback-delivered" | "lead-checkpoint" | "writer-escalation";
 export interface CoordinationEvent { kind: CoordinationEventKind; revision: number; sequence?: number }
 export interface CoordinationStats { scheduledReviews: number; deliveredReviews: number; leadCheckpoints: number; escalations: number; recent: CoordinationEvent[] }
+export interface MixtureDiagnostics {
+	controlFailures: { missingPayload: number; stalePhase: number; invalidState: number; other: number };
+	invalidControlRetries: number;
+	phaseResets: number;
+	tacticalReviewsSkipped: number;
+	reviewsReused: number;
+	jobReconciliations: number;
+}
 export interface MixtureState {
 	version: 2;
 	preset: string;
@@ -74,8 +87,11 @@ export interface MixtureState {
 	writerReviewSequences?: number[];
 	writerReviewsDelivered?: number;
 	writerProgress?: string[];
+	pendingDocumentationReview?: boolean;
 	immediateAction?: ImmediateAction;
 	coordination?: CoordinationStats;
+	diagnostics?: MixtureDiagnostics;
+	resetNotice?: string;
 	finalCorrections: number;
 	jobs: Record<string, Actor>;
 	bgManaged: boolean;
@@ -85,12 +101,14 @@ export interface MixtureState {
 	warning?: string;
 }
 const freshRole = (): RoleState => ({ messages: [], usage: emptyUsage(), calls: 0 });
+const freshDiagnostics = (): MixtureDiagnostics => ({ controlFailures: { missingPayload: 0, stalePhase: 0, invalidState: 0, other: 0 }, invalidControlRetries: 0, phaseResets: 0, tacticalReviewsSkipped: 0, reviewsReused: 0, jobReconciliations: 0 });
+const increment = (value: number, count = 1) => Math.min(Number.MAX_SAFE_INTEGER, value + count);
 export const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function newState(name: string, preset: Preset): MixtureState {
 	return { version: 2, preset: name, configKey: fingerprint(preset), id: randomUUID(), active: "lead",
 		lead: freshRole(), writer: freshRole(), reviewers: preset.reviewers.map(newReviewer), receipts: [], seenUsers: [], initialized: false, brief: "", task: "", attachments: [], revision: 0,
 		delegations: 0, writerTurns: 0, writerRetries: 0, writerRetryDelegation: 0, writerReportRejections: 0, writerBatches: 0, writerReviewSequences: [], writerReviewsDelivered: 0, writerProgress: [],
-		coordination: { scheduledReviews: 0, deliveredReviews: 0, leadCheckpoints: 0, escalations: 0, recent: [] }, finalCorrections: 0, jobs: {}, bgManaged: false, origins: {} };
+		coordination: { scheduledReviews: 0, deliveredReviews: 0, leadCheckpoints: 0, escalations: 0, recent: [] }, diagnostics: freshDiagnostics(), finalCorrections: 0, jobs: {}, bgManaged: false, origins: {} };
 }
 const text = (message: AssistantMessage) => message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
 const retryableWriterFailure = (message: AssistantMessage) => message.stopReason === "error" && message.usage.output === 0
@@ -119,6 +137,11 @@ const swarmTaskMutates = (args?: Record<string, unknown>) => Array.isArray(args?
 const CHECKOUT_NEUTRAL_TOOLS = new Set([...READ_TOOLS, ...LEAD_SESSION_TOOLS, ...SWARM_READ_TOOLS, "bg_process", "sleep"]);
 const NESTED_AGENT_TOOLS = new Set(["subagent", "subagent_process"]);
 const MAX_FINAL_CORRECTIONS_PER_REVISION = 2;
+const DOCUMENT_PATH = /\.(?:md|markdown|txt)$/i;
+const documentationMutation = (message: AssistantMessage) => {
+	const calls = message.content.filter(block => block.type === "toolCall" && !CHECKOUT_NEUTRAL_TOOLS.has(block.name));
+	return calls.length > 0 && calls.every(call => ["edit", "write"].includes(call.name) && typeof call.arguments.path === "string" && DOCUMENT_PATH.test(call.arguments.path));
+};
 
 export class MixtureSession {
 	readonly state: MixtureState;
@@ -149,6 +172,7 @@ export class MixtureSession {
 		this.state.writerProgress ??= [];
 		if (!this.state.phase && this.state.brief.trim()) this.state.phase = adoptLegacyPhase(this.state.brief);
 		this.state.coordination ??= { scheduledReviews: 0, deliveredReviews: 0, leadCheckpoints: 0, escalations: 0, recent: [] };
+		this.state.diagnostics ??= freshDiagnostics();
 		this.reviews = new ReviewPool(preset, state.reviewers, cwd, async (index, context, signal) => {
 			const result = await this.call(index, context, { ...this.requestOptions,
 				signal: AbortSignal.any([signal, ...(this.requestOptions.signal ? [this.requestOptions.signal] : [])]) });
@@ -173,7 +197,28 @@ export class MixtureSession {
 		return phase && !["complete", "superseded"].includes(phase.assessment ?? "") ? "assessing" : "planning";
 	}
 	get modelId() { return this.active === "lead" ? this.preset.lead : this.preset.writer.model; }
-	performanceStats(): PerformanceStats { return { ...structuredClone(this.timings), coordination: structuredClone(this.state.coordination) }; }
+	performanceStats(): PerformanceStats & { diagnostics: MixtureDiagnostics } { return { ...structuredClone(this.timings), coordination: structuredClone(this.state.coordination), diagnostics: structuredClone(this.state.diagnostics!) }; }
+	recordControlFailure(error: unknown) {
+		const message = String(error);
+		const category = /report is required|escalation is required|message is required|needs .*evidence/i.test(message) ? "missingPayload"
+			: /phaseId|phase has been delegated|phase is absent or closed/i.test(message) ? "stalePhase"
+			: /lease|ownership|already|must initiate|invalid .*control/i.test(message) ? "invalidState" : "other";
+		this.state.diagnostics!.controlFailures[category] = increment(this.state.diagnostics!.controlFailures[category]);
+		this.state.diagnostics!.invalidControlRetries = increment(this.state.diagnostics!.invalidControlRetries);
+		this.changed();
+	}
+	recordReset(reason: string) {
+		const notice = reason.slice(0, 4_000);
+		this.state.diagnostics!.phaseResets = increment(this.state.diagnostics!.phaseResets);
+		this.state.resetNotice = notice;
+		this.state.phase = undefined;
+		this.state.brief = "";
+		this.state.active = "lead";
+		this.state.owner = undefined;
+		this.removeNotes("lead", "[Harness phase tracking]", "[Mixture context reset]");
+		this.note("lead", `[Mixture context reset]\n${notice}\nThere is no active phase or writer lease. Start from the current user request and checkout. The only valid coordination action is a fresh delegate without phaseId.`);
+		this.changed();
+	}
 	private recordTiming(group: "requests" | "checkpoints", name: string, started: number) {
 		const elapsed = Math.max(0, performance.now() - started);
 		const current = this.timings[group][name] ?? { count: 0, totalMs: 0, maxMs: 0, lastMs: 0 };
@@ -197,8 +242,11 @@ export class MixtureSession {
 		const epoch = this.epoch;
 		this.reviewing = this.state.reviewers.length > 0;
 		this.changed();
-		try { return await this.reviews.checkpoint(revision, content, signal, images, candidateOnly); }
-		finally {
+		try {
+			const review = await this.reviews.checkpoint(revision, content, signal, images, candidateOnly);
+			if (review.reused) this.state.diagnostics!.reviewsReused = increment(this.state.diagnostics!.reviewsReused);
+			return review;
+		} finally {
 			if (epoch === this.epoch) this.reviewing = false;
 			this.recordTiming("checkpoints", kind, started);
 			this.changed();
@@ -274,12 +322,18 @@ export class MixtureSession {
 		this.state.origins = {};
 		this.state.active = "lead";
 		const jobs = this.jobs();
-		if (jobs.available && !jobs.error && !jobs.jobs.some(job => job.status === "running")) this.state.owner = undefined;
+		const trackedRunning = jobs.jobs.filter(job => job.status === "running" && Object.hasOwn(this.state.jobs, job.id));
+		if (jobs.available && !jobs.error) {
+			const resolved = Object.keys(this.state.jobs).filter(id => !trackedRunning.some(job => job.id === id));
+			for (const id of resolved) delete this.state.jobs[id];
+			if (resolved.length) this.state.diagnostics!.jobReconciliations = increment(this.state.diagnostics!.jobReconciliations, resolved.length);
+			if (!trackedRunning.length) this.state.owner = undefined;
+		}
 		if (interrupted || reason !== "request ended") {
 			this.note("lead", `[Mixture ${reason}] Resumed a completed context checkpoint, not an API stream. The checkout has not been rolled back. Inspect current files and reconcile tracked jobs before further execution. Interrupted tool calls must not be replayed automatically.`);
 		}
-		if (!jobs.available && this.state.bgManaged) this.state.warning = "Background ownership is unavailable. Reload bg-bash before a writer handoff.";
-		if (jobs.error || jobs.jobs.some(job => job.status === "running")) this.state.warning = `Background ownership requires reconciliation: ${jobs.error ?? jobs.jobs.filter(job => job.status === "running").map(job => job.id).join(", ")}`;
+		if (!jobs.available && Object.keys(this.state.jobs).length) this.state.warning = "Background ownership is unavailable while Mixture has unresolved tracked jobs. Reload bg-bash before a writer handoff.";
+		if ((jobs.error && Object.keys(this.state.jobs).length) || trackedRunning.length) this.state.warning = `Background ownership requires reconciliation: ${jobs.error ?? trackedRunning.map(job => job.id).join(", ")}`;
 		this.changed();
 	}
 	async drainAfterAbort() {
@@ -332,6 +386,7 @@ export class MixtureSession {
 		this.state.bgManaged ||= this.rootTools.some(tool => tool.name === "bg_process");
 		this.reviews.configurePrompt(this.systemPrompt);
 		if (this.state.phase) this.replaceNote("lead", "[Harness phase tracking]", phaseSummary(this.state.phase));
+		else this.removeNotes("lead", "[Harness phase tracking]");
 		if (freshUsers.length) this.answerUserDirectly = this.state.owner === "writer" && isDirectQuestion(freshUsers.at(-1)!);
 	}
 
@@ -375,6 +430,8 @@ export class MixtureSession {
 			if (call.name === CONTROL) {
 				const action = call.arguments.action;
 				if (this.active === "lead" ? !["delegate", "assess", "update", "takeover"].includes(action) : !["report", "escalate"].includes(action)) throw new Error(`Invalid ${this.active} control: ${action}`);
+				const tool = this.tools(this.active).find(tool => tool.name === CONTROL)!;
+				validateToolArguments(tool, call);
 			}
 		}
 	}
@@ -389,7 +446,13 @@ export class MixtureSession {
 		return `${this.systemPrompt}${common}${swarm}\n${role}${actor === "writer" && this.preset.writer.guidance ? `\n${this.preset.writer.guidance}` : ""}`;
 	}
 	private tools(actor: Actor): Tool[] {
-		const actions = actor === "writer" ? ["report", "escalate"] : this.state.owner === "writer" ? this.answerUserDirectly ? ["takeover"] : ["update", "takeover"] : ["delegate", "assess", "takeover"];
+		const phase = this.state.phase;
+		const currentPhase = phase && !closedPhase(phase) ? phase : undefined;
+		const actions = actor === "writer" ? ["report", "escalate"]
+			: this.state.owner === "writer" ? this.answerUserDirectly ? ["takeover"] : ["update", "takeover"]
+			: this.state.owner === "lead" && currentPhase ? ["assess"]
+			: !currentPhase ? ["delegate"]
+			: currentPhase.assessment ? ["delegate", "takeover"] : ["assess", "takeover"];
 		return this.rootTools
 			.filter(tool => tool.name === CONTROL || this.allowed(actor, tool.name) || (actor === "lead" && tool.name === "bg_process"))
 			.map(tool => tool.name !== CONTROL ? tool : { ...tool,
@@ -398,7 +461,7 @@ export class MixtureSession {
 					: this.state.owner === "writer"
 						? "The existing writer retains its lease. Send one assessed user update into that context, or take over."
 						: "Assess the previous attempt once with phaseId and evidence before continuing it. Delegate the next current step with task, successCriteria, nextAction and acceptedEvidence, resupplying all three current-step fields and preserving the stored phase acceptance; or explicitly take over. Two failed corrections block equivalent delegation.",
-				parameters: controlParams(actions),
+				parameters: controlParams(actions, currentPhase?.id),
 			});
 	}
 	private async call(actor: Actor | number, context: Context, options: SimpleStreamOptions): Promise<{ message: AssistantMessage; receipt: UsageReceipt }> {
@@ -490,6 +553,7 @@ export class MixtureSession {
 		this.state.writerBatches = 0;
 		this.state.writerReviewSequences = [];
 		this.state.writerReviewsDelivered = 0;
+		this.state.pendingDocumentationReview = false;
 		if (clearProgress) this.state.writerProgress = [];
 	}
 	private reviewWarnings() {
@@ -519,12 +583,12 @@ export class MixtureSession {
 			const summary = this.reviewSummary(review);
 			this.state.reviewSummary = summary;
 			this.replaceNote("writer", "[Harness reviewer feedback", `[Harness reviewer feedback after ${this.state.writerReviewsDelivered} scheduled review cycle(s)]\n${summary}\nAddress supported findings within the writer phase. Routine review does not require a lead check-in.`);
-			if (!incomplete && completed < this.preset.limits.leadEveryReviews) return;
-			checkpointCount = this.state.writerReviewsDelivered;
-			checkpointLabel = "scheduled review cycles";
+			checkpointCount = Math.floor((this.state.writerBatches ?? 0) / this.preset.limits.progressEveryBatches);
+			if (!incomplete && checkpointCount < this.preset.limits.leadEveryProgressIntervals) return;
+			checkpointLabel = "progress intervals";
 		} else {
-			checkpointCount = Math.floor((this.state.writerBatches ?? 0) / this.preset.limits.reviewEveryBatches);
-			if (checkpointCount < this.preset.limits.leadEveryReviews) return;
+			checkpointCount = Math.floor((this.state.writerBatches ?? 0) / this.preset.limits.progressEveryBatches);
+			if (checkpointCount < this.preset.limits.leadEveryProgressIntervals) return;
 			checkpointLabel = "review-cadence intervals";
 		}
 		try { this.requireNoJobs(); }
@@ -593,7 +657,10 @@ export class MixtureSession {
 			return this.terminal(message);
 		}
 		try { this.validateBatch(message); }
-		catch (error) { return this.terminal({ ...failureMessage(resolveModel(this.modelId, this.registry.find.bind(this.registry)), error), usage: message.usage, mixtureReceiptIds: receiptIds(message) } as AssistantMessage); }
+		catch (error) {
+			if (message.content.some(block => block.type === "toolCall" && block.name === CONTROL)) this.recordControlFailure(error);
+			return this.terminal({ ...failureMessage(resolveModel(this.modelId, this.registry.find.bind(this.registry)), error), usage: message.usage, mixtureReceiptIds: receiptIds(message) } as AssistantMessage);
+		}
 		this.state[actor].messages.push(structuredClone(message));
 		const calls = message.content.filter(block => block.type === "toolCall");
 		if (calls.length) {
@@ -611,12 +678,21 @@ export class MixtureSession {
 
 	private requireNoJobs() {
 		const query = this.jobs();
-		if (query.error) throw new Error(`Cannot reconcile background jobs: ${query.error}`);
-		if (!query.available && this.state.bgManaged) throw new Error("bg-bash did not answer the writer-ownership query");
-		const running = query.jobs.filter(job => job.status === "running");
-		if (running.length) throw new Error(`Writer handoff is blocked by running jobs: ${running.map(job => job.id).join(", ")}. Wait for them or explicitly stop them with bg_process; do not repeat the handoff until then.`);
+		const tracked = Object.keys(this.state.jobs);
+		if (!tracked.length) return;
+		if (query.error) throw new Error(`Cannot reconcile tracked background jobs: ${query.error}`);
+		if (!query.available) throw new Error("bg-bash did not answer the unresolved tracked-job query");
+		const running = query.jobs.filter(job => job.status === "running" && Object.hasOwn(this.state.jobs, job.id));
+		const resolved = tracked.filter(id => !running.some(job => job.id === id));
+		for (const id of resolved) delete this.state.jobs[id];
+		if (resolved.length) this.state.diagnostics!.jobReconciliations = increment(this.state.diagnostics!.jobReconciliations, resolved.length);
+		if (running.length) throw new Error(`Writer handoff is blocked by running tracked jobs: ${running.map(job => job.id).join(", ")}. Wait for them or explicitly stop them with bg_process; do not repeat the handoff until then.`);
 	}
 	async control(id: string, input: ControlInput) {
+		try { return await this.executeControl(id, input); }
+		catch (error) { this.recordControlFailure(error); throw error; }
+	}
+	private async executeControl(id: string, input: ControlInput) {
 		const epoch = this.epoch;
 		const signal = AbortSignal.any([this.signal, ...(this.requestOptions.signal ? [this.requestOptions.signal] : [])]);
 		const current = () => { signal.throwIfAborted(); if (epoch !== this.epoch) throw new Error("Mixture control belongs to an abandoned request"); };
@@ -712,7 +788,7 @@ export class MixtureSession {
 			case "escalate": {
 				if (!input.report?.trim()) throw new Error("Writer escalation is required");
 				const evidence = this.handoffEvidence();
-				const review = await this.reviewCheckpoint("writer-escalation", this.state.revision, `${this.currentScope()}\n${evidence}\nWriter escalation:\n${input.report}`, signal);
+				const review = await this.reviewCheckpoint("writer-escalation", this.state.revision, `${this.currentScope()}\n${evidence}\nWriter escalation:\n${input.report}`, signal, undefined, true);
 				current();
 				this.recordCoordination("writer-escalation");
 				this.state.reviewSummary = this.reviewSummary(review);
@@ -727,7 +803,7 @@ export class MixtureSession {
 			case "pause": {
 				this.state.active = "lead";
 				const jobs = this.jobs();
-				if (jobs.available && !jobs.error && !jobs.jobs.some(job => job.status === "running")) this.state.owner = undefined;
+				if (jobs.available && !jobs.error && !jobs.jobs.some(job => job.status === "running" && Object.hasOwn(this.state.jobs, job.id))) this.state.owner = undefined;
 				this.note("lead", `[Writer paused for assessment at a completed tool boundary]\n${input.report}\nThe writer model is paused. Any running writer job keeps its lease. Inspect or explicitly stop its tracked job before another delegation, takeover, or final answer. Once the lease is reconciled, assess the attempt with evidence before requesting an eligible correction, or take over.`);
 				result = `Writer paused; the lead will assess the confirmed review. Writer lease: ${this.state.owner ?? "none"}.`;
 				break;
@@ -783,6 +859,7 @@ export class MixtureSession {
 			else if (result.isError) this.note(origin.actor, `[Mixture control failed] ${JSON.stringify(result.content)}. Reconcile this failure before continuing; do not blindly repeat it.`);
 			const job = result.details?.job;
 			if (job?.id && job.status === "running") this.state.jobs[job.id] = origin.actor;
+			else if (job?.id && Object.hasOwn(this.state.jobs, job.id)) { delete this.state.jobs[job.id]; this.state.diagnostics!.jobReconciliations = increment(this.state.diagnostics!.jobReconciliations); }
 			if (result.toolName !== CONTROL && !CHECKOUT_NEUTRAL_TOOLS.has(result.toolName)) {
 				this.state.revision++;
 				this.state.finalCorrections = 0;
@@ -796,11 +873,22 @@ export class MixtureSession {
 				const progress = this.state.writerProgress ??= [];
 				progress.push(executionProgress(message, results, this.state.revision));
 				while (progress.length > 1 && progress.reduce((length, item) => length + item.length, 0) > 24_000) progress.shift();
-				if (effectfulWriterBatch && this.state.reviewers.length && this.state.writerBatches % this.preset.limits.reviewEveryBatches === 0) {
+				const interval = effectfulWriterBatch && this.state.writerBatches % this.preset.limits.progressEveryBatches === 0;
+				const documentationOnly = effectfulWriterBatch && documentationMutation(message);
+				const leadBoundary = interval && this.state.writerBatches / this.preset.limits.progressEveryBatches >= this.preset.limits.leadEveryProgressIntervals;
+				const requestReview = this.state.reviewers.length && effectfulWriterBatch && (leadBoundary || !documentationOnly && (interval || this.state.pendingDocumentationReview));
+				if (requestReview) {
 					const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(results));
 					(this.state.writerReviewSequences ??= []).push(sequence);
+					this.state.pendingDocumentationReview = false;
 					this.recordCoordination("review-scheduled", sequence);
-				} else this.reviews.prime(this.state.revision, delta, imageContent(results));
+				} else {
+					if (this.state.reviewers.length && interval && documentationOnly) {
+						this.state.pendingDocumentationReview = true;
+						this.state.diagnostics!.tacticalReviewsSkipped = increment(this.state.diagnostics!.tacticalReviewsSkipped);
+					}
+					this.reviews.prime(this.state.revision, delta, imageContent(results));
+				}
 			} else if (leadTakeoverBatch && this.state.reviewers.length) {
 				const sequence = this.reviews.enqueue(this.state.revision, delta, imageContent(results));
 				this.recordCoordination("review-scheduled", sequence);

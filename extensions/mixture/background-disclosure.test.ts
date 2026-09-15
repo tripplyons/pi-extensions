@@ -19,7 +19,7 @@ test("leaving Mixture reports a surviving tracked shell job without killing it",
 	try {
 		const { default: bgBash } = await import("../bg-bash/index.ts");
 		const preset = defaultConfig().presets.default; preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost });
 		const provider: Provider = { id: "fixture", name: "Fixture", auth: { apiKey: { name: "Fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
 			getModels: () => ["lead", "writer", "ordinary"].map(id => find("fixture", id)!), stream: () => { throw new Error("Use simple"); },

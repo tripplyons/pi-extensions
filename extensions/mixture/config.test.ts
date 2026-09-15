@@ -38,7 +38,9 @@ test("strict versioned config rejects old schema, recursion, unsafe names, and l
 });
 test("malformed and old files fail with the path and are preserved", () => {
 	const dir = temporary();
-	for (const text of ["{bad", '{"models":["x/y"]}']) {
+	const version2 = defaultConfig() as any;
+	version2.version = 2;
+	for (const text of ["{bad", '{"models":["x/y"]}', JSON.stringify(version2)]) {
 		writeFileSync(configPath(dir), text);
 		expect(() => loadConfig(dir)).toThrow(configPath(dir));
 		expect(readFileSync(configPath(dir), "utf8")).toBe(text);

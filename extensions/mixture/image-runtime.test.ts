@@ -25,7 +25,7 @@ for (const { textOnlyReviewer } of [
 		const preset = defaultConfig().presets.default;
 		preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer";
 		preset.reviewers = ["reviewer-a", "reviewer-b"].map(id => ({ model: `fixture/${id}`, thinking: "low" }));
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true,
 			input: textOnlyReviewer && id === "reviewer-b" ? ["text"] : ["text", "image"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost });
 		const requests: Array<{ id: string; context: Context }> = [];

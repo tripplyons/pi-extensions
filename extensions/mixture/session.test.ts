@@ -61,7 +61,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	const delegated = await h.next();
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra"]);
 	const leadActions = (h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
-	expect(leadActions).toEqual(["delegate", "assess", "takeover"]);
+	expect(leadActions).toEqual(["delegate"]);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
 	expect(h.calls[0].context.systemPrompt).not.toContain("Agent Swarm is attached");
 	expect(h.calls[0].context.systemPrompt).not.toContain("Never run Git mutations yourself");
@@ -84,16 +84,33 @@ test("role-filtered control schemas require delegate fields without burdening ot
 	const leadSchema = h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any;
 	expect(leadSchema).toMatchObject({ type: "object", required: ["action"] });
 	expect(leadSchema.anyOf.find((branch: any) => branch.properties.action.enum.includes("delegate")).required).toEqual(["action", "task", "nextAction", "successCriteria"]);
-	expect(leadSchema.anyOf.find((branch: any) => branch.properties.action.enum.includes("assess")).required).toEqual(["action"]);
+	expect(leadSchema.anyOf.find((branch: any) => branch.properties.action.enum.includes("assess"))).toBeUndefined();
 	await h.finishControl(lead);
 	await h.next();
 	const writerSchema = h.calls[1].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any;
 	expect(writerSchema).toMatchObject({ type: "object", required: ["action"] });
-	expect(writerSchema.anyOf).toBeUndefined();
 	expect(writerSchema.properties.action.enum).toEqual(["report", "escalate"]);
+	for (const branch of writerSchema.anyOf) expect(branch.required).toEqual(["action", "report"]);
 	expect((writerSchema.required as string[])).not.toContain("task");
 	expect((writerSchema.required as string[])).not.toContain("nextAction");
 	expect((writerSchema.required as string[])).not.toContain("successCriteria");
+});
+
+test("phase-aware control schemas expose only valid actions and the current phase ID", async () => {
+	const h = harness([]);
+	(h.session as any).rootTools = [controlTool];
+	const schema = () => ((h.session as any).tools("lead") as any[]).find(tool => tool.name === CONTROL).parameters as any;
+	expect(schema().properties.action.enum).toEqual(["delegate"]);
+	const phase = delegatePhase(undefined, { task: "Fix", nextAction: "Edit", successCriteria: ["Pass"] }).phase;
+	h.state.phase = phase;
+	expect(schema().properties.action.enum).toEqual(["assess", "takeover"]);
+	const assess = schema().anyOf.find((branch: any) => branch.properties.action.enum.includes("assess"));
+	expect(assess.properties.phaseId.const).toBe(phase.id);
+	h.state.phase = assessPhase(phase, { phaseId: phase.id, assessment: "progress", evidence: "Reproduction passed" });
+	expect(schema().properties.action.enum).toEqual(["delegate", "takeover"]);
+	const continuation = schema().anyOf.find((branch: any) => branch.properties.action.enum.includes("delegate"));
+	expect(continuation.properties.phaseId.const).toBe(phase.id);
+	expect(continuation.required).toContain("phaseId");
 });
 
 test("routes session controls to the lead and arbitrary effectful tools to the lease holder", async () => {
@@ -135,7 +152,7 @@ test("an immediate action blocks other writer tools until the named tool is acce
 test("periodic review counts only writer batches that advance execution revision", async () => {
 	const h = harness([[call("review", "mixture_review", { revision: 2, findings: [] })]]);
 	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
-	h.preset.limits.reviewEveryBatches = 2;
+	h.preset.limits.progressEveryBatches = 2;
 	h.state.reviewers.push(newReviewer());
 	h.state.active = "writer";
 	h.state.owner = "writer";
@@ -156,6 +173,46 @@ test("periodic review counts only writer batches that advance execution revision
 	expect(h.state.coordination?.scheduledReviews).toBe(1);
 	expect(h.calls).toHaveLength(1);
 	expect(JSON.stringify(h.calls[0].context.messages)).toContain("read-1");
+});
+
+test("documentation-only intervals defer tactical review until the next code mutation", async () => {
+	const h = harness([[call("review", "mixture_review", { revision: 2, findings: [] })]]);
+	h.preset.reviewers.push({ model: "fixture/reviewer", thinking: "low" });
+	h.preset.limits.progressEveryBatches = 1;
+	h.preset.limits.leadEveryProgressIntervals = 3;
+	h.state.reviewers.push(newReviewer());
+	h.state.active = "writer";
+	h.state.owner = "writer";
+	const complete = (id: string, path: string) => {
+		h.state.origins[id] = { actor: "writer", synthetic: false };
+		h.session.completeTurn([{ role: "toolResult", toolCallId: id, toolName: "edit", content: content("ok"), isError: false, timestamp: 1 }],
+			{ role: "assistant", provider: "fixture", model: "writer", api: "fixture", content: [call(id, "edit", { path })], stopReason: "toolUse", usage: emptyUsage(), timestamp: 1 });
+	};
+	complete("docs", "README.md");
+	expect(h.calls).toHaveLength(0);
+	expect(h.state.pendingDocumentationReview).toBe(true);
+	expect(h.state.diagnostics?.tacticalReviewsSkipped).toBe(1);
+	complete("code", "index.ts");
+	await new Promise(resolve => setImmediate(resolve));
+	await h.session.reviews.freeze();
+	expect(h.calls).toHaveLength(1);
+	expect(JSON.stringify(h.calls[0].context.messages)).toContain("README.md");
+	expect(h.state.pendingDocumentationReview).toBe(false);
+});
+
+test("a context reset removes stale phase notes and records one authoritative recovery note", () => {
+	const h = harness([]);
+	h.state.phase = delegatePhase(undefined, { task: "Old phase", nextAction: "Edit", successCriteria: ["Pass"] }).phase;
+	h.state.brief = "Old brief";
+	h.state.lead.messages.push({ role: "user", content: "[Harness phase tracking]\nstale", timestamp: 1 });
+	h.session.recordReset("Mixture preset changed; starting fresh role contexts.");
+	expect(h.state.phase).toBeUndefined();
+	expect(h.state.brief).toBe("");
+	expect(h.state.diagnostics?.phaseResets).toBe(1);
+	const messages = h.state.lead.messages.filter(message => message.role === "user" && typeof message.content === "string");
+	expect(messages).toHaveLength(1);
+	expect(messages[0].content).toContain("There is no active phase");
+	expect(messages[0].content).toContain("fresh delegate without phaseId");
 });
 
 test("root compaction rebases only the lead context and preserves usage accounting", async () => {
@@ -263,8 +320,8 @@ test("a direct status question is answered without converting it into writer ste
 
 test("the harness keeps the lead checkpoint cadence without reviewers", async () => {
 	const h = harness([content("Continue with a narrower phase.")]);
-	h.preset.limits.reviewEveryBatches = 2;
-	h.preset.limits.leadEveryReviews = 3;
+	h.preset.limits.progressEveryBatches = 2;
+	h.preset.limits.leadEveryProgressIntervals = 3;
 	h.state.active = "writer";
 	h.state.owner = "writer";
 	h.state.delegations = 1;
@@ -303,6 +360,7 @@ test("the harness forces a lead checkpoint after three completed review cycles",
 	for (let revision = 1; revision <= 3; revision++) h.state.writerReviewSequences!.push(h.session.reviews.prime(0, `Cycle ${revision}`));
 	h.state.reviewers[0].pending = [];
 	h.state.reviewers[0].sequence = 3;
+	h.state.writerBatches = h.preset.limits.progressEveryBatches * h.preset.limits.leadEveryProgressIntervals;
 	const checkpoint = await h.next();
 	expect(h.calls.map(request => request.model)).toEqual(["gpt-6-astra"]);
 	expect(h.session.performanceStats().checkpoints["writer-progress"].count).toBe(1);
@@ -400,6 +458,7 @@ test("rejects mixed control/mutation batches before any execution", async () => 
 test("lead must explicitly acquire the writer lease", async () => {
 	const h = harness([[call("bad", "bash", { command: "touch bad" })], [call("take", CONTROL, { action: "takeover" })], [call("good", "bash", { command: "printf ok" })]]);
 	h.state.delegations = 1;
+	h.state.phase = delegatePhase(undefined, { task: "Fixture", nextAction: "Run the command", successCriteria: ["Pass"] }).phase;
 	expect((await h.next()).stopReason).toBe("error");
 	await h.finishControl(await h.next());
 	expect(h.state.owner).toBe("lead");
@@ -410,7 +469,8 @@ test("running jobs and unknown background status block writer handoff", async ()
 	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Edit the fixture", successCriteria: ["Pass"] })]]);
 	const message = await h.next();
 	h.jobs.jobs.push({ id: "job1", status: "running", cwd: "/fixture", ownerSessionId: "root" });
-	await expect(h.finishControl(message)).rejects.toThrow("running jobs: job1");
+	h.state.jobs.job1 = "writer";
+	await expect(h.finishControl(message)).rejects.toThrow("running tracked jobs: job1");
 	expect(h.state.owner).toBeUndefined();
 	h.jobs.jobs.length = 0;
 	h.jobs.available = false;
@@ -628,6 +688,7 @@ test("attached Swarm tools are lead-only and mutations require the Mixture takeo
 test("nested agents are blocked even for the lease holder", async () => {
 	const h = harness([[call("take", CONTROL, { action: "takeover" })], [call("spawn", "subagent", { task: "edit" })]]);
 	h.state.delegations = 1;
+	h.state.phase = delegatePhase(undefined, { task: "Fixture", nextAction: "Inspect safely", successCriteria: ["Pass"] }).phase;
 	await h.finishControl(await h.next());
 	expect((await h.next()).stopReason).toBe("error");
 	expect(h.state.origins.spawn).toBeUndefined();

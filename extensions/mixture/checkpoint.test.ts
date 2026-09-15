@@ -27,6 +27,8 @@ test("version 3 checkpoints store small deltas and restore their full state", ()
 	const manager = SessionManager.inMemory(cwd);
 	const before = newState("default", preset);
 	before.initialized = true;
+	before.diagnostics!.tacticalReviewsSkipped = 2;
+	before.diagnostics!.jobReconciliations = 1;
 	before.lead.messages.push({ role: "user", content: "x".repeat(200_000), timestamp: 1 });
 	const snapshot = encodeCheckpoint(cwd, "response", before);
 	manager.appendCustomEntry(CHECKPOINT, snapshot);
@@ -191,12 +193,19 @@ test("invalid, incompatible or foreign-directory checkpoints fail visibly withou
 	expect(manager.getEntries()).toHaveLength(count);
 });
 
-test("restoring without bg-bash cannot hand off a previously managed writer", async () => {
-	const { state } = fixture();
-	state.bgManaged = true; state.active = "writer"; state.owner = "writer";
-	const session = new MixtureSession(preset, {} as any, state, () => ({ available: false, jobs: [] }));
-	session.reconcile("reload");
-	state.origins.takeover = { actor: "lead", synthetic: false };
-	await expect(session.control("takeover", { action: "takeover" })).rejects.toThrow("did not answer");
-	expect(state.owner).toBe("writer");
+test("restoring without bg-bash blocks only unresolved tracked jobs", async () => {
+	const empty = fixture().state;
+	empty.bgManaged = true; empty.active = "writer"; empty.owner = "writer"; empty.delegations = 1;
+	const available = new MixtureSession(preset, {} as any, empty, () => ({ sessionId: "root", available: false, jobs: [] }));
+	empty.origins.takeover = { actor: "lead", synthetic: false };
+	await expect(available.control("takeover", { action: "takeover" })).resolves.toBeDefined();
+	expect(empty.owner).toBe("lead");
+
+	const unresolved = fixture().state;
+	unresolved.bgManaged = true; unresolved.active = "writer"; unresolved.owner = "writer"; unresolved.jobs.job1 = "writer";
+	const blocked = new MixtureSession(preset, {} as any, unresolved, () => ({ sessionId: "root", available: false, jobs: [] }));
+	blocked.reconcile("reload");
+	unresolved.origins.takeover = { actor: "lead", synthetic: false };
+	await expect(blocked.control("takeover", { action: "takeover" })).rejects.toThrow("unresolved tracked-job query");
+	expect(unresolved.owner).toBe("writer");
 });

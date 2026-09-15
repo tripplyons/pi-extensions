@@ -21,7 +21,7 @@ test("real Pi tree navigation starts the selected branch without stale reviewer 
 		const preset = defaultConfig().presets.default;
 		preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer";
 		preset.reviewers = [{ model: "fixture/reviewer", thinking: "low" }];
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const provider: Provider = {

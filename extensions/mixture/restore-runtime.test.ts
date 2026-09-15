@@ -22,7 +22,7 @@ test("real Pi compaction and disk reload preserve role histories and current fil
 		writeFileSync(join(dir, "fixture.txt"), "before\n");
 		const preset = defaultConfig().presets.default;
 		preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const requests: Array<{ id: string; context: Context }> = [];
 		const steps = [

@@ -137,6 +137,10 @@ test("report-only checkpoints require a clean current review", async () => {
 		expect((await pool.checkpoint(1, "Candidate", undefined, undefined, true)).findings).toEqual([]);
 		expect(contexts[1].tools?.map(tool => tool.name)).toContain("read");
 		expect(contexts[1].systemPrompt).not.toContain("Do not repeat that audit");
+		const reused = await pool.checkpoint(1, "Unchanged candidate", undefined, undefined, true);
+		expect(reused.reused).toBe(true);
+		expect(contexts[2].tools?.map(tool => tool.name)).toEqual(["mixture_review"]);
+		expect(contexts[2].systemPrompt).toContain("Do not repeat that audit");
 	} finally { await pool.freeze(); }
 });
 

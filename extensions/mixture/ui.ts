@@ -25,9 +25,11 @@ export function inspection(session: MixtureSession): string {
 	}
 	for (const [name, timing] of Object.entries(timings.checkpoints)) lines.push(`Review ${name}: ${timing.count} waits; avg ${Math.round(timing.totalMs / timing.count)}ms; max ${Math.round(timing.maxMs)}ms`);
 	const coordination = state.coordination;
+	const diagnostics = state.diagnostics;
 	lines.push("", `Total reported cost: $${session.usage.cost.total.toFixed(4)}; queued reviews: ${session.reviews.backlog}`,
 		`Delegations: ${state.delegations}; writer responses: ${state.writerTurns}/${preset.limits.writerTurns}; transient retries: ${state.writerRetries ?? 0}; rejected reports: ${state.writerReportRejections ?? 0}; current tool batches: ${state.writerBatches ?? 0}; final assessments: ${state.finalCorrections}`,
-		`Harness totals: ${coordination?.scheduledReviews ?? 0} reviews scheduled; ${coordination?.deliveredReviews ?? 0} delivered to writer; ${coordination?.leadCheckpoints ?? 0} forced lead checkpoints; ${coordination?.escalations ?? 0} early escalations`);
+		`Harness totals: ${coordination?.scheduledReviews ?? 0} reviews scheduled; ${coordination?.deliveredReviews ?? 0} delivered to writer; ${coordination?.leadCheckpoints ?? 0} forced lead checkpoints; ${coordination?.escalations ?? 0} early escalations`,
+		`Diagnostics: ${diagnostics?.invalidControlRetries ?? 0} invalid controls; ${diagnostics?.phaseResets ?? 0} context resets; ${diagnostics?.tacticalReviewsSkipped ?? 0} tactical reviews skipped; ${diagnostics?.reviewsReused ?? 0} clean reviews reused; ${diagnostics?.jobReconciliations ?? 0} jobs reconciled`);
 	for (const [index, reviewer] of state.reviewers.entries()) {
 		lines.push(`Reviewer ${index + 1}: ${reviewer.status}; revision ${reviewer.revision}; ${reviewer.requestCalls} requests this task`);
 		if (reviewer.warning) lines.push(`  Incomplete review: ${reviewer.warning}`);

@@ -101,7 +101,7 @@ export function resolveMixtureWorker(model: string, sourceAgent: string): Mixtur
 	const missing = providers.filter(provider => !Object.hasOwn(stored, provider) || stored[provider] === null || stored[provider] === undefined);
 	if (missing.length) throw new Error(`Missing stored credentials for Mixture preset ${name}: ${missing.join(", ")}`);
 	const credentials = Object.fromEntries(providers.map(provider => [provider, stored[provider]]));
-	const config = { version: 2 as const, presets: { [name]: preset } };
+	const config = { version: 3 as const, presets: { [name]: preset } };
 	return { presetName: name, preset, config, providers, credentials, models: selectedModels(sourceAgent, new Set(providers)) };
 }
 

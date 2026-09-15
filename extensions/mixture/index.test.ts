@@ -105,7 +105,7 @@ test("invalid config retains commands but registers no provider and writes no re
 	expect(h.providers).toHaveLength(0);
 	const notices: string[] = [];
 	await h.commands.get("mixture").handler("status", { ui: { notify: (text: string) => notices.push(text) } });
-	expect(notices[0]).toContain("version 2");
+	expect(notices[0]).toContain("version 3");
 	expect(notices[0]).toContain("mixture.json");
 });
 test("helper calls use the lead only and return an ordinary assistant result", async () => {
@@ -142,7 +142,7 @@ for (const outcome of ["save", "cancel", "conflict"] as const) test(`configure $
 	});
 	const contents = readFileSync(path, "utf8");
 	if (outcome === "save") {
-		expect(JSON.parse(contents)).toMatchObject({ version: 2, presets: { default: { lead: "fixture/lead", reviewers: [] } } });
+		expect(JSON.parse(contents)).toMatchObject({ version: 3, presets: { default: { lead: "fixture/lead", reviewers: [] } } });
 		expect(h.providers).toHaveLength(1);
 		expect(notices[0]).toContain("Saved");
 	} else {

@@ -26,7 +26,7 @@ for (const resolution of ["takeover", "prerequisite"] as const) test(`real Pi st
 		writeFileSync(join(dir, "unrelated.txt"), "human work\n");
 		const preset = defaultConfig().presets.default;
 		preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost });
 		const brief = { task: "Fix fixture.txt", nextAction: "Replace unchanged with fixed and verify the file", acceptedEvidence: ["fixture.txt has the failing value; do not repeat broad source searches"], constraints: ["Preserve unrelated.txt"], successCriteria: ["fixture.txt contains fixed", "Verification exits zero"] };
 		const steps: Array<{ actor: string; run: (context: Context) => AssistantMessage["content"] }> = [];

@@ -28,7 +28,7 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "presets": {
     "default": {
       "lead": "openai-codex/gpt-6-astra",
@@ -60,7 +60,8 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
   does not fetch missing metadata or make inference calls. Missing models and
   unsupported thinking levels produce diagnostics, not substitute models.
 - Malformed and legacy files are preserved and reported with their path.
-  There is no automatic migration. Explicitly configure a new version-2 file.
+  There is no automatic migration. Version 3 renamed the cadence limits; run
+  `/mixture configure` to replace a version-2 file explicitly.
 
 ## Execution and review
 
@@ -84,9 +85,12 @@ read-only implementations, not the outer editing-tool loop. Reviewers cannot
 run shell commands or call arbitrary extension tools. This is not an OS sandbox.
 
 Reviewers receive delegation constraints and completed execution deltas. The
-harness starts a tactical background review every `reviewEveryBatches` completed
+harness starts a tactical background review every `progressEveryBatches` completed
 writer batches that advance the execution revision. Read-only batches are retained as
 evidence for the next scheduled or checkpoint review but do not advance the cadence.
+Documentation-only Markdown and plain-text mutation intervals are coalesced instead
+of starting tactical review. Their evidence is included with the next non-document
+review or mandatory checkpoint; a lead-checkpoint boundary still requests review.
 Newer evidence coalesces while a review is running, and each request retains at most
 the latest eight distinct images.
 Incremental cycles focus on changed evidence and unresolved findings; completion
@@ -98,11 +102,12 @@ injects one consolidated update into the existing writer context without startin
 a replacement phase. Updates are retained separately from standing constraints;
 the latest eight remain in phase state and later continuation briefs.
 
-After `leadEveryReviews` completed scheduled review cycles, the harness snapshots
+After `leadEveryProgressIntervals` progress intervals, the harness snapshots
 current findings plus a bounded tool/status milestone digest at a safe tool
 boundary and transfers control to the lead without starting a redundant review.
-When reviewers are disabled, the same checkpoint timing is preserved: each
-`reviewEveryBatches` effectful writer batches counts as one cadence interval.
+Every `progressEveryBatches` effectful writer batches count as one interval whether
+or not reviewers are enabled. Configured review must finish or fail visibly before
+the corresponding lead checkpoint.
 Completion reports, unresolved escalations and review failures can cause an
 earlier checkpoint. Completion and escalation handoffs include a bounded tail of
 recorded tool outcomes alongside the writer's report, so lead assessment does not
@@ -260,7 +265,10 @@ model calls; the lead may inspect or stop its tracked job before taking over.
 A missing or failed bg-bash ownership query fails closed when that integration
 has been used. Restore bg-bash to reconcile retained jobs if it was disabled.
 Without bg-bash, only synchronous shell execution supports managed handoff.
-Mixture does not infer that an unknown background tool has finished.
+Mixture tracks background jobs started by its roles. An available current-session
+bg-bash query is authoritative: tracked running jobs retain the lease, while tracked
+terminal or absent jobs are reconciled. An unavailable or failed query blocks a
+handoff only while tracked jobs remain unresolved.
 
 Cancellation and model/session changes abort inference, not surviving shell
 jobs. Mixture warns about those jobs; it does not kill them to force a handoff.
@@ -278,8 +286,8 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | `writerRequestTimeoutMs` | 240000 | Absolute ceiling for each writer request, including auth |
 | `writerIdleTimeoutMs` | 240000 | Writer silence deadline, reset by provider stream activity |
 | `writerTurns` | 32 | Responses per delegation, including context recovery |
-| `reviewEveryBatches` | 3 | Writer batches that advance execution revision per scheduled background review |
-| `leadEveryReviews` | 3 | Scheduled review cycles per forced lead checkpoint |
+| `progressEveryBatches` | 3 | Revision-advancing writer batches per progress interval and tactical review opportunity |
+| `leadEveryProgressIntervals` | 3 | Progress intervals per forced lead checkpoint |
 | `reviewerBatchTurns` | 2 | Requests per reviewer batch |
 | `catchUpMs` | 120000 | Checkpoint review deadline |
 | `leadMaxTokens` | 16384 | Lead output ceiling |
@@ -364,8 +372,9 @@ Neither missing usage nor zero configured model prices prove that a call was fre
 - `/mixture` or `/mixture status`: roster, ownership, review state and usage.
 - `/mixture inspect`: scrollable details in the TUI; textual status outside it.
   Inspection includes the durable phase assessment, blocker and correction count,
-  per-role request latency, and separate periodic, escalation, completion-report
-  and final-review wait totals.
+  per-role request latency, separate periodic, escalation, completion-report and
+  final-review wait totals, and bounded counters for invalid controls, context
+  resets, coalesced tactical reviews, clean-review reuse and reconciled jobs.
 - Collapsed lead tool cards show the action plus one message-preview line:
   `delegate` shows the next action (or the task on older calls), `update` shows
   the lead's message, and `assess` shows the assessment and its evidence.

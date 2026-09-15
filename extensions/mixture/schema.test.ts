@@ -12,8 +12,8 @@ import { CONTROL, ControlParams, controlTool, MixtureSession, newState } from ".
 
 const schema = controlTool.parameters as any;
 const controlProperties = Object.keys(schema.properties);
-const delegate = (value: any) => value.anyOf.find((branch: any) => branch.properties?.action?.enum?.includes("delegate"));
-const nonDelegate = (value: any) => value.anyOf.find((branch: any) => branch.properties?.action?.enum?.includes("assess"));
+const branch = (value: any, action: string) => value.anyOf.find((candidate: any) => candidate.properties?.action?.enum?.includes(action));
+const delegate = (value: any) => branch(value, "delegate");
 const continuation = {
 	action: "delegate", phaseId: "phase-1", task: "Current step", nextAction: "Run the focused check",
 	successCriteria: ["The check passes"], constraints: ["Do not commit"], acceptedEvidence: ["Initial check passed"],
@@ -35,24 +35,21 @@ function expectConditionalRequirements(value: any) {
 	expect(Object.keys(value.properties)).toEqual(controlProperties);
 	expect(value.required).toEqual(["action"]);
 	expect(delegate(value).required).toEqual(["action", "task", "nextAction", "successCriteria"]);
-	expect(nonDelegate(value).required).toEqual(["action"]);
-	for (const branch of value.anyOf) expect(branch.additionalProperties).not.toBe(false);
+	expect(branch(value, "assess").required).toEqual(["action", "phaseId", "assessment", "evidence"]);
+	expect(branch(value, "update").required).toEqual(["action", "message"]);
+	for (const action of ["report", "escalate", "pause"]) expect(branch(value, action).required).toEqual(["action", "report"]);
+	for (const candidate of value.anyOf) expect(candidate.additionalProperties).not.toBe(false);
 	expect(Value.Check(value, { action: "delegate", task: "Current step", nextAction: "Run the focused check", successCriteria: ["The check passes"] })).toBe(true);
-	expect(Value.Check(value, { action: "assess" })).toBe(true);
+	expect(Value.Check(value, { action: "assess" })).toBe(false);
+	expect(Value.Check(value, { action: "report" })).toBe(false);
 	expectFullControls(value);
 }
-function expectRoleSchema(value: any, actions: readonly string[], allowsDelegate: boolean) {
+function expectRoleSchema(value: any, actions: readonly string[], required: Record<string, string[]>) {
 	expect(value.type).toBe("object");
 	expect(Object.keys(value.properties)).toEqual(controlProperties);
 	expect(value.properties.action.enum).toEqual(actions);
 	expect(value.required).toEqual(["action"]);
-	expect(Value.Check(value, { action: allowsDelegate ? "assess" : actions[0] })).toBe(true);
-	if (allowsDelegate) {
-		expect(delegate(value).required).toEqual(["action", "task", "nextAction", "successCriteria"]);
-		expect(nonDelegate(value).required).toEqual(["action"]);
-	} else {
-		expect(value.anyOf).toBeUndefined();
-	}
+	for (const action of actions) expect(branch(value, action).required).toEqual(required[action]);
 }
 function model(api: string, provider: string, id = "probe") {
 	return { id, name: id, api, provider, baseUrl: "https://example.test/v1", reasoning: false, input: ["text"],
@@ -78,8 +75,13 @@ test("registered control schema requires delegation fields without burdening oth
 	expect(Value.Check(ControlParams, { ...valid, nextAction: "" })).toBe(false);
 	expect(Value.Check(ControlParams, { ...valid, successCriteria: [] })).toBe(false);
 	expect(Value.Check(ControlParams, { ...valid, successCriteria: [""] })).toBe(false);
-	for (const action of ["assess", "takeover", "update", "report", "escalate", "checkpoint", "pause"]) {
-		expect(Value.Check(ControlParams, { action })).toBe(true);
+	expect(Value.Check(ControlParams, assessment)).toBe(true);
+	expect(Value.Check(ControlParams, { action: "update", message: "Continue" })).toBe(true);
+	expect(Value.Check(ControlParams, { action: "takeover" })).toBe(true);
+	expect(Value.Check(ControlParams, { action: "checkpoint", checkpoint: "checkpoint-1" })).toBe(true);
+	for (const action of ["report", "escalate", "pause"]) {
+		expect(Value.Check(ControlParams, { action, report: "Completed evidence" })).toBe(true);
+		expect(Value.Check(ControlParams, { action })).toBe(false);
 	}
 });
 
@@ -129,42 +131,32 @@ async function captureRoleTools(): Promise<Tool[]> {
 test("role-filtered control schemas survive each provider serializer", async () => {
 	const tools = await captureRoleTools();
 	expect(tools).toHaveLength(2);
-	for (const [index, [actions, allowsDelegate]] of ([[["delegate", "assess", "takeover"], true], [["report", "escalate"], false]] as const).entries()) {
+	const roles = [
+		{ actions: ["delegate"], required: { delegate: ["action", "task", "nextAction", "successCriteria"] } },
+		{ actions: ["report", "escalate"], required: { report: ["action", "report"], escalate: ["action", "report"] } },
+	] as const;
+	for (const [index, role] of roles.entries()) {
 		const tool = tools[index];
 		const roleSchema = tool.parameters as any;
-		expectRoleSchema(roleSchema, actions, allowsDelegate);
+		expectRoleSchema(roleSchema, role.actions, role.required);
 
-		const googleSchema = (convertGoogleTools([tool])![0].functionDeclarations[0] as any).parametersJsonSchema;
-		expectRoleSchema(googleSchema, actions, allowsDelegate);
-		if (allowsDelegate) expectConditionalRequirements(googleSchema);
-
-		const responseSchema = (convertResponsesTools([tool])[0] as any).parameters;
-		expectRoleSchema(responseSchema, actions, allowsDelegate);
-		if (allowsDelegate) expectConditionalRequirements(responseSchema);
-
-		const completionsPayload = await payloadFrom(streamCompletions, { apiKey: "probe" }, model("openai-completions", "openrouter"), tool);
-		const completionsSchema = completionsPayload.tools[0].function.parameters;
-		expectRoleSchema(completionsSchema, actions, allowsDelegate);
-		if (allowsDelegate) expectConditionalRequirements(completionsSchema);
-
+		const serialized = [
+			(convertGoogleTools([tool])![0].functionDeclarations[0] as any).parametersJsonSchema,
+			(convertResponsesTools([tool])[0] as any).parameters,
+			(await payloadFrom(streamCompletions, { apiKey: "probe" }, model("openai-completions", "openrouter"), tool)).tools[0].function.parameters,
+		];
 		const token = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "probe" } })).toString("base64url")}.sig`;
-		const codexPayload = await payloadFrom(streamCodex, { apiKey: token, transport: "sse" }, model("openai-codex-responses", "openai-codex", "gpt-5.6-luna"), tool);
-		const codexSchema = codexPayload.tools[0].parameters;
-		expectRoleSchema(codexSchema, actions, allowsDelegate);
-		if (allowsDelegate) expectConditionalRequirements(codexSchema);
+		serialized.push((await payloadFrom(streamCodex, { apiKey: token, transport: "sse" }, model("openai-codex-responses", "openai-codex", "gpt-5.6-luna"), tool)).tools[0].parameters);
+		for (const converted of serialized) expectRoleSchema(converted, role.actions, role.required);
 
-		const anthropicPayload = await payloadFrom(streamAnthropic, { apiKey: "probe" }, model("anthropic-messages", "anthropic", "claude-sonnet"), tool);
-		const anthropicSchema = anthropicPayload.tools[0].input_schema;
-		expectRoleSchema(anthropicSchema, actions, false);
-		if (allowsDelegate) {
+		const anthropicSchema = (await payloadFrom(streamAnthropic, { apiKey: "probe" }, model("anthropic-messages", "anthropic", "claude-sonnet"), tool)).tools[0].input_schema;
+		expect(anthropicSchema.properties.action.enum).toEqual(role.actions);
+		expect(anthropicSchema.required).toEqual(["action"]);
+		if (index === 0) {
 			expect(Value.Check(anthropicSchema, continuation)).toBe(true);
-			expect(Value.Check(anthropicSchema, assessment)).toBe(true);
 			expect(anthropicSchema.properties.task).toMatchObject({ minLength: 1 });
-			expect(anthropicSchema.properties.task.description).toBe("For delegate: the current-step task. Required on initial delegates and continuations; does not replace the stored phase outcome.");
 			expect(anthropicSchema.properties.nextAction).toMatchObject({ minLength: 1, maxLength: 4_000 });
-			expect(anthropicSchema.properties.nextAction.description).toBe("For delegate: the current-step concrete next implementation or diagnostic step. Required on initial delegates and continuations.");
 			expect(anthropicSchema.properties.successCriteria).toMatchObject({ minItems: 1 });
-			expect(anthropicSchema.properties.successCriteria.description).toBe("For delegate: current-step completion checks. Required on initial delegates and continuations; do not use them to replace stored phase acceptance.");
 		}
 	}
 });

@@ -15,8 +15,8 @@ export const DEFAULT_LIMITS = {
 	writerRequestTimeoutMs: 240_000,
 	writerIdleTimeoutMs: 240_000,
 	writerTurns: 32,
-	reviewEveryBatches: 3,
-	leadEveryReviews: 3,
+	progressEveryBatches: 3,
+	leadEveryProgressIntervals: 3,
 	reviewerBatchTurns: 2,
 	catchUpMs: 120_000,
 	leadMaxTokens: 16_384,
@@ -31,14 +31,14 @@ export interface Preset {
 	limits: Limits;
 }
 export interface MixtureConfig {
-	version: 2;
+	version: 3;
 	presets: Record<string, Preset>;
 }
 
 export const agentDir = (override?: string) => override ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 export const configPath = (dir?: string) => join(agentDir(dir), "mixture.json");
 export const defaultConfig = (): MixtureConfig => ({
-	version: 2,
+	version: 3,
 	presets: {
 		default: {
 			lead: "openai-codex/gpt-6-astra",
@@ -86,7 +86,7 @@ function role(value: unknown, label: string): RoleConfig {
 
 export function parseConfig(value: unknown): MixtureConfig {
 	const input = object(value, "config");
-	if (input.version !== 2) throw new Error("Expected version 2 configuration. Run /mixture configure to replace the old configuration; migration is not supported.");
+	if (input.version !== 3) throw new Error("Expected version 3 configuration. Run /mixture configure to replace the old configuration; migration is not supported.");
 	keys(input, ["version", "presets"], "config");
 	const presets = object(input.presets, "presets");
 	if (!Object.keys(presets).length || Object.keys(presets).length > 16) throw new Error("Configure 1–16 presets");
@@ -111,7 +111,7 @@ export function parseConfig(value: unknown): MixtureConfig {
 			limits: { ...DEFAULT_LIMITS, ...configuredLimits },
 		};
 	}
-	return { version: 2, presets: parsed };
+	return { version: 3, presets: parsed };
 }
 
 export function loadConfig(dir?: string): MixtureConfig {

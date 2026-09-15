@@ -118,7 +118,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				else created.state.rootCompactionId = rootCompaction.id;
 			}
 			if (restored.state) created.reconcile("session restored");
-			if (restored.warning) { created.state.warning = restored.warning; ctx.ui.notify(restored.warning, "warning"); }
+			if (restored.warning) {
+				created.state.warning = restored.warning;
+				if (!restored.state) created.recordReset(restored.warning);
+				ctx.ui.notify(restored.warning, "warning");
+			}
 		}
 		return session;
 	};
@@ -179,7 +183,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				}
 				if (session) {
 					const jobs = queryBackgroundJobs(pi, rootId!);
-					if (jobs.error || jobs.jobs.some(job => job.status === "running") || session.state.bgManaged && !jobs.available) throw new Error("Reconcile Mixture's background jobs before changing its configuration");
+					const tracked = Object.keys(session.state.jobs);
+					const running = jobs.jobs.some(job => job.status === "running" && Object.hasOwn(session.state.jobs, job.id));
+					if (running || tracked.length && (jobs.error || !jobs.available)) throw new Error("Reconcile Mixture's tracked background jobs before changing its configuration");
 				}
 				let before: string | null = null;
 				try { before = readFileSync(configPath(), "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

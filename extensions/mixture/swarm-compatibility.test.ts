@@ -34,7 +34,7 @@ function writeMixtureConfig(agent: string) {
 	preset.lead = "fixture/lead";
 	preset.writer.model = "fixture/writer";
 	preset.reviewers = [];
-	writeFileSync(join(agent, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+	writeFileSync(join(agent, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 }
 
 function roleModel(provider: string, id: string): Model<any> {

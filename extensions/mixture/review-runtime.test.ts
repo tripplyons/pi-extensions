@@ -26,7 +26,7 @@ for (const mode of ["correct", "failed", "slow", "abort"] as const) test(`real P
 		preset.reviewers = ["reviewer-a", "reviewer-b"].map(id => ({ model: `fixture/${id}`, thinking: "low" }));
 		preset.limits.catchUpMs = 30;
 		preset.limits.requestTimeoutMs = 1000;
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 0.1 } });
 		const statuses = new Map<string, string>();
 		const displays: string[] = [];

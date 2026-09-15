@@ -62,7 +62,7 @@ test("createWorkerProcesses provisions Mixture launch arguments and private file
 		const preset = structuredClone(defaultConfig().presets.default);
 		preset.lead = "fixture/lead"; preset.writer.model = "openrouter/vendor/writer";
 		preset.reviewers = [{ model: "fixture/reviewer", thinking: "low" }, { model: "openrouter/vendor/reviewer", thinking: "low" }];
-		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 2, presets: { selected: preset, unrelated: preset } }));
+		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 3, presets: { selected: preset, unrelated: preset } }));
 		writeFileSync(join(source, "auth.json"), JSON.stringify({ fixture: { token: "fixture" }, openrouter: { token: "router" }, anthropic: { token: "unrelated" } }));
 		const calls: string[][] = [];
 		const processes = createWorkerProcesses(fileURLToPath(new URL("./index.ts", import.meta.url)), launchDependencies(calls));
@@ -108,7 +108,7 @@ test("createWorkerProcesses rejects missing Mixture role credentials before any 
 		git(repository, ["init", "-b", "main"]); git(repository, ["config", "user.name", "Process Test"]); git(repository, ["config", "user.email", "process@example.invalid"]);
 		writeFileSync(join(repository, "initial"), "base\n"); git(repository, ["add", "initial"]); git(repository, ["commit", "-m", "Initialize fixture"]);
 		const preset = structuredClone(defaultConfig().presets.default); preset.lead = "fixture/lead"; preset.writer.model = "openrouter/vendor/writer"; preset.reviewers = [];
-		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 2, presets: { selected: preset } }));
+		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 3, presets: { selected: preset } }));
 		writeFileSync(join(source, "auth.json"), JSON.stringify({ fixture: { token: "fixture" } }));
 		const calls: string[][] = [];
 		const processes = createWorkerProcesses(fileURLToPath(new URL("./index.ts", import.meta.url)), launchDependencies(calls));
@@ -136,7 +136,7 @@ test("Mixture worker provisioning selects one preset and deduplicates required r
 			{ model: "openai-codex/reviewer", thinking: "low" },
 		];
 		const other = structuredClone(selected); other.lead = "anthropic/unused";
-		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 2, presets: { selected, other } }));
+		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 3, presets: { selected, other } }));
 		writeFileSync(join(source, "auth.json"), JSON.stringify({
 			"openai-codex": { token: "codex" }, openrouter: { token: "router" }, anthropic: { token: "unrelated" },
 		}));
@@ -183,7 +183,7 @@ test("Mixture worker provisioning materializes the default roster when its confi
 
 for (const [name, setup] of [
 	["invalid configuration", (source: string) => writeFileSync(join(source, "mixture.json"), '{"models":["old/model"]}')],
-	["unknown preset", (source: string) => writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 2, presets: { other: defaultConfig().presets.default } }))],
+	["unknown preset", (source: string) => writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 3, presets: { other: defaultConfig().presets.default } }))],
 ] as const) test(`Mixture worker provisioning rejects ${name} before writing worker credentials`, () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-swarm-mixture-reject-"));
 	const source = join(root, "source"); const worker = join(root, "worker");
@@ -204,7 +204,7 @@ test("Mixture worker provisioning reports every missing role provider before lau
 	try {
 		const preset = structuredClone(defaultConfig().presets.default);
 		preset.lead = "openai-codex/lead"; preset.writer.model = "openrouter/vendor/writer"; preset.reviewers = [{ model: "anthropic/reviewer", thinking: "low" }];
-		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(source, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		writeFileSync(join(source, "auth.json"), JSON.stringify({ "openai-codex": { token: "codex" } }));
 		expect(() => provisionMixtureWorker("mixture/default", source, worker)).toThrow("openrouter, anthropic");
 		expect(existsSync(join(worker, "auth.json"))).toBe(false);

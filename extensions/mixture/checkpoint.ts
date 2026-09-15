@@ -59,6 +59,7 @@ function parseState(value: unknown): MixtureState {
 	for (const field of ["writerRetries", "writerRetryDelegation", "writerReportRejections", "writerBatches", "writerReviewsDelivered"]) assert(state[field] === undefined || count(state[field]), field);
 	assert(state.writerReviewSequences === undefined || Array.isArray(state.writerReviewSequences) && state.writerReviewSequences.every(count), "writer review sequences");
 	assert(state.writerProgress === undefined || Array.isArray(state.writerProgress) && state.writerProgress.every((value: unknown) => typeof value === "string"), "writer progress");
+	assert(state.pendingDocumentationReview === undefined || typeof state.pendingDocumentationReview === "boolean", "pending documentation review");
 	assert(state.immediateAction === undefined || object(state.immediateAction) && typeof state.immediateAction.tool === "string" && !!state.immediateAction.tool.trim() && state.immediateAction.tool.length <= 120
 		&& typeof state.immediateAction.description === "string" && !!state.immediateAction.description.trim() && state.immediateAction.description.length <= 1_000, "immediate action");
 	assert(state.phase === undefined || validPhase(state.phase), "phase tracking");
@@ -66,7 +67,10 @@ function parseState(value: unknown): MixtureState {
 		&& ["scheduledReviews", "deliveredReviews", "leadCheckpoints", "escalations"].every(field => count(state.coordination[field]))
 		&& Array.isArray(state.coordination.recent) && state.coordination.recent.length <= 64
 		&& state.coordination.recent.every((event: unknown) => object(event) && ["review-scheduled", "feedback-delivered", "lead-checkpoint", "writer-escalation"].includes(event.kind) && count(event.revision) && (event.sequence === undefined || count(event.sequence))), "coordination stats");
-	for (const field of ["warning", "reviewSummary", "rootCompactionId"]) assert(state[field] === undefined || typeof state[field] === "string", field);
+	assert(state.diagnostics === undefined || object(state.diagnostics) && object(state.diagnostics.controlFailures)
+		&& ["missingPayload", "stalePhase", "invalidState", "other"].every(field => count(state.diagnostics.controlFailures[field]))
+		&& ["invalidControlRetries", "phaseResets", "tacticalReviewsSkipped", "reviewsReused", "jobReconciliations"].every(field => count(state.diagnostics[field])), "diagnostics");
+	for (const field of ["warning", "reviewSummary", "rootCompactionId", "resetNotice"]) assert(state[field] === undefined || typeof state[field] === "string", field);
 	for (const role of [state.lead, state.writer, ...state.reviewers]) {
 		assert(object(role) && Array.isArray(role.messages) && role.messages.every(validMessage) && validUsage(role.usage) && count(role.calls), "role history or usage");
 		for (const field of ["summaries", "contextTokens"]) assert(role[field] === undefined || count(role[field]), field);
@@ -74,6 +78,7 @@ function parseState(value: unknown): MixtureState {
 	for (const reviewer of state.reviewers) {
 		assert(["idle", "queued", "reviewing", "incomplete"].includes(reviewer.status), "review status");
 		for (const field of ["warning", "imageWarning"]) assert(reviewer[field] === undefined || typeof reviewer[field] === "string", field);
+		assert(reviewer.fullRevision === undefined || count(reviewer.fullRevision), "review full revision");
 		assert(Array.isArray(reviewer.pending) && reviewer.pending.every((update: unknown) => object(update) && count(update.sequence) && count(update.revision) && typeof update.content === "string" && (update.checkpoint === undefined || typeof update.checkpoint === "boolean")
 			&& (update.images === undefined || Array.isArray(update.images) && update.images.every((image: unknown) => object(image) && image.type === "image" && typeof image.data === "string" && typeof image.mimeType === "string"))), "review queue");
 		assert(Array.isArray(reviewer.findings) && reviewer.findings.every((finding: unknown) => object(finding) && typeof finding.id === "string" && typeof finding.summary === "string" && typeof finding.model === "string" && count(finding.reviewer) && count(finding.revision) && typeof finding.alerted === "boolean" && ["nit", "concern", "blocker"].includes(finding.severity)), "review findings");

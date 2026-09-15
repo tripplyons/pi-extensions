@@ -25,6 +25,7 @@ export interface ReviewerState extends RoleState {
 	sequence: number;
 	requestCalls: number;
 	batchCalls: number;
+	fullRevision?: number;
 	status: "idle" | "queued" | "reviewing" | "incomplete";
 	warning?: string;
 	imageWarning?: string;
@@ -48,7 +49,7 @@ const ReportParams = Type.Object({
 const reportTool = { name: "mixture_review", description: "Finish this review batch. Return all findings that still apply at the requested revision, including reconfirmed earlier findings. For each earlier finding that you directly rechecked and found resolved, include its ID in resolvedFindingIds. Never list an unresolved or unchecked finding there. Keep issue IDs stable across updates. Set incompleteReason if any needed check could not be completed. An incomplete report preserves earlier findings unless you explicitly resolve them; it is never treated as clean.", parameters: ReportParams };
 type Report = Static<typeof ReportParams>;
 export type ReviewerRequest = (index: number, context: Context, signal: AbortSignal) => Promise<AssistantMessage>;
-export interface CheckpointReview { findings: Finding[]; warnings: string[]; revision: number }
+export interface CheckpointReview { findings: Finding[]; warnings: string[]; revision: number; reused?: boolean }
 
 const user = (content: string): Message => ({ role: "user", content, timestamp: Date.now() });
 function bounded(value: string, max = 24_000) {
@@ -125,6 +126,7 @@ export class ReviewPool {
 			state.sequence = this.sequence;
 			state.requestCalls = 0;
 			state.batchCalls = 0;
+			state.fullRevision = undefined;
 			state.status = "idle";
 			state.warning = undefined;
 			state.imageWarning = undefined;
@@ -135,6 +137,7 @@ export class ReviewPool {
 		this.frozen = false;
 		const update = { sequence: ++this.sequence, revision, content, images, ...(checkpoint ? { checkpoint: true } : {}) };
 		for (const [index, state] of this.states.entries()) {
+			if (!checkpoint) state.fullRevision = undefined;
 			state.pending.push(update);
 			if (state.pending.length > 16) {
 				const older = state.pending.splice(0, state.pending.length - 8);
@@ -288,7 +291,7 @@ export class ReviewPool {
 
 	async checkpoint(revision: number, content: string, signal?: AbortSignal, images?: ImageContent[], candidateOnly = false): Promise<CheckpointReview> {
 		const label = `checkpoint ${randomUUID()}`;
-		const reportOnly = candidateOnly && this.states.every(state => state.status === "idle" && !state.warning && !state.imageWarning && !state.findings.length && state.revision === revision && state.pending.length === 0);
+		const reportOnly = candidateOnly && this.states.length > 0 && this.states.every(state => state.status === "idle" && !state.warning && !state.imageWarning && !state.findings.length && state.fullRevision === revision && state.pending.length === 0);
 		const target = this.queue(revision, `[${label}, revision ${revision}]\n${content}\nReconfirm unresolved findings against the current checkout. Do not merely repeat earlier advice.`, images, false, true);
 		for (const index of this.states.keys()) {
 			this.requested.add(index);
@@ -314,7 +317,9 @@ export class ReviewPool {
 			if (waiter) this.waiters.delete(waiter);
 			await this.freeze();
 		}
-		return { revision, findings: this.findings, warnings: this.states.flatMap(state => [state.warning, state.imageWarning].filter((value): value is string => !!value)) };
+		const warnings = this.states.flatMap(state => [state.warning, state.imageWarning].filter((value): value is string => !!value));
+		if (!warnings.length && !this.findings.length) for (const state of this.states) state.fullRevision = revision;
+		return { revision, findings: this.findings, warnings, ...(reportOnly ? { reused: true } : {}) };
 	}
 	async freeze() {
 		this.frozen = true;

@@ -46,7 +46,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| [mixture](extensions/mixture/README.md) | A lead/writer model with bounded phase updates, lead-owned acceptance, enforceable handoffs, deduplicated checkpoints, read-only review, and Agent Swarm node support. |
+| [mixture](extensions/mixture/README.md) | A lead/writer model with phase-aware handoffs, progress checkpoints, coalesced read-only review, recovery diagnostics, and Agent Swarm node support. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |

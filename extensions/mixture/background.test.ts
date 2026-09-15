@@ -22,7 +22,7 @@ test("native background writer retains its lease until explicit stop, then lead 
 		const { default: bgBash } = await import("../bg-bash/index.ts");
 		const preset = defaultConfig().presets.default;
 		preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];
-		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 2, presets: { default: preset } }));
+		writeFileSync(join(dir, "mixture.json"), JSON.stringify({ version: 3, presets: { default: preset } }));
 		const find: Registry["find"] = (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 		const roles: string[] = [];
 		const steps: Array<{ actor: string; content: (context: Context) => AssistantMessage["content"] }> = [
@@ -32,7 +32,7 @@ test("native background writer retains its lease until explicit stop, then lead 
 			{ actor: "writer", content: context => {
 				const start = context.messages.find(message => message.role === "toolResult" && message.toolCallId === "start");
 				if (start?.role !== "toolResult" || !start.details?.job?.id) throw new Error("No native job ID");
-				expect(JSON.stringify(context.messages)).toContain("Writer handoff is blocked by running jobs");
+				expect(JSON.stringify(context.messages)).toContain("Writer handoff is blocked by running tracked jobs");
 				return tool("stop", "bg_process", { action: "kill", id: start.details.job.id });
 			} },
 			{ actor: "writer", content: () => tool("report", "mixture_control", { action: "report", report: "Stopped the job; no output file was written." }) },
