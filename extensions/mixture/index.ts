@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { isSwarmAttached } from "../agent-swarm/events.ts";
 import { queryBackgroundJobs } from "../bg-bash/events.ts";
 import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeMarker, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
@@ -88,7 +87,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		registry = context.modelRegistry;
 		const active = pi.getActiveTools().filter(name => name !== CONTROL);
 		pi.setActiveTools(selected() ? [...active, CONTROL] : active);
-		if (selected() && !isSwarmAttached(pi)) ensureSession();
+		if (selected()) ensureSession();
 		render();
 	};
 	const inheritFastMode = (options?: SimpleStreamOptions): RoleStreamOptions | undefined => {
@@ -99,7 +98,6 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	};
 	const ensureSession = () => {
 		if (!selected() || !ctx || !config) throw new Error("Select a Mixture model first");
-		if (isSwarmAttached(pi)) throw new Error("Mixture cannot execute while a managed swarm is attached. Stop or finish that swarm first.");
 		if (!session) {
 			const name = ctx.model!.id;
 			const preset = config.presets[name];

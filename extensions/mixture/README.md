@@ -2,7 +2,8 @@
 
 Mixture is a native Pi model with a lead, a writer and independent read-only
 reviewers. Select `mixture/default` through `/model`. Requires Pi 0.85.1 or newer.
-Selecting an ordinary model does not start collaborators.
+Selecting an ordinary model does not start collaborators. Agent Swarm can launch a
+`mixture/<preset>` node with the same lead/writer loop in that node's worktree.
 
 The lead receives each complete user request first, settles consequential choices,
 defines a concrete plan, constraints and acceptance criteria, and initiates the
@@ -10,9 +11,9 @@ writer. The writer then plans, edits and tests in your current checkout, includi
 uncommitted and untracked files. The
 harness schedules read-only review during that work and delivers findings directly
 to the writer. It returns control to the lead less often for strategy, ambiguity,
-completion assessment and the user-facing answer. No Git repository, worktree or
-editing subprocess is required. The lead can explicitly take over after a safe
-writer handoff.
+completion assessment and the user-facing answer. Standalone Mixture needs no Git
+repository, worktree or editing subprocess. The lead can explicitly take over after
+a safe writer handoff.
 
 ## Configuration
 
@@ -50,8 +51,9 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
   already supplied to Pi are included; no additional project config is loaded.
 - Lead thinking follows Pi's normal selector. Writer/reviewer levels are
   validated separately. Recursive `mixture/*` role models are rejected.
-- Credentials stay in Pi. Each request resolves its own effective provider,
-  authentication, headers and endpoint, including provider overrides.
+- Standalone requests resolve each role's effective provider, authentication,
+  headers and endpoint, including provider overrides. Agent Swarm copies only the
+  selected node preset's underlying role-provider credentials into its private home.
 - An explicit session `/fast` override is inherited by every `openai-codex`
   role request. Untoggled sessions leave the provider's existing tier unchanged.
 - Role models must be present in Pi's catalog or model configuration. Discovery
@@ -70,8 +72,11 @@ valid for the current role and lease: writer report/escalation, lead steering
 update/takeover, or lead delegation/assessment/takeover. Unknown effectful tools require the writer lease. This includes extension tools
 such as autoresearch and image generation; Mixture does not maintain an allowlist
 that silently hides newly installed writer tools. Conversation-level goal creation
-and completion remain with the lead. Nested editing-agent launches and execution
-while attached to a managed swarm are blocked.
+and completion remain with the lead. Nested editing-agent launches remain blocked.
+When Agent Swarm is attached, the current checkout is this node's assigned
+worktree. Use active known Swarm tools for managed coordination; only the Mixture
+lead may call them, and it must take over the writer lease before any mutating
+Swarm operation. Agent Swarm owns children, worktrees and controller Git.
 
 Reviewers have separate histories and only Pi's native `read`, `grep`, `find`
 and `ls`, plus a structured reporting operation. Their private reads use those
@@ -141,6 +146,25 @@ reassessment allowance, so productive correction work remains unbounded.
 Images remain available to roles that support them. Text-only roles receive an
 explicit omitted-image warning; their review must not be treated as visual
 verification. Composite input metadata reflects the whole roster conservatively.
+
+## Agent Swarm integration
+
+A Swarm node selecting `mixture/<preset>` explicitly loads this extension after
+Agent Swarm. The launcher validates the source configuration, selects one preset,
+and writes only that preset to the node's private `mixture.json`. It takes the
+provider portion before the first slash in every lead, writer and reviewer model
+ID, deduplicates those providers, and copies only their stored credentials. A
+missing source file uses the in-memory default preset. There is no synthetic
+`mixture` credential. Malformed configuration, an unknown preset or a missing role
+credential stops the worker before tmux launch. Relevant filtered model metadata is
+copied when present; unrelated providers and presets are not.
+
+Mixture's lead and writer still own the inner phase and writer lease. The lead can
+read and coordinate through active, known `swarm_*` tools. The writer cannot spawn,
+complete, integrate or otherwise coordinate Swarm nodes. The lead must take over
+the writer lease before any mutating Swarm operation. Agent Swarm remains the only
+owner of child processes, worktrees and controller-owned commits. Standalone
+Mixture keeps its nested editing-agent prohibition.
 
 ## Handoffs and stalled work
 
@@ -291,8 +315,9 @@ Superseded reviewer-feedback and lead-progress notes are replaced by their curre
 authoritative form instead of accumulating across cycles. Lifetime scheduling,
 feedback, lead-checkpoint, and escalation counters remain in bounded checkpoint
 audit metadata. Checkpoints are not injected into the main model context. Ephemeral
-sessions remain ephemeral. No global daemon, private credential copy or separate
-run directory is created.
+standalone sessions remain ephemeral. Standalone Mixture creates no global daemon,
+private credential copy or separate run directory; Swarm-managed nodes use the
+private home and run directory provisioned by Agent Swarm.
 
 Reload/resume restores the active branch's valid checkpoint. Model/preset changes,
 new sessions, forks, tree navigation and compaction invalidate stale work.

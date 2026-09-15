@@ -1,6 +1,8 @@
 # Agent swarm
 
-`agent-swarm` runs a durable hierarchy of Pi workers in tmux. It requires macOS `sandbox-exec`, tmux, Git, Node, and a stored Pi credential for the selected model's provider. Workers use native Pi file tools and bg-bash, with Codex tool overrides disabled. Other platforms refuse worker launch.
+`agent-swarm` runs a durable hierarchy of Pi workers in tmux. It requires macOS `sandbox-exec`, tmux, Git, Node, and stored Pi credentials for the selected model's providers. Workers use native Pi file tools and bg-bash, with Codex tool overrides disabled. Other platforms refuse worker launch.
+
+A worker whose model is `mixture/<preset>` explicitly loads Mixture. The launcher validates the source preset, writes only that preset to the worker's private agent directory, and copies only the underlying providers used by its lead, writer and reviewers. It does not create a synthetic `mixture` credential. Invalid or unknown presets and missing role credentials fail before tmux starts. Ordinary provider workers keep the existing single-provider launch.
 
 Workers snapshot the coordinator session's current `/fast` setting when they are spawned and use the same Codex service tier without changing the active swarm system prompt.
 
@@ -10,7 +12,7 @@ Every worker runs under `/usr/bin/sandbox-exec` in a linked Git worktree. File r
 
 File writes use a denylist. Workers may write any host-user-writable location except the coordinator checkout, shared Git metadata, swarm authority and sibling state, common credential locations, and system or application paths. The worker's own worktree, private home, temporary directory, and request outbox are exceptions within the protected swarm state root. Reviewers cannot write their worktrees. Workers can still modify other repositories, documents, user configuration, and installed tools not covered by the denylist.
 
-The worker receives a private copy of the Pi files required for Codex authentication, but unrestricted reads also expose the original credential file, SSH and cloud credentials, user extensions, skills, and other host files. User web and ask tools are not loaded. The bundled `complain` tool is loaded explicitly and appends reports to the coordinator's `${XDG_STATE_HOME:-~/.local/state}/pi/complain/complaints.jsonl`. Outbound network access is required for model calls. The macOS sandbox cannot restrict that access to an inference host, so a worker can transmit any readable data. Use a managed sandbox with host-side credential injection for a stronger boundary. This version fails closed outside macOS and has no external launcher backend.
+The worker receives a private copy of the Pi files required for its selected provider credentials. Mixture workers also receive the selected `mixture.json` and filtered model metadata when present. Unrestricted reads still expose the original credential file, SSH and cloud credentials, user extensions, skills, and other host files. User web and ask tools are not loaded. The bundled `complain` tool is loaded explicitly and appends reports to the coordinator's `${XDG_STATE_HOME:-~/.local/state}/pi/complain/complaints.jsonl`. Outbound network access is required for model calls. The macOS sandbox cannot restrict that access to an inference host, so a worker can transmit any readable data. Use a managed sandbox with host-side credential injection for a stronger boundary. This version fails closed outside macOS and has no external launcher backend.
 
 Linked worktrees share Git history, object storage, and repository configuration. The write denylist protects that shared metadata. Do not put credentials in repository remotes or local Git configuration because workers can read them.
 
@@ -20,7 +22,7 @@ Stop, pause, and timeout operate on the original worker process group. A descend
 
 ## Roles
 
-- The coordinator is the user's root session. It sees the full tree, may stop any descendant, and may integrate an accepted direct child into its checkout through controller-owned Git.
+- The coordinator is the user's root session. It sees the full tree, may stop any descendant, and may integrate an accepted direct child into its checkout through controller-owned Git. If its selected model is Mixture, the Mixture lead may use active swarm tools only after taking the Mixture writer lease for any mutating Swarm operation.
 - A manager may spawn, instruct, review, restart, stop, and integrate direct children.
 - A worker edits its assignment and submits it to its direct parent.
 - A reviewer gets a read-only snapshot of a direct child's result commit and reports findings to their shared parent.
@@ -45,7 +47,7 @@ Defaults limit a run to depth 2, four active children per coordinator or manager
 }
 ```
 
-New workers at every depth inherit the coordinator session's current model, thinking level, and `/fast` setting at spawn time. Changing those settings affects later spawns only; already-running workers keep their launch settings. Optional `roleModels` and `roleThinking` maps override the current model and thinking level per role. Model overrides use `provider/model` names. Workers cannot change the run's configuration.
+New workers at every depth inherit the coordinator session's current model, thinking level, and `/fast` setting at spawn time. Changing those settings affects later spawns only; already-running workers keep their launch settings. Optional `roleModels` and `roleThinking` maps override the current model and thinking level per role. Model overrides use `provider/model` names. Workers cannot change the run's configuration. With `mixture/<preset>`, every node uses its own assigned worktree for Mixture's lead/writer loop, and the launcher provisions the selected preset plus deduplicated role-provider credentials in that node's private home.
 
 ## Commands
 
@@ -80,6 +82,12 @@ swarm_spawn({
 - `swarm_review` accepts, rejects, or requests changes. Managers and the root coordinator use the separate `swarm_integrate` operation instead of running `git merge` or `git cherry-pick`; direct-parent and accepted-result checks apply. Managers integrate into generated branches, while the root integrates into its checkout.
 - `swarm_stop`, `swarm_restart`, and `swarm_cleanup` manage direct children. The root may emergency-stop descendants.
 - `swarm_kill` and `swarm_clear` are root-only run operations.
+
+## Mixture nodes
+
+A node launched with `mixture/<preset>` loads the Mixture extension after Agent Swarm. The worker launcher reads and validates the coordinator's Mixture configuration, selects the named preset, and writes no other presets to the private home. It collects the provider portion before the first slash in each lead, writer and reviewer model ID, deduplicates those providers, and copies only their stored credentials. A missing default file still uses Mixture's in-memory default configuration. The worker fails before launch for malformed configuration, an unknown preset, or a missing role credential. No `mixture` credential is needed.
+
+The checkout is the current node's assigned worktree. Mixture's lead may use active, known `swarm_*` tools to read state and coordinate the node. The Mixture writer cannot spawn, complete, integrate, or otherwise coordinate Swarm nodes. The lead must take over the Mixture writer lease before any mutating Swarm operation. Agent Swarm remains the owner of child processes, worktrees, and controller Git; standalone Mixture still blocks nested editing-agent launches.
 
 Large task, message, result, feedback, and verification strings use private request artifacts, capped at 10 MiB each. Tool previews point to full output files. Recipient snapshots expose only that recipient's artifact copies.
 

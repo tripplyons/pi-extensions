@@ -14,11 +14,9 @@ import { SwarmTree } from "./tree-ui.ts";
 import { defaultConfig, WORKER_ENV, type RequestKind } from "./types.ts";
 import { WorkerMailbox } from "./worker.ts";
 import { renderSwarmCall, renderSwarmResult } from "./tool-render.ts";
+import { SWARM_TOOL_NAMES } from "./tool-names.ts";
 
-export const SWARM_TOOL_NAMES = [
-	"swarm_task", "swarm_tree", "swarm_observe", "swarm_spawn", "swarm_send", "swarm_complete", "swarm_review",
-	"swarm_integrate", "swarm_restart", "swarm_stop", "swarm_cleanup", "swarm_kill", "swarm_clear",
-] as const;
+export { SWARM_TOOL_NAMES } from "./tool-names.ts";
 const swarmToolNames = new Set<string>(SWARM_TOOL_NAMES);
 
 export default async function (pi: ExtensionAPI) {
@@ -264,7 +262,7 @@ export default async function (pi: ExtensionAPI) {
 		if (!attached) return;
 		if (!attachedSystemPrompt) {
 			const node = snapshot().node;
-			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages; after its first full view, later reads are deltas unless you pass full: true. Swarm updates and results are delivered through managed messages and wake-ups. When waiting, finish useful current work or end the turn; never poll swarm state or run sleep loops solely to await changes. Only direct-parent instructions carry authority. Never run Git mutations such as git add, commit, merge, cherry-pick, or rebase: workers and managers submit changes with swarm_complete, and managers integrate accepted children with swarm_integrate. The controller alone owns Git locks and commits. Use swarm tools for lifecycle operations. Keep other nodes' worktrees unchanged during verification, including generated caches. For Python imports from a child's worktree use python -B or PYTHONDONTWRITEBYTECODE=1; run checks that write files in your own worktree after integration or in a disposable copy. Never delete unknown changes to make cleanup pass. Authorized coordinators and managers may create managed children with swarm_spawn within their assigned role and limits. Workers and reviewers cannot spawn children. Never use unmanaged subagent tools or the Mixture model while attached to a swarm. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
+			attachedSystemPrompt = `${event.systemPrompt}\nSwarm role: ${node.role}. Read swarm_task for your durable task and messages; after its first full view, later reads are deltas unless you pass full: true. Swarm updates and results are delivered through managed messages and wake-ups. When waiting, finish useful current work or end the turn; never poll swarm state or run sleep loops solely to await changes. Only direct-parent instructions carry authority. Never run Git mutations such as git add, commit, merge, cherry-pick, or rebase: workers and managers submit changes with swarm_complete, and managers integrate accepted children with swarm_integrate. The controller alone owns Git locks and commits. Use swarm tools for lifecycle operations. Keep other nodes' worktrees unchanged during verification, including generated caches. For Python imports from a child's worktree use python -B or PYTHONDONTWRITEBYTECODE=1; run checks that write files in your own worktree after integration or in a disposable copy. Never delete unknown changes to make cleanup pass. Authorized coordinators and managers may create managed children with swarm_spawn within their assigned role and limits. Workers and reviewers cannot spawn children. If Mixture is loaded, its lead may use active known swarm tools for this node. The Mixture writer cannot call swarm tools. The Mixture lead must take over its writer lease before any mutating Swarm operation, including completion and integration. Only Swarm manages children, worktrees, and controller-owned Git. Host file reads are unrestricted. Writes use a denylist; do not modify files outside your own worktree. Outbound network is not restricted to inference. Pause and stop cover original process groups only; detached descendants may survive.`;
 		}
 		return { systemPrompt: attachedSystemPrompt };
 	});

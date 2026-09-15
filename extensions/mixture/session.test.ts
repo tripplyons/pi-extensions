@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
 import { defaultConfig } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { newReviewer } from "./review.ts";
@@ -62,6 +63,8 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	const leadActions = (h.calls[0].context.tools?.find(tool => tool.name === CONTROL)?.parameters as any).properties.action.enum;
 	expect(leadActions).toEqual(["delegate", "assess", "takeover"]);
 	expect(delegated.content[0]).toMatchObject({ name: CONTROL, arguments: { action: "delegate", task: "Fix this without changing unrelated files" } });
+	expect(h.calls[0].context.systemPrompt).not.toContain("Agent Swarm is attached");
+	expect(h.calls[0].context.systemPrompt).not.toContain("Never run Git mutations yourself");
 	const delegatedResult = await h.finishControl(delegated);
 	expect((delegatedResult.details as any).usageSummary).toBeUndefined();
 	expect((delegatedResult.details as any).controlSummary).toMatchObject({ phaseId: h.state.phase!.id, attempt: 1, findings: { total: 0, serious: 0 } });
@@ -569,6 +572,31 @@ test("truncated tool batches and cancelled calls never grant a lease", async () 
 	cancelled.session.abort();
 	expect((await cancelled.next()).stopReason).toBe("aborted");
 	expect(cancelled.calls).toHaveLength(0);
+});
+
+test("attached Swarm tools are lead-only and mutations require the Mixture takeover", async () => {
+	const lead = harness([[call("task", "swarm_task", {})]]);
+	lead.context.tools.push(...SWARM_TOOL_NAMES.map(name => ({ name, description: name, parameters: Type.Object({}) })));
+	lead.state.delegations = 1;
+	const task = await lead.next();
+	expect(task.content[0]).toMatchObject({ name: "swarm_task" });
+	expect(lead.calls[0].context.tools?.map(tool => tool.name)).toContain("swarm_task");
+	expect(lead.calls[0].context.systemPrompt).toContain("Agent Swarm is attached");
+	expect(lead.calls[0].context.systemPrompt).toContain("before any mutating Swarm operation");
+	expect(lead.calls[0].context.systemPrompt).toContain("Never run Git mutations yourself");
+	expect(lead.session.allowed("lead", "swarm_task")).toBe(true);
+	expect(lead.session.allowed("lead", "swarm_tree")).toBe(true);
+	expect(lead.session.allowed("lead", "swarm_integrate")).toBe(false);
+	expect(lead.session.allowed("lead", "swarm_unknown")).toBe(false);
+	expect(lead.session.allowed("lead", "subagent")).toBe(false);
+	for (const name of SWARM_TOOL_NAMES) expect(lead.session.allowed("writer", name)).toBe(false);
+	lead.state.origins.integrate = { actor: "lead", synthetic: false };
+	lead.state.owner = "writer";
+	expect(lead.session.allowed("lead", "swarm_task", { acknowledge: ["message"] })).toBe(false);
+	expect(() => lead.session.guard("integrate", "swarm_integrate", {})).toThrow("does not own permission");
+	lead.state.owner = "lead";
+	expect(lead.session.allowed("lead", "swarm_task", { acknowledge: ["message"] })).toBe(true);
+	expect(() => lead.session.guard("integrate", "swarm_integrate", {})).not.toThrow();
 });
 
 test("nested agents are blocked even for the lease holder", async () => {

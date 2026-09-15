@@ -34,7 +34,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | Extension | What it does |
 | --- | --- |
 | [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Loads pinned upstream conversion with its tool overrides disabled by configuration. |
-| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; swarm tools are active only while this session is attached to a live swarm. |
+| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; swarm tools are active only while attached, and Mixture nodes receive a selected private roster. |
 | ask-user | Collects choices and free-text answers in an interactive form. |
 | auto-rename | Names sessions automatically. |
 | autocomplete | Adds editor completions for files, skills, and commands. |
@@ -46,7 +46,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| [mixture](extensions/mixture/README.md) | A lead/writer model with bounded phase updates, lead-owned acceptance, enforceable handoffs, deduplicated checkpoints, and read-only review. |
+| [mixture](extensions/mixture/README.md) | A lead/writer model with bounded phase updates, lead-owned acceptance, enforceable handoffs, deduplicated checkpoints, read-only review, and Agent Swarm node support. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |
