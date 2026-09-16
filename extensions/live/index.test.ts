@@ -16,9 +16,17 @@ function setup(entries: any[] = []) {
   const sent: Array<{ content: unknown; options: unknown }> = [];
   const notices: string[] = [];
   let command: { description: string; handler: Function };
+  let terminalInput: ((data: string) => void) | undefined;
   const ctx = {
+    mode: "tui",
     sessionManager: { getBranch: () => entries },
-    ui: { notify: (message: string) => notices.push(message) },
+    ui: {
+      notify: (message: string) => notices.push(message),
+      onTerminalInput: (handler: (data: string) => void) => {
+        terminalInput = handler;
+        return () => { terminalInput = undefined; };
+      },
+    },
   } as unknown as ExtensionCommandContext;
 
   liveExtension({
@@ -36,6 +44,8 @@ function setup(entries: any[] = []) {
     description: () => command.description,
     run: (args = "") => command.handler(args, ctx),
     start: () => handlers.get("session_start")!({}, ctx),
+    shutdown: () => handlers.get("session_shutdown")!({}, ctx),
+    focus: (data: string) => terminalInput?.(data),
     message: (message: unknown) => handlers.get("message_end")!({ message }, ctx),
   };
 }
@@ -87,6 +97,37 @@ test("ignores dictation and malformed lifecycle messages", async () => {
   session.start();
   await session.run();
   expect(session.sent[0]?.content).toBe("/codex voice realtime");
+});
+
+test("Overseer focus signals mute and unmute an active session", async () => {
+  const previous = process.env.OVERSEER;
+  process.env.OVERSEER = "1";
+  try {
+    const session = setup();
+    session.start();
+    await session.run();
+    session.focus("\x1b[O");
+    session.focus("\x1b[O");
+    session.focus("\x1b[I");
+    session.focus("\x1b[O");
+    await session.run();
+    await session.run();
+    session.focus("\x1b[I");
+    expect(session.sent.map(({ content }) => content)).toEqual([
+      "/codex voice realtime",
+      "/codex voice mute",
+      "/codex voice mute",
+      "/codex voice mute",
+      "/codex voice stop",
+      "/codex voice realtime",
+    ]);
+    session.shutdown();
+    session.focus("\x1b[O");
+    expect(session.sent).toHaveLength(6);
+  } finally {
+    if (previous === undefined) delete process.env.OVERSEER;
+    else process.env.OVERSEER = previous;
+  }
 });
 
 test("rejects arguments", async () => {

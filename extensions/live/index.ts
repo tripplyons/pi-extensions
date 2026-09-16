@@ -18,19 +18,58 @@ function realtimeState(message: unknown): boolean | undefined {
 
 export default function liveExtension(pi: ExtensionAPI) {
   let realtimeActive = false;
+  let mutedByFocus = false;
+  let stopInput: (() => void) | undefined;
+
+  const dispatch = (command: string) => {
+    pi.sendUserMessage(command, { expandPromptTemplates: true });
+  };
 
   pi.on("session_start", (_event, ctx) => {
     realtimeActive = false;
+    mutedByFocus = false;
+    stopInput?.();
+    stopInput = undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "message") continue;
       const state = realtimeState(entry.message);
       if (state !== undefined) realtimeActive = state;
     }
+    if (ctx.mode === "tui" && process.env.OVERSEER === "1") {
+      stopInput = ctx.ui.onTerminalInput((data) => {
+        if (data === "\x1b[O" && realtimeActive && !mutedByFocus) {
+          mutedByFocus = true;
+          try {
+            dispatch("/codex voice mute");
+          } catch (error) {
+            mutedByFocus = false;
+            throw error;
+          }
+        } else if (data === "\x1b[I" && mutedByFocus) {
+          mutedByFocus = false;
+          try {
+            dispatch("/codex voice mute");
+          } catch (error) {
+            mutedByFocus = true;
+            throw error;
+          }
+        }
+      });
+    }
   });
 
   pi.on("message_end", (event) => {
     const state = realtimeState(event.message);
-    if (state !== undefined) realtimeActive = state;
+    if (state === undefined) return;
+    realtimeActive = state;
+    if (!state) mutedByFocus = false;
+  });
+
+  pi.on("session_shutdown", () => {
+    stopInput?.();
+    stopInput = undefined;
+    realtimeActive = false;
+    mutedByFocus = false;
   });
 
   pi.registerCommand("live", {
@@ -41,14 +80,14 @@ export default function liveExtension(pi: ExtensionAPI) {
         return;
       }
       const wasActive = realtimeActive;
+      const wasMutedByFocus = mutedByFocus;
       realtimeActive = !wasActive;
+      if (wasActive) mutedByFocus = false;
       try {
-        pi.sendUserMessage(
-          wasActive ? "/codex voice stop" : "/codex voice realtime",
-          { expandPromptTemplates: true },
-        );
+        dispatch(wasActive ? "/codex voice stop" : "/codex voice realtime");
       } catch (error) {
         realtimeActive = wasActive;
+        mutedByFocus = wasMutedByFocus;
         throw error;
       }
     },

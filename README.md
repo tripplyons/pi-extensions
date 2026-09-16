@@ -44,7 +44,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | [fast](extensions/fast/README.md) | Toggles session Codex priority requests, including Mixture's Codex roles, with `/fast` or Ctrl+F. |
 | goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
 | hide-empty-editor | Hides the empty editor. |
-| live | Toggles Codex realtime voice with `/live`. |
+| live | Toggles Codex realtime voice with `/live` and follows Overseer terminal focus for microphone ownership. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
 | [mixture](extensions/mixture/README.md) | A lead/writer model with bounded handoff previews, phase-aware checkpoints, coalesced review, recovery diagnostics, and Agent Swarm node support. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
