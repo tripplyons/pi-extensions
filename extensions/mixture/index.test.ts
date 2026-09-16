@@ -10,7 +10,7 @@ import { createMixtureExtension } from "./index.ts";
 import { ASK_ADVISOR } from "./advisor.ts";
 import { defaultAdvisorPreset } from "./config.ts";
 import { ManualScheduler } from "../test-scheduler.ts";
-import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
+import { emitMessage, emptyUsage, requestLaneId, type Registry } from "./provider.ts";
 
 const originalAgent = process.env.PI_CODING_AGENT_DIR;
 const dirs: string[] = [];
@@ -102,7 +102,7 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	expect(h.roleOptions[1].reasoning).toBe("high");
 	expect(h.roleOptions[1].maxTokens).toBe(4_096);
 	await h.handlers.get("agent_end")({ messages: [] });
-	expect(h.releasedIds).toEqual(expect.arrayContaining([h.roleOptions[0].sessionId, h.roleOptions[1].sessionId]));
+	expect(h.releasedIds).toEqual([h.roleOptions[1].sessionId, h.roleOptions[0].sessionId]);
 	// Keep the composite newer than the underlying Executor message for Pi's resume lookup.
 	expect(h.selectedModels).toEqual([{ provider: "mixture", id: "advisor" }]);
 	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "ordinary" } });
@@ -136,6 +136,99 @@ test("advisor mode nudges the Executor on its configured five-minute cadence", a
 	await h.handlers.get("agent_end")({ messages: [] });
 	await scheduler.advanceBy(300_000);
 	expect(h.sentMessages).toHaveLength(1);
+});
+
+const advisorHarness = async () => {
+	const scheduler = new ManualScheduler();
+	const preset = defaultAdvisorPreset();
+	preset.limits.advisorIntervalMs = 180_000;
+	preset.context.git = "off";
+	preset.advisor.model = "fixture/advisor";
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }), undefined, scheduler);
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, model: { provider: "mixture", id: "advisor" },
+		sessionManager: { getSessionId: () => "root", getBranch: () => [], getEntries: () => [] },
+		isIdle: () => false, hasPendingMessages: () => false, ui: { notify() {} },
+	};
+	await h.handlers.get("session_start")({}, context);
+	await h.handlers.get("agent_start")();
+	return { ...h, scheduler, context };
+};
+
+test("consulting just before a tick restarts the full interval and reminders cannot accumulate", async () => {
+	const h = await advisorHarness();
+	await h.scheduler.advanceBy(170_000);
+	h.handlers.get("tool_call")({ toolCallId: "review", toolName: ASK_ADVISOR });
+	await h.definitions.get(ASK_ADVISOR).execute("review", {}, undefined, undefined, h.context);
+	await h.scheduler.advanceBy(179_999);
+	expect(h.sentMessages).toHaveLength(0);
+	await h.scheduler.advanceBy(1);
+	expect(h.sentMessages).toHaveLength(1);
+	await h.scheduler.advanceBy(900_000);
+	expect(h.sentMessages).toHaveLength(1);
+	const reminder = { role: "custom", ...h.sentMessages[0].message };
+	expect(h.handlers.get("context")({ messages: [reminder] }).messages).toEqual([reminder]);
+	h.handlers.get("tool_call")({ toolCallId: "review-again", toolName: ASK_ADVISOR });
+	expect(h.handlers.get("context")({ messages: [reminder] }).messages).toEqual([]);
+});
+
+for (const transition of ["agent_end", "session_before_switch", "session_before_fork", "session_before_tree", "session_before_compact", "session_shutdown", "model_select"])
+	test(`advisor cancels reminders on ${transition}`, async () => {
+		const h = await advisorHarness();
+		await h.handlers.get(transition)({}, { ...h.context, model: { provider: "fixture", id: "other" } });
+		await h.scheduler.advanceBy(900_000);
+		expect(h.sentMessages).toHaveLength(0);
+	});
+
+test("session transitions clear the previous session's in-memory cooldown", async () => {
+	const h = await advisorHarness();
+	const call = { toolCallId: "first", toolName: ASK_ADVISOR };
+	expect(h.handlers.get("tool_call")(call)).toBeUndefined();
+	expect(h.handlers.get("tool_call")({ ...call, toolCallId: "blocked" })).toMatchObject({ block: true });
+	await h.handlers.get("session_before_switch")({});
+	await h.handlers.get("session_start")({}, { ...h.context, sessionManager: { ...h.context.sessionManager, getSessionId: () => "next-root" } });
+	expect(h.handlers.get("tool_call")({ ...call, toolCallId: "next" })).toBeUndefined();
+});
+
+for (const outcome of ["error", "aborted"] as const) test(`advisor ${outcome} releases its exact provider session and backs off`, async () => {
+	const h = await advisorHarness();
+	h.registry.getProvider = () => ({ streamSimple: (model: any) => {
+		const stream = createAssistantMessageEventStream();
+		emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content: [], usage: emptyUsage(), stopReason: outcome, errorMessage: outcome, timestamp: 1 });
+		return stream;
+	} }) as any;
+	await expect(h.definitions.get(ASK_ADVISOR).execute("failed", {}, undefined, undefined, h.context)).rejects.toThrow(outcome);
+	expect(h.releasedIds).toHaveLength(1);
+	expect(h.releasedIds[0]).toBe(requestLaneId("root", "advisor", "fixture/advisor", "ordinary"));
+	await h.scheduler.advanceBy(179_999);
+	expect(h.sentMessages).toHaveLength(0);
+	await h.scheduler.advanceBy(1);
+	expect(h.sentMessages).toHaveLength(1);
+	await h.handlers.get("agent_end")({});
+	expect(h.releasedIds).toHaveLength(1);
+});
+
+test("model transition aborts an in-flight advisor and releases once without restarting reminders", async () => {
+	const h = await advisorHarness();
+	let started!: () => void;
+	const ready = new Promise<void>(resolve => { started = resolve; });
+	let signal: AbortSignal | undefined;
+	h.registry.getProvider = () => ({ streamSimple: (_model: any, _context: any, options: any) => {
+		signal = options.signal;
+		started();
+		return createAssistantMessageEventStream();
+	} }) as any;
+	const result = h.definitions.get(ASK_ADVISOR).execute("pending", {}, undefined, undefined, h.context);
+	const rejected = result.catch((error: unknown) => error);
+	await ready;
+	await h.handlers.get("model_select")({}, { ...h.context, model: { provider: "fixture", id: "other" } });
+	expect(await rejected).toBeInstanceOf(Error);
+	expect(signal?.aborted).toBe(true);
+	expect(h.releasedIds).toHaveLength(1);
+	await h.handlers.get("session_shutdown")({});
+	expect(h.releasedIds).toHaveLength(1);
+	await h.scheduler.advanceBy(900_000);
+	expect(h.sentMessages).toHaveLength(0);
 });
 
 test("native Pi rows preserve lead previews through streaming, expansion and history rebuilds", async () => {

@@ -119,18 +119,25 @@ A call may narrow, but never expand, the configured Git level.
 
 Secret redaction is enabled in the default advisor template. It covers common token,
 credential assignment, bearer-token and private-key patterns, but is not a complete
-data-classification system. Use `git: "off"` when filenames themselves are
-sensitive. Repository and draft regions are marked as untrusted data in the Advisor
-prompt.
+data-classification system or security boundary. Full patches require explicit
+`git: "full"` configuration; the default is `summary`. Use `git: "off"` when filenames
+themselves are sensitive. Conversation and tool output may still contain source or
+secrets, so select only an Advisor provider authorized to receive that data.
+The Advisor prompt treats conversation, tool results, summaries, repository changes,
+drafts and questions as untrusted evidence whose embedded instructions must not be followed.
 
 The `plan`, `failure`, and `completion` gates are Executor instructions, not hidden
 model calls. Advisor mode also tells the Executor to make an initial review for
-coding or repository work and sends a reminder at least every five minutes while
-the request is active. The interval is customizable with
+coding or repository work and schedules a reminder five minutes after the request
+starts or the latest consultation finishes, including failed or aborted consultations. The interval is customizable with
 `limits.advisorIntervalMs`; omitted or legacy configurations use 300000ms (five
 minutes). Calls are rate-limited to no more than once per minute. A reminder is a
 steering message: the Executor still calls `ask_advisor`, so advice stays visible
-and the Executor retains control. Legacy `limits.maxCalls` is accepted but ignored
+and the Executor retains control. Only one reminder is issued until another
+consultation. Pending messages defer reminders by one interval. A new consultation
+or lifecycle transition invalidates the old reminder and filters it from model
+context. Pi has no extension API to remove individual queued messages, so an
+invalidated reminder can remain visible in the transcript. Legacy `limits.maxCalls` is accepted but ignored
 and is removed the next time the config is saved. Advisor usage is attached to the
 visible tool result and therefore contributes to Pi's session usage without
 inflating Executor context pressure. Optional `guidance` on `executor` or `advisor`

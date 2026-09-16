@@ -47,7 +47,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	const reservedAdvisorCalls = new Set<string>();
 	let advisorReminderTimer: ScheduledTask | undefined;
 	let advisorRun = 0;
-	let lastAdvisorStartedAt = 0;
+	let lastAdvisorStartedAt: number | undefined;
+	let advisorActive = false;
+	let advisorReminderId: string | undefined;
 	try { config = loadConfig(); }
 	catch (error) { diagnostic = String(error); }
 	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
@@ -61,21 +63,24 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		if (advisorReminderTimer) scheduler.cancel(advisorReminderTimer);
 		advisorReminderTimer = undefined;
 		advisorRun++;
+		advisorReminderId = undefined;
 	};
 	const startAdvisorReminders = (context: ExtensionContext, preset: AdvisorPreset) => {
 		stopAdvisorReminders();
 		const run = advisorRun;
-		advisorReminderTimer = scheduler.every(preset.limits.advisorIntervalMs, () => {
-			const recent = Math.max(lastAdvisorStartedAt, advisorLastCallAt(context.sessionManager.getBranch()) ?? 0);
-			if (run !== advisorRun || !selectedAdvisor() || context.isIdle() || context.hasPendingMessages() || recent && Date.now() - recent < MIN_ADVISOR_INTERVAL_MS) return;
+		advisorReminderTimer = scheduler.after(preset.limits.advisorIntervalMs, () => {
+			advisorReminderTimer = undefined;
+			if (run !== advisorRun || !advisorActive || !selectedAdvisor() || context.isIdle()) return;
+			if (context.hasPendingMessages() || reservedAdvisorCalls.size) { startAdvisorReminders(context, preset); return; }
+			advisorReminderId = randomUUID();
 			try {
 				pi.sendMessage({
 					customType: "mixture-advisor-reminder",
 					content: `Advisor review due. Call ${ASK_ADVISOR} now with a concise draft or focused question before making more edits or finalizing. This is a rate-limited review point, not a request for another coding agent.`,
 					display: true,
-					details: { intervalMs: preset.limits.advisorIntervalMs },
+					details: { intervalMs: preset.limits.advisorIntervalMs, reminderId: advisorReminderId },
 				}, { deliverAs: "steer" });
-			} catch { /* The active request may have ended between the checks and the queue operation. */ }
+			} catch { startAdvisorReminders(context, preset); }
 		});
 	};
 	const status = () => {
@@ -128,6 +133,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		deltaChain = checkpoint.kind === "delta" ? deltaChain + 1 : 0;
 	};
 	const detach = async (reason: string, warn = false) => {
+		advisorActive = false;
 		stopAdvisorReminders();
 		for (const helper of helpers) helper.abort(new Error(`Mixture ${reason}`));
 		reservedAdvisorCalls.clear();
@@ -154,8 +160,10 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		stopAdvisorReminders();
 		const resourceIdentityChanged = reset || context.sessionManager.getSessionId() !== rootId || context.model?.provider !== "mixture" || ctx?.model?.provider !== "mixture" || ctx.model.id !== context.model.id;
 		const handoffInvalid = session && (!context.model || session.state.preset !== context.model.id || config?.presets[context.model.id]?.mode !== "handoff");
-		if ((session || directSessionIds.size) && (resourceIdentityChanged || handoffInvalid)) await detach("model or session changed", true);
+		if ((session || directSessionIds.size || helpers.size) && (resourceIdentityChanged || handoffInvalid)) await detach("model or session changed", true);
+		if (resourceIdentityChanged) lastAdvisorStartedAt = undefined;
 		ctx = context;
+		rootId = context.sessionManager?.getSessionId();
 		registry = context.modelRegistry;
 		const active = pi.getActiveTools().filter(name => name !== CONTROL && name !== ASK_ADVISOR);
 		pi.setActiveTools(selectedHandoff() ? [...active, CONTROL] : selectedAdvisor() ? [...active, ASK_ADVISOR] : active);
@@ -278,10 +286,22 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			ctx = context;
 			const preset = selectedAdvisor();
 			if (!preset) throw new Error("Select a Mixture advisor preset first");
+			const controller = new AbortController();
+			helpers.add(controller);
+			stopAdvisorReminders();
+			const run = advisorRun;
+			let acquiredId: string | undefined;
 			try {
-				const advice = await consultAdvisor(preset, registry, input, context, { ...inheritFastMode(), signal }, id => directSessionIds.add(id), scheduler);
+				const advice = await consultAdvisor(preset, registry, input, context, { ...inheritFastMode(), signal: AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]) }, id => { acquiredId = id; }, scheduler);
 				return { content: [{ type: "text" as const, text: advice.text }], details: { model: advice.model }, usage: advice.usage };
-			} finally { reservedAdvisorCalls.delete(id); render(); }
+			} finally {
+				helpers.delete(controller);
+				if (acquiredId) releaseProviderSessions(pi, [acquiredId]);
+				reservedAdvisorCalls.delete(id);
+				// Success, failure and abort all get a full interval before another reminder.
+				if (advisorActive && run === advisorRun) startAdvisorReminders(context, preset);
+				render();
+			}
 		},
 		renderCall: (args, theme, context) => controlCard(`Advisor review${args.question ? `\n${args.question}` : ""}`, context.expanded, theme),
 		renderResult: (result, options, theme) => controlCard(result.content.filter(block => block.type === "text").map(block => block.text).join("\n"), options.expanded, theme),
@@ -336,7 +356,12 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		const guidance = preset.executor.guidance ? `\n\nExecutor guidance:\n${preset.executor.guidance}` : "";
 		return { systemPrompt: `${context.getSystemPrompt()}\n\nMixture advisor mode:\n${guidelines.map(rule => `- ${rule}`).join("\n")}${guidance}` };
 	});
+	pi.on("context", event => ({
+		messages: event.messages.filter(message => message.role !== "custom" || message.customType !== "mixture-advisor-reminder" ||
+			(advisorActive && advisorReminderId !== undefined && (message.details as any)?.reminderId === advisorReminderId)),
+	}));
 	pi.on("agent_start", () => {
+		advisorActive = true;
 		if (selectedHandoff()) session?.resumeLoop();
 		else {
 			const advisor = selectedAdvisor();
@@ -352,10 +377,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		const preset = selectedAdvisor();
 		if (!preset || event.toolName !== ASK_ADVISOR) return;
 		const usedAt = ctx ? advisorLastCallAt(ctx.sessionManager.getBranch()) ?? 0 : 0;
-		const recent = Math.max(lastAdvisorStartedAt, usedAt);
-		const cooldown = recent ? Math.max(0, MIN_ADVISOR_INTERVAL_MS - (Date.now() - recent)) : 0;
+		const recent = Math.max(lastAdvisorStartedAt ?? -Infinity, usedAt || -Infinity);
+		const cooldown = Math.max(0, MIN_ADVISOR_INTERVAL_MS - (scheduler.time() - recent));
 		if (cooldown) return { block: true, reason: `Advisor call throttled; try again in ${Math.ceil(cooldown / 1_000)} seconds` };
-		lastAdvisorStartedAt = Date.now();
+		lastAdvisorStartedAt = scheduler.time();
+		if (advisorActive && ctx) startAdvisorReminders(ctx, preset);
 		reservedAdvisorCalls.add(event.toolCallId);
 	});
 	pi.on("tool_result", (event, context) => {
@@ -377,6 +403,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	});
 	pi.on("turn_end", event => { if (selectedHandoff()) { session?.completeTurn(event.toolResults, event.message.role === "assistant" ? event.message : undefined); persist("turn"); } });
 	pi.on("agent_end", async () => {
+		advisorActive = false;
 		stopAdvisorReminders();
 		reservedAdvisorCalls.clear();
 		if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); }

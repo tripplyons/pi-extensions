@@ -46,7 +46,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | hide-empty-editor | Hides the empty editor. |
 | live | Toggles Codex realtime voice with `/live` or Ctrl+L and follows Overseer terminal focus for microphone ownership. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| [mixture](extensions/mixture/README.md) | Native preset models with lead/writer handoff or bounded Executor/Advisor modes, plus Agent Swarm support. |
+| [mixture](extensions/mixture/README.md) | Native lead/writer or Executor/Advisor presets with consultation-based reminders, plus Agent Swarm support. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |
