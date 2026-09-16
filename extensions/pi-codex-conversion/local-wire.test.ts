@@ -8,24 +8,23 @@ const token = `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth"
 const context = { messages: [{ role: "user" as const, content: "local sentinel", timestamp: 1 }], tools: [] };
 function fixture(events?: unknown[]) {
 	const requests: { body: Record<string, any>; headers: Headers; path: string }[] = [];
-	const server = Bun.serve({
-		port: 0,
-		async fetch(request) {
-			const bytes = new Uint8Array(await request.arrayBuffer());
-			const body = request.headers.get("content-encoding") === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes;
-			requests.push({ body: JSON.parse(new TextDecoder().decode(body)), headers: request.headers, path: new URL(request.url).pathname });
-			return new Response(events ? events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") : 'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":0}}}\n\n', {
-				headers: { "content-type": "text/event-stream", "x-codex-turn-state": "remote-state-must-not-return" },
-			});
-		},
-	});
+	const previousFetch = globalThis.fetch;
+	globalThis.fetch = async (input, init) => {
+		const request = input instanceof Request ? input : new Request(input, init);
+		const bytes = new Uint8Array(await request.arrayBuffer());
+		const body = request.headers.get("content-encoding") === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes;
+		requests.push({ body: JSON.parse(new TextDecoder().decode(body)), headers: request.headers, path: new URL(request.url).pathname });
+		return new Response(events ? events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") : 'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":0}}}\n\n', {
+			headers: { "content-type": "text/event-stream", "x-codex-turn-state": "remote-state-must-not-return" },
+		});
+	};
 	const model: Model<"openai-codex-responses"> = {
 		provider: "openai-codex", id: "gpt-5.4", name: "fixture", api: "openai-codex-responses",
-		baseUrl: `http://127.0.0.1:${server.port}`, reasoning: true, input: ["text"],
+		baseUrl: "https://fixture.invalid", reasoning: true, input: ["text"],
 		contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		headers: { "X-Codex-Beta-Features": "remote_compaction_v2", "X-Codex-Window-Id": "root" },
 	};
-	return { requests, model, close: () => server.stop(true) };
+	return { requests, model, close: () => { globalThis.fetch = previousFetch; } };
 }
 
 test("native namespace tool responses round-trip through local notes and full-input replay", async () => {

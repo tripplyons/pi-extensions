@@ -5,11 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type Provider } from "@earendil-works/pi-ai";
 import swarmExtension from "../agent-swarm/index.ts";
-import { isSwarmAttached } from "../agent-swarm/events.ts";
+import { isSwarmAttached, publishSwarmAttachment } from "../agent-swarm/events.ts";
 import { makeNode } from "../agent-swarm/runtime.ts";
 import { SCHEMA_VERSION } from "../agent-swarm/types.ts";
 import { WorkerMailbox } from "../agent-swarm/worker.ts";
-import { git } from "../agent-swarm/git.ts";
 import { defaultConfig } from "./config.ts";
 import { createMixtureExtension } from "./index.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
@@ -140,15 +139,11 @@ function context(cwd: string, sessionId: string, registry: Registry) {
 	};
 }
 
-const coordinatorTest = process.platform === "darwin" ? test : test.skip;
-
-coordinatorTest("real coordinator attachment keeps Mixture control and lead Swarm reads on one event bus", async () => {
+test("mocked coordinator attachment keeps Mixture control and lead Swarm reads on one event bus", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-mixture-coordinator-"));
 	const agent = mkdtempSync(join(tmpdir(), "pi-mixture-coordinator-agent-"));
 	const state = mkdtempSync(join(tmpdir(), "pi-mixture-coordinator-state-"));
 	temporaryDirectories.push(root, agent, state);
-	git(root, ["init", "-b", "main"]); git(root, ["config", "user.name", "Mixture Test"]); git(root, ["config", "user.email", "mixture@example.invalid"]);
-	writeFileSync(join(root, "initial"), "base\n"); git(root, ["add", "initial"]); git(root, ["commit", "-m", "Initialize fixture"]);
 	process.env.PI_CODING_AGENT_DIR = agent; process.env.PI_SWARM_HOME = state;
 	writeMixtureConfig(agent);
 	const leadResponses = [
@@ -158,10 +153,16 @@ coordinatorTest("real coordinator attachment keeps Mixture control and lead Swar
 	const writerResponses = [toolMessage(roleModel("fixture", "writer"), "mixture_control", { action: "report", report: "The attached check is ready for lead review" })];
 	const harness = await combinedHarness({ lead: leadResponses, writer: writerResponses });
 	const ctx = context(root, "coordinator-combined", harness.registry);
+	let attachment: ReturnType<typeof publishSwarmAttachment> | undefined;
 	try {
 		await dispatch(harness, "session_start", {}, ctx);
 		expect(isSwarmAttached(harness.pi)).toBe(false);
-		await harness.commands.get("swarm:start").handler("Use the attached coordinator", ctx);
+		attachment = publishSwarmAttachment(harness.pi, true);
+		harness.pi.setActiveTools([...harness.pi.getActiveTools(), "swarm_task", "swarm_integrate"]);
+		harness.tools.set("swarm_task", { name: "swarm_task", execute: async () => ({ content: [{ type: "text", text: JSON.stringify({ runId: "run_mock", role: "coordinator" }) }] }) });
+		const starts = harness.handlers.get("before_agent_start") ?? [];
+		starts.push((event: any) => ({ systemPrompt: `${event.systemPrompt}\nSwarm role: coordinator` }));
+		harness.handlers.set("before_agent_start", starts);
 		expect(isSwarmAttached(harness.pi)).toBe(true);
 		expect(harness.pi.getActiveTools()).toEqual(expect.arrayContaining(["mixture_control", "swarm_task", "swarm_integrate"]));
 		const first = await mixtureTurn(harness, ctx, "Coordinate the attached check", true);
@@ -174,14 +175,15 @@ coordinatorTest("real coordinator attachment keeps Mixture control and lead Swar
 		expect(third.call?.name).toBe("swarm_task");
 		expect(String(third.output.content[0].text)).toContain("runId");
 		expect(harness.roleContexts.find(call => call.tools?.some(tool => tool.name === "swarm_task"))).toBeDefined();
-		await harness.commands.get("swarm:kill").handler("", ctx);
+		attachment.dispose();
 		expect(isSwarmAttached(harness.pi)).toBe(false);
 	} finally {
+		attachment?.dispose();
 		await dispatch(harness, "session_shutdown", {}, ctx);
 	}
 });
 
-test("real worker mailbox attachment lets a Mixture lead submit through swarm_complete while its writer is denied", async () => {
+test("mocked worker mailbox attachment lets a Mixture lead submit through swarm_complete while its writer is denied", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-mixture-worker-"));
 	const agent = mkdtempSync(join(tmpdir(), "pi-mixture-worker-agent-"));
 	const state = mkdtempSync(join(tmpdir(), "pi-mixture-worker-state-"));

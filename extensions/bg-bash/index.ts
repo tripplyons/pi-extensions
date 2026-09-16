@@ -121,6 +121,28 @@ const shellPath = () => {
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
+export const backgroundJobScript = (paths: {
+	shell: string;
+	gateFile: string;
+	statusFile: string;
+	command: string;
+}) => {
+	const statusTempFile = `${paths.statusFile}.tmp`;
+	return [
+		`#!${paths.shell}`,
+		"set +e",
+		"export PAGER=cat GIT_PAGER=cat",
+		`while [ ! -e ${shellQuote(paths.gateFile)} ]; do sleep 0.05; done`,
+		`rm -f ${shellQuote(paths.gateFile)}`,
+		`${shellQuote(paths.shell)} -lc ${shellQuote(paths.command)}`,
+		"__pi_bg_status=$?",
+		`printf '%s\\n' "$__pi_bg_status" > ${shellQuote(statusTempFile)}`,
+		`mv -f ${shellQuote(statusTempFile)} ${shellQuote(paths.statusFile)}`,
+		'exit "$__pi_bg_status"',
+		"",
+	].join("\n");
+};
+
 const tmuxArgs = (args: string[]) => process.env.PI_BG_BASH_TMUX_SOCKET
 	? ["-S", basename(process.env.PI_BG_BASH_TMUX_SOCKET), ...args]
 	: args;
@@ -508,20 +530,7 @@ class BackgroundBashManager {
 		mkdirSync(jobDir, { recursive: true, mode: 0o700 });
 		writeFileSync(combinedFile, "", { mode: 0o600 });
 
-		const statusTempFile = `${statusFile}.tmp`;
-		writeFileSync(scriptFile, [
-			`#!${shellPath()}`,
-			"set +e",
-			"export PAGER=cat GIT_PAGER=cat",
-			`while [ ! -e ${shellQuote(gateFile)} ]; do sleep 0.05; done`,
-			`rm -f ${shellQuote(gateFile)}`,
-			`${shellQuote(shellPath())} -lc ${shellQuote(command)}`,
-			"__pi_bg_status=$?",
-			`printf '%s\\n' "$__pi_bg_status" > ${shellQuote(statusTempFile)}`,
-			`mv -f ${shellQuote(statusTempFile)} ${shellQuote(statusFile)}`,
-			'exit "$__pi_bg_status"',
-			"",
-		].join("\n"), { mode: 0o700 });
+		writeFileSync(scriptFile, backgroundJobScript({ shell: shellPath(), gateFile, statusFile, command }), { mode: 0o700 });
 
 		try {
 			const environment = Object.entries(process.env).flatMap(([name, value]) => value === undefined ? [] : ["-e", `${name}=${value}`]);

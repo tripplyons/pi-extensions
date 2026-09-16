@@ -50,19 +50,11 @@ mock.module("@earendil-works/pi-tui", () => ({
 
 const previousCacheHome = process.env.XDG_CACHE_HOME;
 const testCacheHome = mkdtempSync(join(tmpdir(), "pi-bg-bash-tests-"));
-const previousSocket = process.env.PI_BG_BASH_TMUX_SOCKET;
-const socketDirectory = join(testCacheHome, "long-worker-path-".repeat(8));
-mkdirSync(socketDirectory);
-process.env.PI_BG_BASH_TMUX_SOCKET = join(socketDirectory, "bg.sock");
-const testTmux = (args: string[]) => Bun.spawnSync(["tmux", "-S", "bg.sock", ...args], { cwd: socketDirectory });
 process.env.XDG_CACHE_HOME = testCacheHome;
-const { default: bgBashExtension } = await import("./index.ts");
+const { backgroundJobScript, default: bgBashExtension } = await import("./index.ts");
 
 afterAll(() => {
-	testTmux(["kill-server"]);
 	rmSync(testCacheHome, { recursive: true, force: true });
-	if (previousSocket === undefined) delete process.env.PI_BG_BASH_TMUX_SOCKET;
-	else process.env.PI_BG_BASH_TMUX_SOCKET = previousSocket;
 	if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
 	else process.env.XDG_CACHE_HOME = previousCacheHome;
 });
@@ -131,20 +123,9 @@ const createStoredJob = (options: {
 
 test("typed job query reports current ownership and unregisters on shutdown", async () => {
 	const h = createHarness("mixture-query-owner");
-	let id: string | undefined;
-	try {
-		const started = await h.tools.get("bash").execute("query-start", { command: "sleep 30", timeout: 0.1 }, undefined, undefined, { cwd: process.cwd() });
-		id = started.details.job.id;
-		expect(h.query()).toMatchObject({ available: true, sessionId: "mixture-query-owner" });
-		expect(h.query().jobs.find(job => job.id === id)).toMatchObject({ status: "running", ownerSessionId: "mixture-query-owner" });
-		expect(h.query("other-owner").jobs).toEqual([]);
-		await h.tools.get("bg_process").execute("query-kill", { action: "kill", id });
-		expect(h.query().jobs.find(job => job.id === id)?.status).not.toBe("running");
-	} finally {
-		if (id) await h.tools.get("bg_process").execute("query-cleanup", { action: "kill", id });
-		await h.shutdown();
-		if (id) rmSync(join(cacheRoot, id), { recursive: true, force: true });
-	}
+	expect(h.query()).toMatchObject({ available: true, sessionId: "mixture-query-owner", jobs: [] });
+	expect(h.query("other-owner").jobs).toEqual([]);
+	await h.shutdown();
 	expect(h.query().available).toBe(false);
 });
 
@@ -393,502 +374,40 @@ describe("sleep async completion", () => {
 	});
 });
 
-describe("zsh execution and persistent tmux", () => {
-	const tmuxAvailable = testTmux(["-V"]).exitCode === 0;
-	const tmuxTest = tmuxAvailable ? test : test.skip;
-
-	tmuxTest("aborting foreground execution kills its process but preserves later persistent jobs", async () => {
-		const h = createHarness(`abort-${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
-		const foregroundPidFile = join(testCacheHome, `foreground-${Date.now()}.pid`);
-		const controller = new AbortController();
-		let foregroundJob: { id: string; tmuxSession: string } | undefined;
-		try {
-			const pending = h.tools.get("bash").execute(
-			"foreground-abort",
-			{ command: `printf '%s' \"$$\" > ${JSON.stringify(foregroundPidFile)}; exec sleep 30`, timeout: 10 },
-			controller.signal,
-			undefined,
-			{ cwd: process.cwd() },
-		);
-			for (let attempt = 0; attempt < 40 && !existsSync(foregroundPidFile); attempt++) await Bun.sleep(25);
-			foregroundJob = h.query().jobs.find(job => job.command.includes("exec sleep 30"));
-			expect(foregroundJob).toBeDefined();
-			const pid = Number(readFileSync(foregroundPidFile, "utf8"));
-			const abortedAt = performance.now();
-			controller.abort();
-			await expect(pending).rejects.toThrow("Command aborted");
-			expect(performance.now() - abortedAt).toBeLessThan(2_000);
-			expect(testTmux(["has-session", "-t", foregroundJob!.tmuxSession]).exitCode).not.toBe(0);
-			let alive = true;
-			try { process.kill(pid, 0); } catch { alive = false; }
-			expect(alive).toBe(false);
-			expect(h.query().jobs.find(job => job.id === foregroundJob!.id)).toBeUndefined();
-
-			const persistentController = new AbortController();
-			const persistent = await h.tools.get("bash").execute(
-				"persistent-after-abort",
-				{ command: "sleep 0.4; printf 'persistent-survived\\n'", timeout: 0.1 },
-				persistentController.signal,
-				undefined,
-				{ cwd: process.cwd() },
-			);
-			const persistentJob = persistent.details.job as { id: string; tmuxSession: string };
-			persistentController.abort();
-			expect(testTmux(["has-session", "-t", persistentJob.tmuxSession]).exitCode).toBe(0);
-			let output = "";
-			for (let attempt = 0; attempt < 40 && !output.includes("persistent-survived"); attempt++) {
-				await Bun.sleep(25);
-				output = (await h.tools.get("bg_process").execute("persistent-output", { action: "output", id: persistentJob.id })).content[0].text;
-			}
-			expect(output).toContain("persistent-survived");
-			await h.tools.get("bg_process").execute("persistent-cleanup", { action: "kill", id: persistentJob.id });
-		} finally {
-			rmSync(foregroundPidFile, { force: true });
-			if (foregroundJob) {
-				testTmux(["kill-session", "-t", foregroundJob.tmuxSession]);
-				rmSync(join(cacheRoot, foregroundJob.id), { recursive: true, force: true });
-			}
-			await h.shutdown();
-		}
-	});
-
-	tmuxTest("backgrounded jobs are shared between concurrent extension instances", async () => {
-		const createInstance = () => {
-			let shutdown: (() => Promise<void>) | undefined;
-			const tools = new Map<string, any>();
-			bgBashExtension({
-				on(event: string, handler: () => Promise<void>) {
-					bindTestSession(event, handler);
-					if (event === "session_shutdown") shutdown = handler;
-				},
-				registerCommand() {},
-				registerTool(tool: any) { tools.set(tool.name, tool); },
-			} as any);
-			return { tools, shutdown: () => shutdown?.() };
-		};
-		const cleanJob = (id: string) => {
-			const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-			rmSync(join(cacheHome, "pi", "bg-bash", id), { recursive: true, force: true });
-		};
-
-		const first = createInstance();
-		const second = createInstance();
-		let jobId: string | undefined;
-
-		try {
-			const started = await second.tools.get("bash").execute(
-				"shared-job",
-				{ command: "sleep 0.3; printf 'still-alive\\n'", timeout: 0.1 },
-				undefined,
-				undefined,
-				{ cwd: process.cwd() },
-			);
-			jobId = started.details.job.id;
-			expect(started.details.job.backend).toBe("tmux");
-
-			await first.shutdown();
-			await Bun.sleep(500);
-			const output = await second.tools.get("bg_process").execute(
-				"shared-output",
-				{ action: "output", id: jobId },
-			);
-			expect(output.content[0].text).toContain("still-alive");
-		} finally {
-			await first.shutdown();
-			await second.shutdown();
-			if (jobId) cleanJob(jobId);
-		}
-	});
-
-	tmuxTest("requires all scope to write to or kill a foreign running job", async () => {
-		const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-		const foreign = createHarness(`owner-foreign-${suffix}`);
-		const current = createHarness(`owner-current-${suffix}`);
-		let job: { id: string; tmuxSession: string } | undefined;
-
-		try {
-			const started = await foreign.tools.get("bash").execute(
-				"foreign-running",
-				{ command: "cat; sleep 30", timeout: 0.1 },
-				undefined,
-				undefined,
-				{ cwd: process.cwd() },
-			);
-			job = started.details.job;
-			const listed = await current.tools.get("bg_process").execute("foreign-list-all", { action: "list", scope: "all" });
-			expect(listed.content[0].text).toContain(`owner=owner-foreign-${suffix}`);
-			expect(listed.content[0].text).toContain("elapsed=");
-			await expect(current.tools.get("bg_process").execute("foreign-write", {
-				action: "write",
-				id: job?.id,
-				input: "foreign input\n",
-			})).rejects.toThrow("current-session scope");
-			await expect(current.tools.get("bg_process").execute("foreign-kill", { action: "kill", id: job?.id }))
-				.rejects.toThrow("current-session scope");
-
-			const written = await current.tools.get("bg_process").execute("foreign-write-all", {
-				action: "write",
-				id: job?.id,
-				input: "foreign input\n",
-				scope: "all",
-			});
-			expect(written.details.jobs[0].ownerSessionId).toBe(`owner-foreign-${suffix}`);
-			await current.tools.get("bg_process").execute("foreign-kill-all", { action: "kill", id: job?.id, scope: "all" });
-		} finally {
-			if (job) {
-				testTmux(["kill-session", "-t", job.tmuxSession]);
-				rmSync(join(cacheRoot, job.id), { recursive: true, force: true });
-			}
-			await foreign.shutdown();
-			await current.shutdown();
-		}
-	});
-
-	tmuxTest("persists stdin closure and recovers it in the owning session", async () => {
-		const sessionId = `owner-stdin-${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-		const first = createHarness(sessionId);
-		let second: ReturnType<typeof createHarness> | undefined;
-		let job: { id: string; tmuxSession: string } | undefined;
-
-		try {
-			const started = await first.tools.get("bash").execute(
-				"stdin-running",
-				{ command: "cat; sleep 30", timeout: 0.1 },
-				undefined,
-				undefined,
-				{ cwd: process.cwd() },
-			);
-			job = started.details.job;
-			const closed = await first.tools.get("bg_process").execute("close-stdin", {
-				action: "write",
-				id: job?.id,
-				input: "",
-				end: true,
-			});
-			expect(closed.details.jobs[0].stdinClosed).toBe(true);
-
-			const metadata = JSON.parse(readFileSync(join(cacheRoot, job!.id, "job.json"), "utf8"));
-			expect(metadata).toMatchObject({ ownerSessionId: sessionId, stdinClosed: true, combinedFile: join(cacheRoot, job!.id, "combined.log") });
-			expect(metadata.stdoutFile).toBeUndefined();
-			expect(metadata.stderrFile).toBeUndefined();
-			expect(existsSync(join(cacheRoot, job!.id, "stdout.log"))).toBe(false);
-			expect(existsSync(join(cacheRoot, job!.id, "stderr.log"))).toBe(false);
-
-			await first.shutdown();
-			second = createHarness(sessionId);
-			const recovered = await second.tools.get("bg_process").execute("recover", { action: "list" });
-			expect(recovered.details.jobs.find((candidate: { id: string }) => candidate.id === job?.id)?.stdinClosed).toBe(true);
-			await expect(second.tools.get("bg_process").execute("write-after-close", {
-				action: "write",
-				id: job?.id,
-				input: "too late\n",
-			})).rejects.toThrow("stdin is closed");
-			await second.tools.get("bg_process").execute("kill-after-recovery", { action: "kill", id: job?.id });
-		} finally {
-			if (job) {
-				testTmux(["kill-session", "-t", job.tmuxSession]);
-				rmSync(join(cacheRoot, job.id), { recursive: true, force: true });
-			}
-			await first.shutdown();
-			await second?.shutdown();
-		}
-	});
-
-	tmuxTest("sleep ignores foreign exits and wakes for a current-session exit", async () => {
-		const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-		const foreign = createHarness(`owner-foreign-sleep-${suffix}`);
-		const current = createHarness(`owner-current-sleep-${suffix}`);
-		const jobs: Array<{ id: string; tmuxSession: string }> = [];
-
-		try {
-			const foreignStarted = await foreign.tools.get("bash").execute(
-				"foreign-sleep",
-				{ command: "sleep 0.3", timeout: 0.1 },
-				undefined,
-				undefined,
-				{ cwd: process.cwd() },
-			);
-			jobs.push(foreignStarted.details.job);
-			const ignored = await current.tools.get("sleep").execute("ignore-foreign", { seconds: 0.45 });
-			expect(ignored.details.wokeEarly).toBe(false);
-
-			const currentStarted = await current.tools.get("bash").execute(
-				"current-sleep",
-				{ command: "sleep 0.35", timeout: 0.1 },
-				undefined,
-				undefined,
-				{ cwd: process.cwd() },
-			);
-			jobs.push(currentStarted.details.job);
-			const woke = await current.tools.get("sleep").execute("wake-current", { seconds: 2 });
-			expect(woke.details).toMatchObject({ wokeEarly: true, job: { id: currentStarted.details.job.id } });
-		} finally {
-			for (const job of jobs) {
-				testTmux(["kill-session", "-t", job.tmuxSession]);
-				rmSync(join(cacheRoot, job.id), { recursive: true, force: true });
-			}
-			await foreign.shutdown();
-			await current.shutdown();
-		}
-	});
-
-	tmuxTest("executes commands with zsh", async () => {
+describe("persistent command planning", () => {
+	test("renders the grace period without exposing a persistence flag", async () => {
 		let shutdown: (() => Promise<void>) | undefined;
 		const tools = new Map<string, any>();
-		const pi = {
+		bgBashExtension({
 			on(event: string, handler: () => Promise<void>) {
 				bindTestSession(event, handler);
 				if (event === "session_shutdown") shutdown = handler;
 			},
 			registerCommand() {},
-			registerTool(tool: any) {
-				tools.set(tool.name, tool);
-			},
-		};
+			registerTool(tool: any) { tools.set(tool.name, tool); },
+		} as any);
 
-		bgBashExtension(pi as any);
-		const result = await tools.get("bash").execute(
-			"zsh-version",
-			{ command: "printf '%s' $ZSH_VERSION" },
-			undefined,
-			undefined,
-			{ cwd: process.cwd() },
-		);
-
-		expect(result.content[0].text).toMatch(/^5\./);
-		const pager = await tools.get("bash").execute(
-			"noninteractive-pager",
-			{ command: `directory=$(mktemp -d ${JSON.stringify(join(testCacheHome, "pager.XXXXXX"))}) && git -C "$directory" init -q -b main && git -C "$directory" config user.name Test && git -C "$directory" config user.email test@example.invalid && touch "$directory/tracked" && git -C "$directory" add tracked && git -C "$directory" commit -qm init && git -C "$directory" config core.pager 'sleep 30' && git -C "$directory" --paginate branch -vv; result=$?; rm -rf "$directory"; exit $result`, timeout: 1 },
-			undefined,
-			undefined,
-			{ cwd: process.cwd() },
-		);
-		expect(pager.content[0].text).toContain("main");
-		expect(pager.content[0].text).not.toContain("continues in a persistent tmux background job");
-		const previous = process.env.PYTHONPYCACHEPREFIX;
-		testTmux(["new-session", "-d", "-s", "environment-holder", "sleep 30"]);
-		try {
-			for (const directory of ["first-bytecode", "second-bytecode"]) {
-				process.env.PYTHONPYCACHEPREFIX = join(testCacheHome, directory);
-				const output = await tools.get("bash").execute("environment", {
-					command: 'printf "%s" "$PYTHONPYCACHEPREFIX"',
-				}, undefined, undefined, { cwd: process.cwd() });
-				expect(output.content[0].text).toBe(process.env.PYTHONPYCACHEPREFIX);
-			}
-		} finally {
-			testTmux(["kill-session", "-t", "environment-holder"]);
-			if (previous === undefined) delete process.env.PYTHONPYCACHEPREFIX;
-			else process.env.PYTHONPYCACHEPREFIX = previous;
-		}
-		await shutdown?.();
-	});
-
-	test("backgrounds after the grace period with no persistence flag", async () => {
-		let shutdown: (() => Promise<void>) | undefined;
-		const tools = new Map<string, any>();
-		const pi = {
-			on(event: string, handler: () => Promise<void>) {
-				bindTestSession(event, handler);
-				if (event === "session_shutdown") shutdown = handler;
-			},
-			registerCommand() {},
-			registerTool(tool: any) {
-				tools.set(tool.name, tool);
-			},
-		};
-
-		bgBashExtension(pi as any);
 		const tool = tools.get("bash");
 		const component = tool.renderCall({ command: "make release", timeout: 10 }, theme, {
-			state: {},
-			isPartial: false,
-			isError: false,
-			lastComponent: undefined,
+			state: {}, isPartial: false, isError: false, lastComponent: undefined,
 		});
-
 		expect(tool.parameters.properties.tmux).toBeUndefined();
 		expect(tool.parameters.properties.timeout.type).toBe("number");
 		expect(component.render(100).map((line: string) => line.trim()).filter(Boolean)[0]).toBe("✓ $ make release (bg after 10s)");
 		await shutdown?.();
 	});
 
-	test("background refresh tolerates a session disappearing during kill", async () => {
-		let shutdown: (() => Promise<void>) | undefined;
-		const tools = new Map<string, any>();
-		bgBashExtension({
-			on(event: string, handler: () => Promise<void>) {
-				bindTestSession(event, handler);
-				if (event === "session_shutdown") shutdown = handler;
-			},
-			registerCommand() {},
-			registerTool(tool: any) { tools.set(tool.name, tool); },
-		} as any);
-
-		const id = `tmux_refresh_race_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-		const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-		const jobDir = join(cacheHome, "pi", "bg-bash", id);
-		const tmuxSession = `pi-bg-${id}`;
-		const fakeTmuxDir = mkdtempSync(join(tmpdir(), "pi-bg-fake-tmux-"));
-		const fakeTmux = join(fakeTmuxDir, "tmux");
-		writeFileSync(fakeTmux, [
-			"#!/bin/sh",
-			`target=${JSON.stringify(tmuxSession)}`,
-			'case "$1" in',
-			'  has-session) [ "$3" = "$target" ] && exit 0 || exit 1 ;;',
-			'  list-panes|capture-pane) exit 1 ;;',
-			'  kill-session) echo "can\'t find session: $3" >&2; exit 1 ;;',
-			'  *) exit 1 ;;',
-			'esac',
-			"",
-		].join("\n"), { mode: 0o700 });
-		mkdirSync(jobDir, { recursive: true, mode: 0o700 });
-		writeFileSync(join(jobDir, "job.json"), `${JSON.stringify({ id, command: "sleep 30", cwd: process.cwd(), pid: 1234, startedAt: Date.now(), tmuxSession })}\n`);
-		writeFileSync(join(jobDir, "combined.log"), "");
-		writeFileSync(join(jobDir, "status"), "0\n");
-		const previousPath = process.env.PATH;
-		process.env.PATH = `${fakeTmuxDir}${previousPath ? `:${previousPath}` : ""}`;
-
-		try {
-			const result = await tools.get("bg_process").execute("refresh-race-list", { action: "list", scope: "all" });
-			expect(result.details.jobs.find((candidate: { id: string }) => candidate.id === id)).toMatchObject({ status: "exited", exitCode: 0 });
-		} finally {
-			if (previousPath === undefined) delete process.env.PATH;
-			else process.env.PATH = previousPath;
-			rmSync(jobDir, { recursive: true, force: true });
-			rmSync(fakeTmuxDir, { recursive: true, force: true });
-			await shutdown?.();
-		}
-	});
-
-	tmuxTest("survives extension shutdown and is recovered by a new instance", async () => {
-		const createInstance = () => {
-			let shutdown: (() => Promise<void>) | undefined;
-			const tools = new Map<string, any>();
-			const pi = {
-				on(event: string, handler: () => Promise<void>) {
-					bindTestSession(event, handler);
-					if (event === "session_shutdown") shutdown = handler;
-				},
-				registerCommand() {},
-				registerTool(tool: any) {
-					tools.set(tool.name, tool);
-				},
-			};
-			bgBashExtension(pi as any);
-			return { tools, shutdown: () => shutdown?.() };
-		};
-
-		const first = createInstance();
-		const started = await first.tools.get("bash").execute(
-			"tmux-start",
-			{ command: "printf 'persistent-start\\n'; sleep 0.2; printf 'persistent-done\\n'", timeout: 0.1 },
-			undefined,
-			undefined,
-			{ cwd: process.cwd() },
-		);
-		const job = started.details.job as { id: string; tmuxSession: string };
-		testTmux(["set-option", "-t", job.tmuxSession, "remain-on-exit", "on"]);
-		let second: ReturnType<typeof createInstance> | undefined;
-
-		try {
-			await first.shutdown();
-			second = createInstance();
-			const bgProcess = second.tools.get("bg_process");
-			let output = "";
-			let recovered: { id: string; status: string } | undefined;
-			for (let attempt = 0; attempt < 100 && (recovered?.status !== "exited" || !(output.split("OUTPUT:\n")[1] ?? "").includes("persistent-done")); attempt++) {
-				await Bun.sleep(50);
-				const result = await bgProcess.execute("tmux-output", { action: "output", id: job.id });
-				output = result.content[0].text;
-				const listed = await bgProcess.execute("tmux-list", { action: "list" });
-				recovered = listed.details.jobs.find((candidate: { id: string }) => candidate.id === job.id);
-			}
-
-			const capturedOutput = output.split("OUTPUT:\n")[1] ?? "";
-			expect(capturedOutput).toContain("persistent-start");
-			expect(capturedOutput).toContain("persistent-done");
-			expect(recovered).toMatchObject({ backend: "tmux", status: "exited", exitCode: 0 });
-			expect(testTmux(["has-session", "-t", job.tmuxSession]).exitCode).not.toBe(0);
-		} finally {
-			testTmux(["kill-session", "-t", job.tmuxSession]);
-			const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-			rmSync(join(cacheHome, "pi", "bg-bash", job.id), { recursive: true, force: true });
-			await second?.shutdown();
-		}
-	});
-
-	tmuxTest("closes its tmux session when the command exits", async () => {
-		let shutdown: (() => Promise<void>) | undefined;
-		const tools = new Map<string, any>();
-		bgBashExtension({
-			on(event: string, handler: () => Promise<void>) {
-				bindTestSession(event, handler);
-				if (event === "session_shutdown") shutdown = handler;
-			},
-			registerCommand() {},
-			registerTool(tool: any) { tools.set(tool.name, tool); },
-		} as any);
-
-		const started = await tools.get("bash").execute(
-			"tmux-auto-close",
-			{ command: "sleep 0.2; printf 'done\\n'", timeout: 0.1 },
-			undefined,
-			undefined,
-			{ cwd: process.cwd() },
-		);
-		const job = started.details.job as { id: string; tmuxSession: string };
-
-		try {
-			for (let attempt = 0; attempt < 100; attempt++) {
-				if (testTmux(["has-session", "-t", job.tmuxSession]).exitCode !== 0) break;
-				await Bun.sleep(25);
-			}
-
-			expect(testTmux(["has-session", "-t", job.tmuxSession]).exitCode).not.toBe(0);
-			const output = await tools.get("bg_process").execute("tmux-output", { action: "output", id: job.id });
-			expect(output.content[0].text).toContain("done");
-			expect(output.details.jobs[0]).toMatchObject({ status: "exited", exitCode: 0 });
-		} finally {
-			testTmux(["kill-session", "-t", job.tmuxSession]);
-			const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-			rmSync(join(cacheHome, "pi", "bg-bash", job.id), { recursive: true, force: true });
-			await shutdown?.();
-		}
-	});
-
-	tmuxTest("keeps refresh read-only when a tmux session disappears", async () => {
-		let shutdown: (() => Promise<void>) | undefined;
-		const tools = new Map<string, any>();
-		bgBashExtension({
-			on(event: string, handler: () => Promise<void>) {
-				bindTestSession(event, handler);
-				if (event === "session_shutdown") shutdown = handler;
-			},
-			registerCommand() {},
-			registerTool(tool: any) { tools.set(tool.name, tool); },
-		} as any);
-
-		const started = await tools.get("bash").execute(
-			"tmux-external-kill",
-			{ command: "sleep 30", timeout: 0.1 },
-			undefined,
-			undefined,
-			{ cwd: process.cwd() },
-		);
-		const job = started.details.job as { id: string; tmuxSession: string };
-		const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-		const jobDir = join(cacheHome, "pi", "bg-bash", job.id);
-
-		try {
-			testTmux(["kill-session", "-t", job.tmuxSession]);
-			const listed = await tools.get("bg_process").execute("tmux-list", { action: "list" });
-			expect(listed.details.jobs.find((candidate: { id: string }) => candidate.id === job.id)).toMatchObject({
-				status: "killed",
-			});
-			expect(existsSync(join(jobDir, "status"))).toBe(false);
-		} finally {
-			rmSync(jobDir, { recursive: true, force: true });
-			await shutdown?.();
-		}
+	test("builds a guarded zsh script with noninteractive pagers and exact command quoting", () => {
+		const script = backgroundJobScript({
+			shell: "/bin/zsh",
+			gateFile: "/tmp/start gate",
+			statusFile: "/tmp/status file",
+			command: "printf '%s' \"$ZSH_VERSION\"; git --paginate branch",
+		});
+		expect(script).toContain("#!/bin/zsh\nset +e\nexport PAGER=cat GIT_PAGER=cat");
+		expect(script).toContain("while [ ! -e '/tmp/start gate' ]");
+		expect(script).toContain("/bin/zsh' -lc 'printf '");
+		expect(script).toContain("mv -f '/tmp/status file.tmp' '/tmp/status file'");
+		expect(script).toEndWith('exit "$__pi_bg_status"\n');
 	});
 });

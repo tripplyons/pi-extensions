@@ -1,76 +1,115 @@
+import { EventEmitter } from "node:events";
 import { expect, test } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { sandboxProfile } from "./isolation.ts";
-import { processExists } from "./ownership.ts";
-import { readJson, writeJson } from "./state.ts";
+import { runSupervisor, validateSupervisorConfig } from "./supervisor.mjs";
 
-const macTest = process.platform === "darwin" ? test : test.skip;
-const waitFor = async (condition: () => boolean) => {
-	const deadline = Date.now() + 5000;
-	while (!condition()) {
-		if (Date.now() >= deadline) throw new Error("Supervisor fixture did not reach the expected state");
-		await new Promise((resolve) => setTimeout(resolve, 25));
-	}
+class FakeStream extends EventEmitter {
+	destroyed = false;
+	destroy() { this.destroyed = true; }
+}
+
+class FakeChild extends EventEmitter {
+	pid = 4321;
+	stdout = new FakeStream();
+	stderr = new FakeStream();
+}
+
+const config = {
+	profile: "/state/worker.sb",
+	executable: "/usr/bin/node",
+	cwd: "/worktree",
+	timeoutMs: 1_000,
+	statusFile: "/state/status.json",
+	commandFile: "/state/command.json",
+	environment: { HOME: "/worker/home" },
+	args: ["worker.mjs", "--rpc"],
 };
 
-macTest("supervisor pauses group execution and enforces timeout after controller death", async () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-swarm-supervisor-")));
-	const [worktree, workerHome, workerTmp, outbox, inbox] = ["worktree", "home", "tmp", "outbox", "inbox"].map((name) => join(root, name));
-	for (const path of [worktree, workerHome, workerTmp, outbox, inbox]) mkdirSync(path);
-	const node = realpathSync(spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim());
-	const profile = join(root, "profile.sb");
-	writeFileSync(profile, sandboxProfile({
-		worktree, workerHome, workerTmp, outbox, inbox, stateRoot: root,
-		coordinatorWorktree: join(root, "coordinator"), gitCommonDir: join(root, "git-common"),
-		hostHome: join(root, "host-home"), sourceAgentDir: join(root, "host-home", ".pi", "agent"),
-	}));
-	const statusFile = join(root, "status.json");
-	const commandFile = join(root, "command.json");
-	const activityFile = join(worktree, "activity");
-	const configFile = join(root, "launch.json");
-	writeJson(configFile, {
-		profile, executable: node, cwd: worktree, timeoutMs: 1000, statusFile, commandFile,
-		environment: { HOME: workerHome, TMPDIR: workerTmp, PATH: "/usr/bin:/bin" },
-		args: ["-e", `process.on('SIGTERM', () => {}); setInterval(() => require('node:fs').writeFileSync(${JSON.stringify(activityFile)}, String(Date.now())), 25);`],
+test("supervisor validates platform, timeout, and worker arguments before spawning", () => {
+	expect(() => validateSupervisorConfig(config, "darwin")).not.toThrow();
+	expect(() => validateSupervisorConfig(config, "linux")).toThrow("requires macOS");
+	expect(() => validateSupervisorConfig({ ...config, timeoutMs: 999 }, "darwin")).toThrow("timeout");
+	expect(() => validateSupervisorConfig({ ...config, args: ["ok", 1] }, "darwin")).toThrow("arguments");
+});
+
+test("mocked supervisor pauses elapsed time, resumes, and force-kills after timeout", () => {
+	const child = new FakeChild();
+	const signals: Array<[number, string]> = [];
+	const saves: any[] = [];
+	const signalHandlers = new Map<string, Function>();
+	let command: { status: string } | undefined;
+	let now = 0;
+	let spawnCall: any[] | undefined;
+	let intervalCleared = false;
+	const supervisor = runSupervisor(config, {
+		pid: 1234,
+		clock: () => now,
+		spawn: (...args: any[]) => { spawnCall = args; return child; },
+		signal: (pid: number, value: string) => signals.push([pid, value]),
+		save: (record: object) => saves.push(record),
+		readCommand: () => command,
+		onSignal: (name: string, handler: Function) => { signalHandlers.set(name, handler); },
+		setInterval: () => ({ fake: true }),
+		clearInterval: () => { intervalCleared = true; },
+		output: () => {},
 	});
-	const supervisor = fileURLToPath(new URL("./supervisor.mjs", import.meta.url));
-	const controller = spawn(node, ["-e", `
-		const child = require('node:child_process').spawn(process.execPath, [${JSON.stringify(supervisor)}, ${JSON.stringify(configFile)}], { detached:true, stdio:'ignore' });
-		child.unref(); setTimeout(() => {}, 10000);
-	`], { stdio: "ignore" });
-	const controllerExited = new Promise<void>((resolve) => controller.once("close", () => resolve()));
-	const status = () => readJson<{ pid: number; supervisorPid: number; status: string }>(statusFile);
-	let workerPid: number | undefined;
-	let supervisorPid: number | undefined;
-	try {
-		await waitFor(() => status()?.status === "running" && existsSync(activityFile));
-		workerPid = status()!.pid;
-		supervisorPid = status()!.supervisorPid;
-		writeJson(commandFile, { status: "paused" });
-		await waitFor(() => status()?.status === "paused");
-		const pausedContent = readFileSync(activityFile, "utf8");
-		await new Promise((resolve) => setTimeout(resolve, 1200));
-		expect(readFileSync(activityFile, "utf8")).toBe(pausedContent);
-		expect(status()!.status).toBe("paused");
-		writeJson(commandFile, { status: "running" });
-		await waitFor(() => status()?.status === "running");
-		controller.kill("SIGKILL");
-		await controllerExited;
-		await waitFor(() => !processExists(workerPid!));
-		expect(status()!.status).toBe("timed-out");
-		await waitFor(() => !processExists(supervisorPid!));
-	} finally {
-		controller.kill("SIGKILL");
-		await controllerExited;
-		for (const pid of [workerPid ? -workerPid : undefined, supervisorPid]) {
-			if (!pid) continue;
-			try { process.kill(pid, "SIGKILL"); }
-			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-		}
-		rmSync(root, { recursive: true, force: true });
-	}
-}, 12000);
+
+	expect(spawnCall?.slice(0, 2)).toEqual([
+		"/usr/bin/sandbox-exec",
+		["-f", config.profile, config.executable, ...config.args],
+	]);
+	expect(spawnCall?.[2]).toMatchObject({ cwd: config.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+	expect(supervisor.record.status).toBe("starting");
+	child.emit("spawn");
+	expect(supervisor.record.status).toBe("running");
+
+	now = 100;
+	command = { status: "paused" };
+	supervisor.tick();
+	expect(supervisor.record).toMatchObject({ status: "paused", elapsedMs: 100 });
+	expect(signals.at(-1)).toEqual([-child.pid, "SIGSTOP"]);
+
+	now = 1_500;
+	supervisor.tick();
+	expect(supervisor.record).toMatchObject({ status: "paused", elapsedMs: 100 });
+	command = { status: "running" };
+	now = 1_600;
+	supervisor.tick();
+	expect(supervisor.record).toMatchObject({ status: "running", elapsedMs: 100 });
+	expect(signals.at(-1)).toEqual([-child.pid, "SIGCONT"]);
+
+	command = undefined;
+	now = 2_501;
+	supervisor.tick();
+	expect(supervisor.record.status).toBe("timed-out");
+	expect(signals.at(-1)).toEqual([-child.pid, "SIGTERM"]);
+	now = 3_502;
+	supervisor.tick();
+	expect(signals.at(-1)).toEqual([-child.pid, "SIGKILL"]);
+	child.emit("exit", null, "SIGKILL");
+	supervisor.tick();
+	expect(supervisor.record.status).toBe("timed-out");
+	expect(intervalCleared).toBe(true);
+	expect(child.stdout.destroyed).toBe(true);
+	expect(child.stderr.destroyed).toBe(true);
+	expect(saves.at(-1)).toMatchObject({ supervisorPid: 1234, pid: child.pid, status: "timed-out", signal: "SIGKILL" });
+	expect([...signalHandlers.keys()]).toEqual(["SIGTERM", "SIGINT"]);
+});
+
+test("invalid mocked commands fail closed and terminate the worker group", () => {
+	const child = new FakeChild();
+	const signals: string[] = [];
+	const supervisor = runSupervisor(config, {
+		clock: () => 100,
+		spawn: () => child,
+		signal: (_pid: number, value: string) => signals.push(value),
+		save: () => {},
+		readCommand: () => ({ status: "forged" }),
+		onSignal: () => {},
+		setInterval: () => 1,
+		output: () => {},
+	});
+	child.emit("spawn");
+	supervisor.tick();
+	expect(supervisor.record).toMatchObject({ status: "failed", failure: "Invalid supervisor command" });
+	expect(signals).toContain("SIGTERM");
+});

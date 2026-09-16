@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { queryBackgroundJobs } from "../bg-bash/events.ts";
+import { queryBackgroundJobs, type BackgroundJobQuery } from "../bg-bash/events.ts";
 import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeMarker, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
@@ -13,6 +13,13 @@ import { compactStatus, configure, controlCall, controlCard, inspection, Inspect
 import { receiptIds, tagReceipts } from "./usage.ts";
 import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
+
+export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
+	const running = jobs.jobs.filter(job => job.status === "running");
+	return running.length || jobs.error
+		? `Mixture stopped inference, not shell jobs. ${jobs.error ?? `Still running: ${running.map(job => job.id).join(", ")}`}`
+		: undefined;
+};
 
 export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry) {
 	let registry = initialRegistry ?? new ModelRegistry(await ModelRuntime.create({ allowModelNetwork: false }));
@@ -75,9 +82,8 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		old.reconcile(reason);
 		persist("detached");
 		if (warn && ctx) {
-			const jobs = queryBackgroundJobs(pi, rootId!);
-			const running = jobs.jobs.filter(job => job.status === "running");
-			if (running.length || jobs.error) ctx.ui.notify(`Mixture stopped inference, not shell jobs. ${jobs.error ?? `Still running: ${running.map(job => job.id).join(", ")}`}`, "warning");
+			const warning = backgroundDetachWarning(queryBackgroundJobs(pi, rootId!));
+			if (warning) ctx.ui.notify(warning, "warning");
 		}
 		if (session === old) session = undefined;
 		persistedState = undefined;

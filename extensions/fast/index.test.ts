@@ -148,27 +148,26 @@ test("rejects arguments and leaves other providers alone", async () => {
   expect(session.entries).toHaveLength(1);
 });
 
-test("pinned Codex provider sends the toggled tier over HTTP", async () => {
+test("pinned Codex provider sends the toggled tier through the mocked transport", async () => {
   const requests: Record<string, unknown>[] = [];
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      const bytes = new Uint8Array(await request.arrayBuffer());
-      const body = request.headers.get("content-encoding") === "zstd"
-        ? Bun.zstdDecompressSync(bytes) : bytes;
-      requests.push(JSON.parse(new TextDecoder().decode(body)));
-      return new Response('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n', {
-        headers: { "content-type": "text/event-stream" },
-      });
-    },
-  });
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const body = request.headers.get("content-encoding") === "zstd"
+      ? Bun.zstdDecompressSync(bytes) : bytes;
+    requests.push(JSON.parse(new TextDecoder().decode(body)));
+    return new Response('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n', {
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
   try {
     let provider: Provider;
     registerOpenAICodexCustomProvider({
       registerProvider: (value: Provider) => { provider = value; },
     } as unknown as ExtensionAPI, { useResponsesLite: () => false });
     const session = setup();
-    const model = { ...session.ctx.model!, baseUrl: `http://127.0.0.1:${server.port}` };
+    const model = { ...session.ctx.model!, baseUrl: "https://fixture.invalid" };
     const token = `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test" } })).toString("base64url")}.test`;
     for (let index = 0; index < 3; index++) {
       if (index > 0) await session.shortcut();
@@ -183,6 +182,6 @@ test("pinned Codex provider sends the toggled tier over HTTP", async () => {
     }
     expect(requests.map((request) => request.service_tier)).toEqual([undefined, "priority", "default"]);
   } finally {
-    server.stop(true);
+    globalThis.fetch = previousFetch;
   }
 });

@@ -1,1136 +1,326 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
-# Tests for finalize.sh
-# Creates temp git repos, simulates autoresearch sessions, and verifies behavior.
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+SCRIPT="$ROOT/skills/autoresearch-finalize/finalize.sh"
+PASSED=0
+FAILED=0
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FINALIZE="$SCRIPT_DIR/../skills/autoresearch-finalize/finalize.sh"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
-
-TESTS_RUN=0
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-pass() { TESTS_PASSED=$((TESTS_PASSED + 1)); echo -e "${GREEN}✓ $1${NC}"; }
-fail_test() { TESTS_FAILED=$((TESTS_FAILED + 1)); echo -e "${RED}✗ $1${NC}"; echo "  $2"; }
-
-# Create a fresh test repo with a simulated autoresearch session
-# Returns the repo path
-create_fixture_repo() {
-  local REPO=$1
-  cd "$REPO"
-  git init --quiet
-  git checkout -b main
-
-  # Initial commit on main
-  echo "original" > file_a.txt
-  echo "original" > file_b.txt
-  echo "original" > file_c.txt
-  git add -A && git commit -m "initial" --quiet
-
-  # Autoresearch branch
-  git checkout -b autoresearch/test-session --quiet
-
-  # Session files (should not end up in branches)
-  echo '{"type":"config","metricName":"ms","metricUnit":"ms","bestDirection":"lower"}' > autoresearch.jsonl
-  echo "# Autoresearch session" > autoresearch.md
-  echo "#!/bin/bash" > autoresearch.sh
-  echo "- try X" > autoresearch.ideas.md
-  git add -A && git commit -m "add session files" --quiet
-
-  # Kept experiment 1: modify file_a
-  echo "optimized_a" > file_a.txt
-  git add -A && git commit -m "optimize file_a" --quiet
-
-  # Kept experiment 2: modify file_b
-  echo "optimized_b" > file_b.txt
-  git add -A && git commit -m "optimize file_b" --quiet
-}
-
-FIXTURE_REPO=$(mktemp -d)
-create_fixture_repo "$FIXTURE_REPO"
-
-setup_repo() {
-  local REPO
-  REPO=$(mktemp -d)
-  cp -R "$FIXTURE_REPO/." "$REPO"
-  echo "$REPO"
-}
-
-cleanup_repo() {
-  rm -rf "$1"
-}
-
-# ---------------------------------------------------------------------------
-# Test: basic two-group finalization
-# ---------------------------------------------------------------------------
-
-test_basic_two_groups() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL COMMIT_A COMMIT_B
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-  # Get the commits for file_a and file_b changes
-  COMMIT_A=$(git log --oneline --all --diff-filter=M -- file_a.txt | head -1 | awk '{print $1}')
-  COMMIT_A=$(git rev-parse "$COMMIT_A")
-  COMMIT_B=$(git rev-parse HEAD)
-
-  cat > $REPO/groups.json << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize file A",
-      "body": "Changed file_a.\n\nMetric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "optimize-a"
-    },
-    {
-      "title": "Optimize file B",
-      "body": "Changed file_b.\n\nMetric: 5ms → 3ms (-40%)",
-      "last_commit": "$COMMIT_B",
-      "slug": "optimize-b"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" $REPO/groups.json 2>&1) || { fail_test "basic two groups" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  # Check branches exist
-  git rev-parse "autoresearch/test/01-optimize-a" >/dev/null 2>&1 || { fail_test "basic two groups" "Branch 01 not created"; cleanup_repo "$REPO"; return; }
-  git rev-parse "autoresearch/test/02-optimize-b" >/dev/null 2>&1 || { fail_test "basic two groups" "Branch 02 not created"; cleanup_repo "$REPO"; return; }
-
-  # Check each branch starts from BASE
-  local BASE_OF_A BASE_OF_B
-  BASE_OF_A=$(git merge-base "autoresearch/test/01-optimize-a" main)
-  BASE_OF_B=$(git merge-base "autoresearch/test/02-optimize-b" main)
-  [ "$BASE_OF_A" = "$BASE" ] || { fail_test "basic two groups" "Branch A not from merge-base"; cleanup_repo "$REPO"; return; }
-  [ "$BASE_OF_B" = "$BASE" ] || { fail_test "basic two groups" "Branch B not from merge-base"; cleanup_repo "$REPO"; return; }
-
-  # Check branches are independent (each has exactly 1 commit from base)
-  local COUNT_A COUNT_B
-  COUNT_A=$(git rev-list --count "$BASE"..autoresearch/test/01-optimize-a)
-  COUNT_B=$(git rev-list --count "$BASE"..autoresearch/test/02-optimize-b)
-  [ "$COUNT_A" = "1" ] || { fail_test "basic two groups" "Branch A has $COUNT_A commits, expected 1"; cleanup_repo "$REPO"; return; }
-  [ "$COUNT_B" = "1" ] || { fail_test "basic two groups" "Branch B has $COUNT_B commits, expected 1"; cleanup_repo "$REPO"; return; }
-
-  # Check file contents
-  local A_CONTENT B_CONTENT
-  A_CONTENT=$(git show autoresearch/test/01-optimize-a:file_a.txt)
-  B_CONTENT=$(git show autoresearch/test/02-optimize-b:file_b.txt)
-  [ "$A_CONTENT" = "optimized_a" ] || { fail_test "basic two groups" "file_a.txt wrong in branch A: $A_CONTENT"; cleanup_repo "$REPO"; return; }
-  [ "$B_CONTENT" = "optimized_b" ] || { fail_test "basic two groups" "file_b.txt wrong in branch B: $B_CONTENT"; cleanup_repo "$REPO"; return; }
-
-  # Check branch A doesn't have file_b changes and vice versa
-  local A_FILEB B_FILEA
-  A_FILEB=$(git show autoresearch/test/01-optimize-a:file_b.txt)
-  B_FILEA=$(git show autoresearch/test/02-optimize-b:file_a.txt)
-  [ "$A_FILEB" = "original" ] || { fail_test "basic two groups" "Branch A has file_b changes"; cleanup_repo "$REPO"; return; }
-  [ "$B_FILEA" = "original" ] || { fail_test "basic two groups" "Branch B has file_a changes"; cleanup_repo "$REPO"; return; }
-
-  pass "basic two groups"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: session artifacts excluded
-# ---------------------------------------------------------------------------
-
-test_no_session_artifacts() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > $REPO/groups.json << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "All optimizations",
-      "body": "Metric: 10ms → 3ms (-70%)",
-      "last_commit": "$FINAL",
-      "slug": "all"
-    }
-  ]
-}
-EOF
-
-  bash "$FINALIZE" $REPO/groups.json >/dev/null 2>&1 || { fail_test "no session artifacts" "Script failed"; cleanup_repo "$REPO"; return; }
-
-  for f in autoresearch.jsonl autoresearch.sh autoresearch.md autoresearch.ideas.md; do
-    if git show "autoresearch/test/01-all":"$f" &>/dev/null 2>&1; then
-      fail_test "no session artifacts" "Session file $f found in branch"
-      cleanup_repo "$REPO"
-      return
-    fi
-  done
-
-  pass "no session artifacts"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: overlapping files rejected
-# ---------------------------------------------------------------------------
-
-test_overlapping_files_rejected() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  # Add another commit that also modifies file_a
-  echo "more_optimized_a" > file_a.txt
-  git add -A && git commit -m "further optimize file_a" --quiet
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  # Find the two commits that touch file_a
-  local COMMITS
-  COMMITS=$(git log --format="%H" --diff-filter=M -- file_a.txt)
-  local COMMIT_FIRST COMMIT_SECOND
-  COMMIT_SECOND=$(echo "$COMMITS" | head -1)
-  COMMIT_FIRST=$(echo "$COMMITS" | tail -1)
-
-  cat > $REPO/groups.json << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "First file_a change",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_FIRST",
-      "slug": "first-a"
-    },
-    {
-      "title": "Second file_a change",
-      "body": "Metric: 5ms → 3ms (-40%)",
-      "last_commit": "$COMMIT_SECOND",
-      "slug": "second-a"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" $REPO/groups.json 2>&1); then
-    fail_test "overlapping files rejected" "Script should have failed but succeeded"
-    cleanup_repo "$REPO"
-    return
+pass() { printf '✓ %s\n' "$1"; PASSED=$((PASSED + 1)); }
+fail_test() { printf '✗ %s\n%s\n' "$1" "$2" >&2; FAILED=$((FAILED + 1)); }
+run_test() {
+  local name="$1"
+  if output=$( ( source "$SCRIPT"; "$name" ) 2>&1); then pass "${name#test_}"
+  else fail_test "${name#test_}" "$output"
   fi
+}
+assert_contains() { [[ "$1" == *"$2"* ]] || { echo "Expected '$2' in: $1"; return 1; }; }
+assert_not_contains() { [[ "$1" != *"$2"* ]] || { echo "Did not expect '$2' in: $1"; return 1; }; }
 
-  if echo "$OUTPUT" | grep -q "appears in multiple groups"; then
-    pass "overlapping files rejected"
-  else
-    fail_test "overlapping files rejected" "Wrong error message: $OUTPUT"
-  fi
-  cleanup_repo "$REPO"
+mock_git() {
+  printf '%s\n' "$*" >> "${GIT_LOG:?}"
+  case "$1 ${2:-}" in
+    "branch --show-current") printf '%s\n' "${MOCK_BRANCH-research}" ;;
+    "rev-parse --verify") return "${MOCK_BRANCH_EXISTS:-1}" ;;
+    "rev-parse "*) printf '%040d\n' 1 ;;
+    "cat-file -t") printf 'commit\n' ;;
+    "diff --name-only") printf '%b' "${MOCK_DIFF_NUL-src/a.ts\\0}" ;;
+    "diff --quiet"|"diff --cached") return "${MOCK_DIRTY:-0}" ;;
+    "diff-tree "*) printf '%b' "${MOCK_DIFF_TREE:-src/a.ts\\n}" ;;
+    "ls-files --others") printf '%s' "${MOCK_UNTRACKED:-}" ;;
+    "log -1") printf '%s\n' "${MOCK_LOG_MESSAGE:-Metric: 10 -> 9}" ;;
+  esac
 }
 
-# ---------------------------------------------------------------------------
-# Test: rollback on failure
-# ---------------------------------------------------------------------------
-
-test_rollback_on_failure() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  # Use a bad commit hash for group 2
-  local COMMIT_A
-  COMMIT_A=$(git log --format="%H" --diff-filter=M -- file_a.txt | head -1)
-
-  cat > $REPO/groups.json << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Good group",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "good"
-    },
-    {
-      "title": "Bad group",
-      "body": "This will fail",
-      "last_commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-      "slug": "bad"
-    }
-  ]
+fixture_data() {
+  DATA_DIR=$(mktemp -d)
+  BASE=1111111111111111111111111111111111111111
+  FINAL_TREE=2222222222222222222222222222222222222222
+  GOAL=fixture
+  TRUNK=main
+  ORIG_BRANCH=research
+  GROUP_COUNT=1
+  printf 'Fixture title' > "$DATA_DIR/0.title"
+  printf 'Metric: 10 -> 9' > "$DATA_DIR/0.body"
+  printf '%s' "$FINAL_TREE" > "$DATA_DIR/0.last_commit"
+  printf 'change' > "$DATA_DIR/0.slug"
+  printf 'src/a.ts\n' > "$DATA_DIR/0.files"
+  GIT_LOG="$DATA_DIR/git.log"; export GIT_LOG
+  : > "$GIT_LOG"
 }
-EOF
-
-  bash "$FINALIZE" $REPO/groups.json >/dev/null 2>&1 && { fail_test "rollback on failure" "Script should have failed"; cleanup_repo "$REPO"; return; }
-
-  # Should be back on original branch
-  local CURRENT
-  CURRENT=$(git branch --show-current 2>/dev/null || echo "")
-  [ "$CURRENT" = "autoresearch/test-session" ] || { fail_test "rollback on failure" "Not on original branch: $CURRENT"; cleanup_repo "$REPO"; return; }
-
-  # No leftover branches
-  if git rev-parse "autoresearch/test/01-good" >/dev/null 2>&1; then
-    fail_test "rollback on failure" "Rollback didn't delete branch 01-good"
-    cleanup_repo "$REPO"
-    return
-  fi
-
-  pass "rollback on failure"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: summary file generated
-# ---------------------------------------------------------------------------
-
-test_summary_output() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  local GROUPS_JSON
-  GROUPS_JSON=$(mktemp)
-  cat > "$GROUPS_JSON" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize file A",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$FINAL",
-      "slug": "optimize-a"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" "$GROUPS_JSON" 2>&1) || { fail_test "summary output" "Script failed"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
-
-  # Check output contains key sections
-  echo "$OUTPUT" | grep -q "Optimize file A" || { fail_test "summary output" "Missing group title in output"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
-  echo "$OUTPUT" | grep -q "Cleanup" || { fail_test "summary output" "Missing cleanup in output"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
-  echo "$OUTPUT" | grep -q "autoresearch.ideas.md" || { fail_test "summary output" "Missing ideas in output"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
-
-  # No summary file should be written to disk
-  [ ! -f "autoresearch-finalize-summary.md" ] || { fail_test "summary output" "Summary file written to disk — should only print"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
-
-  pass "summary output"
-  rm -f "$GROUPS_JSON"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: dirty tree stashed and restored on success
-# ---------------------------------------------------------------------------
-
-test_stash_on_dirty_tree() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  # Make the tree dirty
-  echo "dirty" > untracked_file.txt
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > $REPO/groups.json << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "All optimizations",
-      "body": "Metric: 10ms → 3ms (-70%)",
-      "last_commit": "$FINAL",
-      "slug": "all"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" $REPO/groups.json 2>&1) || { fail_test "stash on dirty tree" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  # Script should mention stash
-  echo "$OUTPUT" | grep -qi "stash" || { fail_test "stash on dirty tree" "No stash warning in output"; cleanup_repo "$REPO"; return; }
-
-  pass "stash on dirty tree"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: bad groups.json path
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Test: no args shows usage
-# ---------------------------------------------------------------------------
 
 test_no_args() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  cd /tmp
-
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" 2>&1); then
-    fail_test "no args" "Script should have failed"
-    return
-  fi
-
-  echo "$OUTPUT" | grep -q "Usage:" || { fail_test "no args" "No usage message: $OUTPUT"; return; }
-
-  pass "no args"
+  local output
+  if output=$(bash "$SCRIPT" 2>&1); then return 1; fi
+  assert_contains "$output" "Usage:"
 }
-
-# ---------------------------------------------------------------------------
-# Test: detached HEAD rejected
-# ---------------------------------------------------------------------------
-
-test_detached_head() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Test",
-      "body": "Metric: 10 → 5 (-50%)",
-      "last_commit": "$FINAL",
-      "slug": "test"
-    }
-  ]
-}
-EOF
-
-  # Detach HEAD
-  git checkout --detach HEAD --quiet
-
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1); then
-    fail_test "detached head" "Script should have failed"
-    cleanup_repo "$REPO"
-    return
-  fi
-
-  echo "$OUTPUT" | grep -qi "detached" || { fail_test "detached head" "Wrong error: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  pass "detached head"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: on trunk rejected
-# ---------------------------------------------------------------------------
-
-test_on_trunk() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Test",
-      "body": "Metric: 10 → 5 (-50%)",
-      "last_commit": "$FINAL",
-      "slug": "test"
-    }
-  ]
-}
-EOF
-
-  git checkout main --quiet
-
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1); then
-    fail_test "on trunk" "Script should have failed"
-    cleanup_repo "$REPO"
-    return
-  fi
-
-  echo "$OUTPUT" | grep -qi "trunk" || { fail_test "on trunk" "Wrong error: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  pass "on trunk"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: malformed JSON
-# ---------------------------------------------------------------------------
 
 test_malformed_json() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  echo '{ "base": "abc", BROKEN' > "$REPO/groups.json"
-
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1); then
-    fail_test "malformed json" "Script should have failed"
-    cleanup_repo "$REPO"
-    return
-  fi
-
-  echo "$OUTPUT" | grep -q "check JSON syntax" || { fail_test "malformed json" "Wrong error: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  # No orphaned temp dirs (check DATA_DIR was cleaned)
-  pass "malformed json"
-  cleanup_repo "$REPO"
+  local dir output
+  dir=$(mktemp -d); trap 'rm -rf "$dir"' RETURN
+  printf '{bad' > "$dir/groups.json"
+  if output=$(bash "$SCRIPT" "$dir/groups.json" 2>&1); then return 1; fi
+  assert_contains "$output" "Failed to parse"
 }
-
-# ---------------------------------------------------------------------------
-# Test: branch collision detected
-# ---------------------------------------------------------------------------
-
-test_branch_collision() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  # Pre-create a branch that will collide
-  git branch "autoresearch/test/01-optimize-a" "$BASE"
-
-  COMMIT_A=$(git log --format="%H" --diff-filter=M -- file_a.txt | head -1)
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize file A",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "optimize-a"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1); then
-    fail_test "branch collision" "Script should have failed"
-    cleanup_repo "$REPO"
-    return
-  fi
-
-  echo "$OUTPUT" | grep -q "already exists" || { fail_test "branch collision" "Wrong error: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  pass "branch collision"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Test: bad groups.json path
-# ---------------------------------------------------------------------------
 
 test_missing_groups_json() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-
-  cd /tmp
-  local OUTPUT
-  if OUTPUT=$(bash "$FINALIZE" /tmp/nonexistent-groups.json 2>&1); then
-    fail_test "missing groups.json" "Script should have failed"
-    return
-  fi
-
-  echo "$OUTPUT" | grep -q "not found" || { fail_test "missing groups.json" "Wrong error: $OUTPUT"; return; }
-
-  pass "missing groups.json"
+  local output
+  if output=$(bash "$SCRIPT" "/tmp/pi-finalize-missing-$$.json" 2>&1); then return 1; fi
+  assert_contains "$output" "not found"
 }
 
-# ---------------------------------------------------------------------------
-# Test: single group works
-# ---------------------------------------------------------------------------
-
-test_single_group() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > $REPO/groups.json << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "All optimizations",
-      "body": "Everything in one.\n\nMetric: 10ms → 3ms (-70%)",
-      "last_commit": "$FINAL",
-      "slug": "all"
-    }
-  ]
-}
-EOF
-
-  bash "$FINALIZE" $REPO/groups.json >/dev/null 2>&1 || { fail_test "single group" "Script failed"; cleanup_repo "$REPO"; return; }
-
-  git rev-parse "autoresearch/test/01-all" >/dev/null 2>&1 || { fail_test "single group" "Branch not created"; cleanup_repo "$REPO"; return; }
-
-  # Should have both file changes
-  local A B
-  A=$(git show autoresearch/test/01-all:file_a.txt)
-  B=$(git show autoresearch/test/01-all:file_b.txt)
-  [ "$A" = "optimized_a" ] || { fail_test "single group" "file_a wrong: $A"; cleanup_repo "$REPO"; return; }
-  [ "$B" = "optimized_b" ] || { fail_test "single group" "file_b wrong: $B"; cleanup_repo "$REPO"; return; }
-
-  pass "single group"
-  cleanup_repo "$REPO"
+test_parse_groups() {
+  local dir
+  dir=$(mktemp -d); trap 'rm -rf "$dir"' RETURN
+  cat > "$dir/groups.json" <<'JSON'
+{"base":"base-hash","final_tree":"final-hash","goal":"speed","groups":[{"title":"One","body":"Metric: 2 -> 1","last_commit":"last-hash","slug":"one"}]}
+JSON
+  parse_groups "$dir/groups.json"
+  [[ "$BASE:$TRUNK:$FINAL_TREE:$GOAL:$GROUP_COUNT" == "base-hash:main:final-hash:speed:1" ]]
+  [[ $(cat "$DATA_DIR/0.title") == One ]]
+  cleanup_data
 }
 
-# ---------------------------------------------------------------------------
-# Test: session artifacts in subdirectories excluded
-# ---------------------------------------------------------------------------
-
-test_nested_session_artifacts() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(mktemp -d)
-  cd "$REPO"
-  git init --quiet
-  git checkout -b main
-
-  mkdir -p libs/polaris
-  echo "original" > libs/polaris/component.ts
-  git add -A && git commit -m "initial" --quiet
-
-  git checkout -b autoresearch/nested-test --quiet
-
-  # Session files in a subdirectory (like world's libraries/javascript/polaris/)
-  echo '{"type":"config"}' > libs/polaris/autoresearch.jsonl
-  echo "# session" > libs/polaris/autoresearch.md
-  echo "#!/bin/bash" > libs/polaris/autoresearch.sh
-  echo "- idea" > libs/polaris/autoresearch.ideas.md
-  echo "#!/bin/bash" > libs/polaris/autoresearch.checks.sh
-  echo "optimized" > libs/polaris/component.ts
-  git add -A && git commit -m "optimize + session files" --quiet
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize component",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$FINAL",
-      "slug": "optimize"
-    }
-  ]
+test_session_paths() {
+  is_session_file ".auto/log.jsonl"
+  is_session_file "nested/autoresearch.jsonl/history"
+  ! is_session_file "src/auto.ts"
+  ! is_session_file "notes/research.md"
 }
-EOF
 
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1) || { fail_test "nested session artifacts" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
+test_detached_head() {
+  fixture_data; trap cleanup_data RETURN
+  MOCK_BRANCH=""; export MOCK_BRANCH
+  git() { mock_git "$@"; }
+  local output
+  if output=$(assert_on_feature_branch 2>&1); then return 1; fi
+  assert_contains "$output" "Detached HEAD"
+}
 
-  # Branch should only have component.ts, not any autoresearch.* files
-  local BRANCH="autoresearch/test/01-optimize"
-  for f in $(git diff-tree --no-commit-id --name-only -r "$(git rev-parse "$BRANCH")"); do
-    local base
-    base=$(basename "$f")
-    case "$base" in
-      autoresearch.*)
-        fail_test "nested session artifacts" "Session artifact '$f' leaked into branch"
-        cleanup_repo "$REPO"
-        return
-        ;;
-    esac
+test_on_trunk() {
+  fixture_data; trap cleanup_data RETURN
+  MOCK_BRANCH=main; export MOCK_BRANCH
+  git() { mock_git "$@"; }
+  local output
+  if output=$(assert_on_feature_branch 2>&1); then return 1; fi
+  assert_contains "$output" "On trunk"
+}
+
+test_commit_preflight() {
+  fixture_data; trap cleanup_data RETURN
+  git() { mock_git "$@"; }
+  assert_commits_exist
+  assert_contains "$(cat "$GIT_LOG")" "rev-parse $BASE"
+  assert_contains "$(cat "$GIT_LOG")" "rev-parse $FINAL_TREE"
+}
+
+test_collect_files() {
+  fixture_data; trap cleanup_data RETURN
+  MOCK_DIFF_NUL='src/a.ts\0.auto/log.jsonl\0nested/autoresearch.jsonl/item\0src/b.ts\0'; export MOCK_DIFF_NUL
+  git() { mock_git "$@"; }
+  collect_group_files 0 "$BASE"
+  local files; files=$(cat "$DATA_DIR/0.files")
+  assert_contains "$files" "src/a.ts"
+  assert_contains "$files" "src/b.ts"
+  assert_not_contains "$files" ".auto"
+  assert_not_contains "$files" "autoresearch.jsonl"
+}
+
+test_overlapping_files() {
+  fixture_data; trap cleanup_data RETURN
+  printf 'src/a.ts\n' > "$DATA_DIR/new"
+  printf 'src/a.ts\n' > "$DATA_DIR/seen"
+  local output
+  if output=$(assert_no_overlapping_files "$DATA_DIR/new" "$DATA_DIR/seen" 2>&1); then return 1; fi
+  assert_contains "$output" "multiple groups"
+}
+
+test_branch_collision() {
+  fixture_data; trap cleanup_data RETURN
+  MOCK_BRANCH_EXISTS=0; export MOCK_BRANCH_EXISTS
+  git() { mock_git "$@"; }
+  local output
+  if output=$(assert_branch_available "autoresearch/fixture/01-change" 2>&1); then return 1; fi
+  assert_contains "$output" "already exists"
+}
+
+test_clean_tree_skips_stash() {
+  fixture_data; trap cleanup_data RETURN
+  MOCK_DIRTY=0; MOCK_UNTRACKED=""; export MOCK_DIRTY MOCK_UNTRACKED
+  git() { mock_git "$@"; }
+  stash_if_dirty
+  [[ "$STASHED" == false ]]
+  assert_not_contains "$(cat "$GIT_LOG")" "stash -u"
+}
+
+test_dirty_tree_stashes() {
+  fixture_data; trap cleanup_data RETURN
+  MOCK_DIRTY=1; export MOCK_DIRTY
+  git() { mock_git "$@"; }
+  stash_if_dirty
+  [[ "$STASHED" == true ]]
+  assert_contains "$(cat "$GIT_LOG")" "stash -u"
+}
+
+test_create_group_branch() {
+  fixture_data; trap cleanup_data RETURN
+  git() { mock_git "$@"; }
+  create_group_branch 0 >/dev/null
+  [[ "${CREATED_BRANCHES[*]}" == "autoresearch/fixture/01-change" ]]
+  local calls; calls=$(cat "$GIT_LOG")
+  assert_contains "$calls" "checkout $BASE --quiet --detach"
+  assert_contains "$calls" "checkout -b autoresearch/fixture/01-change"
+  assert_contains "$calls" "checkout $FINAL_TREE -- src/a.ts"
+  assert_contains "$calls" "commit -m Fixture title -m Metric: 10 -> 9"
+}
+
+test_skip_empty_group() {
+  fixture_data; trap cleanup_data RETURN
+  : > "$DATA_DIR/0.files"
+  git() { mock_git "$@"; }
+  create_group_branch 0 >/dev/null
+  [[ "${GROUP_BRANCH[0]}" == skipped ]]
+  [[ ${#CREATED_BRANCHES[@]} -eq 0 ]]
+}
+
+test_multiple_independent_groups() {
+  fixture_data; trap cleanup_data RETURN
+  GROUP_COUNT=3
+  for i in 1 2; do
+    printf 'Title %s' "$i" > "$DATA_DIR/$i.title"
+    printf 'Metric: %s' "$i" > "$DATA_DIR/$i.body"
+    printf '%040d' "$((i + 2))" > "$DATA_DIR/$i.last_commit"
+    printf 'change-%s' "$i" > "$DATA_DIR/$i.slug"
+    printf 'src/%s.ts\n' "$i" > "$DATA_DIR/$i.files"
   done
-
-  # Verify the actual code file is there
-  local CONTENT
-  CONTENT=$(git show "$BRANCH":libs/polaris/component.ts)
-  [ "$CONTENT" = "optimized" ] || { fail_test "nested session artifacts" "component.ts wrong: $CONTENT"; cleanup_repo "$REPO"; return; }
-
-  pass "nested session artifacts"
-  cleanup_repo "$REPO"
+  git() { mock_git "$@"; }
+  for i in 0 1 2; do create_group_branch "$i" >/dev/null; done
+  [[ "${CREATED_BRANCHES[*]}" == "autoresearch/fixture/01-change autoresearch/fixture/02-change-1 autoresearch/fixture/03-change-2" ]]
+  [[ $(grep -c "checkout $BASE --quiet --detach" "$GIT_LOG") -eq 3 ]]
 }
 
-# ---------------------------------------------------------------------------
-# Test: .auto/ session folder excluded (current layout)
-# ---------------------------------------------------------------------------
-
-test_auto_dir_session_artifacts() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(mktemp -d)
-  cd "$REPO"
-  git init --quiet
-  git checkout -b main
-
-  mkdir -p libs/polaris
-  echo "original" > libs/polaris/component.ts
-  git add -A && git commit -m "initial" --quiet
-
-  git checkout -b autoresearch/auto-dir-test --quiet
-
-  # Current layout: everything under .auto/ (root and nested)
-  mkdir -p .auto libs/polaris/.auto
-  echo '{"type":"config"}' > .auto/log.jsonl
-  echo "# session" > .auto/prompt.md
-  echo "#!/bin/bash" > .auto/measure.sh
-  echo '{"type":"config"}' > libs/polaris/.auto/log.jsonl
-  echo "optimized" > libs/polaris/component.ts
-  git add -A && git commit -m "optimize + .auto session files" --quiet
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize component",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$FINAL",
-      "slug": "optimize"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1) || { fail_test ".auto dir session artifacts" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  # Branch should only have component.ts, nothing under .auto/
-  local BRANCH="autoresearch/test/01-optimize"
-  for f in $(git diff-tree --no-commit-id --name-only -r "$(git rev-parse "$BRANCH")"); do
-    case "/$f/" in
-      */.auto/*)
-        fail_test ".auto dir session artifacts" "Session artifact '$f' leaked into branch"
-        cleanup_repo "$REPO"
-        return
-        ;;
-    esac
-  done
-
-  local CONTENT
-  CONTENT=$(git show "$BRANCH":libs/polaris/component.ts)
-  [ "$CONTENT" = "optimized" ] || { fail_test ".auto dir session artifacts" "component.ts wrong: $CONTENT"; cleanup_repo "$REPO"; return; }
-
-  pass ".auto dir session artifacts"
-  cleanup_repo "$REPO"
+test_summary_output() {
+  fixture_data; trap cleanup_data RETURN
+  GROUP_BRANCH[0]=autoresearch/fixture/01-change
+  local output; output=$(print_summary)
+  assert_contains "$output" "Fixture title"
+  assert_contains "$output" "Metric: 10 -> 9"
+  assert_contains "$output" "autoresearch/fixture/01-change"
+  assert_contains "$output" "rm -r .auto"
 }
 
-# ---------------------------------------------------------------------------
-# Test: verification failure leaves branches intact and returns to orig branch
-# ---------------------------------------------------------------------------
-
-test_verify_failure_leaves_branches() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  # Only group file_a — final_tree has both a+b, so verify will fail
-  COMMIT_A=$(git log --format="%H" --diff-filter=M -- file_a.txt | head -1)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize file A only",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "optimize-a"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  if bash "$FINALIZE" "$REPO/groups.json" >/dev/null 2>&1; then
-    fail_test "verify failure leaves branches" "Script should have failed (verify mismatch)"
-    cleanup_repo "$REPO"
-    return
-  fi
-
-  # Branch should still exist
-  git rev-parse "autoresearch/test/01-optimize-a" >/dev/null 2>&1 || { fail_test "verify failure leaves branches" "Branch was deleted"; cleanup_repo "$REPO"; return; }
-
-  # Should be back on original branch
-  local CURRENT
-  CURRENT=$(git branch --show-current 2>/dev/null || echo "")
-  [ "$CURRENT" = "autoresearch/test-session" ] || { fail_test "verify failure leaves branches" "Not on original branch: $CURRENT"; cleanup_repo "$REPO"; return; }
-
-  pass "verify failure leaves branches"
-  cleanup_repo "$REPO"
+test_union_verification() {
+  fixture_data; trap cleanup_data RETURN
+  CREATED_BRANCHES=(autoresearch/fixture/01-change)
+  MOCK_DIFF_NUL=''; export MOCK_DIFF_NUL
+  git() { mock_git "$@"; }
+  verify_union_matches_original >/dev/null
+  MOCK_DIFF_NUL='src/missing.ts\0'; export MOCK_DIFF_NUL
+  # verify_union uses newline output for this query.
+  git() { if [[ "$1 ${2:-}" == "diff --name-only" ]]; then printf 'src/missing.ts\n'; else mock_git "$@"; fi; }
+  ! verify_union_matches_original >/dev/null
 }
 
-# ---------------------------------------------------------------------------
-# Test: dirty tree + mid-creation failure pops stash
-# ---------------------------------------------------------------------------
-
-test_stash_pop_on_rollback() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  # Make the tree dirty with a tracked file change
-  echo "dirty_tracked" > file_c.txt
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  COMMIT_A=$(git log --format="%H" --diff-filter=M -- file_a.txt | head -1)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Good group",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "good"
-    },
-    {
-      "title": "Bad group",
-      "body": "This will fail",
-      "last_commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-      "slug": "bad"
-    }
-  ]
-}
-EOF
-
-  bash "$FINALIZE" "$REPO/groups.json" >/dev/null 2>&1 && { fail_test "stash pop on rollback" "Script should have failed"; cleanup_repo "$REPO"; return; }
-
-  # Should be back on original branch
-  local CURRENT
-  CURRENT=$(git branch --show-current 2>/dev/null || echo "")
-  [ "$CURRENT" = "autoresearch/test-session" ] || { fail_test "stash pop on rollback" "Not on original branch: $CURRENT"; cleanup_repo "$REPO"; return; }
-
-  # Dirty change should be restored
-  local C_CONTENT
-  C_CONTENT=$(cat file_c.txt)
-  [ "$C_CONTENT" = "dirty_tracked" ] || { fail_test "stash pop on rollback" "Stash not popped — file_c.txt is '$C_CONTENT'"; cleanup_repo "$REPO"; return; }
-
-  pass "stash pop on rollback"
-  cleanup_repo "$REPO"
+test_artifact_verification() {
+  fixture_data; trap cleanup_data RETURN
+  CREATED_BRANCHES=(autoresearch/fixture/01-change)
+  MOCK_DIFF_TREE='src/a.ts\n'; export MOCK_DIFF_TREE
+  git() { mock_git "$@"; }
+  verify_no_session_artifacts >/dev/null
+  MOCK_DIFF_TREE='.auto/log.jsonl\n'; export MOCK_DIFF_TREE
+  ! verify_no_session_artifacts >/dev/null
 }
 
-# ---------------------------------------------------------------------------
-# Test: skipped group with empty diff
-# ---------------------------------------------------------------------------
-
-test_skipped_empty_group() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(setup_repo)
-  cd "$REPO"
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  # Group 1: points to a commit where file_a changed
-  COMMIT_A=$(git log --format="%H" --diff-filter=M -- file_a.txt | head -1)
-
-  # Group 2: same last_commit as group 1 — diff between them is empty
-  # Group 3: covers file_b changes
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "test",
-  "groups": [
-    {
-      "title": "Optimize file A",
-      "body": "Metric: 10ms → 5ms (-50%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "optimize-a"
-    },
-    {
-      "title": "Empty group",
-      "body": "Nothing here",
-      "last_commit": "$COMMIT_A",
-      "slug": "empty"
-    },
-    {
-      "title": "Optimize file B",
-      "body": "Metric: 5ms → 3ms (-40%)",
-      "last_commit": "$FINAL",
-      "slug": "optimize-b"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1) || { fail_test "skipped empty group" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  # Should have created 2 branches, not 3
-  local COUNT
-  COUNT=$(echo "$OUTPUT" | grep -c "Created .* branches")
-  [ "$COUNT" = "1" ] || { fail_test "skipped empty group" "No creation summary found"; cleanup_repo "$REPO"; return; }
-  echo "$OUTPUT" | grep -q "Created 2 branches" || { fail_test "skipped empty group" "Expected 2 branches created"; cleanup_repo "$REPO"; return; }
-
-  # Should mention skipping
-  echo "$OUTPUT" | grep -q "skipping" || { fail_test "skipped empty group" "No skip warning"; cleanup_repo "$REPO"; return; }
-
-  pass "skipped empty group"
-  cleanup_repo "$REPO"
+test_empty_commit_verification() {
+  fixture_data; trap cleanup_data RETURN
+  CREATED_BRANCHES=(autoresearch/fixture/01-change)
+  MOCK_DIFF_TREE=''; export MOCK_DIFF_TREE
+  git() { mock_git "$@"; }
+  ! verify_no_empty_commits >/dev/null
+  MOCK_DIFF_TREE='src/a.ts\n'; export MOCK_DIFF_TREE
+  verify_no_empty_commits >/dev/null
 }
 
-# ---------------------------------------------------------------------------
-# Test: three groups (off-by-one in PREV_COMMIT chaining)
-# ---------------------------------------------------------------------------
-
-test_three_groups() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local REPO
-  REPO=$(mktemp -d)
-  cd "$REPO"
-  git init --quiet
-  git checkout -b main
-
-  echo "original_a" > file_a.txt
-  echo "original_b" > file_b.txt
-  echo "original_c" > file_c.txt
-  git add -A && git commit -m "initial" --quiet
-
-  git checkout -b autoresearch/three-test --quiet
-
-  # Three sequential optimizations, each touching a different file
-  echo "optimized_a" > file_a.txt
-  git add -A && git commit -m "optimize a" --quiet
-  COMMIT_A=$(git rev-parse HEAD)
-
-  echo "optimized_b" > file_b.txt
-  git add -A && git commit -m "optimize b" --quiet
-  COMMIT_B=$(git rev-parse HEAD)
-
-  echo "optimized_c" > file_c.txt
-  git add -A && git commit -m "optimize c" --quiet
-  COMMIT_C=$(git rev-parse HEAD)
-
-  local BASE FINAL
-  BASE=$(git merge-base HEAD main)
-  FINAL=$(git rev-parse HEAD)
-
-  cat > "$REPO/groups.json" << EOF
-{
-  "base": "$BASE",
-  "trunk": "main",
-  "final_tree": "$FINAL",
-  "goal": "three",
-  "groups": [
-    {
-      "title": "Optimize A",
-      "body": "Metric: 10 → 8 (-20%)",
-      "last_commit": "$COMMIT_A",
-      "slug": "a"
-    },
-    {
-      "title": "Optimize B",
-      "body": "Metric: 8 → 6 (-25%)",
-      "last_commit": "$COMMIT_B",
-      "slug": "b"
-    },
-    {
-      "title": "Optimize C",
-      "body": "Metric: 6 → 4 (-33%)",
-      "last_commit": "$COMMIT_C",
-      "slug": "c"
-    }
-  ]
-}
-EOF
-
-  local OUTPUT
-  OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1) || { fail_test "three groups" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
-
-  # All 3 branches exist
-  git rev-parse "autoresearch/three/01-a" >/dev/null 2>&1 || { fail_test "three groups" "Branch 01 missing"; cleanup_repo "$REPO"; return; }
-  git rev-parse "autoresearch/three/02-b" >/dev/null 2>&1 || { fail_test "three groups" "Branch 02 missing"; cleanup_repo "$REPO"; return; }
-  git rev-parse "autoresearch/three/03-c" >/dev/null 2>&1 || { fail_test "three groups" "Branch 03 missing"; cleanup_repo "$REPO"; return; }
-
-  # Each branch is independent — 1 commit from base
-  for b in autoresearch/three/01-a autoresearch/three/02-b autoresearch/three/03-c; do
-    local C
-    C=$(git rev-list --count "$BASE".."$b")
-    [ "$C" = "1" ] || { fail_test "three groups" "$b has $C commits, expected 1"; cleanup_repo "$REPO"; return; }
-  done
-
-  # Each branch only has its own file changed
-  [ "$(git show autoresearch/three/01-a:file_a.txt)" = "optimized_a" ] || { fail_test "three groups" "01-a: wrong file_a"; cleanup_repo "$REPO"; return; }
-  [ "$(git show autoresearch/three/01-a:file_b.txt)" = "original_b" ] || { fail_test "three groups" "01-a: has file_b changes"; cleanup_repo "$REPO"; return; }
-  [ "$(git show autoresearch/three/02-b:file_b.txt)" = "optimized_b" ] || { fail_test "three groups" "02-b: wrong file_b"; cleanup_repo "$REPO"; return; }
-  [ "$(git show autoresearch/three/02-b:file_a.txt)" = "original_a" ] || { fail_test "three groups" "02-b: has file_a changes"; cleanup_repo "$REPO"; return; }
-  [ "$(git show autoresearch/three/03-c:file_c.txt)" = "optimized_c" ] || { fail_test "three groups" "03-c: wrong file_c"; cleanup_repo "$REPO"; return; }
-
-  # Verify passed (output should contain the checkmark)
-  echo "$OUTPUT" | grep -q "Union of all groups matches" || { fail_test "three groups" "Verify didn't pass"; cleanup_repo "$REPO"; return; }
-
-  pass "three groups"
-  cleanup_repo "$REPO"
-}
-
-# ---------------------------------------------------------------------------
-# Run all tests
-# ---------------------------------------------------------------------------
-
-echo ""
-echo "Running finalize.sh tests..."
-echo ""
-
-tests=(
-  test_no_args
-  test_malformed_json
-  test_branch_collision
-  test_missing_groups_json
-  test_detached_head
-  test_on_trunk
-  test_basic_two_groups
-  test_nested_session_artifacts
-  test_auto_dir_session_artifacts
-  test_verify_failure_leaves_branches
-  test_stash_pop_on_rollback
-  test_skipped_empty_group
-  test_three_groups
-  test_no_session_artifacts
-  test_overlapping_files_rejected
-  test_rollback_on_failure
-  test_summary_output
-  test_stash_on_dirty_tree
-  test_single_group
-)
-
-OUTPUT_DIR=$(mktemp -d)
-trap 'rm -rf "$OUTPUT_DIR" "$FIXTURE_REPO"' EXIT
-MAX_PARALLEL=10
-for ((batch_start = 0; batch_start < ${#tests[@]}; batch_start += MAX_PARALLEL)); do
-  PIDS=()
-  for ((index = batch_start; index < ${#tests[@]} && index < batch_start + MAX_PARALLEL; index += 1)); do
-    test_name=${tests[index]}
-    ("$test_name") >"$OUTPUT_DIR/$test_name.log" 2>&1 &
-    PIDS+=("$!")
-  done
-
-  for offset in "${!PIDS[@]}"; do
-    index=$((batch_start + offset))
-    test_name=${tests[index]}
-    TESTS_RUN=$((TESTS_RUN + 1))
-    if ! wait "${PIDS[offset]}" || grep -q '✗' "$OUTPUT_DIR/$test_name.log"; then
-      TESTS_FAILED=$((TESTS_FAILED + 1))
-    else
-      TESTS_PASSED=$((TESTS_PASSED + 1))
+test_verify_failure_leaves_group_branches() {
+  fixture_data
+  local log="$DATA_DIR/../verify-git.log" output
+  GIT_LOG="$log"; export GIT_LOG; : > "$GIT_LOG"
+  CREATED_BRANCHES=(autoresearch/fixture/01-change)
+  MOCK_DIFF_TREE='src/a.ts\n'; export MOCK_DIFF_TREE
+  git() {
+    if [[ "$1 ${2:-}" == "diff --name-only" && "$*" != *"-z"* ]]; then printf 'src/missing.ts\n'
+    else mock_git "$@"
     fi
-    cat "$OUTPUT_DIR/$test_name.log"
-  done
+  }
+  set +e
+  output=$(verify_branches 2>&1)
+  set -e
+  assert_contains "$output" "Branches are intact"
+  assert_not_contains "$(cat "$log")" "branch -D autoresearch/fixture/01-change"
+  rm -f "$log"
+  DATA_DIR=""
+}
+
+test_rollback() {
+  fixture_data
+  local log="$DATA_DIR/../rollback-git.log"
+  GIT_LOG="$log"; export GIT_LOG; : > "$GIT_LOG"
+  DATA_DIR=""
+  CREATED_BRANCHES=(autoresearch/fixture/01-change autoresearch/fixture/02-more)
+  STASHED=true
+  git() { mock_git "$@"; }
+  set +e
+  ( false; rollback_on_failure >/dev/null )
+  set -e
+  local calls; calls=$(cat "$GIT_LOG")
+  assert_contains "$calls" "branch -D autoresearch/fixture/01-change"
+  assert_contains "$calls" "checkout research --quiet"
+  assert_contains "$calls" "stash pop --quiet"
+  rm -f "$log"
+}
+
+test_full_mocked_workflow() {
+  local dir bin output
+  dir=$(mktemp -d); trap 'rm -rf "$dir"' RETURN
+  bin="$dir/bin"; mkdir "$bin"
+  cat > "$bin/git" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GIT_LOG"
+case "$1 ${2:-}" in
+  "branch --show-current") echo research ;;
+  "rev-parse --verify") exit 1 ;;
+  "rev-parse "*) printf '%040d\n' 1 ;;
+  "cat-file -t") echo commit ;;
+  "diff --name-only")
+    if [[ "$*" == *"-z"* ]]; then printf 'src/a.ts\0'; fi ;;
+  "diff --quiet"|"diff --cached") exit 0 ;;
+  "diff-tree "*) echo src/a.ts ;;
+  "ls-files --others") ;;
+  "log -1") echo 'Metric: 10 -> 9' ;;
+esac
+MOCK
+  chmod +x "$bin/git"
+  cat > "$dir/groups.json" <<'JSON'
+{"base":"1111111111111111111111111111111111111111","trunk":"main","final_tree":"2222222222222222222222222222222222222222","goal":"fixture","groups":[{"title":"Fixture title","body":"Metric: 10 -> 9","last_commit":"2222222222222222222222222222222222222222","slug":"change"}]}
+JSON
+  : > "$dir/git.log"
+  output=$(cd "$dir" && PATH="$bin:$PATH" GIT_LOG="$dir/git.log" bash "$SCRIPT" "$dir/groups.json")
+  assert_contains "$output" "All checks passed"
+  assert_contains "$output" "autoresearch/fixture/01-change"
+  assert_contains "$(cat "$dir/git.log")" "checkout -b autoresearch/fixture/01-change"
+}
+
+printf '\nRunning finalize.sh mocked-boundary tests...\n\n'
+for test_name in \
+  test_no_args test_malformed_json test_missing_groups_json test_parse_groups test_session_paths test_detached_head \
+  test_on_trunk test_commit_preflight test_collect_files test_overlapping_files test_branch_collision \
+  test_clean_tree_skips_stash test_dirty_tree_stashes test_create_group_branch test_skip_empty_group \
+  test_multiple_independent_groups test_summary_output test_union_verification test_artifact_verification \
+  test_empty_commit_verification test_verify_failure_leaves_group_branches test_rollback test_full_mocked_workflow; do
+  run_test "$test_name"
 done
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Tests: $TESTS_RUN  Passed: ${GREEN}$TESTS_PASSED${NC}  Failed: ${RED}$TESTS_FAILED${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-[ "$TESTS_FAILED" -eq 0 ] || exit 1
+printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+printf 'Tests: %d  Passed: %d  Failed: %d\n' "$((PASSED + FAILED))" "$PASSED" "$FAILED"
+printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+(( FAILED == 0 ))

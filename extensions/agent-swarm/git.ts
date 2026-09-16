@@ -4,12 +4,15 @@ import { spawnSync } from "node:child_process";
 import type { NodeRecord, RunRecord } from "./types.ts";
 import { ensureDir, runDir, worktreeDir } from "./state.ts";
 
-export const git = (cwd: string, args: string[], allowFailure = false, input?: string) => {
+interface GitProcessResult { error?: Error; status: number | null; stdout: string; stderr: string }
+type GitExecutor = (command: string, args: string[], options: { encoding: "utf8"; env: NodeJS.ProcessEnv; input?: string }) => GitProcessResult;
+
+export const createGitRunner = (execute: GitExecutor = spawnSync as GitExecutor) => (cwd: string, args: string[], allowFailure = false, input?: string) => {
 	const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 	environment.GIT_TERMINAL_PROMPT = "0";
 	environment.GIT_OPTIONAL_LOCKS = "0";
 	const options = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-C", cwd];
-	const run = (command: string[], input?: string) => spawnSync("git", [...options, ...command], { encoding: "utf8", env: environment, input });
+	const run = (command: string[], input?: string) => execute("git", [...options, ...command], { encoding: "utf8", env: environment, input });
 	// Only commands which populate or stage the worktree can invoke a content
 	// filter. Avoid doing several full-tree attribute scans for read-only Git
 	// queries and for commit itself; commitResult's preceding `add` is the
@@ -49,43 +52,58 @@ export const git = (cwd: string, args: string[], allowFailure = false, input?: s
 	return { ok: result.status === 0, stdout: result.stdout, stderr: result.stderr };
 };
 
-const generatedBranch = (runId: string, nodeId: string) => `pi-swarm/${runId.slice(-12)}/${nodeId.slice(-12)}`;
+type GitRunner = ReturnType<typeof createGitRunner>;
+let activeGitRunner: GitRunner = createGitRunner();
+export const git: GitRunner = (...args) => activeGitRunner(...args);
+export const setGitRunnerForTests = (runner?: GitRunner) => { activeGitRunner = runner ?? createGitRunner(); };
+export const generatedBranch = (runId: string, nodeId: string) => `pi-swarm/${runId.slice(-12)}/${nodeId.slice(-12)}`;
 
 function assertWorktreePath(node: NodeRecord) {
 	if (!lstatSync(node.cwd).isDirectory() || realpathSync(node.cwd) !== node.cwd) throw new Error(`Worktree path changed: ${node.cwd}`);
 }
 
+export function assertSupportedAttributes(values: string[], kind: "filter" | "merge") {
+	const supported = kind === "filter" ? new Set(["unspecified", "unset"]) : new Set(["unspecified", "set", "unset", "text", "binary", "union"]);
+	for (let index = 2; index < values.length; index += 3) {
+		if (!supported.has(values[index]!)) throw new Error(kind === "filter"
+			? `Git content filters are unsupported: ${values[index - 2]}`
+			: `Custom Git merge drivers are unsupported: ${values[index - 2]} uses ${values[index]}`);
+	}
+}
+
 function assertRevisionFilters(cwd: string, revision: string) {
 	const paths = git(cwd, ["ls-tree", "-r", "--name-only", "-z", revision]).stdout;
 	const values = git(cwd, ["check-attr", `--source=${revision}`, "-z", "--stdin", "filter"], false, paths).stdout.split("\0");
-	for (let index = 2; index < values.length; index += 3) {
-		if (values[index] !== "unspecified" && values[index] !== "unset") throw new Error(`Git content filters are unsupported: ${values[index - 2]}`);
-	}
+	assertSupportedAttributes(values, "filter");
 }
 
 function assertMergeDrivers(cwd: string, revision: string) {
 	const incoming = git(cwd, ["ls-tree", "-r", "--name-only", "-z", revision]).stdout;
 	const current = git(cwd, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).stdout;
 	const paths = [...new Set((incoming + current).split("\0").filter(Boolean))].join("\0") + "\0";
-	const builtins = new Set(["unspecified", "set", "unset", "text", "binary", "union"]);
 	for (const source of [[], ["--cached"], ["--source=HEAD"], [`--source=${revision}`]]) {
 		const values = git(cwd, ["check-attr", ...source, "-z", "--stdin", "merge"], false, paths).stdout.split("\0");
-		for (let index = 2; index < values.length; index += 3) {
-			if (!builtins.has(values[index])) throw new Error(`Custom Git merge drivers are unsupported: ${values[index - 2]} uses ${values[index]}`);
-		}
+		assertSupportedAttributes(values, "merge");
 	}
 }
 
 export const repositoryInfo = (cwd: string) => {
-	const root = git(cwd, ["rev-parse", "--show-toplevel"], true);
-	if (!root.ok) throw new Error("agent-swarm requires a Git repository");
-	const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+	const paths = git(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], true);
+	if (!paths.ok) throw new Error("agent-swarm requires a Git repository");
+	const [root, commonDir, ...unexpectedPaths] = paths.stdout.trim().split("\n");
+	if (!root || !commonDir || unexpectedPaths.length) throw new Error("Cannot inspect Git repository paths");
+	const status = git(cwd, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]).stdout;
+	const lines = status.split("\n");
+	const oid = lines.find(line => line.startsWith("# branch.oid "))?.slice("# branch.oid ".length);
+	const branchHead = lines.find(line => line.startsWith("# branch.head "))?.slice("# branch.head ".length);
+	if (!oid || oid === "(initial)" || !branchHead) throw new Error("Cannot inspect Git HEAD");
+	const changes = lines.filter(line => line && !line.startsWith("# "));
 	return {
-		root: root.stdout.trim(),
-		commonDir: common.stdout.trim(),
-		branch: git(cwd, ["branch", "--show-current"]).stdout.trim() || null,
-		head: git(cwd, ["rev-parse", "HEAD"]).stdout.trim(),
-		status: git(cwd, ["status", "--porcelain=v2", "--untracked-files=all"]).stdout,
+		root,
+		commonDir,
+		branch: branchHead === "(detached)" ? null : branchHead,
+		head: oid,
+		status: changes.length ? `${changes.join("\n")}\n` : "",
 	};
 };
 
@@ -125,10 +143,10 @@ export const createWorktree = (run: RunRecord, parent: NodeRecord, childId: stri
 
 function assertNoGitOperation(node: NodeRecord) {
 	assertWorktreePath(node);
-	for (const name of ["index.lock", "HEAD.lock", "MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply"]) {
-		const path = git(node.cwd, ["rev-parse", "--path-format=absolute", "--git-path", name]).stdout.trim();
-		if (existsSync(path)) throw new Error(`Git operation is in progress: ${path}`);
-	}
+	const names = ["index.lock", "HEAD.lock", "MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply"];
+	const paths = git(node.cwd, ["rev-parse", "--path-format=absolute", ...names.flatMap(name => ["--git-path", name])]).stdout.trim().split("\n");
+	if (paths.length !== names.length) throw new Error("Cannot inspect Git operation paths");
+	for (const path of paths) if (existsSync(path)) throw new Error(`Git operation is in progress: ${path}`);
 }
 
 export function assertCleanWorktree(node: NodeRecord) {
