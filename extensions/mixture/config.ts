@@ -23,11 +23,12 @@ export const DEFAULT_LIMITS = {
 	writerMaxTokens: 8_192,
 	reviewerMaxTokens: 8_192,
 };
+export const MIN_ADVISOR_INTERVAL_MS = 60_000;
 export const DEFAULT_ADVISOR_LIMITS = {
 	requestTimeoutMs: 240_000,
 	executorMaxTokens: 16_384,
 	advisorMaxTokens: 4_096,
-	maxCalls: 2,
+	advisorIntervalMs: 300_000,
 };
 export type AdvisorGitContext = "off" | "summary" | "full";
 export interface AdvisorContext {
@@ -164,13 +165,18 @@ export function parseConfig(value: unknown): MixtureConfig {
 			if (context.maxChars !== undefined && (!Number.isInteger(context.maxChars) || Number(context.maxChars) < 1 || Number(context.maxChars) > 1_000_000)) throw new Error(`${name}.context.maxChars must be an integer from 1 to 1000000`);
 			if (context.git !== undefined && !["off", "summary", "full"].includes(String(context.git))) throw new Error(`${name}.context.git must be off, summary, or full`);
 			if (context.redactSecrets !== undefined && typeof context.redactSecrets !== "boolean") throw new Error(`${name}.context.redactSecrets must be boolean`);
+			const configuredLimits = preset.limits === undefined ? {} : object(preset.limits, `${name}.limits`);
+			keys(configuredLimits, [...Object.keys(DEFAULT_ADVISOR_LIMITS), "maxCalls"], `${name}.limits`);
+			if (configuredLimits.maxCalls !== undefined && (!Number.isInteger(configuredLimits.maxCalls) || Number(configuredLimits.maxCalls) <= 0 || Number(configuredLimits.maxCalls) > 256)) throw new Error(`${name}.limits.maxCalls must be a positive integer at most 256`);
+			const { maxCalls: _legacyMaxCalls, ...currentLimits } = configuredLimits;
+			if (currentLimits.advisorIntervalMs !== undefined && Number(currentLimits.advisorIntervalMs) < MIN_ADVISOR_INTERVAL_MS) throw new Error(`${name}.limits.advisorIntervalMs must be at least ${MIN_ADVISOR_INTERVAL_MS}ms`);
 			parsed[name] = {
 				mode,
 				executor: role(preset.executor, `${name}.executor`),
 				advisor: role(preset.advisor, `${name}.advisor`),
 				context: { ...DEFAULT_ADVISOR_CONTEXT, ...context } as AdvisorPreset["context"],
 				gates: advisorGates(preset.gates, `${name}.gates`),
-				limits: positiveIntegers(preset.limits, DEFAULT_ADVISOR_LIMITS, { requestTimeoutMs: 600_000, executorMaxTokens: 131_072, advisorMaxTokens: 131_072, maxCalls: 256 }, `${name}.limits`) as unknown as AdvisorLimits,
+				limits: positiveIntegers(currentLimits, DEFAULT_ADVISOR_LIMITS, { requestTimeoutMs: 600_000, executorMaxTokens: 131_072, advisorMaxTokens: 131_072, advisorIntervalMs: 86_400_000 }, `${name}.limits`) as unknown as AdvisorLimits,
 			};
 			continue;
 		}

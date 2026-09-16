@@ -75,7 +75,7 @@ An advisor preset can live beside handoff presets in the same file:
     "requestTimeoutMs": 240000,
     "executorMaxTokens": 16384,
     "advisorMaxTokens": 4096,
-    "maxCalls": 2
+    "advisorIntervalMs": 300000
   }
 }
 ```
@@ -124,12 +124,17 @@ sensitive. Repository and draft regions are marked as untrusted data in the Advi
 prompt.
 
 The `plan`, `failure`, and `completion` gates are Executor instructions, not hidden
-model calls. The default asks for advice after repeated failure but not for every
-plan or completion. `limits.maxCalls` is a hard per-session cap based on recorded
-`ask_advisor` results; blocked or concurrent calls cannot exceed the reservation.
-Advisor usage is attached to the visible tool result and therefore contributes to
-Pi's session usage without inflating Executor context pressure. Optional `guidance`
-on `executor` or `advisor` is appended only to that role's system prompt.
+model calls. Advisor mode also tells the Executor to make an initial review for
+coding or repository work and sends a reminder at least every five minutes while
+the request is active. The interval is customizable with
+`limits.advisorIntervalMs`; omitted or legacy configurations use 300000ms (five
+minutes). Calls are rate-limited to no more than once per minute. A reminder is a
+steering message: the Executor still calls `ask_advisor`, so advice stays visible
+and the Executor retains control. Legacy `limits.maxCalls` is accepted but ignored
+and is removed the next time the config is saved. Advisor usage is attached to the
+visible tool result and therefore contributes to Pi's session usage without
+inflating Executor context pressure. Optional `guidance` on `executor` or `advisor`
+is appended only to that role's system prompt.
 
 Compaction and other Pi helper requests use the Executor with tools disabled. Advisor
 mode does not create Mixture checkpoints or private lead/writer histories; the
@@ -384,7 +389,7 @@ Advisor presets use separate limits:
 | `requestTimeoutMs` | 240000 | Each Executor, Advisor or helper request, including auth |
 | `executorMaxTokens` | 16384 | Executor output ceiling |
 | `advisorMaxTokens` | 4096 | Advisor output ceiling |
-| `maxCalls` | 2 | Recorded or reserved Advisor consultations per Pi session |
+| `advisorIntervalMs` | 300000 | Reminder cadence while the Executor is active; at least 60000 |
 
 Output limits are clamped to each provider's model limit. Steering does not reset
 request limits. Writer stream activity renews only the idle deadline; the absolute

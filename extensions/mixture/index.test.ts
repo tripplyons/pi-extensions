@@ -9,6 +9,7 @@ import { createAssistantMessageEventStream, type Provider, type SimpleStreamOpti
 import { createMixtureExtension } from "./index.ts";
 import { ASK_ADVISOR } from "./advisor.ts";
 import { defaultAdvisorPreset } from "./config.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
 
 const originalAgent = process.env.PI_CODING_AGENT_DIR;
@@ -17,13 +18,14 @@ afterEach(() => {
 	if (originalAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = originalAgent;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-const harness = async (config?: string, fast?: boolean) => {
+const harness = async (config?: string, fast?: boolean, scheduler?: ManualScheduler) => {
 	const dir = mkdtempSync(join(tmpdir(), "mixture-index-")); dirs.push(dir); process.env.PI_CODING_AGENT_DIR = dir;
 	if (config) writeFileSync(join(dir, "mixture.json"), config);
 	const commands = new Map<string, any>(); const handlers = new Map<string, any>(); const providers: Provider[] = []; const tools: string[] = [];
 	let activeTools = ["read", "write", "edit", "bash"];
 	const roleOptions: Array<SimpleStreamOptions & { serviceTier?: string }> = [];
 	const definitions = new Map<string, any>();
+	const sentMessages: Array<{ message: any; options: any }> = [];
 	const releasedIds: string[] = [];
 	let calls = 0;
 	const registry: Registry = {
@@ -47,9 +49,10 @@ const harness = async (config?: string, fast?: boolean) => {
 			if (name === "fast:query" && fast !== undefined) value.enabled = fast;
 			if (name === "tripp:mixture-session-release/v1") releasedIds.push(...value.sessionIds!);
 		} },
+		sendMessage: (message: any, options: any) => { sentMessages.push({ message, options }); },
 	};
-	await createMixtureExtension(pi as any, registry);
-	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, get activeTools() { return activeTools; }, get calls() { return calls; } };
+	await createMixtureExtension(pi as any, registry, scheduler ? { scheduler } : {});
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, sentMessages, get activeTools() { return activeTools; }, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -70,6 +73,7 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	const context = {
 		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
 		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false,
 		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus() {} },
 	};
 	await h.handlers.get("session_start")({}, context);
@@ -81,10 +85,13 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	expect(h.roleOptions[0].reasoning).toBe("medium");
 	const prompt = await h.handlers.get("before_agent_start")({ prompt: "Execute" }, context);
 	expect(prompt.systemPrompt).toContain("Mixture advisor mode");
+	expect(prompt.systemPrompt).toContain("must call ask_advisor at least once");
+	expect(prompt.systemPrompt).toContain("every 5 minutes");
 	expect(prompt.systemPrompt).toContain("after two materially equivalent failed attempts");
 	const tool = h.definitions.get(ASK_ADVISOR);
 	const call = { toolCallId: "advisor-call", toolName: ASK_ADVISOR, input: {} };
 	expect(h.handlers.get("tool_call")(call, context)).toBeUndefined();
+	expect(h.handlers.get("tool_call")({ toolCallId: "advisor-call-too-soon", toolName: ASK_ADVISOR, input: {} }, context)).toMatchObject({ block: true, reason: expect.stringContaining("throttled") });
 	const advice = await tool.execute("advisor-call", {}, undefined, undefined, context);
 	expect(advice.content[0].text).toBe("summary");
 	expect(advice.details.model).toBe("fixture/advisor");
@@ -94,6 +101,33 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	expect(h.releasedIds).toEqual(expect.arrayContaining([h.roleOptions[0].sessionId, h.roleOptions[1].sessionId]));
 	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "ordinary" } });
 	expect(h.activeTools).not.toContain(ASK_ADVISOR);
+});
+
+test("advisor mode nudges the Executor on its configured five-minute cadence", async () => {
+	const scheduler = new ManualScheduler();
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }), undefined, scheduler);
+	const branch: any[] = [{ type: "message", message: { role: "user", content: "Keep working" } }];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false,
+		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus() {} },
+	};
+	await h.handlers.get("session_start")({}, context);
+	await h.handlers.get("before_agent_start")({ prompt: "Keep working" }, context);
+	await h.handlers.get("agent_start")();
+	await scheduler.advanceBy(299_999);
+	expect(h.sentMessages).toHaveLength(0);
+	await scheduler.advanceBy(1);
+	expect(h.sentMessages).toHaveLength(1);
+	expect(h.sentMessages[0].message.content).toContain("ask_advisor");
+	expect(h.sentMessages[0].options).toEqual({ deliverAs: "steer" });
+	await h.handlers.get("agent_end")({ messages: [] });
+	await scheduler.advanceBy(300_000);
+	expect(h.sentMessages).toHaveLength(1);
 });
 
 test("native Pi rows preserve lead previews through streaming, expansion and history rebuilds", async () => {

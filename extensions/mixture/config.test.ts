@@ -47,12 +47,19 @@ test("advisor presets are strict, default bounded context, and keep legacy hando
 	delete sparse.presets.review.gates;
 	delete sparse.presets.review.limits;
 	expect(parseConfig(sparse).presets.review).toEqual(defaultAdvisorPreset());
+	const legacyLimit = structuredClone(advisor) as any;
+	legacyLimit.presets.review.limits = { maxCalls: 2 };
+	expect(parseConfig(legacyLimit).presets.review).toEqual(defaultAdvisorPreset());
+	const customInterval = structuredClone(advisor) as any;
+	customInterval.presets.review.limits = { advisorIntervalMs: 600_000 };
+	expect(parseConfig(customInterval).presets.review.limits.advisorIntervalMs).toBe(600_000);
 	for (const mutate of [
 		(value: any) => { value.presets.review.executor.model = "mixture/default"; },
 		(value: any) => { value.presets.review.context.git = "everything"; },
 		(value: any) => { value.presets.review.context.maxChars = 0; },
 		(value: any) => { value.presets.review.gates.failure = "yes"; },
 		(value: any) => { value.presets.review.limits.maxCalls = 0; },
+		(value: any) => { value.presets.review.limits.advisorIntervalMs = 59_999; },
 		(value: any) => { value.presets.review.reviewers = []; },
 	]) {
 		const invalid = structuredClone(advisor) as any;

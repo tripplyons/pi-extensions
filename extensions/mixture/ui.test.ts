@@ -169,7 +169,7 @@ test("configuration can switch a named preset to advisor mode", async () => {
 		executor: { model: "fixture/executor", thinking: "high" },
 		advisor: { model: "fixture/advisor", thinking: "high" },
 		context: { maxChars: 15_000, git: "summary", redactSecrets: true },
-		limits: { maxCalls: 2 },
+		limits: { advisorIntervalMs: 300_000 },
 	});
 });
 

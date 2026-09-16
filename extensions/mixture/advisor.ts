@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { StringEnum, type Context, type Message, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import type { AdvisorPreset } from "./config.ts";
+import { MIN_ADVISOR_INTERVAL_MS, type AdvisorPreset } from "./config.ts";
 import { callRole, requestLaneId, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { systemScheduler, type Scheduler } from "../scheduler.ts";
 
@@ -16,7 +16,7 @@ export type AdvisorInput = Static<typeof AdvisorParams>;
 
 export const advisorTool = {
 	name: ASK_ADVISOR,
-	description: "Ask the configured read-only Advisor for a concise second opinion. The Executor keeps ownership of tools and implementation. The Advisor receives bounded recent conversation and the configured repository context, cannot call tools, and returns guidance only.",
+	description: "Use the configured read-only Advisor for a concise second opinion. For coding or repository work, call this at least once before finalizing, then follow the configured reminder cadence. Calls are rate-limited to at most one per minute. The Executor keeps ownership of tools and implementation. The Advisor receives bounded recent conversation and the configured repository context, cannot call tools, and returns guidance only.",
 	parameters: AdvisorParams,
 };
 
@@ -110,13 +110,26 @@ const gitRank = { off: 0, summary: 1, full: 2 } as const;
 const allowedGit = (requested: AdvisorInput["gitContext"], configured: AdvisorPreset["context"]["git"]) =>
 	requested && gitRank[requested] < gitRank[configured] ? requested : configured;
 
+export const advisorIntervalLabel = (milliseconds: number) => {
+	if (milliseconds % 60_000 === 0) {
+		const minutes = milliseconds / 60_000;
+		return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+	}
+	const seconds = Math.round(milliseconds / 1_000);
+	return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+};
+
 export function advisorGuidelines(preset: AdvisorPreset, calls: number) {
-	const lines: string[] = [];
+	const lines: string[] = [
+		"You are the Executor in Mixture advisor mode. You own all tool use, edits, tests, and the final answer; the Advisor can only review and advise.",
+		"For every coding or repository task, you must call ask_advisor at least once before finalizing. Do not skip it because the task looks easy; a one-sentence draft or focused question is enough, and you must use the response.",
+		`While this request is active, expect an Advisor reminder every ${advisorIntervalLabel(preset.limits.advisorIntervalMs)}. Treat each reminder as a required review point before more edits or finalizing. Never call more often than once per minute.`,
+	];
 	if (preset.gates.plan) lines.push("Before committing to a materially consequential plan, investigate first, form a candidate direction, then call ask_advisor with that draft.");
 	if (preset.gates.failure) lines.push("Call ask_advisor after two materially equivalent failed attempts, when a fix recreates an earlier failure, or after two actions make no measurable progress.");
 	if (preset.gates.completion) lines.push("Before declaring non-trivial work complete, call ask_advisor with a concise draft naming the changes, validation, and remaining risks.");
-	if (!lines.length) lines.push("Call ask_advisor only when uncertainty remains after using normal tools or when a second opinion would materially reduce risk.");
-	lines.push(`Advisor calls remaining this session: ${Math.max(0, preset.limits.maxCalls - calls)}. Reserve them for material decisions.`);
+	if (!calls) lines.push("No Advisor call is recorded for this session yet. Make the initial review before finalizing this request.");
+	lines.push(`Advisor calls recorded this session: ${calls}. The one-minute rate limit is the only call-frequency guard.`);
 	return lines;
 }
 
@@ -126,10 +139,21 @@ export const advisorCallCount = (entries: unknown[]) => entries.filter(entry => 
 	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR;
 }).length;
 
+const advisorCallTimestamp = (entry: unknown): number | undefined => {
+	if (!entry || typeof entry !== "object" || (entry as any).type !== "message") return;
+	const message = (entry as any).message as ToolResultMessage;
+	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR && typeof (message as any).timestamp === "number" ? (message as any).timestamp : undefined;
+};
+export const advisorLastCallAt = (entries: unknown[]) => entries.map(advisorCallTimestamp).filter((value): value is number => value !== undefined).reduce<number | undefined>((latest, value) => latest === undefined ? value : Math.max(latest, value), undefined);
+export const advisorCooldownMs = (entries: unknown[], now = Date.now()) => {
+	const last = advisorLastCallAt(entries);
+	return last === undefined ? 0 : Math.max(0, MIN_ADVISOR_INTERVAL_MS - (now - last));
+};
+
 export async function consultAdvisor(preset: AdvisorPreset, registry: Registry, input: AdvisorInput, ctx: ExtensionContext,
 	options: RoleStreamOptions = {}, onAcquire?: (sessionId: string) => void, scheduler: Scheduler = systemScheduler): Promise<{ text: string; usage: Usage; model: string }> {
-	const calls = advisorCallCount(ctx.sessionManager.getBranch());
-	if (calls >= preset.limits.maxCalls) throw new Error(`Advisor call limit reached (${preset.limits.maxCalls} per session)`);
+	const cooldown = advisorCooldownMs(ctx.sessionManager.getBranch());
+	if (cooldown) throw new Error(`Advisor call throttled; try again in ${Math.ceil(cooldown / 1_000)} seconds`);
 	const level = allowedGit(input.gitContext, preset.context.git);
 	const gitBudget = Math.floor(preset.context.maxChars / 2);
 	const changes = repositoryContext(ctx.cwd, level, gitBudget, preset.context.redactSecrets);

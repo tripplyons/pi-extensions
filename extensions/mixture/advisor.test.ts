@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { advisorCallCount, advisorGuidelines, consultAdvisor, recentConversation, repositoryContext } from "./advisor.ts";
-import { defaultAdvisorPreset } from "./config.ts";
+import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
 
 const directories: string[] = [];
@@ -48,7 +48,6 @@ test("repository context respects off, summary, full, and the character cap", ()
 test("consultation calls only the configured advisor, carries usage, and enforces the persisted call budget", async () => {
 	const preset = defaultAdvisorPreset();
 	preset.advisor = { model: "fixture/advisor", thinking: "high" };
-	preset.limits.maxCalls = 1;
 	const calls: any[] = [];
 	const registry: Registry = {
 		find: (_provider, id) => model(id) as any,
@@ -70,8 +69,13 @@ test("consultation calls only the configured advisor, carries usage, and enforce
 	expect(calls[0].context.tools).toEqual([]);
 	expect(calls[0].context.systemPrompt).toContain("cannot call tools");
 	expect(calls[0].options.reasoning).toBe("high");
-	branch.push({ type: "message", message: { role: "toolResult", toolName: "ask_advisor", content: [{ type: "text", text: result.text }] } });
+	branch.push({ type: "message", message: { role: "toolResult", toolName: "ask_advisor", content: [{ type: "text", text: result.text }], timestamp: Date.now() } });
 	expect(advisorCallCount(branch)).toBe(1);
-	await expect(consultAdvisor(preset, registry, {}, ctx)).rejects.toThrow("call limit reached");
-	expect(advisorGuidelines(preset, 1).join("\n")).toContain("0");
+	await expect(consultAdvisor(preset, registry, {}, ctx)).rejects.toThrow("throttled");
+	(branch[1]!.message as any).timestamp = Date.now() - MIN_ADVISOR_INTERVAL_MS - 1;
+	const second = await consultAdvisor(preset, registry, {}, ctx);
+	expect(second.text).toBe("Review the boundary condition.");
+	expect(calls).toHaveLength(2);
+	expect(advisorGuidelines(preset, 1).join("\n")).toContain("one-minute rate limit");
+	expect(advisorGuidelines(preset, 1).join("\n")).toContain("every 5 minutes");
 });
