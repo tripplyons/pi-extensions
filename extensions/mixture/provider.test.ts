@@ -2,6 +2,10 @@ import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { defaultConfig } from "./config.ts";
 import { abortable, callRole, createMixtureProvider, emitMessage, emptyUsage, modelDefinition, requestLaneId, validatePreset, type Registry } from "./provider.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
+
+const flush = async () => { for (let index = 0; index < 5; index++) await Promise.resolve(); };
+const scheduledDelay = (scheduler: ManualScheduler, delayMs: number) => new Promise<void>(resolve => { scheduler.after(delayMs, resolve); });
 
 test("one request-lane constructor separates roots, runs, actors, summaries, overflow and helpers", () => {
 	const ids = new Set<string>();
@@ -68,6 +72,7 @@ test("role calls use effective provider auth, endpoint, callbacks and thinking",
 	expect(seen?.options.onPayload).toBe(callback);
 });
 test("writer idle deadlines reset on stream activity but remain absolutely bounded", async () => {
+	const scheduler = new ManualScheduler();
 	let completedSignal: AbortSignal | undefined;
 	const activeRegistry: Registry = {
 		find: () => model(), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
@@ -76,14 +81,17 @@ test("writer idle deadlines reset on stream activity but remain absolutely bound
 			return (async function* () {
 				const partial = { ...message(), content: [], stopReason: "pending" as const };
 				yield { type: "start", partial };
-				for (let index = 0; index < 4; index++) { await Bun.sleep(12); yield { type: "text_delta", contentIndex: 0, delta: "x", partial }; }
+				for (let index = 0; index < 4; index++) { await scheduledDelay(scheduler, 12); yield { type: "text_delta", contentIndex: 0, delta: "x", partial }; }
 				yield { type: "done", reason: "stop", message: { ...message(), content: [{ type: "text", text: "complete" }], stopReason: "stop" } };
 			})() as any;
 		} }) as any,
 	};
-	const active = await callRole(activeRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 200, idleTimeoutMs: 25 });
+	const activeResult = callRole(activeRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 200, idleTimeoutMs: 25 }, undefined, undefined, scheduler);
+	await flush();
+	for (let index = 0; index < 4; index++) { await scheduler.advanceBy(12); await flush(); }
+	const active = await activeResult;
 	expect(active.stopReason).toBe("stop");
-	await Bun.sleep(35);
+	await scheduler.advanceBy(35);
 	expect(completedSignal?.aborted).toBe(false);
 
 	const stalledRegistry: Registry = {
@@ -91,11 +99,13 @@ test("writer idle deadlines reset on stream activity but remain absolutely bound
 		getProvider: () => ({ streamSimple: () => (async function* () {
 			const partial = { ...message(), content: [], stopReason: "pending" as const };
 			yield { type: "start", partial };
-			await Bun.sleep(80);
-			yield { type: "done", reason: "stop", message: message() };
+			await new Promise(() => {});
 		})() as any }) as any,
 	};
-	const stalled = await callRole(stalledRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 200, idleTimeoutMs: 20 });
+	const stalledResult = callRole(stalledRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 200, idleTimeoutMs: 20 }, undefined, undefined, scheduler);
+	await flush();
+	await scheduler.advanceBy(20);
+	const stalled = await stalledResult;
 	expect(stalled.stopReason).toBe("error");
 	expect(stalled.errorMessage).toContain("provider idle timeout");
 
@@ -103,10 +113,13 @@ test("writer idle deadlines reset on stream activity but remain absolutely bound
 		find: () => model(), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
 		getProvider: () => ({ streamSimple: (_model, _context, options) => (async function* () {
 			const partial = { ...message(), content: [], stopReason: "pending" as const };
-			while (!options?.signal?.aborted) { await Bun.sleep(10); yield { type: "text_delta", contentIndex: 0, delta: "x", partial }; }
+			while (!options?.signal?.aborted) { await scheduledDelay(scheduler, 10); yield { type: "text_delta", contentIndex: 0, delta: "x", partial }; }
 		})() as any }) as any,
 	};
-	const bounded = await callRole(boundedRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 45, idleTimeoutMs: 25 });
+	const boundedResult = callRole(boundedRegistry, "test/lead", { messages: [] }, "high", { timeoutMs: 45, idleTimeoutMs: 25 }, undefined, undefined, scheduler);
+	await flush();
+	for (const step of [10, 10, 10, 10, 5]) { await scheduler.advanceBy(step); await flush(); }
+	const bounded = await boundedResult;
 	expect(bounded.stopReason).toBe("error");
 	expect(bounded.errorMessage).not.toContain("provider idle timeout");
 });

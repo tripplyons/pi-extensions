@@ -17,6 +17,7 @@ const deferred = <T>() => {
 	const promise = new Promise<T>(done => { resolve = done; });
 	return { promise, resolve };
 };
+const flush = async () => { for (let index = 0; index < 5; index++) await Promise.resolve(); };
 
 test("new reviewer phases archive the previous projection and preserve private notes", async () => {
 	const preset = defaultConfig().presets.default;
@@ -63,7 +64,7 @@ test("reviewers run concurrently and serialize repeated scheduled review cycles"
 			expect(JSON.stringify(request.context.messages)).toContain("missing-check");
 			request.result.resolve(report(2));
 		}
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 		expect(pool.serious).toHaveLength(0);
 		const checkpoint = pool.checkpoint(2, "Confirm the result");
 		await untilRequests(6);
@@ -92,7 +93,7 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		pool.prime(0, "Initial delegation");
 		expect(requests).toHaveLength(0);
 		pool.enqueue(1, "Native edit completed");
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 		expect(requests).toHaveLength(1);
 		expect(JSON.stringify(requests[0].context.messages)).toContain("Initial delegation");
 		expect(JSON.stringify(requests[0].context.messages)).toContain("tactical incremental review");
@@ -103,17 +104,17 @@ test("primed evidence coalesces until an explicit review trigger", async () => {
 		expect(requests[0].context.systemPrompt).toContain("Flag a writer-authored or materially weakened acceptance oracle");
 		pool.prime(2, "Tests passed after the edit");
 		requests[0].result.resolve(report(1));
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 		expect(requests).toHaveLength(1);
 		const checkpoint = pool.checkpoint(2, "Final writer report");
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 		expect(requests).toHaveLength(2);
 		expect(JSON.stringify(requests[1].context.messages)).toContain("Tests passed after the edit");
 		expect(JSON.stringify(requests[1].context.messages)).toContain("completion or handoff checkpoint");
 		requests[1].result.resolve(report(2));
 		expect((await checkpoint).warnings).toEqual([]);
 		const candidate = pool.checkpoint(2, "Lead final-answer candidate", undefined, undefined, true);
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 		expect(requests).toHaveLength(3);
 		expect(requests[2].context.tools?.map(tool => tool.name)).toEqual(["history", "notes", "new_context", "get_context_remaining", "mixture_review"]);
 		expect(requests[2].context.systemPrompt).toContain("Do not repeat that audit");
@@ -135,12 +136,12 @@ test("review requests retain only the latest eight distinct images", async () =>
 	try {
 		for (let index = 0; index < 12; index++) pool.prime(index, `Evidence ${index}`, [{ type: "image", mimeType: "image/png", data: `image-${index}` }]);
 		pool.enqueue(12, "Trigger review");
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 		const images = request!.context.messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(block => block.type === "image") : []);
 		expect(images).toHaveLength(8);
 		expect(images.map(image => image.data)).toEqual(Array.from({ length: 8 }, (_, index) => `image-${index + 4}`));
 		request!.result.resolve(report(12));
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
 	} finally { await pool.freeze(); }
 });
 

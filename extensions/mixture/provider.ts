@@ -6,6 +6,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { splitModel, type MixtureConfig, type Preset } from "./config.ts";
+import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 export type Registry = Pick<ModelRegistry, "find" | "getProvider" | "getApiKeyAndHeaders">;
 export type Lookup = (provider: string, model: string) => Model<Api> | undefined;
@@ -135,18 +136,19 @@ export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 
 export async function callRole(registry: Registry, id: string, context: Context, thinking: ModelThinkingLevel,
 	options: RoleStreamOptions & { timeoutMs: number; idleTimeoutMs?: number }, onPartial?: (message: AssistantMessage) => void,
-	onAcquire?: (sessionId: string) => void): Promise<AssistantMessage> {
+	onAcquire?: (sessionId: string) => void, scheduler: Scheduler = systemScheduler): Promise<AssistantMessage> {
 	const model = resolveModel(id, registry.find.bind(registry));
 	if (!getSupportedThinkingLevels(model).includes(thinking)) throw new Error(`${id} does not support thinking ${thinking}`);
+	const deadline = new AbortController();
+	const deadlineTimer = scheduler.after(options.timeoutMs, () => deadline.abort(new Error(`${id}: provider timeout after ${options.timeoutMs}ms`)));
 	const idle = options.idleTimeoutMs === undefined ? undefined : new AbortController();
-	let idleTimer: NodeJS.Timeout | undefined;
+	let idleTimer: ScheduledTask | undefined;
 	const resetIdle = () => {
 		if (!idle || options.idleTimeoutMs === undefined) return;
-		if (idleTimer) clearTimeout(idleTimer);
-		idleTimer = setTimeout(() => idle.abort(new Error(`${id}: provider idle timeout after ${options.idleTimeoutMs}ms`)), options.idleTimeoutMs);
-		idleTimer.unref?.();
+		if (idleTimer) scheduler.cancel(idleTimer);
+		idleTimer = scheduler.after(options.idleTimeoutMs, () => idle.abort(new Error(`${id}: provider idle timeout after ${options.idleTimeoutMs}ms`)));
 	};
-	const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(options.timeoutMs), ...(idle ? [idle.signal] : [])]);
+	const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), deadline.signal, ...(idle ? [idle.signal] : [])]);
 	let latest: AssistantMessage | undefined;
 	resetIdle();
 	try {
@@ -186,6 +188,7 @@ export async function callRole(registry: Registry, id: string, context: Context,
 	} catch (error) {
 		return { ...failureMessage(model, error, options.signal?.aborted), usage: latest?.usage ?? emptyUsage() };
 	} finally {
-		if (idleTimer) clearTimeout(idleTimer);
+		scheduler.cancel(deadlineTimer);
+		if (idleTimer) scheduler.cancel(idleTimer);
 	}
 }

@@ -7,8 +7,16 @@ export interface Scheduler {
 }
 
 export const systemScheduler: Scheduler = {
-	after: (delayMs, callback) => setTimeout(() => void callback(), delayMs),
-	every: (delayMs, callback) => setInterval(() => void callback(), delayMs),
+	after: (delayMs, callback) => {
+		const task = setTimeout(() => void callback(), delayMs);
+		task.unref?.();
+		return task;
+	},
+	every: (delayMs, callback) => {
+		const task = setInterval(() => void callback(), delayMs);
+		task.unref?.();
+		return task;
+	},
 	cancel: (task) => {
 		clearTimeout(task);
 		clearInterval(task);

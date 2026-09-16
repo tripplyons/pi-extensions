@@ -1,29 +1,9 @@
-import { afterAll, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { expect, test } from "bun:test";
 import { normalizeCodexConversionConfig } from "@howaboua/pi-codex-conversion/src/adapter/activation/config.ts";
 
-// Apply the tracked dependency patch in isolation, without modifying the installed runtime.
-const root = resolve(import.meta.dir, "../..");
-const directory = mkdtempSync(join(tmpdir(), "pi-voice-input-"));
-afterAll(() => rmSync(directory, { recursive: true, force: true }));
-const relative = "node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js";
-const target = join(directory, relative);
-mkdirSync(dirname(target), { recursive: true });
-copyFileSync(join(root, relative), target);
-const patch = join(root, "patches/@howaboua+pi-codex-conversion+3.0.33.patch");
-const args = ["git", "apply", "--unsafe-paths", `--include=${relative}`];
-const check = Bun.spawnSync([...args, "--check", patch], { cwd: directory });
-if (check.exitCode === 0) {
-	const applied = Bun.spawnSync([...args, patch], { cwd: directory });
-	if (applied.exitCode !== 0) throw new Error(applied.stderr.toString());
-} else {
-	const reverse = Bun.spawnSync([...args, "--reverse", "--check", patch], { cwd: directory });
-	if (reverse.exitCode !== 0) throw new Error(check.stderr.toString());
-}
-const { startRealtimeOffer } = await import(pathToFileURL(target).href);
+// Exercise the patched dependency installed by the package manager. Patch-package owns
+// patch applicability; these tests own the resulting microphone-selection behavior.
+const { startRealtimeOffer } = await import(new URL("../../node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js", import.meta.url).href);
 
 function harness(
 	inputs: Array<{ id: string; name: string }>,

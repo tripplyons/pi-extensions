@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
 import { ensureDir, newToken, readRun, runDir, runFile, writeJson } from "./state.ts";
 
@@ -13,14 +13,30 @@ export function processExists(pid: number) {
 	}
 }
 
-export async function acquireRunOwnership(runId: string) {
-	if (process.platform !== "darwin") throw new Error("Swarm ownership requires macOS lockf");
+export interface OwnershipDependencies {
+	platform: NodeJS.Platform;
+	pid: number;
+	now: () => number;
+	processExists: (pid: number) => boolean;
+	spawnLock: (lockPath: string) => ChildProcessWithoutNullStreams;
+}
+
+const ownershipDependencies: OwnershipDependencies = {
+	platform: process.platform,
+	pid: process.pid,
+	now: Date.now,
+	processExists,
+	spawnLock: lockPath => spawn("/usr/bin/lockf", ["-k", "-t", "0", lockPath, "/bin/sh", "-c", "printf ready; exec /bin/cat >/dev/null"], {
+		stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" },
+	}),
+};
+
+export async function acquireRunOwnership(runId: string, dependencies: OwnershipDependencies = ownershipDependencies) {
+	if (dependencies.platform !== "darwin") throw new Error("Swarm ownership requires macOS lockf");
 	const control = join(runDir(runId), "control");
 	ensureDir(control);
 	// Keep the inode. Unlinking a flock file allows two owners to lock different inodes.
-	const holder = spawn("/usr/bin/lockf", ["-k", "-t", "0", join(control, "owner.lock"), "/bin/sh", "-c", "printf ready; exec /bin/cat >/dev/null"], {
-		stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" },
-	});
+	const holder = dependencies.spawnLock(join(control, "owner.lock"));
 	let exited = false;
 	const closed = new Promise<void>((resolve) => holder.once("close", () => { exited = true; resolve(); }));
 	let diagnostics = "";
@@ -37,18 +53,18 @@ export async function acquireRunOwnership(runId: string) {
 			holder.once("close", () => { clearTimeout(timeout); reject(new Error(`Swarm ownership unavailable: ${diagnostics.trim()}`)); });
 		});
 		const run = readRun(runId);
-		if (processExists(run.ownerPid)) throw new Error(`Swarm already has a live owner: ${run.ownerPid}`);
+		if (dependencies.processExists(run.ownerPid)) throw new Error(`Swarm already has a live owner: ${run.ownerPid}`);
 		const token = newToken();
 		run.ownerToken = token;
-		run.ownerPid = process.pid;
-		run.heartbeatAt = Date.now();
+		run.ownerPid = dependencies.pid;
+		run.heartbeatAt = dependencies.now();
 		run.updatedAt = run.heartbeatAt;
 		writeJson(runFile(runId), run);
 		let released = false;
 		const assertOwned = () => {
-			if (released || exited || !holder.pid || !processExists(holder.pid)) throw new Error("Swarm ownership lock was lost");
+			if (released || exited || !holder.pid || !dependencies.processExists(holder.pid)) throw new Error("Swarm ownership lock was lost");
 			const current = readRun(runId);
-			if (current.ownerToken !== token || current.ownerPid !== process.pid) throw new Error("Swarm root ownership changed");
+			if (current.ownerToken !== token || current.ownerPid !== dependencies.pid) throw new Error("Swarm root ownership changed");
 			return current;
 		};
 		return {
@@ -56,7 +72,7 @@ export async function acquireRunOwnership(runId: string) {
 			assertOwned,
 			heartbeat() {
 				const current = assertOwned();
-				current.heartbeatAt = Date.now();
+				current.heartbeatAt = dependencies.now();
 				current.updatedAt = current.heartbeatAt;
 				writeJson(runFile(runId), current);
 			},
