@@ -35,8 +35,9 @@ test("Pi discovers the explicit package whitelist with unique tool registrations
     await loader.reload();
     const result = loader.getExtensions();
     expect(result.errors).toEqual([]);
-    expect(result.extensions).toHaveLength(23 + addons.length);
+    expect(result.extensions).toHaveLength(24 + addons.length);
     expect(result.extensions.filter((extension) => extension.commands.has("fast"))).toHaveLength(1);
+    expect(result.extensions.filter((extension) => extension.commands.has("live"))).toHaveLength(1);
     const names = result.extensions.flatMap((extension) => [...extension.tools.keys()]);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toContain("bash");
@@ -55,7 +56,7 @@ test("Pi discovers the explicit package whitelist with unique tool registrations
     expect(result.extensions.filter((extension) => extension.commands.has("mixture"))).toHaveLength(1);
     await loader.reload();
     expect(loader.getExtensions().errors).toEqual([]);
-    expect(loader.getExtensions().extensions).toHaveLength(23 + addons.length);
+    expect(loader.getExtensions().extensions).toHaveLength(24 + addons.length);
   } finally {
     process.argv[1] = originalScript;
     if (previousAgent === undefined) delete process.env.PI_CODING_AGENT_DIR;
