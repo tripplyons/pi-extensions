@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Message, Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Preset } from "./config.ts";
+import type { HandoffPreset } from "./config.ts";
 import { applyDelta, cloneJson, createDelta, type DeltaOperation } from "./delta.ts";
 import { CONTROL, fingerprint, type Actor, type MixtureState } from "./session.ts";
 import { receiptIds } from "./usage.ts";
@@ -234,7 +234,7 @@ export function materializeCheckpoint(branch: SessionEntry[]): { checkpoint?: Ch
 	return { checkpoint: materialized.checkpoint, index: checkpointIndex, warning: chainWarning };
 }
 
-export function restoreCheckpoint(branch: SessionEntry[], allEntries: SessionEntry[], name: string, preset: Preset, cwd: string): { state?: MixtureState; warning?: string } {
+export function restoreCheckpoint(branch: SessionEntry[], allEntries: SessionEntry[], name: string, preset: HandoffPreset, cwd: string): { state?: MixtureState; warning?: string } {
 	const materialized = materializeCheckpoint(branch);
 	const { checkpoint } = materialized;
 	const checkpointIndex = materialized.index;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { StringEnum, validateToolArguments, type AssistantMessage, type Context, type ImageContent, type Message, type Tool, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { createReadOnlyTools } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import type { Preset, RoleConfig } from "./config.ts";
+import type { HandoffPreset, RoleConfig } from "./config.ts";
 import { abortable, emptyUsage } from "./provider.ts";
 import { estimateContextTokens } from "./context.ts";
 import type { RoleState } from "./session.ts";
@@ -90,7 +90,7 @@ export class ReviewPool {
 	private systemPrompt = "";
 	private scope?: { content: string; images: ImageContent[] };
 	private readonly waiters = new Set<() => void>();
-	constructor(readonly preset: Preset, readonly states: ReviewerState[], cwd: string,
+	constructor(readonly preset: HandoffPreset, readonly states: ReviewerState[], cwd: string,
 		private readonly request: ReviewerRequest,
 		private readonly supportsImages: (model: string) => boolean,
 		private readonly changed: () => void = () => {},

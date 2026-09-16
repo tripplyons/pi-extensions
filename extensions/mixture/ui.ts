@@ -2,7 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSelectListTheme, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, Input, Key, matchesKey, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { defaultConfig, parseConfig, type MixtureConfig, type RoleConfig } from "./config.ts";
+import { defaultAdvisorPreset, defaultConfig, parseConfig, type HandoffPreset, type MixtureConfig, type RoleConfig } from "./config.ts";
 import { validatePreset } from "./provider.ts";
 import { phaseSummary } from "./phase.ts";
 import type { ControlInput, MixtureSession } from "./session.ts";
@@ -122,7 +122,7 @@ export async function configure(ctx: ExtensionCommandContext, current: MixtureCo
 	}
 	if (!name) return;
 	if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name) || ["constructor", "prototype", "__proto__"].includes(name)) throw new Error(`Invalid preset name: ${name}`);
-	const preset = candidate.presets[name] ?? structuredClone(defaultConfig().presets.default);
+	const existing = candidate.presets[name];
 	const available = ctx.modelRegistry.getAvailable().filter(model => model.provider !== "mixture");
 	if (!available.length) throw new Error("No authenticated role models are available. Configure Pi provider credentials first.");
 	const chooseModel = async (label: string, current: string) => {
@@ -164,19 +164,32 @@ export async function configure(ctx: ExtensionCommandContext, current: MixtureCo
 		const thinking = await ctx.ui.select(`${label} thinking`, levels);
 		return thinking ? { ...role, model, thinking: thinking as ModelThinkingLevel } : undefined;
 	};
-	const lead = await chooseModel("Lead model (thinking follows Pi's selector)", preset.lead);
-	if (!lead) return;
-	const writer = await chooseRole("Writer", preset.writer);
-	if (!writer) return;
-	const reviewerCount = await ctx.ui.select("Independent reviewers", [String(preset.reviewers.length), ...[0, 1, 2, 3, 4].filter(count => count !== preset.reviewers.length).map(String)]);
-	if (reviewerCount === undefined) return;
-	const reviewers: RoleConfig[] = [];
-	for (let index = 0; index < Number(reviewerCount); index++) {
-		const reviewer = await chooseRole(`Reviewer ${index + 1}`, preset.reviewers[index] ?? defaultConfig().presets.default.reviewers[index % 2]);
-		if (!reviewer) return;
-		reviewers.push(reviewer);
+	const currentMode = existing?.mode ?? "handoff";
+	const mode = await ctx.ui.select("Mixture mode", [currentMode, ...(["handoff", "advisor"] as const).filter(value => value !== currentMode)]);
+	if (!mode) return;
+	if (mode === "advisor") {
+		const preset = existing?.mode === "advisor" ? existing : defaultAdvisorPreset();
+		const executor = await chooseRole("Executor", preset.executor);
+		if (!executor) return;
+		const advisor = await chooseRole("Advisor", preset.advisor);
+		if (!advisor) return;
+		candidate.presets[name] = { ...preset, mode, executor, advisor };
+	} else {
+		const preset: HandoffPreset = existing?.mode === "handoff" ? existing : structuredClone(defaultConfig().presets.default);
+		const lead = await chooseModel("Lead model (thinking follows Pi's selector)", preset.lead);
+		if (!lead) return;
+		const writer = await chooseRole("Writer", preset.writer);
+		if (!writer) return;
+		const reviewerCount = await ctx.ui.select("Independent reviewers", [String(preset.reviewers.length), ...[0, 1, 2, 3, 4].filter(count => count !== preset.reviewers.length).map(String)]);
+		if (reviewerCount === undefined) return;
+		const reviewers: RoleConfig[] = [];
+		for (let index = 0; index < Number(reviewerCount); index++) {
+			const reviewer = await chooseRole(`Reviewer ${index + 1}`, preset.reviewers[index] ?? defaultConfig().presets.default.reviewers[index % 2]);
+			if (!reviewer) return;
+			reviewers.push(reviewer);
+		}
+		candidate.presets[name] = { ...preset, mode: "handoff", lead, writer, reviewers };
 	}
-	candidate.presets[name] = { ...preset, lead, writer, reviewers };
 	const edited = await ctx.ui.editor("Review Mixture config; edit guidance or limits if needed", JSON.stringify(candidate, null, 2));
 	if (edited === undefined) return;
 	const validated = parseConfig(JSON.parse(edited));

@@ -5,7 +5,7 @@ import { compactRole, estimateContextTokens, forModel, imageContent, interruptPe
 import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import { systemScheduler, type Scheduler } from "../scheduler.ts";
-import type { Preset } from "./config.ts";
+import type { HandoffPreset } from "./config.ts";
 import { addUsage, callRole, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RequestLane } from "./provider.ts";
 import { ASSESSMENTS, adoptLegacyPhase, assessPhase, closedPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
@@ -106,8 +106,13 @@ export interface MixtureState {
 const freshRole = (): RoleState => ({ messages: [], usage: emptyUsage(), calls: 0 });
 const freshDiagnostics = (): MixtureDiagnostics => ({ controlFailures: { missingPayload: 0, stalePhase: 0, invalidState: 0, other: 0 }, invalidControlRetries: 0, phaseResets: 0, tacticalReviewsSkipped: 0, reviewsReused: 0, jobReconciliations: 0 });
 const increment = (value: number, count = 1) => Math.min(Number.MAX_SAFE_INTEGER, value + count);
-export const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export function newState(name: string, preset: Preset): MixtureState {
+export const fingerprint = (value: unknown) => {
+	const compatible = value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "handoff"
+		? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "mode"))
+		: value;
+	return createHash("sha256").update(JSON.stringify(compatible)).digest("hex");
+};
+export function newState(name: string, preset: HandoffPreset): MixtureState {
 	return { version: 2, preset: name, configKey: fingerprint(preset), id: randomUUID(), active: "lead",
 		lead: freshRole(), writer: freshRole(), reviewers: preset.reviewers.map(newReviewer), receipts: [], seenUsers: [], initialized: false, brief: "", task: "", attachments: [], revision: 0,
 		delegations: 0, writerTurns: 0, writerRetries: 0, writerRetryDelegation: 0, writerReportRejections: 0, writerBatches: 0, writerReviewSequences: [], writerReviewsDelivered: 0, writerProgress: [],
@@ -163,7 +168,7 @@ export class MixtureSession {
 	private answerUserDirectly = false;
 	private readonly timings: PerformanceStats = { requests: {}, checkpoints: {} };
 	readonly reviews: ReviewPool;
-	constructor(readonly preset: Preset, readonly registry: Registry, state: MixtureState,
+	constructor(readonly preset: HandoffPreset, readonly registry: Registry, state: MixtureState,
 		private readonly jobs: () => BackgroundJobQuery,
 		private readonly changed: () => void = () => {}, cwd = process.cwd(), private readonly branchId = state.id,
 		private readonly scheduler: Scheduler = systemScheduler) {

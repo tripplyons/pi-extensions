@@ -7,6 +7,8 @@ import { initTheme, InteractiveMode } from "@earendil-works/pi-coding-agent";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { createAssistantMessageEventStream, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createMixtureExtension } from "./index.ts";
+import { ASK_ADVISOR } from "./advisor.ts";
+import { defaultAdvisorPreset } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
 
 const originalAgent = process.env.PI_CODING_AGENT_DIR;
@@ -19,6 +21,7 @@ const harness = async (config?: string, fast?: boolean) => {
 	const dir = mkdtempSync(join(tmpdir(), "mixture-index-")); dirs.push(dir); process.env.PI_CODING_AGENT_DIR = dir;
 	if (config) writeFileSync(join(dir, "mixture.json"), config);
 	const commands = new Map<string, any>(); const handlers = new Map<string, any>(); const providers: Provider[] = []; const tools: string[] = [];
+	let activeTools = ["read", "write", "edit", "bash"];
 	const roleOptions: Array<SimpleStreamOptions & { serviceTier?: string }> = [];
 	const definitions = new Map<string, any>();
 	const releasedIds: string[] = [];
@@ -38,15 +41,15 @@ const harness = async (config?: string, fast?: boolean) => {
 		on: (event: string, handler: any) => handlers.set(event, handler),
 		registerProvider: (provider: Provider) => providers.push(provider),
 		unregisterProvider: (id: string) => { const index = providers.findIndex(provider => provider.id === id); if (index >= 0) providers.splice(index, 1); },
-		getActiveTools: () => ["read", "write", "edit", "bash"],
-		setActiveTools: () => {},
+		getActiveTools: () => activeTools,
+		setActiveTools: (names: string[]) => { activeTools = names; },
 		events: { emit(name: string, value: { enabled?: boolean; sessionIds?: string[] }) {
 			if (name === "fast:query" && fast !== undefined) value.enabled = fast;
 			if (name === "tripp:mixture-session-release/v1") releasedIds.push(...value.sessionIds!);
 		} },
 	};
 	await createMixtureExtension(pi as any, registry);
-	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, get calls() { return calls; } };
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, get activeTools() { return activeTools; }, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -58,6 +61,40 @@ test("factory registers a native model without starting inference or old tools",
 	await h.handlers.get("session_start")({}, { modelRegistry: h.registry, thinkingLevel: "high", model: { provider: "ordinary" }, ui: { notify() {} } });
 	expect(h.calls).toBe(0);
 });
+test("advisor mode is a selectable Mixture model whose executor owns tools and consults its configured advisor", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	const branch: any[] = [{ type: "message", message: { role: "user", content: "Check the fixture" } }];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus() {} },
+	};
+	await h.handlers.get("session_start")({}, context);
+	expect(h.activeTools).toContain(ASK_ADVISOR);
+	expect(h.activeTools).not.toContain("mixture_control");
+	const provider = h.providers[0];
+	const output = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "Execute", timestamp: 1 }], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(output.model).toBe("executor");
+	expect(h.roleOptions[0].reasoning).toBe("medium");
+	const prompt = await h.handlers.get("before_agent_start")({ prompt: "Execute" }, context);
+	expect(prompt.systemPrompt).toContain("Mixture advisor mode");
+	expect(prompt.systemPrompt).toContain("after two materially equivalent failed attempts");
+	const tool = h.definitions.get(ASK_ADVISOR);
+	const call = { toolCallId: "advisor-call", toolName: ASK_ADVISOR, input: {} };
+	expect(h.handlers.get("tool_call")(call, context)).toBeUndefined();
+	const advice = await tool.execute("advisor-call", {}, undefined, undefined, context);
+	expect(advice.content[0].text).toBe("summary");
+	expect(advice.details.model).toBe("fixture/advisor");
+	expect(h.roleOptions[1].reasoning).toBe("high");
+	expect(h.roleOptions[1].maxTokens).toBe(4_096);
+	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "ordinary" } });
+	expect(h.activeTools).not.toContain(ASK_ADVISOR);
+	expect(h.releasedIds).toEqual(expect.arrayContaining([h.roleOptions[0].sessionId, h.roleOptions[1].sessionId]));
+});
+
 test("native Pi rows preserve lead previews through streaming, expansion and history rebuilds", async () => {
 	initTheme("dark", false);
 	const h = await harness();

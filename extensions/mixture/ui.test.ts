@@ -146,6 +146,33 @@ test("configuration supports disabled reviewers, guidance and limits without mut
 	expect(await configure(ctx, original)).toBeUndefined();
 });
 
+test("configuration can switch a named preset to advisor mode", async () => {
+	const original = defaultConfig();
+	const models = [
+		{ provider: "fixture", id: "executor", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000 },
+		{ provider: "fixture", id: "advisor", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000 },
+	];
+	let modelChoice = 0;
+	const ctx = { hasUI: true, isIdle: () => true, modelRegistry: { getAvailable: () => models, find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id) }, ui: {
+		select: async (label: string, options: string[]) => {
+			if (label === "Mixture preset") return "default";
+			if (label === "Mixture mode") return "advisor";
+			if (label.endsWith(" model")) return `fixture/${modelChoice++ === 0 ? "executor" : "advisor"}`;
+			return options.includes("high") ? "high" : options[0];
+		},
+		editor: async (_label: string, value: string) => value,
+		confirm: async () => true,
+	} } as unknown as ExtensionCommandContext;
+	const config = await configure(ctx, original);
+	expect(config?.presets.default).toMatchObject({
+		mode: "advisor",
+		executor: { model: "fixture/executor", thinking: "high" },
+		advisor: { model: "fixture/advisor", thinking: "high" },
+		context: { maxChars: 15_000, git: "summary", redactSecrets: true },
+		limits: { maxCalls: 2 },
+	});
+});
+
 test("print mode and active tasks get actionable errors instead of TUI-only callbacks", async () => {
 	await expect(configure({ hasUI: false } as ExtensionCommandContext, defaultConfig())).rejects.toThrow("edit mixture.json directly");
 	await expect(configure({ hasUI: true, isIdle: () => false } as ExtensionCommandContext, defaultConfig())).rejects.toThrow("only while idle");

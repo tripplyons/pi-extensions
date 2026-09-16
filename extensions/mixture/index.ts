@@ -4,7 +4,7 @@ import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext }
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { queryBackgroundJobs, type BackgroundJobQuery } from "../bg-bash/events.ts";
 import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeMarker, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
-import { configPath, loadConfig, saveConfig, type MixtureConfig } from "./config.ts";
+import { configPath, loadConfig, saveConfig, type AdvisorPreset, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
 import { releaseProviderSessions } from "./events.ts";
 import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
@@ -14,6 +14,7 @@ import { receiptIds, tagReceipts } from "./usage.ts";
 import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
 import { systemScheduler, type Scheduler } from "../scheduler.ts";
+import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorGuidelines, advisorTool, consultAdvisor, type AdvisorInput } from "./advisor.ts";
 
 export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
 	const running = jobs.jobs.filter(job => job.status === "running");
@@ -42,15 +43,42 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	let requesting = false;
 	let compacting = false;
 	const helpers = new Set<AbortController>();
+	const directSessionIds = new Set<string>();
+	const reservedAdvisorCalls = new Set<string>();
 	try { config = loadConfig(); }
 	catch (error) { diagnostic = String(error); }
 	const selected = () => ctx?.model?.provider === "mixture" && !!config?.presets[ctx.model.id];
-	const status = () => diagnostic ?? (session ? inspection(session) : `Mixture presets: ${Object.keys(config!.presets).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`);
-	const render = () => { if (ctx?.hasUI) ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : "lead · unavailable · $?" : undefined); };
+	const selectedPreset = () => selected() ? config!.presets[ctx!.model!.id] : undefined;
+	const selectedHandoff = () => selectedPreset()?.mode === "handoff";
+	const selectedAdvisor = (): AdvisorPreset | undefined => {
+		const preset = selectedPreset();
+		return preset?.mode === "advisor" ? preset : undefined;
+	};
+	const status = () => {
+		if (diagnostic) return diagnostic;
+		if (session) return inspection(session);
+		const advisor = selectedAdvisor();
+		if (advisor && ctx) return [
+			`Mixture ${ctx.model!.id} (advisor)`,
+			`Executor: ${advisor.executor.model} (${advisor.executor.thinking})`,
+			`Advisor: ${advisor.advisor.model} (${advisor.advisor.thinking})`,
+			`Calls: ${advisorCallCount(ctx.sessionManager.getBranch())}/${advisor.limits.maxCalls}`,
+			`Context: ${advisor.context.maxChars} chars; Git ${advisor.context.git}; redaction ${advisor.context.redactSecrets ? "on" : "off"}`,
+			`Gates: plan ${advisor.gates.plan ? "on" : "off"}; failure ${advisor.gates.failure ? "on" : "off"}; completion ${advisor.gates.completion ? "on" : "off"}`,
+		].join("\n");
+		return `Mixture presets: ${Object.entries(config!.presets).map(([name, preset]) => `${name} (${preset.mode})`).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`;
+	};
+	const render = () => {
+		if (!ctx?.hasUI) return;
+		const advisor = selectedAdvisor();
+		const calls = advisor && ctx ? advisorCallCount(ctx.sessionManager.getBranch()) : 0;
+		ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : advisor ? `executor · advisor ${calls}/${advisor.limits.maxCalls}` : "handoff · unavailable · $?" : undefined);
+	};
 	const releaseRoleResources = (target = session) => {
 		for (const helper of helpers) helper.abort(new Error("Mixture helper released"));
-		if (!target) return;
-		releaseProviderSessions(pi, target.resourceSessionIds());
+		if (target) for (const id of target.resourceSessionIds()) directSessionIds.add(id);
+		if (directSessionIds.size) releaseProviderSessions(pi, [...directSessionIds]);
+		directSessionIds.clear();
 	};
 	const persist = (stage: CheckpointStage) => {
 		if (!ctx || !session || ctx.sessionManager.getSessionId() !== rootId) return;
@@ -76,8 +104,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	};
 	const detach = async (reason: string, warn = false) => {
 		for (const helper of helpers) helper.abort(new Error(`Mixture ${reason}`));
+		reservedAdvisorCalls.clear();
 		const old = session;
-		if (!old) return;
+		if (!old) { releaseRoleResources(); return; }
 		await old.abort();
 		await pending?.catch(() => {});
 		releaseRoleResources(old);
@@ -96,12 +125,14 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		persistedBlobs = new Set();
 	};
 	const activate = async (context: ExtensionContext, reset = false) => {
-		if (session && (reset || context.sessionManager.getSessionId() !== rootId || context.model?.provider !== "mixture" || session.state.preset !== context.model.id)) await detach("model or session changed", true);
+		const resourceIdentityChanged = reset || context.sessionManager.getSessionId() !== rootId || context.model?.provider !== "mixture" || ctx?.model?.provider !== "mixture" || ctx.model.id !== context.model.id;
+		const handoffInvalid = session && (!context.model || session.state.preset !== context.model.id || config?.presets[context.model.id]?.mode !== "handoff");
+		if ((session || directSessionIds.size) && (resourceIdentityChanged || handoffInvalid)) await detach("model or session changed", true);
 		ctx = context;
 		registry = context.modelRegistry;
-		const active = pi.getActiveTools().filter(name => name !== CONTROL);
-		pi.setActiveTools(selected() ? [...active, CONTROL] : active);
-		if (selected()) ensureSession();
+		const active = pi.getActiveTools().filter(name => name !== CONTROL && name !== ASK_ADVISOR);
+		pi.setActiveTools(selectedHandoff() ? [...active, CONTROL] : selectedAdvisor() ? [...active, ASK_ADVISOR] : active);
+		if (selectedHandoff()) ensureSession();
 		render();
 	};
 	const inheritFastMode = (options?: SimpleStreamOptions): RoleStreamOptions | undefined => {
@@ -111,10 +142,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		return { ...options, serviceTier: fast.enabled ? "priority" : "default" };
 	};
 	const ensureSession = () => {
-		if (!selected() || !ctx || !config) throw new Error("Select a Mixture model first");
+		if (!selectedHandoff() || !ctx || !config) throw new Error("Select a Mixture handoff preset first");
 		if (!session) {
 			const name = ctx.model!.id;
 			const preset = config.presets[name];
+			if (preset.mode !== "handoff") throw new Error("Mixture preset is not in handoff mode");
 			const branch = ctx.sessionManager.getBranch();
 			persistedBlobs = new Set(branch.flatMap(entry => entry.type === "custom" && entry.customType === CHECKPOINT_BLOB && typeof (entry.data as any)?.hash === "string" ? [(entry.data as any).hash] : []));
 			const restored = restoreCheckpoint(branch, ctx.sessionManager.getEntries(), name, preset, ctx.cwd);
@@ -147,6 +179,17 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			try {
 				const inheritedOptions = inheritFastMode(options);
 				if (selected() && ctx?.model?.id === name && options?.sessionId === ctx.sessionManager.getSessionId()) {
+					if (preset.mode === "advisor") {
+						rootId = ctx.sessionManager.getSessionId();
+						const message = await callRole(registry, preset.executor.model, context, preset.executor.thinking, {
+							...inheritedOptions,
+							timeoutMs: preset.limits.requestTimeoutMs,
+							maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.executorMaxTokens, preset.limits.executorMaxTokens),
+							sessionId: requestLaneId(rootId, name, `${name}/executor`, "ordinary"),
+						}, undefined, id => directSessionIds.add(id), scheduler);
+						emitMessage(stream, message);
+						return;
+					}
 					const active = ensureSession();
 					requesting = true; render(); persist("request");
 					const request = active.next(context, inheritedOptions, ctx.thinkingLevel);
@@ -159,17 +202,20 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 					return;
 				}
 				// Pi helper requests have a separate routing ID and never join a run.
-				const model = resolveModel(preset.lead, registry.find.bind(registry));
+				const role = preset.mode === "advisor" ? preset.executor : { model: preset.lead, thinking: undefined };
+				const model = resolveModel(role.model, registry.find.bind(registry));
 				const helperState = createLocalContext({ branchId: options?.sessionId ?? `helper-${randomUUID()}`, preset: name, role: "/helper" }, context.messages);
 				const helperContext = { ...context, messages: helperState.activeMessages, tools: [] };
 				const controller = new AbortController();
 				helpers.add(controller);
 				let acquiredId: string | undefined;
 				try {
-					emitMessage(stream, await callRole(registry, preset.lead, helperContext, inheritedOptions?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off"), {
-						...inheritedOptions, sessionId: requestLaneId(options?.sessionId ?? "detached", randomUUID(), `${name}/lead`, "helper"), timeoutMs: preset.limits.requestTimeoutMs,
+					const maxTokens = preset.mode === "advisor" ? preset.limits.executorMaxTokens : preset.limits.leadMaxTokens;
+					const thinking = role.thinking ?? inheritedOptions?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off");
+					emitMessage(stream, await callRole(registry, role.model, helperContext, thinking, {
+						...inheritedOptions, sessionId: requestLaneId(options?.sessionId ?? "detached", randomUUID(), `${name}/helper`, "helper"), timeoutMs: preset.limits.requestTimeoutMs,
 						signal: AbortSignal.any([controller.signal, ...(options?.signal ? [options.signal] : [])]),
-						maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
+						maxTokens: Math.min(inheritedOptions?.maxTokens ?? maxTokens, maxTokens),
 					}, undefined, id => { acquiredId = id; }, scheduler));
 				} finally {
 					helpers.delete(controller);
@@ -198,6 +244,21 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		renderCall: (args, theme, context) => controlCall(args, context.expanded, theme),
 		renderResult: (result, options, theme) => controlCard(result.content.filter(block => block.type === "text").map(block => block.text).join("\n"), options.expanded, theme),
 	});
+	pi.registerTool({
+		name: ASK_ADVISOR, label: "Advisor", description: advisorTool.description, parameters: AdvisorParams,
+		execute: async (id, input: AdvisorInput, signal, _update, context) => {
+			if (signal?.aborted) throw new Error("Advisor consultation cancelled");
+			ctx = context;
+			const preset = selectedAdvisor();
+			if (!preset) throw new Error("Select a Mixture advisor preset first");
+			try {
+				const advice = await consultAdvisor(preset, registry, input, context, { ...inheritFastMode(), signal }, id => directSessionIds.add(id), scheduler);
+				return { content: [{ type: "text" as const, text: advice.text }], details: { model: advice.model }, usage: advice.usage };
+			} finally { reservedAdvisorCalls.delete(id); render(); }
+		},
+		renderCall: (args, theme, context) => controlCard(`Advisor review${args.question ? `\n${args.question}` : ""}`, context.expanded, theme),
+		renderResult: (result, options, theme) => controlCard(result.content.filter(block => block.type === "text").map(block => block.text).join("\n"), options.expanded, theme),
+	});
 	pi.registerCommand("mixture", {
 		description: "Configure or inspect Mixture models",
 		getArgumentCompletions: prefix => ["status", "configure", "inspect"].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
@@ -206,15 +267,16 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			try {
 				if (extra || !["status", "configure", "inspect"].includes(action) || name && action !== "configure") throw new Error("Usage: /mixture [status | inspect | configure [preset]]");
 				if (action !== "configure") {
-					if (selected()) ensureSession();
+					if (selectedHandoff()) ensureSession();
 					if (action === "inspect" && context.mode === "tui") await context.ui.custom<void>((tui, theme, _keys, done) => new Inspector(status(), () => Math.min(30, tui.terminal.rows - 4), () => tui.requestRender(), () => done(), theme), { overlay: true, overlayOptions: { width: "100%", maxHeight: "90%" } });
 					else context.ui.notify(status(), diagnostic ? "error" : "info");
 					return;
 				}
 				if (session) {
+					const activeSession = session;
 					const jobs = queryBackgroundJobs(pi, rootId!);
-					const tracked = Object.keys(session.state.jobs);
-					const running = jobs.jobs.some(job => job.status === "running" && Object.hasOwn(session.state.jobs, job.id));
+					const tracked = Object.keys(activeSession.state.jobs);
+					const running = jobs.jobs.some(job => job.status === "running" && Object.hasOwn(activeSession.state.jobs, job.id));
 					if (running || tracked.length && (jobs.error || !jobs.available)) throw new Error("Reconcile Mixture's tracked background jobs before changing its configuration");
 				}
 				let before: string | null = null;
@@ -236,17 +298,33 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			} catch (error) { context.ui.notify(String(error), "error"); }
 		},
 	});
-	pi.on("session_start", async (_event, context) => { await activate(context, true); if (diagnostic) context.ui.notify(diagnostic, "error"); });
+	pi.on("session_start", async (_event, context) => { reservedAdvisorCalls.clear(); await activate(context, true); if (diagnostic) context.ui.notify(diagnostic, "error"); });
 	pi.on("model_select", (_event, context) => activate(context));
-	pi.on("before_agent_start", async (event, context) => { await activate(context); if (selected()) ensureSession().newRequest(event.prompt); });
-	pi.on("agent_start", () => { if (selected()) session?.resumeLoop(); });
+	pi.on("before_agent_start", async (event, context) => {
+		await activate(context);
+		if (selectedHandoff()) ensureSession().newRequest(event.prompt);
+		const preset = selectedAdvisor();
+		if (!preset) return;
+		const guidelines = advisorGuidelines(preset, advisorCallCount(context.sessionManager.getBranch()) + reservedAdvisorCalls.size);
+		const guidance = preset.executor.guidance ? `\n\nExecutor guidance:\n${preset.executor.guidance}` : "";
+		return { systemPrompt: `${context.getSystemPrompt()}\n\nMixture advisor mode:\n${guidelines.map(rule => `- ${rule}`).join("\n")}${guidance}` };
+	});
+	pi.on("agent_start", () => { if (selectedHandoff()) session?.resumeLoop(); });
 	pi.on("tool_call", event => {
-		if (!selected()) return;
-		try { ensureSession().guard(event.toolCallId, event.toolName, event.input); }
-		catch (error) { return { block: true, reason: String(error) }; }
+		if (selectedHandoff()) {
+			try { ensureSession().guard(event.toolCallId, event.toolName, event.input); }
+			catch (error) { return { block: true, reason: String(error) }; }
+			return;
+		}
+		const preset = selectedAdvisor();
+		if (!preset || event.toolName !== ASK_ADVISOR) return;
+		const used = ctx ? advisorCallCount(ctx.sessionManager.getBranch()) : 0;
+		if (used + reservedAdvisorCalls.size >= preset.limits.maxCalls) return { block: true, reason: `Advisor call limit reached (${preset.limits.maxCalls} per session)` };
+		reservedAdvisorCalls.add(event.toolCallId);
 	});
 	pi.on("tool_result", (event, context) => {
-		if (!session || context.sessionManager.getSessionId() !== rootId) return;
+		reservedAdvisorCalls.delete(event.toolCallId);
+		if (!session || context.sessionManager.getSessionId() !== rootId) { render(); return; }
 		const nested = session.takeUsage();
 		if (!nested.totalTokens && !nested.cost.total) return;
 		const usage = structuredClone(event.usage ?? emptyUsage());
@@ -255,14 +333,14 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		return { usage, details: { ...details, mixtureReceiptIds: [...new Set([...receiptIds(details), ...session.lastDrained])] } };
 	});
 	pi.on("message_end", async event => {
-		if (!selected() || !session || event.message.role !== "assistant" || !["aborted", "error"].includes(event.message.stopReason)) return;
+		if (!selectedHandoff() || !session || event.message.role !== "assistant" || !["aborted", "error"].includes(event.message.stopReason)) return;
 		const usage = await session.drainAfterAbort();
 		if (!usage.totalTokens && !usage.cost.total) return;
 		addUsage(usage, event.message.usage);
 		return { message: tagReceipts({ ...event.message, usage }, session.lastDrained) };
 	});
-	pi.on("turn_end", event => { if (selected()) { session?.completeTurn(event.toolResults, event.message.role === "assistant" ? event.message : undefined); persist("turn"); } });
-	pi.on("agent_end", async () => { if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); } render(); });
+	pi.on("turn_end", event => { if (selectedHandoff()) { session?.completeTurn(event.toolResults, event.message.role === "assistant" ? event.message : undefined); persist("turn"); } });
+	pi.on("agent_end", async () => { reservedAdvisorCalls.clear(); if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); } render(); });
 	pi.on("session_before_switch", () => detach("session switch"));
 	pi.on("session_before_fork", () => detach("session fork"));
 	pi.on("session_before_tree", () => detach("tree navigation"));
@@ -270,7 +348,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	pi.on("session_before_compact", () => { compacting = true; render(); return detach("compaction"); });
 	pi.on("session_compact", (_event, context) => { compacting = false; return activate(context, true); });
 	pi.on("session_compact_failed", (_event, context) => { compacting = false; return activate(context, true); });
-	pi.on("session_shutdown", async () => { await detach("session shutdown", true); ctx = undefined; rootId = undefined; });
+	pi.on("session_shutdown", async () => { reservedAdvisorCalls.clear(); await detach("session shutdown", true); releaseRoleResources(undefined); ctx = undefined; rootId = undefined; });
 	if (config) {
 		try { registered = buildProvider(config); pi.registerProvider(registered); }
 		catch (error) { diagnostic = `Mixture registration failed: ${String(error)}`; }

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configPath, defaultConfig, loadConfig, parseConfig, saveConfig, splitModel } from "./config.ts";
+import { configPath, defaultAdvisorPreset, defaultConfig, loadConfig, parseConfig, saveConfig, splitModel } from "./config.ts";
 
 const directories: string[] = [];
 const temporary = () => { const dir = mkdtempSync(join(tmpdir(), "mixture-config-")); directories.push(dir); return dir; };
@@ -36,6 +36,31 @@ test("strict versioned config rejects old schema, recursion, unsafe names, and l
 	expect(() => splitModel("provider/")).toThrow();
 	expect(() => splitModel("no-provider")).toThrow();
 });
+test("advisor presets are strict, default bounded context, and keep legacy handoff presets valid", () => {
+	const legacy = structuredClone(defaultConfig()) as any;
+	delete legacy.presets.default.mode;
+	expect(parseConfig(legacy).presets.default.mode).toBe("handoff");
+	const advisor = { version: 3, presets: { review: defaultAdvisorPreset() } };
+	expect(parseConfig(advisor)).toEqual(advisor);
+	const sparse = structuredClone(advisor) as any;
+	delete sparse.presets.review.context;
+	delete sparse.presets.review.gates;
+	delete sparse.presets.review.limits;
+	expect(parseConfig(sparse).presets.review).toEqual(defaultAdvisorPreset());
+	for (const mutate of [
+		(value: any) => { value.presets.review.executor.model = "mixture/default"; },
+		(value: any) => { value.presets.review.context.git = "everything"; },
+		(value: any) => { value.presets.review.context.maxChars = 0; },
+		(value: any) => { value.presets.review.gates.failure = "yes"; },
+		(value: any) => { value.presets.review.limits.maxCalls = 0; },
+		(value: any) => { value.presets.review.reviewers = []; },
+	]) {
+		const invalid = structuredClone(advisor) as any;
+		mutate(invalid);
+		expect(() => parseConfig(invalid)).toThrow();
+	}
+});
+
 test("malformed and old files fail with the path and are preserved", () => {
 	const dir = temporary();
 	const version2 = defaultConfig() as any;

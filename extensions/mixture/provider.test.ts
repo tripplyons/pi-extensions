@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { defaultConfig } from "./config.ts";
+import { defaultAdvisorPreset, defaultConfig } from "./config.ts";
 import { abortable, callRole, createMixtureProvider, emitMessage, emptyUsage, modelDefinition, requestLaneId, validatePreset, type Registry } from "./provider.ts";
 import { ManualScheduler } from "../test-scheduler.ts";
 
@@ -44,6 +44,20 @@ test("native provider has ambient role auth and conservative catalog metadata", 
 	expect(modelDefinition("default", preset, (p, id) => ({ ...model(p, id), input: id.includes("meta") ? ["text"] : ["text", "image"] })).input).toEqual(["text", "image"]);
 	expect(() => validatePreset(preset, (p, id) => ({ ...model(p, id), thinkingLevelMap: { low: null } }))).toThrow("does not support");
 });
+test("advisor model metadata follows the Executor rather than its bounded text-only Advisor", () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const definition = modelDefinition("advisor", preset, (provider, id) => ({
+		...model(provider, id), input: id === "executor" ? ["text", "image"] : ["text"],
+		contextWindow: id === "executor" ? 200_000 : 50_000,
+	}));
+	expect(definition.input).toEqual(["text", "image"]);
+	expect(definition.contextWindow).toBe(200_000);
+	expect(definition.maxTokens).toBe(16_384);
+	expect(() => validatePreset(preset, (provider, id) => id === "advisor" ? { ...model(provider, id), reasoning: false } : model(provider, id))).toThrow("advisor");
+});
+
 test("emits native text and structured tool events with one terminal result", async () => {
 	const stream = createAssistantMessageEventStream();
 	emitMessage(stream, message());

@@ -92,7 +92,10 @@ export function resolveMixtureWorker(model: string, sourceAgent: string): Mixtur
 	const sourceConfig = loadConfig(sourceAgent);
 	const preset = sourceConfig.presets[name];
 	if (!preset) throw new Error(`Unknown Mixture preset ${name} in ${configPath(sourceAgent)}`);
-	const providers = [...new Set([preset.lead, preset.writer.model, ...preset.reviewers.map(role => role.model)].map(id => splitModel(id)[0]))];
+	const roleModels = preset.mode === "advisor"
+		? [preset.executor.model, preset.advisor.model]
+		: [preset.lead, preset.writer.model, ...preset.reviewers.map(role => role.model)];
+	const providers = [...new Set(roleModels.map(id => splitModel(id)[0]))];
 	const authPath = join(sourceAgent, "auth.json");
 	let stored: unknown;
 	try { stored = readJson(authPath); }

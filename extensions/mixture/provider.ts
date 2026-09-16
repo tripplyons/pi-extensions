@@ -33,23 +33,28 @@ export function resolveModel(id: string, find: Lookup): Model<Api> {
 	return resolved;
 }
 export function validatePreset(preset: Preset, find: Lookup) {
-	resolveModel(preset.lead, find);
-	for (const role of [preset.writer, ...preset.reviewers]) {
-		const model = resolveModel(role.model, find);
-		if (!getSupportedThinkingLevels(model).includes(role.thinking)) {
-			throw new Error(`${role.model} does not support thinking ${role.thinking}; supported: ${getSupportedThinkingLevels(model).join(", ")}`);
+	const roles = preset.mode === "advisor" ? [preset.executor, preset.advisor] : [preset.writer, ...preset.reviewers];
+	if (preset.mode === "handoff") resolveModel(preset.lead, find);
+	for (const role of roles) {
+		const resolved = resolveModel(role.model, find);
+		if (!getSupportedThinkingLevels(resolved).includes(role.thinking)) {
+			throw new Error(`${role.model} does not support thinking ${role.thinking}; supported: ${getSupportedThinkingLevels(resolved).join(", ")}`);
 		}
 	}
 }
 export function modelDefinition(name: string, preset: Preset, find: Lookup): Model<Api> {
-	const models = [preset.lead, preset.writer.model, ...preset.reviewers.map(role => role.model)].map(id => resolveModel(id, find));
-	const lead = models[0];
+	const ids = preset.mode === "advisor"
+		? [preset.executor.model, preset.advisor.model]
+		: [preset.lead, preset.writer.model, ...preset.reviewers.map(role => role.model)];
+	const models = ids.map(id => resolveModel(id, find));
+	const primary = models[0];
+	const maxTokens = preset.mode === "advisor" ? preset.limits.executorMaxTokens : preset.limits.leadMaxTokens;
 	return {
-		id: name, name: `Mixture: ${name}`, api: "mixture", provider: "mixture", baseUrl: "",
-		reasoning: lead.reasoning, thinkingLevelMap: lead.thinkingLevelMap,
-		input: models.every(model => model.input.includes("image")) ? ["text", "image"] : ["text"],
-		contextWindow: Math.min(...models.map(model => model.contextWindow)),
-		maxTokens: Math.min(lead.maxTokens, preset.limits.leadMaxTokens),
+		id: name, name: `Mixture: ${name} (${preset.mode})`, api: "mixture", provider: "mixture", baseUrl: "",
+		reasoning: primary.reasoning, thinkingLevelMap: primary.thinkingLevelMap,
+		input: preset.mode === "advisor" ? primary.input : models.every(model => model.input.includes("image")) ? ["text", "image"] : ["text"],
+		contextWindow: preset.mode === "advisor" ? primary.contextWindow : Math.min(...models.map(model => model.contextWindow)),
+		maxTokens: Math.min(primary.maxTokens, maxTokens),
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	};
 }

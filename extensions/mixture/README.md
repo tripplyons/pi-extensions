@@ -1,19 +1,22 @@
 # Mixture
 
-Mixture is a native Pi model with a lead, a writer and independent read-only
-reviewers. Select `mixture/default` through `/model`. Requires Pi 0.85.1 or newer.
-Selecting an ordinary model does not start collaborators. Agent Swarm can launch a
-`mixture/<preset>` node with the same lead/writer loop in that node's worktree.
+Mixture exposes named, JSON-configured workflows as native Pi models. Select any
+preset as `mixture/<preset>` through `/model`. Requires Pi 0.85.1 or newer.
+Selecting an ordinary model does not start Mixture behavior. Each preset chooses a
+mode:
 
-The lead receives each complete user request first, settles consequential choices,
-defines a concrete plan, constraints and acceptance criteria, and initiates the
-writer. The writer then plans, edits and tests in your current checkout, including
-uncommitted and untracked files. The
-harness schedules read-only review during that work and delivers findings directly
-to the writer. It returns control to the lead less often for strategy, ambiguity,
-completion assessment and the user-facing answer. Standalone Mixture needs no Git
-repository, worktree or editing subprocess. The lead can explicitly take over after
-a safe writer handoff.
+- `handoff` preserves the lead, writer and independent-reviewer workflow.
+- `advisor` keeps one economical Executor in control and gives it a bounded,
+  read-only `ask_advisor` consultation with a stronger model.
+
+Agent Swarm can launch either mode as a `mixture/<preset>` node in that node's
+worktree.
+
+In handoff mode, the lead receives each complete user request first, settles
+consequential choices, defines a concrete plan, constraints and acceptance
+criteria, and initiates the writer. The writer then plans, edits and tests in your
+current checkout. The harness schedules read-only review and returns control to the
+lead for strategy, ambiguity, completion assessment and the user-facing answer.
 
 ## Configuration
 
@@ -31,6 +34,7 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
   "version": 3,
   "presets": {
     "default": {
+      "mode": "handoff",
       "lead": "openai-codex/gpt-6-astra",
       "writer": {
         "model": "openrouter/z-ai/glm-5.3-flash",
@@ -44,9 +48,43 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
 }
 ```
 
-- A missing file uses these defaults in memory; startup does not write it.
-- Preset names become model IDs: `mixture/<preset>`.
-- Set `reviewers` to `[]` to disable independent review. Up to four are allowed.
+An advisor preset can live beside handoff presets in the same file:
+
+```json
+{
+  "mode": "advisor",
+  "executor": {
+    "model": "openai-codex/gpt-5.6-luna",
+    "thinking": "medium"
+  },
+  "advisor": {
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinking": "high"
+  },
+  "context": {
+    "maxChars": 15000,
+    "git": "summary",
+    "redactSecrets": true
+  },
+  "gates": {
+    "plan": false,
+    "failure": true,
+    "completion": false
+  },
+  "limits": {
+    "requestTimeoutMs": 240000,
+    "executorMaxTokens": 16384,
+    "advisorMaxTokens": 4096,
+    "maxCalls": 2
+  }
+}
+```
+
+- A missing file uses the handoff defaults in memory; startup does not write it.
+- Existing version-3 presets without `mode` remain valid and parse as `handoff`.
+- Preset names become model IDs: `mixture/<preset>` regardless of mode.
+- `/mixture configure [preset]` can create or switch either mode.
+- In handoff mode, set `reviewers` to `[]` to disable independent review. Up to four are allowed.
 - Each writer/reviewer can have optional `guidance`. Repository instructions
   already supplied to Pi are included; no additional project config is loaded.
 - Lead thinking follows Pi's normal selector. Writer/reviewer levels are
@@ -63,6 +101,40 @@ Configuration lives at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/mixture.json`:
   There is no automatic migration. Version 3 renamed the cadence limits; run
   `/mixture configure` to replace a version-2 file explicitly.
 
+## Advisor mode
+
+The Executor is the active worker behind the composite model. It receives Pi's
+ordinary context and tools, performs all reads, edits and tests, and produces the
+user-facing answer. Its configured thinking level is stable rather than following
+Pi's selector. This keeps the execution model pinned for prompt-cache reuse.
+
+`ask_advisor` is active only while an advisor preset is selected. The Advisor gets
+no tools and cannot edit, run commands or take over. A consultation includes recent
+complete conversation entries, capped tool output, and repository disclosure up to
+the preset's configured ceiling. `summary` sends Git status, paths and line counts;
+`full` also sends the tracked patch; `off` sends no repository data. Untracked files
+are named by Git status but their contents are never attached. The Git region can
+use at most half of `context.maxChars`, so it cannot displace the whole conversation.
+A call may narrow, but never expand, the configured Git level.
+
+Secret redaction is enabled in the default advisor template. It covers common token,
+credential assignment, bearer-token and private-key patterns, but is not a complete
+data-classification system. Use `git: "off"` when filenames themselves are
+sensitive. Repository and draft regions are marked as untrusted data in the Advisor
+prompt.
+
+The `plan`, `failure`, and `completion` gates are Executor instructions, not hidden
+model calls. The default asks for advice after repeated failure but not for every
+plan or completion. `limits.maxCalls` is a hard per-session cap based on recorded
+`ask_advisor` results; blocked or concurrent calls cannot exceed the reservation.
+Advisor usage is attached to the visible tool result and therefore contributes to
+Pi's session usage without inflating Executor context pressure. Optional `guidance`
+on `executor` or `advisor` is appended only to that role's system prompt.
+
+Compaction and other Pi helper requests use the Executor with tools disabled. Advisor
+mode does not create Mixture checkpoints or private lead/writer histories; the
+ordinary Pi session branch is its durable context.
+
 ## Tool previews
 
 `mixture_control` shows one compact excerpt in collapsed cards: the next action
@@ -71,7 +143,7 @@ reports for writer reports, escalations, and pauses. Harness checkpoints show
 their checkpoint text. Whitespace is flattened and excerpts are capped at 160
 visible columns; expanded cards retain all control fields.
 
-## Execution and review
+## Handoff execution and review
 
 Lead and writer calls use the normal Pi tool loop, including validation,
 permission hooks, visible tool output and recorded results. `mixture_control`
@@ -167,14 +239,15 @@ verification. Composite input metadata reflects the whole roster conservatively.
 A Swarm node selecting `mixture/<preset>` explicitly loads this extension after
 Agent Swarm. The launcher validates the source configuration, selects one preset,
 and writes only that preset to the node's private `mixture.json`. It takes the
-provider portion before the first slash in every lead, writer and reviewer model
-ID, deduplicates those providers, and copies only their stored credentials. A
+provider portion before the first slash in every configured role model ID—lead,
+writer and reviewers for handoff mode, or Executor and Advisor for advisor mode—
+deduplicates those providers, and copies only their stored credentials. A
 missing source file uses the in-memory default preset. There is no synthetic
 `mixture` credential. Malformed configuration, an unknown preset or a missing role
 credential stops the worker before tmux launch. Relevant filtered model metadata is
 copied when present; unrelated providers and presets are not.
 
-Mixture's lead and writer still own the inner phase and writer lease. The lead can
+In handoff mode, Mixture's lead and writer still own the inner phase and writer lease. The lead can
 read and coordinate through active, known `swarm_*` tools. The writer cannot spawn,
 complete, integrate or otherwise coordinate Swarm nodes. The lead must take over
 the writer lease before any mutating Swarm operation. Agent Swarm remains the only
@@ -287,7 +360,7 @@ intentionally detaching a writing process.
 
 ## Limits
 
-Each preset accepts a `limits` object. Omitted fields use these defaults:
+Handoff presets accept a `limits` object. Omitted fields use these defaults:
 
 | Field | Default | Scope |
 | --- | ---: | --- |
@@ -303,6 +376,15 @@ Each preset accepts a `limits` object. Omitted fields use these defaults:
 | `writerMaxTokens` | 8192 | Writer output ceiling |
 | `reviewerMaxTokens` | 8192 | Reviewer output ceiling |
 | `maxCostUsd` | unset | Estimated admission cap for the role-state lifetime |
+
+Advisor presets use separate limits:
+
+| Field | Default | Scope |
+| --- | ---: | --- |
+| `requestTimeoutMs` | 240000 | Each Executor, Advisor or helper request, including auth |
+| `executorMaxTokens` | 16384 | Executor output ceiling |
+| `advisorMaxTokens` | 4096 | Advisor output ceiling |
+| `maxCalls` | 2 | Recorded or reserved Advisor consultations per Pi session |
 
 Output limits are clamped to each provider's model limit. Steering does not reset
 request limits. Writer stream activity renews only the idle deadline; the absolute
@@ -321,7 +403,7 @@ output and no tool call is eligible. Other provider failures are not retried her
 
 ## Sessions, context and usage
 
-Versioned custom entries in the current Pi session hold role histories, findings,
+The following checkpoint behavior applies to handoff mode. Versioned custom entries in the current Pi session hold role histories, findings,
 counters, phase assessments, usage receipts and writer ownership. A lifecycle starts with one full
 snapshot; later checkpoints store content-addressed deltas and periodically start
 a new snapshot chain. Image bytes are stored once per active branch as immutable
@@ -429,6 +511,12 @@ user files deleted by this extension.
 
 ## References
 
+- [pi-advisor-flow](https://github.com/philipbrembeck/pi-advisor) (MIT): bounded
+  conversation reconstruction, read-only advisor prompts, disclosure ceilings and
+  invocation-gate semantics informed advisor mode. Mixture keeps its own preset,
+  provider, accounting and Agent Swarm integration.
+- [Anthropic's advisor strategy](https://claude.com/blog/the-advisor-strategy):
+  economical Executor with selective stronger-model consultation.
 - [pi-moa](https://pi.dev/packages/pi-moa): named model configuration and labeled
   contributions. Mixture uses native model selection rather than its command pipeline.
 - [pi-omplike-advisor](https://github.com/pasky/pi-omplike-advisor): persistent
