@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { normalizeCodexConversionConfig } from "@howaboua/pi-codex-conversion/src/adapter/activation/config.ts";
 
 // Apply the tracked dependency patch in isolation, without modifying the installed runtime.
 const root = resolve(import.meta.dir, "../..");
@@ -24,11 +25,15 @@ if (check.exitCode === 0) {
 }
 const { startRealtimeOffer } = await import(pathToFileURL(target).href);
 
-function harness(inputs: Array<{ id: string; name: string }>, inputDevice: string | undefined = "coreaudio:boya") {
+function harness(
+	inputs: Array<{ id: string; name: string }>,
+	inputDevice: string | undefined = "coreaudio:boya",
+	inputDeviceName?: string,
+) {
 	const events = new Set<(event: any) => void>();
 	const exits = new Set<(error: Error) => void>();
 	const commands: any[] = [];
-	const config = { tools: {}, voice: { inputDevice, outputDevice: "coreaudio:speaker" } };
+	const config = { tools: {}, voice: { inputDeviceName, inputDevice, outputDevice: "coreaudio:speaker" } };
 	let failure: Error | undefined;
 	const helper = {
 		protocolVersion: 5,
@@ -72,6 +77,27 @@ test("missing BOYA follows the system default, not the first input, without chan
 		]);
 		expect(h.config.voice.inputDevice).toBe(boya.id);
 	}
+});
+
+test("preferred microphone name resolves its current device ID on every start", async () => {
+	const renamed = { id: "coreaudio:boya-current", name: boya.name };
+	const h = harness([other, renamed], "coreaudio:boya-stale", boya.name);
+	await startRealtimeOffer(h.helper, h.config, "native");
+	expect(h.commands).toEqual([
+		{ type: "list_devices" },
+		{ type: "start_v3", microphone: renamed.id, speaker: "coreaudio:speaker" },
+	]);
+});
+
+test("missing preferred microphone name follows the system default even when its saved ID is connected", async () => {
+	const h = harness([other], other.id, boya.name);
+	await startRealtimeOffer(h.helper, h.config, "native");
+	expect(h.commands.at(-1)).toEqual({ type: "start_v3", speaker: "coreaudio:speaker" });
+});
+
+test("normalization preserves the preferred microphone name", () => {
+	const config = normalizeCodexConversionConfig({ voice: { inputDeviceName: boya.name } });
+	expect(config.voice.inputDeviceName).toBe(boya.name);
 });
 
 test("unconfigured input and bridge mode retain their existing commands", async () => {

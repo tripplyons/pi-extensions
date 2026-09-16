@@ -4,11 +4,12 @@ This wrapper loads pinned `@howaboua/pi-codex-conversion@3.0.33` with local depe
 
 ## Realtime microphone fallback
 
-Native realtime voice checks the configured input ID against connected inputs
-before starting capture. If it is missing, capture follows the system-default
-microphone. The saved preference is unchanged, so a connected BOYA is used again
-on a later start. This does not switch microphones during an active call.
-Enumeration and other audio errors remain errors; speaker selection is unchanged.
+Native realtime voice resolves `voice.inputDeviceName` against connected inputs
+before every capture and uses the device's current ID. If the named input is
+missing, capture follows the system-default microphone. Configurations without a
+preferred name retain exact-ID selection and the same missing-ID fallback. This
+does not switch microphones during an active call. Enumeration and other audio
+errors remain errors; speaker selection is unchanged.
 
 The dependency patch covers the source and distributed runtime. Install it with
 `npm ci` when updating this checkout, then reload Pi. Tests apply the

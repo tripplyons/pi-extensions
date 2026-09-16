@@ -1,3 +1,48 @@
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-contract.d.ts b/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-contract.d.ts
+index bac94ce..04bc6cc 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-contract.d.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-contract.d.ts
+@@ -73,6 +73,7 @@ export interface CodexConversionConfig {
+         dictationShortcutMode: DictationShortcutMode;
+         contextModel?: VoiceContextModel | undefined;
+         contextReasoning: VoiceContextReasoning;
++        inputDeviceName?: string | undefined;
+         inputDevice?: string | undefined;
+         outputDevice?: string | undefined;
+     };
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-normalize.js b/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-normalize.js
+index 913f072..54b4ae1 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-normalize.js
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-normalize.js
+@@ -13,6 +13,7 @@ export function normalizeCodexConversionConfig(value) {
+     const notebook = isObject(value["notebook"]) ? value["notebook"] : {};
+     const voice = isObject(value["voice"]) ? value["voice"] : {};
+     const openai = isObject(value["openai"]) ? value["openai"] : {};
++    const inputDeviceName = normalizeOptionalString(voice["inputDeviceName"]);
+     const inputDevice = normalizeOptionalString(voice["inputDevice"]);
+     const outputDevice = normalizeOptionalString(voice["outputDevice"]);
+     const contextModel = normalizeVoiceContextModel(voice["contextModel"]);
+@@ -81,6 +82,7 @@ export function normalizeCodexConversionConfig(value) {
+                 DEFAULT_CODEX_CONVERSION_CONFIG.voice.dictationShortcutMode,
+             ...(contextModel ? { contextModel } : {}),
+             contextReasoning: normalizeVoiceContextReasoning(voice["contextReasoning"]),
++            ...(inputDeviceName ? { inputDeviceName } : {}),
+             ...(inputDevice ? { inputDevice } : {}),
+             ...(outputDevice ? { outputDevice } : {}),
+         },
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-store.js b/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-store.js
+index 3295a3a..a21aaec 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-store.js
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/adapter/activation/config-store.js
+@@ -27,7 +27,7 @@ function clearAbsentOwnedOptionals(document, owned) {
+     const ownedVoice = isRecord(owned["voice"]) ? owned["voice"] : undefined;
+     if (!voice || !ownedVoice)
+         return;
+-    for (const key of ["contextModel", "inputDevice", "outputDevice"])
++    for (const key of ["contextModel", "inputDeviceName", "inputDevice", "outputDevice"])
+         if (!(key in ownedVoice))
+             delete voice[key];
+ }
 diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js b/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js
 index 5e31118..8c0e05f 100644
 --- a/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js
@@ -74,6 +119,102 @@ index 1549ed5..fd5dba8 100644
 -    return { setup, start, stop, toggleInputMute };
 +    return { setup, start, stop, setInputMute, toggleInputMute };
  }
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js b/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
+index ebecf9f..c8376a1 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
+@@ -6,8 +6,26 @@ export async function startRealtimeOffer(helper, config, mode) {
+         await helper.close();
+         throw new Error(`Incompatible Codex voice helper protocol ${actualVersion}; expected 5`);
+     }
++    let awaitingDevices = mode === "native" && !!(config.voice.inputDeviceName || config.voice.inputDevice);
++    const start = (microphone) => helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
++        type: "start_v3",
++        ...(microphone ? { microphone } : {}),
++        ...(config.voice.outputDevice ? { speaker: config.voice.outputDevice } : {}),
++    });
+     const offer = Promise.withResolvers();
+     const removeEvent = helper.onEvent((event) => {
++        if (event.type === "devices" && awaitingDevices) {
++            awaitingDevices = false;
++            const namedInput = config.voice.inputDeviceName
++                ? event.inputs.find((device) => device.name === config.voice.inputDeviceName)
++                : undefined;
++            const microphone = namedInput?.id ?? (!config.voice.inputDeviceName
++                && event.inputs.some((device) => device.id === config.voice.inputDevice)
++                ? config.voice.inputDevice : undefined);
++            try { start(microphone); }
++            catch (error) { offer.reject(error); }
++            return;
++        }
+         if (event.type === "offer")
+             offer.resolve(event.sdp);
+         else if (event.type === "error")
+@@ -15,15 +33,10 @@ export async function startRealtimeOffer(helper, config, mode) {
+     });
+     const removeExit = helper.onExit((error) => offer.reject(error));
+     const timeout = setTimeout(() => offer.reject(new Error("Codex voice helper did not create an offer")), OFFER_TIMEOUT_MS);
+-    helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
+-        type: "start_v3",
+-        ...(config.voice.inputDevice
+-            ? { microphone: config.voice.inputDevice }
+-            : {}),
+-        ...(config.voice.outputDevice
+-            ? { speaker: config.voice.outputDevice }
+-            : {}),
+-    });
++    try {
++        if (awaitingDevices) helper.send({ type: "list_devices" });
++        else start(undefined);
++    } catch (error) { offer.reject(error); }
+     return offer.promise.finally(() => {
+         clearTimeout(timeout);
+         removeEvent();
+diff --git a/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-contract.ts b/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-contract.ts
+index 16b6b5d..db7520f 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-contract.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-contract.ts
+@@ -87,6 +87,7 @@ export interface CodexConversionConfig {
+ 		dictationShortcutMode: DictationShortcutMode;
+ 		contextModel?: VoiceContextModel | undefined;
+ 		contextReasoning: VoiceContextReasoning;
++		inputDeviceName?: string | undefined;
+ 		inputDevice?: string | undefined;
+ 		outputDevice?: string | undefined;
+ 	};
+diff --git a/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-normalize.ts b/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-normalize.ts
+index 9a0a599..7794064 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-normalize.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-normalize.ts
+@@ -41,6 +41,7 @@ export function normalizeCodexConversionConfig(
+ 	const notebook = isObject(value["notebook"]) ? value["notebook"] : {};
+ 	const voice = isObject(value["voice"]) ? value["voice"] : {};
+ 	const openai = isObject(value["openai"]) ? value["openai"] : {};
++	const inputDeviceName = normalizeOptionalString(voice["inputDeviceName"]);
+ 	const inputDevice = normalizeOptionalString(voice["inputDevice"]);
+ 	const outputDevice = normalizeOptionalString(voice["outputDevice"]);
+ 	const contextModel = normalizeVoiceContextModel(voice["contextModel"]);
+@@ -203,6 +204,7 @@ export function normalizeCodexConversionConfig(
+ 			contextReasoning: normalizeVoiceContextReasoning(
+ 				voice["contextReasoning"],
+ 			),
++			...(inputDeviceName ? { inputDeviceName } : {}),
+ 			...(inputDevice ? { inputDevice } : {}),
+ 			...(outputDevice ? { outputDevice } : {}),
+ 		},
+diff --git a/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-store.ts b/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-store.ts
+index 2c2e785..52a2dbb 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-store.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/src/adapter/activation/config-store.ts
+@@ -40,7 +40,7 @@ function clearAbsentOwnedOptionals(document: Record<string, unknown>, owned: Rec
+ 	const voice = isRecord(document["voice"]) ? document["voice"] : undefined;
+ 	const ownedVoice = isRecord(owned["voice"]) ? owned["voice"] : undefined;
+ 	if (!voice || !ownedVoice) return;
+-	for (const key of ["contextModel", "inputDevice", "outputDevice"])
++	for (const key of ["contextModel", "inputDeviceName", "inputDevice", "outputDevice"])
+ 		if (!(key in ownedVoice)) delete voice[key];
+ }
+
 diff --git a/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts b/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts
 index d0c8e67..2e67401 100644
 --- a/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts
@@ -81,13 +222,13 @@ index d0c8e67..2e67401 100644
 @@ -22,9 +22,9 @@ import type { CodexLanVoiceServerController } from "../../voice/lan/controller.t
  import { ROUTABLE_SETTINGS_TABS, parseSettingsTab, type SettingsTab } from "./tabs.ts";
  import { openCodexSettingsScreen } from "./screen.ts";
- 
+
 -const VOICE_ACTIONS = ["voice realtime", "voice mute", "voice dictation", "voice stop", "voice server", "voice setup"] as const;
 +const VOICE_ACTIONS = ["voice realtime", "voice mute", "voice mute on", "voice mute off", "voice dictation", "voice stop", "voice server", "voice setup"] as const;
  const CODEX_COMMAND_COMPLETIONS = [...ROUTABLE_SETTINGS_TABS.map(({ id }) => id), ...VOICE_ACTIONS];
 -const CODEX_USAGE = "Usage: /codex [context|tools|openai|display|voice [realtime|mute|dictation|stop|server|setup]|usage|about]";
 +const CODEX_USAGE = "Usage: /codex [context|tools|openai|display|voice [realtime|mute [on|off]|dictation|stop|server|setup]|usage|about]";
- 
+
  export function registerCodexCommand(
  	pi: ExtensionAPI,
 @@ -187,9 +187,10 @@ export function registerCodexCommand(
@@ -114,11 +255,11 @@ index 9445319..3e5f1d4 100644
 +	setInputMute(muted: boolean, ctx: ExtensionContext): void;
  	toggleInputMute(ctx: ExtensionContext): void;
  }
- 
+
 @@ -88,8 +89,7 @@ export function createCodexVoiceControls(options: {
  		else await start(mode, ctx);
  	};
- 
+
 -	const toggleInputMute = (ctx: ExtensionContext): void => {
 -		const muted = !voice.inputMuted;
 +	const setInputMute = (muted: boolean, ctx: ExtensionContext): void => {
@@ -128,7 +269,7 @@ index 9445319..3e5f1d4 100644
 @@ -97,6 +97,10 @@ export function createCodexVoiceControls(options: {
  		ctx.ui.notify(`Realtime microphone ${muted ? "muted" : "unmuted"}`, "info");
  	};
- 
+
 +	const toggleInputMute = (ctx: ExtensionContext): void => {
 +		setInputMute(!voice.inputMuted, ctx);
 +	};
@@ -139,18 +280,19 @@ index 9445319..3e5f1d4 100644
 @@ -110,5 +114,5 @@ export function createCodexVoiceControls(options: {
  		},
  	});
- 
+
 -	return { setup, start, stop, toggleInputMute };
 +	return { setup, start, stop, setInputMute, toggleInputMute };
  }
 diff --git a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts b/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts
+index 7856653..16a404d 100644
 --- a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts
 +++ b/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts
-@@ -14,8 +14,22 @@
+@@ -14,8 +14,26 @@ export async function startRealtimeOffer(
  		await helper.close();
  		throw new Error(`Incompatible Codex voice helper protocol ${actualVersion}; expected 5`);
  	}
-+	let awaitingDevices = mode === "native" && !!config.voice.inputDevice;
++	let awaitingDevices = mode === "native" && !!(config.voice.inputDeviceName || config.voice.inputDevice);
 +	const start = (microphone: string | undefined) => helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
 +		type: "start_v3",
 +		...(microphone ? { microphone } : {}),
@@ -160,8 +302,12 @@ diff --git a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/h
  	const removeEvent = helper.onEvent((event) => {
 +		if (event.type === "devices" && awaitingDevices) {
 +			awaitingDevices = false;
-+			const microphone = event.inputs.some((device) => device.id === config.voice.inputDevice)
-+				? config.voice.inputDevice : undefined;
++			const namedInput = config.voice.inputDeviceName
++				? event.inputs.find((device) => device.name === config.voice.inputDeviceName)
++				: undefined;
++			const microphone = namedInput?.id ?? (!config.voice.inputDeviceName
++				&& event.inputs.some((device) => device.id === config.voice.inputDevice)
++				? config.voice.inputDevice : undefined);
 +			try { start(microphone); }
 +			catch (error) { offer.reject(error); }
 +			return;
@@ -169,7 +315,7 @@ diff --git a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/h
  		if (event.type === "offer") offer.resolve(event.sdp);
  		else if (event.type === "error") offer.reject(new Error(event.message));
  	});
-@@ -25,15 +39,10 @@
+@@ -25,15 +43,10 @@ export async function startRealtimeOffer(
  			offer.reject(new Error("Codex voice helper did not create an offer")),
  		OFFER_TIMEOUT_MS,
  	);
@@ -189,49 +335,3 @@ diff --git a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/h
  	return offer.promise.finally(() => {
  		clearTimeout(timeout);
  		removeEvent();
-diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js b/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
---- a/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
-+++ b/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
-@@ -6,8 +6,22 @@
-         await helper.close();
-         throw new Error(`Incompatible Codex voice helper protocol ${actualVersion}; expected 5`);
-     }
-+    let awaitingDevices = mode === "native" && !!config.voice.inputDevice;
-+    const start = (microphone) => helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
-+        type: "start_v3",
-+        ...(microphone ? { microphone } : {}),
-+        ...(config.voice.outputDevice ? { speaker: config.voice.outputDevice } : {}),
-+    });
-     const offer = Promise.withResolvers();
-     const removeEvent = helper.onEvent((event) => {
-+        if (event.type === "devices" && awaitingDevices) {
-+            awaitingDevices = false;
-+            const microphone = event.inputs.some((device) => device.id === config.voice.inputDevice)
-+                ? config.voice.inputDevice : undefined;
-+            try { start(microphone); }
-+            catch (error) { offer.reject(error); }
-+            return;
-+        }
-         if (event.type === "offer")
-             offer.resolve(event.sdp);
-         else if (event.type === "error")
-@@ -15,15 +29,10 @@
-     });
-     const removeExit = helper.onExit((error) => offer.reject(error));
-     const timeout = setTimeout(() => offer.reject(new Error("Codex voice helper did not create an offer")), OFFER_TIMEOUT_MS);
--    helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
--        type: "start_v3",
--        ...(config.voice.inputDevice
--            ? { microphone: config.voice.inputDevice }
--            : {}),
--        ...(config.voice.outputDevice
--            ? { speaker: config.voice.outputDevice }
--            : {}),
--    });
-+    try {
-+        if (awaitingDevices) helper.send({ type: "list_devices" });
-+        else start(undefined);
-+    } catch (error) { offer.reject(error); }
-     return offer.promise.finally(() => {
-         clearTimeout(timeout);
-         removeEvent();
