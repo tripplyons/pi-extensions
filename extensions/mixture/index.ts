@@ -381,6 +381,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		reservedAdvisorCalls.clear();
 		if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); }
 		else releaseRoleResources();
+		// Pi also infers a resumed model from assistant identity. Mixture exposes the
+		// underlying role there, so reaffirm the composite after the run settles.
+		if (selected() && ctx?.model) await pi.setModel(ctx.model);
 		render();
 	});
 	pi.on("session_before_switch", () => detach("session switch"));

@@ -408,6 +408,10 @@ output and no tool call is eligible. Other provider failures are not retried her
 
 ## Sessions, context and usage
 
+After a request settles, Mixture records the composite model selection after the
+underlying role response. Starting or resuming that session without `--model`
+therefore restores the same `mixture/<preset>` model and its mode-specific tools.
+
 The following checkpoint behavior applies to handoff mode. Versioned custom entries in the current Pi session hold role histories, findings,
 counters, phase assessments, usage receipts and writer ownership. A lifecycle starts with one full
 snapshot; later checkpoints store content-addressed deltas and periodically start

@@ -27,6 +27,7 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 	const definitions = new Map<string, any>();
 	const sentMessages: Array<{ message: any; options: any }> = [];
 	const releasedIds: string[] = [];
+	const selectedModels: Array<{ provider: string; id: string }> = [];
 	let calls = 0;
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost }),
@@ -50,9 +51,10 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 			if (name === "tripp:mixture-session-release/v1") releasedIds.push(...value.sessionIds!);
 		} },
 		sendMessage: (message: any, options: any) => { sentMessages.push({ message, options }); },
+		setModel: async (model: { provider: string; id: string }) => { selectedModels.push(model); return true; },
 	};
 	await createMixtureExtension(pi as any, registry, scheduler ? { scheduler } : {});
-	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, sentMessages, get activeTools() { return activeTools; }, get calls() { return calls; } };
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, selectedModels, sentMessages, get activeTools() { return activeTools; }, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -99,7 +101,11 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	expect(h.roleOptions[1].maxTokens).toBe(4_096);
 	await h.handlers.get("agent_end")({ messages: [] });
 	expect(h.releasedIds).toEqual(expect.arrayContaining([h.roleOptions[0].sessionId, h.roleOptions[1].sessionId]));
+	// Keep the composite newer than the underlying Executor message for Pi's resume lookup.
+	expect(h.selectedModels).toEqual([{ provider: "mixture", id: "advisor" }]);
 	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "ordinary" } });
+	await h.handlers.get("agent_end")({ messages: [] });
+	expect(h.selectedModels).toHaveLength(1);
 	expect(h.activeTools).not.toContain(ASK_ADVISOR);
 });
 

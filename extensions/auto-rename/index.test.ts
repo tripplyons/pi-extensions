@@ -361,6 +361,7 @@ async function mixtureRenameHarness(): Promise<MixtureRenameHarness> {
 		registerTool: () => {},
 		getActiveTools: () => [...active],
 		setActiveTools: (names: string[]) => { active = [...names]; },
+		setModel: async () => true,
 		appendEntry: (customType: string, data: unknown) => appended.push({ type: "custom", customType, data }),
 		getSessionName: () => sessionName,
 		setSessionName: (name: string) => { sessionName = name; },
