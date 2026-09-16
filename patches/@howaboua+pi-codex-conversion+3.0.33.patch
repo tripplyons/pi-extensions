@@ -143,3 +143,95 @@ index 9445319..3e5f1d4 100644
 -	return { setup, start, stop, toggleInputMute };
 +	return { setup, start, stop, setInputMute, toggleInputMute };
  }
+diff --git a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts b/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts
+--- a/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/src/voice/conversation/helper-offer.ts
+@@ -14,8 +14,22 @@
+ 		await helper.close();
+ 		throw new Error(`Incompatible Codex voice helper protocol ${actualVersion}; expected 5`);
+ 	}
++	let awaitingDevices = mode === "native" && !!config.voice.inputDevice;
++	const start = (microphone: string | undefined) => helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
++		type: "start_v3",
++		...(microphone ? { microphone } : {}),
++		...(config.voice.outputDevice ? { speaker: config.voice.outputDevice } : {}),
++	});
+ 	const offer = Promise.withResolvers<string>();
+ 	const removeEvent = helper.onEvent((event) => {
++		if (event.type === "devices" && awaitingDevices) {
++			awaitingDevices = false;
++			const microphone = event.inputs.some((device) => device.id === config.voice.inputDevice)
++				? config.voice.inputDevice : undefined;
++			try { start(microphone); }
++			catch (error) { offer.reject(error); }
++			return;
++		}
+ 		if (event.type === "offer") offer.resolve(event.sdp);
+ 		else if (event.type === "error") offer.reject(new Error(event.message));
+ 	});
+@@ -25,15 +39,10 @@
+ 			offer.reject(new Error("Codex voice helper did not create an offer")),
+ 		OFFER_TIMEOUT_MS,
+ 	);
+-	helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
+-		type: "start_v3",
+-		...(config.voice.inputDevice
+-			? { microphone: config.voice.inputDevice }
+-			: {}),
+-		...(config.voice.outputDevice
+-			? { speaker: config.voice.outputDevice }
+-			: {}),
+-	});
++	try {
++		if (awaitingDevices) helper.send({ type: "list_devices" });
++		else start(undefined);
++	} catch (error) { offer.reject(error); }
+ 	return offer.promise.finally(() => {
+ 		clearTimeout(timeout);
+ 		removeEvent();
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js b/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/voice/conversation/helper-offer.js
+@@ -6,8 +6,22 @@
+         await helper.close();
+         throw new Error(`Incompatible Codex voice helper protocol ${actualVersion}; expected 5`);
+     }
++    let awaitingDevices = mode === "native" && !!config.voice.inputDevice;
++    const start = (microphone) => helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
++        type: "start_v3",
++        ...(microphone ? { microphone } : {}),
++        ...(config.voice.outputDevice ? { speaker: config.voice.outputDevice } : {}),
++    });
+     const offer = Promise.withResolvers();
+     const removeEvent = helper.onEvent((event) => {
++        if (event.type === "devices" && awaitingDevices) {
++            awaitingDevices = false;
++            const microphone = event.inputs.some((device) => device.id === config.voice.inputDevice)
++                ? config.voice.inputDevice : undefined;
++            try { start(microphone); }
++            catch (error) { offer.reject(error); }
++            return;
++        }
+         if (event.type === "offer")
+             offer.resolve(event.sdp);
+         else if (event.type === "error")
+@@ -15,15 +29,10 @@
+     });
+     const removeExit = helper.onExit((error) => offer.reject(error));
+     const timeout = setTimeout(() => offer.reject(new Error("Codex voice helper did not create an offer")), OFFER_TIMEOUT_MS);
+-    helper.send(mode === "bridge" ? { type: "start_v3_bridge" } : {
+-        type: "start_v3",
+-        ...(config.voice.inputDevice
+-            ? { microphone: config.voice.inputDevice }
+-            : {}),
+-        ...(config.voice.outputDevice
+-            ? { speaker: config.voice.outputDevice }
+-            : {}),
+-    });
++    try {
++        if (awaitingDevices) helper.send({ type: "list_devices" });
++        else start(undefined);
++    } catch (error) { offer.reject(error); }
+     return offer.promise.finally(() => {
+         clearTimeout(timeout);
+         removeEvent();
