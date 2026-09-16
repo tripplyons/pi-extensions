@@ -99,7 +99,7 @@ test("ignores dictation and malformed lifecycle messages", async () => {
   expect(session.sent[0]?.content).toBe("/codex voice realtime");
 });
 
-test("Overseer focus signals suspend and resume an enabled live session", async () => {
+test("Overseer focus signals explicitly mute and unmute an active session", async () => {
   const previous = process.env.OVERSEER;
   const previousTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
   const write = spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -118,14 +118,17 @@ test("Overseer focus signals suspend and resume an enabled live session", async 
     session.focus("\x1b[I");
     expect(session.sent.map(({ content }) => content)).toEqual([
       "/codex voice realtime",
+      "/codex voice mute on",
+      "/codex voice mute off",
+      "/codex voice mute on",
       "/codex voice stop",
       "/codex voice realtime",
-      "/codex voice stop",
-      "/codex voice realtime",
+      "/codex voice mute on",
+      "/codex voice mute off",
     ]);
     session.shutdown();
     session.focus("\x1b[O");
-    expect(session.sent).toHaveLength(5);
+    expect(session.sent).toHaveLength(8);
     expect(write.mock.calls.map(([value]) => value)).toEqual(["\x1b[?1004h", "\x1b[?1004l"]);
   } finally {
     write.mockRestore();

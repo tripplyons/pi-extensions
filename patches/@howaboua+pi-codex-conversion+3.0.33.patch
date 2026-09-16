@@ -1,0 +1,145 @@
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js b/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js
+index 5e31118..8c0e05f 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/ui/settings/command.js
+@@ -3,9 +3,9 @@ import { syncAdapter } from "../../adapter/activation/activation.js";
+ import { createCodexVoiceControls } from "../../voice/controls.js";
+ import { ROUTABLE_SETTINGS_TABS, parseSettingsTab } from "./tabs.js";
+ import { openCodexSettingsScreen } from "./screen.js";
+-const VOICE_ACTIONS = ["voice realtime", "voice mute", "voice dictation", "voice stop", "voice server", "voice setup"];
++const VOICE_ACTIONS = ["voice realtime", "voice mute", "voice mute on", "voice mute off", "voice dictation", "voice stop", "voice server", "voice setup"];
+ const CODEX_COMMAND_COMPLETIONS = [...ROUTABLE_SETTINGS_TABS.map(({ id }) => id), ...VOICE_ACTIONS];
+-const CODEX_USAGE = "Usage: /codex [context|tools|openai|display|voice [realtime|mute|dictation|stop|server|setup]|usage|about]";
++const CODEX_USAGE = "Usage: /codex [context|tools|openai|display|voice [realtime|mute [on|off]|dictation|stop|server|setup]|usage|about]";
+ export function registerCodexCommand(pi, state, voice, lanVoice, onConfigApplied) {
+     function effectiveConfig(ctx) {
+         return readEffectiveCodexConversionConfig({
+@@ -153,12 +153,15 @@ export function registerCodexCommand(pi, state, voice, lanVoice, onConfigApplied
+                 await voiceControls.stop(ctx);
+                 return;
+             }
+-            if (arg === "voice mute") {
++            if (arg === "voice mute" || arg === "voice mute on" || arg === "voice mute off") {
+                 if (ctx.mode !== "tui") {
+                     ctx.ui.notify("Codex voice requires interactive TUI mode", "error");
+                     return;
+                 }
+-                voiceControls.toggleInputMute(ctx);
++                if (arg === "voice mute")
++                    voiceControls.toggleInputMute(ctx);
++                else
++                    voiceControls.setInputMute(arg === "voice mute on", ctx);
+                 return;
+             }
+             if (arg === "voice server") {
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.d.ts b/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.d.ts
+index 996239f..45daa38 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.d.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.d.ts
+@@ -7,6 +7,7 @@ export interface CodexVoiceControls {
+     setup(ctx: ExtensionContext): Promise<void>;
+     start(mode: CodexVoiceMode, ctx: ExtensionContext): Promise<void>;
+     stop(ctx: ExtensionContext): Promise<void>;
++    setInputMute(muted: boolean, ctx: ExtensionContext): void;
+     toggleInputMute(ctx: ExtensionContext): void;
+ }
+ export declare function createCodexVoiceControls(options: {
+diff --git a/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.js b/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.js
+index 1549ed5..fd5dba8 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.js
++++ b/node_modules/@howaboua/pi-codex-conversion/dist/voice/controls.js
+@@ -53,14 +53,16 @@ export function createCodexVoiceControls(options) {
+         else
+             await start(mode, ctx);
+     };
+-    const toggleInputMute = (ctx) => {
+-        const muted = !voice.inputMuted;
++    const setInputMute = (muted, ctx) => {
+         if (!voice.setInputMuted(muted)) {
+             ctx.ui.notify("Start realtime voice before muting the microphone", "info");
+             return;
+         }
+         ctx.ui.notify(`Realtime microphone ${muted ? "muted" : "unmuted"}`, "info");
+     };
++    const toggleInputMute = (ctx) => {
++        setInputMute(!voice.inputMuted, ctx);
++    };
+     registerCodexVoiceShortcuts(pi, state.config, () => state.config, {
+         startDictation: (ctx) => start("dictation", ctx),
+         finishDictation: (ctx) => stop(ctx),
+@@ -74,5 +76,5 @@ export function createCodexVoiceControls(options) {
+                 ctx.ui.notify("LAN voice server stopped", "info");
+         },
+     });
+-    return { setup, start, stop, toggleInputMute };
++    return { setup, start, stop, setInputMute, toggleInputMute };
+ }
+diff --git a/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts b/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts
+index d0c8e67..2e67401 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/src/ui/settings/command.ts
+@@ -22,9 +22,9 @@ import type { CodexLanVoiceServerController } from "../../voice/lan/controller.t
+ import { ROUTABLE_SETTINGS_TABS, parseSettingsTab, type SettingsTab } from "./tabs.ts";
+ import { openCodexSettingsScreen } from "./screen.ts";
+ 
+-const VOICE_ACTIONS = ["voice realtime", "voice mute", "voice dictation", "voice stop", "voice server", "voice setup"] as const;
++const VOICE_ACTIONS = ["voice realtime", "voice mute", "voice mute on", "voice mute off", "voice dictation", "voice stop", "voice server", "voice setup"] as const;
+ const CODEX_COMMAND_COMPLETIONS = [...ROUTABLE_SETTINGS_TABS.map(({ id }) => id), ...VOICE_ACTIONS];
+-const CODEX_USAGE = "Usage: /codex [context|tools|openai|display|voice [realtime|mute|dictation|stop|server|setup]|usage|about]";
++const CODEX_USAGE = "Usage: /codex [context|tools|openai|display|voice [realtime|mute [on|off]|dictation|stop|server|setup]|usage|about]";
+ 
+ export function registerCodexCommand(
+ 	pi: ExtensionAPI,
+@@ -187,9 +187,10 @@ export function registerCodexCommand(
+ 				await voiceControls.stop(ctx);
+ 				return;
+ 			}
+-			if (arg === "voice mute") {
++			if (arg === "voice mute" || arg === "voice mute on" || arg === "voice mute off") {
+ 				if (ctx.mode !== "tui") { ctx.ui.notify("Codex voice requires interactive TUI mode", "error"); return; }
+-				voiceControls.toggleInputMute(ctx);
++				if (arg === "voice mute") voiceControls.toggleInputMute(ctx);
++				else voiceControls.setInputMute(arg === "voice mute on", ctx);
+ 				return;
+ 			}
+ 			if (arg === "voice server") {
+diff --git a/node_modules/@howaboua/pi-codex-conversion/src/voice/controls.ts b/node_modules/@howaboua/pi-codex-conversion/src/voice/controls.ts
+index 9445319..3e5f1d4 100644
+--- a/node_modules/@howaboua/pi-codex-conversion/src/voice/controls.ts
++++ b/node_modules/@howaboua/pi-codex-conversion/src/voice/controls.ts
+@@ -17,6 +17,7 @@ export interface CodexVoiceControls {
+ 	setup(ctx: ExtensionContext): Promise<void>;
+ 	start(mode: CodexVoiceMode, ctx: ExtensionContext): Promise<void>;
+ 	stop(ctx: ExtensionContext): Promise<void>;
++	setInputMute(muted: boolean, ctx: ExtensionContext): void;
+ 	toggleInputMute(ctx: ExtensionContext): void;
+ }
+ 
+@@ -88,8 +89,7 @@ export function createCodexVoiceControls(options: {
+ 		else await start(mode, ctx);
+ 	};
+ 
+-	const toggleInputMute = (ctx: ExtensionContext): void => {
+-		const muted = !voice.inputMuted;
++	const setInputMute = (muted: boolean, ctx: ExtensionContext): void => {
+ 		if (!voice.setInputMuted(muted)) {
+ 			ctx.ui.notify("Start realtime voice before muting the microphone", "info");
+ 			return;
+@@ -97,6 +97,10 @@ export function createCodexVoiceControls(options: {
+ 		ctx.ui.notify(`Realtime microphone ${muted ? "muted" : "unmuted"}`, "info");
+ 	};
+ 
++	const toggleInputMute = (ctx: ExtensionContext): void => {
++		setInputMute(!voice.inputMuted, ctx);
++	};
++
+ 	registerCodexVoiceShortcuts(pi, state.config, () => state.config, {
+ 		startDictation: (ctx) => start("dictation", ctx),
+ 		finishDictation: (ctx) => stop(ctx),
+@@ -110,5 +114,5 @@ export function createCodexVoiceControls(options: {
+ 		},
+ 	});
+ 
+-	return { setup, start, stop, toggleInputMute };
++	return { setup, start, stop, setInputMute, toggleInputMute };
+ }
