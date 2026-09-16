@@ -273,10 +273,11 @@ model calls; the lead may inspect or stop its tracked job before taking over.
 A missing or failed bg-bash ownership query fails closed when that integration
 has been used. Restore bg-bash to reconcile retained jobs if it was disabled.
 Without bg-bash, only synchronous shell execution supports managed handoff.
-Mixture tracks background jobs started by its roles. An available current-session
-bg-bash query is authoritative: tracked running jobs retain the lease, while tracked
-terminal or absent jobs are reconciled. An unavailable or failed query blocks a
-handoff only while tracked jobs remain unresolved.
+Mixture tracks background jobs started by its roles. Both roles may list current-session
+jobs and read their output while reconciling work; mutating process actions remain
+lease-controlled. An available current-session bg-bash query is authoritative: tracked
+running jobs retain the lease, while tracked terminal or absent jobs are reconciled. An
+unavailable or failed query blocks a handoff only while tracked jobs remain unresolved.
 
 Cancellation and model/session changes abort inference, not surviving shell
 jobs. Mixture warns about those jobs; it does not kill them to force a handoff.
@@ -359,9 +360,10 @@ existing checkpoint chain. Missing legacy fields initialize from role history;
 malformed new fields reject restore. Upstream notes are not imported.
 
 Each role compacts its own context with the same model, preserving task facts,
-unresolved advice, images and recent complete tool batches. Recognized context
-overflow gets one bounded recovery attempt. Failed summaries preserve the last
-valid history. Successful window changes retain the outgoing window in the local
+unresolved advice, images and recent complete tool batches. History too large for one
+summary request is reduced in bounded complete-group segments. Recognized context
+overflow gets one bounded recovery attempt. Failed summaries preserve the last valid
+history. Successful window changes retain the outgoing window in the local
 archive. Root Pi compaction archives and rebases only the lead; writer and reviewer
 stores remain independent.
 

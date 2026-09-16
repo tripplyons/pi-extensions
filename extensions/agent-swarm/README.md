@@ -24,10 +24,10 @@ Stop, pause, and timeout operate on the original worker process group. A descend
 
 ## Roles
 
-- The coordinator is the user's root session. It sees the full tree, may stop any descendant, and may integrate an accepted direct child into its checkout through controller-owned Git. If its selected model is Mixture, the Mixture lead may use active swarm tools only after taking the Mixture writer lease for any mutating Swarm operation.
-- A manager may spawn, instruct, review, restart, stop, and integrate direct children.
-- A worker edits its assignment and submits it to its direct parent.
-- A reviewer gets a read-only snapshot of a direct child's result commit and reports findings to their shared parent.
+- The coordinator is the user's root session. It sees the full tree, may stop any descendant, and may, only when the user explicitly authorizes it, stage and commit the requested changes in its own checkout while preserving unrelated changes. It uses swarm_integrate for accepted direct-child results, leaves child integration, child worktrees, lifecycle, and shared Git metadata controller-owned, and never pushes or performs destructive Git operations. If its selected model is Mixture, the Mixture lead may use active swarm tools only after taking the Mixture writer lease for any mutating Swarm operation.
+- A manager may spawn, instruct, review, restart, stop, and integrate direct children, but does not run Git mutations; it submits changes with swarm_complete and integrates accepted children with swarm_integrate.
+- A worker edits its assignment and submits it to its direct parent with swarm_complete instead of running Git mutations.
+- A reviewer gets a read-only snapshot of a direct child's result commit and reports findings to their shared parent without committing.
 
 Only direct parents issue instructions or review results. Managers integrate only into generated manager branches; the coordinator may integrate only its own accepted direct child into the root checkout. Integration never pushes.
 

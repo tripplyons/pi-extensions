@@ -52,6 +52,24 @@ test("role compaction preserves current facts, images and complete recent tool b
 	expect(messages).toHaveLength(6);
 });
 
+test("role compaction summarizes oversized history in bounded complete-group segments", async () => {
+	const small = { ...model, contextWindow: 1_200, maxTokens: 128 };
+	const messages = Array.from({ length: 8 }, (_, index) => user(`segment-${index}-${"x".repeat(700)}`));
+	const requests: Context[] = [];
+	const compacted = await compactRole({ messages }, small, 128, "Preserve every segment in order", async context => {
+		requests.push(context);
+		return answer(`summary-${requests.length}`);
+	}, true);
+	expect(requests.length).toBeGreaterThan(1);
+	expect(requests.every(request => request.messages.length > 0)).toBeTrue();
+	const summarizedInput = JSON.stringify(requests.flatMap(request => request.messages));
+	for (let index = 0; index < 7; index++) expect(summarizedInput).toContain(`segment-${index}-`);
+	expect(JSON.stringify(compacted.messages)).toContain("segment-7-");
+	expect(JSON.stringify(compacted.messages)).toContain("[Segment 1]");
+	expect(JSON.stringify(compacted.messages)).toContain("summary-1");
+	expect(JSON.stringify(compacted.messages)).toContain(`summary-${requests.length}`);
+});
+
 test("one overflow retry charges the failed call, summary and successful candidate once", async () => {
 	const preset = defaultConfig().presets.default;
 	preset.lead = "fixture/lead"; preset.writer.model = "fixture/writer"; preset.reviewers = [];

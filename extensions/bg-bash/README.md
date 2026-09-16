@@ -2,7 +2,7 @@
 
 Restored from this repository's main branch. Requires tmux and zsh.
 
-- `bash` runs zsh commands. Commands exceeding the foreground grace period continue as persistent tmux jobs.
+- `bash` runs zsh commands. Commands exceeding the foreground grace period continue as persistent tmux jobs. Shells set `PAGER=cat` and `GIT_PAGER=cat` so inspection commands cannot stall on an interactive pager.
 - `bg_process` lists, reads, writes to, kills, or clears jobs. Operations default to the current Pi session; foreign jobs require explicit `scope: "all"`.
 - `sleep` wakes on current-session shell exits, subagent completion, user steering, or swarm activity. It is not a guaranteed fixed delay. Cancellation and session shutdown cancel pending sleeps.
 

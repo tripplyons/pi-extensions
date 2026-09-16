@@ -512,6 +512,7 @@ class BackgroundBashManager {
 		writeFileSync(scriptFile, [
 			`#!${shellPath()}`,
 			"set +e",
+			"export PAGER=cat GIT_PAGER=cat",
 			`while [ ! -e ${shellQuote(gateFile)} ]; do sleep 0.05; done`,
 			`rm -f ${shellQuote(gateFile)}`,
 			`${shellQuote(shellPath())} -lc ${shellQuote(command)}`,

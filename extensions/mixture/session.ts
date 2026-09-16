@@ -501,7 +501,7 @@ export class MixtureSession {
 			: !currentPhase ? ["delegate"]
 			: currentPhase.assessment ? ["delegate", "takeover"] : ["assess", "takeover"];
 		return this.rootTools
-			.filter(tool => tool.name === CONTROL || this.allowed(actor, tool.name) || (actor === "lead" && tool.name === "bg_process"))
+			.filter(tool => tool.name === CONTROL || tool.name === "bg_process" || this.allowed(actor, tool.name))
 			.map(tool => tool.name !== CONTROL ? tool : { ...tool,
 				description: actor === "writer"
 					? "Finish or escalate the current writer phase. The harness owns routine review and checkpoints."

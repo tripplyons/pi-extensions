@@ -6,7 +6,7 @@ import { join } from "node:path";
 import extension, { SWARM_TOOL_NAMES } from "./index.ts";
 import { isSwarmAttached } from "./events.ts";
 import { makeNode, SwarmRuntime } from "./runtime.ts";
-import { sessionFile, workerHome, writeJson } from "./state.ts";
+import { inboxDir, sessionFile, workerHome, writeJson } from "./state.ts";
 import { WorkerMailbox } from "./worker.ts";
 
 function harness(entries: any[] = [], initialActiveTools = ["read", "bash", "edit", "write"]) {
@@ -205,9 +205,13 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		await extension(active.pi as any);
 		await active.handlers.get("session_start")!({}, ctx);
 		const first = await active.handlers.get("before_agent_start")!({ systemPrompt: "base before swarm state changes" }, ctx);
+		expect(first.systemPrompt).toContain("root coordinator may stage and commit only changes the user explicitly authorizes in its own checkout");
+		expect(first.systemPrompt).toContain("preserve unrelated changes");
 		expect(first.systemPrompt).toContain("submit changes with swarm_complete");
 		expect(first.systemPrompt).toContain("managers integrate accepted children with swarm_integrate");
-		expect(first.systemPrompt).toContain("controller alone owns Git locks");
+		expect(first.systemPrompt).toContain("Child integration, child worktrees, lifecycle, and shared Git metadata remain controller-owned");
+		expect(first.systemPrompt).toContain("Never push, reset, clean, rebase, or perform other destructive Git operations");
+		expect(first.systemPrompt).not.toContain("The controller alone owns Git locks and commits");
 		expect(first.systemPrompt).toContain("Keep other nodes' worktrees unchanged during verification, including generated caches");
 		expect(first.systemPrompt).toContain("python -B or PYTHONDONTWRITEBYTECODE=1");
 		expect(first.systemPrompt).toContain("Never delete unknown changes to make cleanup pass");
@@ -217,7 +221,7 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		expect(first.systemPrompt).toContain("The Mixture writer cannot call swarm tools");
 		expect(first.systemPrompt).not.toContain("Mixture model while attached");
 		expect(first.systemPrompt).not.toContain("Never create subagents");
-		expect(first.systemPrompt).toContain("Never run Git mutations");
+		expect(first.systemPrompt).not.toContain("Never run Git mutations such as git add, commit, merge, cherry-pick, or rebase");
 		expect(first.systemPrompt).toContain("delivered through managed messages and wake-ups");
 		expect(first.systemPrompt).toContain("end the turn");
 		expect(first.systemPrompt).toContain("never poll swarm state or run sleep loops");
@@ -236,6 +240,49 @@ test("swarm system prompt is frozen across turns and child lifecycle changes", a
 		await active.handlers.get("session_shutdown")?.({}, ctx);
 		resume.mockRestore();
 		if (previous === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("before_agent_start keeps child Git guidance controller-owned", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-swarm-role-prompt-"));
+	const previousHome = process.env.PI_SWARM_HOME;
+	const environmentKeys = ["PI_SWARM_WORKER", "PI_SWARM_RUN", "PI_SWARM_NODE", "PI_SWARM_TOKEN"];
+	const previousEnvironment = environmentKeys.map((key) => process.env[key]);
+	const request = spyOn(WorkerMailbox.prototype, "request").mockResolvedValue({});
+	process.env.PI_SWARM_HOME = directory;
+	try {
+		for (const role of ["worker", "manager", "reviewer"] as const) {
+			const runId = `run_prompt${role}`;
+			const nodeId = `node_prompt${role}`;
+			Object.assign(process.env, { PI_SWARM_WORKER: "1", PI_SWARM_RUN: runId, PI_SWARM_NODE: nodeId, PI_SWARM_TOKEN: "token" });
+			writeJson(join(inboxDir(runId, nodeId), "snapshot.json"), {
+				schemaVersion: 2, status: "active", maxInlineBytes: 65536,
+				node: makeNode(runId, nodeId, role, "Task", "/tmp", "node_parent"), nodes: [], messages: [],
+			});
+			const active = harness();
+			const ctx = { sessionManager: { getSessionId: () => `role-${role}`, getBranch: () => [] }, ui: { setStatus() {} } };
+			try {
+				await extension(active.pi as any);
+				await active.handlers.get("session_start")!({}, ctx);
+				const prompt = await active.handlers.get("before_agent_start")!({ systemPrompt: "base" }, ctx);
+				expect(prompt.systemPrompt).toContain(`Swarm role: ${role}.`);
+				expect(prompt.systemPrompt).toContain("Never run Git mutations such as git add, commit, merge, cherry-pick, or rebase");
+				expect(prompt.systemPrompt).toContain("workers and managers submit changes with swarm_complete");
+				expect(prompt.systemPrompt).toContain("managers integrate accepted children with swarm_integrate");
+				expect(prompt.systemPrompt).toContain("The controller alone owns Git locks and commits");
+				expect(prompt.systemPrompt).not.toContain("root coordinator may stage and commit");
+				expect(prompt.systemPrompt).not.toContain("Do not claim that all commits belong to the controller");
+				if (role === "manager") expect(prompt.systemPrompt).toContain("Authorized coordinators and managers may create managed children with swarm_spawn");
+				if (role === "worker" || role === "reviewer") expect(prompt.systemPrompt).toContain("Workers and reviewers cannot spawn children");
+			} finally { await active.handlers.get("session_shutdown")?.({}, ctx); }
+		}
+	} finally {
+		request.mockRestore();
+		for (const [index, key] of environmentKeys.entries()) {
+			if (previousEnvironment[index] === undefined) delete process.env[key]; else process.env[key] = previousEnvironment[index];
+		}
+		if (previousHome === undefined) delete process.env.PI_SWARM_HOME; else process.env.PI_SWARM_HOME = previousHome;
 		rmSync(directory, { recursive: true, force: true });
 	}
 });

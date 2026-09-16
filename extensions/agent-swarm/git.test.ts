@@ -9,7 +9,7 @@ import { type NodeRecord, type RunRecord } from "./types.ts";
 
 const macTest = process.platform === "darwin" ? test : test.skip;
 
-test("root coordinator integrates only its accepted direct-child commit", () => {
+test("root coordinator preserves authorized own changes before accepted direct-child integration", () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-swarm-root-integrate-")));
 	const previousHome = process.env.PI_SWARM_HOME;
 	process.env.PI_SWARM_HOME = join(root, "state");
@@ -29,6 +29,15 @@ test("root coordinator integrates only its accepted direct-child commit", () => 
 		manager.result = { text: "done", commit: commitResult(manager, "Complete manager result"), submittedAt: Date.now() };
 		expect(() => integrateResult(run, { ...coordinator, nodeId: "node_impostor" }, manager)).toThrow("root coordinator checkout");
 		expect(() => integrateResult(run, coordinator, { ...manager, status: "awaiting-review" })).toThrow("accepted direct-child commit");
+		writeFileSync(join(source, "authorized-root-change"), "authorized\n");
+		writeFileSync(join(source, "unrelated-root-change"), "preserve\n");
+		expect(() => integrateResult(run, coordinator, manager)).toThrow(`Worktree is dirty: ${coordinator.nodeId}`);
+		git(source, ["add", "authorized-root-change"]);
+		git(source, ["commit", "-m", "Authorized coordinator change"]);
+		expect(repositoryInfo(source).status).toContain("unrelated-root-change");
+		expect(readFileSync(join(source, "unrelated-root-change"), "utf8")).toBe("preserve\n");
+		expect(() => integrateResult(run, coordinator, manager)).toThrow(`Worktree is dirty: ${coordinator.nodeId}`);
+		rmSync(join(source, "unrelated-root-change"));
 		const commit = integrateResult(run, coordinator, manager);
 		expect(readFileSync(join(source, "feature"), "utf8")).toBe("integrated\n");
 		expect(repositoryInfo(source).head).toBe(commit);

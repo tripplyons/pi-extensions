@@ -33,11 +33,11 @@ Extensions and subagents run with your user permissions, including shell and fil
 | Extension | What it does |
 | --- | --- |
 | [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Owns local Codex context, history, and notes; preserves native tools and voice with missing-microphone fallback. |
-| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; swarm tools are active only while attached, and Mixture nodes receive a selected private roster. |
+| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; explicitly authorized coordinator commits stay in the root checkout while child Git and integration remain controller-owned. |
 | ask-user | Collects choices and free-text answers in an interactive form. |
 | auto-rename | Names sessions automatically, including Mixture sessions. |
 | autocomplete | Adds editor completions for files, skills, and commands. |
-| bg-bash | Runs persistent shell jobs with five-line collapsed result cards and waits for background activity. |
+| [bg-bash](extensions/bg-bash/README.md) | Runs persistent non-paging shell jobs with five-line collapsed result cards and waits for background activity. |
 | btw | Answers side questions with `/btw`; `/btw:tools` allows the child's configured tools. |
 | clean-footer | Shows agent and compaction activity, session metrics, and extension statuses. |
 | [complain](extensions/complain/README.md) | Records timestamped environment and tool issues for later review. |
@@ -46,7 +46,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | hide-empty-editor | Hides the empty editor. |
 | live | Toggles Codex realtime voice with `/live` and follows Overseer terminal focus for microphone ownership. |
 | message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| [mixture](extensions/mixture/README.md) | A lead/writer model with bounded handoff previews, phase-aware checkpoints, coalesced review, recovery diagnostics, and Agent Swarm node support. |
+| [mixture](extensions/mixture/README.md) | A lead/writer model with phase-aware checkpoints, segmented context recovery, background-job reconciliation, coalesced review, and Agent Swarm support. |
 | nvim-session-export | Exports the local session to Neovim with `/nvim`. |
 | stash | Stashes and restores editor text with Ctrl+S. |
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |

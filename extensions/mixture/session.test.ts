@@ -77,7 +77,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 });
 
 test("oversized private-note projection preserves the previous role checkpoint", async () => {
-	const h = harness([content("summary")]);
+	const h = harness(Array.from({ length: 10 }, () => content("summary")));
 	h.session.newRequest("Fix this");
 	h.state.initialized = true;
 	h.state.seenUsers = [fingerprint(h.context.messages[0])];
@@ -512,6 +512,22 @@ test("lead must explicitly acquire the writer lease", async () => {
 	expect((await h.next()).stopReason).toBe("toolUse");
 	expect(() => h.session.guard("good", "bash", { command: "printf ok" })).not.toThrow();
 });
+test("writers can inspect current-session background jobs without broader process control", async () => {
+	const h = harness([
+		[call("delegate", CONTROL, { action: "delegate", task: "Inspect the running job", nextAction: "Read its current output", successCriteria: ["The job output is reported"] })],
+		[call("inspect", "bg_process", { action: "output", id: "job1" })],
+	]);
+	await h.finishControl(await h.next());
+	const inspection = await h.next();
+	expect(h.calls[1].context.tools?.map(tool => tool.name)).toContain("bg_process");
+	expect(inspection).toMatchObject({ stopReason: "toolUse", content: [{ type: "toolCall", name: "bg_process", arguments: { action: "output", id: "job1" } }] });
+	expect(() => h.session.guard("inspect", "bg_process", { action: "output", id: "job1" })).not.toThrow();
+	expect(h.session.allowed("writer", "bg_process", { action: "kill", id: "job1" })).toBeTrue();
+	h.state.owner = undefined;
+	expect(h.session.allowed("writer", "bg_process", { action: "list" })).toBeTrue();
+	expect(h.session.allowed("writer", "bg_process", { action: "kill", id: "job1" })).toBeFalse();
+});
+
 test("running jobs and unknown background status block writer handoff", async () => {
 	const h = harness([[call("delegate", CONTROL, { action: "delegate", task: "Edit", nextAction: "Edit the fixture", successCriteria: ["Pass"] })]]);
 	const message = await h.next();

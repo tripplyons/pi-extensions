@@ -656,6 +656,15 @@ describe("zsh execution and persistent tmux", () => {
 		);
 
 		expect(result.content[0].text).toMatch(/^5\./);
+		const pager = await tools.get("bash").execute(
+			"noninteractive-pager",
+			{ command: `directory=$(mktemp -d ${JSON.stringify(join(testCacheHome, "pager.XXXXXX"))}) && git -C "$directory" init -q -b main && git -C "$directory" config user.name Test && git -C "$directory" config user.email test@example.invalid && touch "$directory/tracked" && git -C "$directory" add tracked && git -C "$directory" commit -qm init && git -C "$directory" config core.pager 'sleep 30' && git -C "$directory" --paginate branch -vv; result=$?; rm -rf "$directory"; exit $result`, timeout: 1 },
+			undefined,
+			undefined,
+			{ cwd: process.cwd() },
+		);
+		expect(pager.content[0].text).toContain("main");
+		expect(pager.content[0].text).not.toContain("continues in a persistent tmux background job");
 		const previous = process.env.PYTHONPYCACHEPREFIX;
 		testTmux(["new-session", "-d", "-s", "environment-holder", "sleep 30"]);
 		try {
