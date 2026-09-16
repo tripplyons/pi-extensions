@@ -42,12 +42,16 @@ function setup(entries: any[] = []) {
 
 const dispatchOptions = { expandPromptTemplates: true };
 
-test("starts Codex realtime voice when inactive", async () => {
+test("alternates start and stop without waiting for lifecycle messages", async () => {
   const session = setup();
   session.start();
   await session.run();
+  await session.run();
   expect(session.description()).toBe("Toggle Codex realtime voice");
-  expect(session.sent).toEqual([{ content: "/codex voice realtime", options: dispatchOptions }]);
+  expect(session.sent).toEqual([
+    { content: "/codex voice realtime", options: dispatchOptions },
+    { content: "/codex voice stop", options: dispatchOptions },
+  ]);
 });
 
 test("stops active realtime voice and starts again after it ends", async () => {

@@ -40,10 +40,17 @@ export default function liveExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /live", "warning");
         return;
       }
-      pi.sendUserMessage(
-        realtimeActive ? "/codex voice stop" : "/codex voice realtime",
-        { expandPromptTemplates: true },
-      );
+      const wasActive = realtimeActive;
+      realtimeActive = !wasActive;
+      try {
+        pi.sendUserMessage(
+          wasActive ? "/codex voice stop" : "/codex voice realtime",
+          { expandPromptTemplates: true },
+        );
+      } catch (error) {
+        realtimeActive = wasActive;
+        throw error;
+      }
     },
   });
 }
