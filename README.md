@@ -24,7 +24,7 @@ Disable Code mode and Codex tool overrides before starting a fresh session. See 
 - OpenAI Codex authentication in Pi for web search and image generation.
 - tmux and zsh for bg-bash.
 - Neovim for `/nvim`.
-- Bun and Python 3 for tests. Run `npm test` from the checkout.
+- Bun and Python 3 for tests. Run `npm test` from the checkout. The runner uses four isolated workers and a 30-second per-file timeout; override them with `PI_TEST_JOBS` and `PI_TEST_FILE_TIMEOUT_MS`.
 
 Extensions and subagents run with your user permissions, including shell and file-write access.
 

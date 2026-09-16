@@ -60,7 +60,7 @@ The wrapper refuses incompatible explicit remote-context, hybrid-compaction, Res
 
 ## Local state and transport
 
-`history`, `notes`, `new_context`, and `get_context_remaining` operate on local session state. Mixture lead, writer, and reviewer stores are separate. Reviewers can change their own notes and windows, not another role's notes or checkout files. Helper and summary inference has no tools.
+`history`, `notes`, `new_context`, and `get_context_remaining` operate on local session state. An exhausted context result explicitly says that tools remain available after context recovery, rather than implying that the requested operation must stop. Mixture lead, writer, and reviewer stores are separate. Reviewers can change their own notes and windows, not another role's notes or checkout files. Helper and summary inference has no tools.
 
 A window change waits for the complete tool batch. Archived windows retain complete messages, including images, and remain searchable after leaving the active prompt. Notes are virtual files, limited to 1 MB per file and 10 MB per snapshot. Standalone stores use Pi custom entries and survive restart, compaction, forks, and tree navigation; sibling branches diverge independently. Mixture stores use its checkpoint/blob chain. Runtime state stays outside this repository.
 

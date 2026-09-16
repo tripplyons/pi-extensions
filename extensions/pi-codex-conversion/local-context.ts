@@ -59,6 +59,8 @@ export interface RemainingContext {
 	remainingTokens?: number;
 	windowId: string;
 	contextWindow: number;
+	budgetStatus?: "exhausted";
+	guidance?: string;
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -461,5 +463,14 @@ export function localNotes(state: LocalContextState, action: NotesAction, params
 
 export function contextRemaining(state: LocalContextState, contextWindow: number, reserveTokens: number, usedTokens?: number): RemainingContext {
 	const limit = Math.max(0, contextWindow - Math.max(0, reserveTokens));
-	return { remainingTokens: usedTokens === undefined ? undefined : Math.max(0, limit - usedTokens), windowId: state.activeWindowId, contextWindow: limit };
+	const remainingTokens = usedTokens === undefined ? undefined : Math.max(0, limit - usedTokens);
+	return {
+		remainingTokens,
+		windowId: state.activeWindowId,
+		contextWindow: limit,
+		...(remainingTokens === 0 ? {
+			budgetStatus: "exhausted" as const,
+			guidance: "Zero local context budget does not disable tools. Continue the requested operation after the runtime compacts or changes the active context window.",
+		} : {}),
+	};
 }

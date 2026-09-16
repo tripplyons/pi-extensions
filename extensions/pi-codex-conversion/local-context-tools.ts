@@ -63,7 +63,7 @@ export function createLocalContextTools(pi: ExtensionAPI, standalone: () => Loca
 			const alreadyPending = !!target.state.pending; const transition = scheduleContextTransition(target.state); target.changed();
 			return result({ started: !alreadyPending, window_id: transition.toWindowId });
 		} },
-		{ name: "get_context_remaining", label: "get_context_remaining", description: "Get the remaining tokens in this actor's local context window.", parameters: EmptyParameters, async execute(_id, _params, _signal, _update, ctx) {
+		{ name: "get_context_remaining", label: "get_context_remaining", description: "Get the remaining tokens in this actor's local context window. Zero budget does not disable tools; continue the requested operation after context recovery.", parameters: EmptyParameters, async execute(_id, _params, _signal, _update, ctx) {
 			const target = requireTarget(pi, ctx.sessionManager.getSessionId(), standalone);
 			return result(contextRemaining(target.state, target.contextWindow, target.reserveTokens, target.usedTokens));
 		} },

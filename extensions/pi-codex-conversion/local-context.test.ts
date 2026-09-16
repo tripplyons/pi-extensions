@@ -163,8 +163,13 @@ describe("local notes", () => {
 	});
 });
 
-test("remaining context reserves output and preserves unknown usage", () => {
+test("remaining context reserves output, explains exhaustion, and preserves unknown usage", () => {
 	const state = createLocalContext(identity);
-	expect(contextRemaining(state, 10_000, 2_000, 3_000).remainingTokens).toBe(5_000);
+	expect(contextRemaining(state, 10_000, 2_000, 3_000)).toMatchObject({ remainingTokens: 5_000 });
+	expect(contextRemaining(state, 10_000, 2_000, 8_000)).toMatchObject({
+		remainingTokens: 0,
+		budgetStatus: "exhausted",
+		guidance: expect.stringContaining("does not disable tools"),
+	});
 	expect(contextRemaining(state, 10_000, 2_000).remainingTokens).toBeUndefined();
 });
