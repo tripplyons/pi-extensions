@@ -8,6 +8,7 @@ import { isSwarmAttached } from "./events.ts";
 import { makeNode, SwarmRuntime } from "./runtime.ts";
 import { inboxDir, sessionFile, workerHome, writeJson } from "./state.ts";
 import { WorkerMailbox } from "./worker.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
 
 function harness(entries: any[] = [], initialActiveTools = ["read", "bash", "edit", "write"]) {
 	const bus = new EventEmitter();
@@ -396,34 +397,36 @@ test("monitor waits for idle, deduplicates wakes, and restores its generation af
 	let pending = false;
 	const ctx = { model: { provider: "openai-codex", id: "gpt" }, sessionManager: { getSessionId: () => "monitor", getBranch: () => entries }, ui: { notify() {}, setStatus() {} }, isIdle: () => idle, hasPendingMessages: () => pending };
 	let active = harness(entries);
+	let scheduler = new ManualScheduler();
 	const activity: unknown[] = [];
 	active.bus.on("tripp:agent-swarm-activity", (event) => activity.push(event));
 	try {
 		writeJson(sessionFile("monitor"), { runId: root.runId });
-		await extension(active.pi as any);
+		await extension(active.pi as any, { scheduler });
 		await active.handlers.get("session_start")!({}, ctx);
-		await new Promise((resolve) => setTimeout(resolve, 350));
+		await scheduler.advanceBy(350);
 		expect(active.messages).toHaveLength(0);
 		expect(activity).toHaveLength(1);
 		idle = true; pending = true;
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await scheduler.advanceBy(150);
 		expect(active.messages).toHaveLength(0);
 		expect(activity).toHaveLength(1);
 		pending = false;
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await scheduler.advanceBy(150);
 		expect(active.messages).toHaveLength(1);
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await scheduler.advanceBy(150);
 		expect(active.messages).toHaveLength(1);
 		await active.handlers.get("session_shutdown")!({}, ctx);
 		active = harness(entries);
-		await extension(active.pi as any);
+		scheduler = new ManualScheduler();
+		await extension(active.pi as any, { scheduler });
 		await active.handlers.get("session_start")!({}, ctx);
-		await new Promise((resolve) => setTimeout(resolve, 350));
+		await scheduler.advanceBy(350);
 		expect(active.messages).toHaveLength(0);
 		const prompt = await active.handlers.get("before_agent_start")!({ systemPrompt: "Compacted context" }, ctx);
 		expect(prompt.systemPrompt).toContain("Read swarm_task");
 		child.status = "failed";
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await scheduler.advanceBy(150);
 		expect(active.messages).toHaveLength(1);
 	} finally {
 		await active.handlers.get("session_shutdown")?.({}, ctx);

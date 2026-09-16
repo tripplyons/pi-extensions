@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { isSwarmAttached } from "../agent-swarm/events.ts";
+import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 const CUSTOM_TYPE = "goal-state";
 const CONTINUATION_TYPE = "goal-continuation";
@@ -293,13 +294,14 @@ The system has marked the goal as budget_limited, so do not start new substantiv
 
 Do not call update_goal unless the goal is actually complete.`;
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, dependencies: { scheduler?: Scheduler } = {}) {
+	const scheduler = dependencies.scheduler ?? systemScheduler;
 	let goal: Goal | undefined;
 	let continuationQueued = false;
 	let activeGoalTurn = false;
 	let interruptedPausePendingCompaction = false;
 	let compactionInProgress = false;
-	let scheduledContinuation: ReturnType<typeof setTimeout> | undefined;
+	let scheduledContinuation: ScheduledTask | undefined;
 
 	const persistGoal = () => {
 		pi.appendEntry(CUSTOM_TYPE, goal ? goal : {});
@@ -361,7 +363,7 @@ export default function (pi: ExtensionAPI) {
 
 	const cancelScheduledContinuation = () => {
 		if (scheduledContinuation === undefined) return;
-		clearTimeout(scheduledContinuation);
+		scheduler.cancel(scheduledContinuation);
 		scheduledContinuation = undefined;
 	};
 
@@ -375,10 +377,10 @@ export default function (pi: ExtensionAPI) {
 
 	const scheduleContinuation = (ctx: ExtensionContext) => {
 		if (scheduledContinuation !== undefined) return;
-		scheduledContinuation = setTimeout(() => {
+		scheduledContinuation = scheduler.after(0, () => {
 			scheduledContinuation = undefined;
 			queueContinuation(ctx);
-		}, 0);
+		});
 	};
 
 	const setGoal = (objective: string, status: GoalStatus = "active", tokenBudget: number | null = null) => {

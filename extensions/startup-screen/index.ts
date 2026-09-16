@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { relative } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 import { Spacer, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 interface RenderableNode {
@@ -98,23 +99,24 @@ export function removeHiddenSection(component: RenderableNode): boolean {
 	return false;
 }
 
-export default function startupScreenExtension(pi: ExtensionAPI) {
+export default function startupScreenExtension(pi: ExtensionAPI, dependencies: { scheduler?: Scheduler } = {}) {
+	const scheduler = dependencies.scheduler ?? systemScheduler;
 	let activeTui: StartupTui | undefined;
-	let filterTimers: Array<ReturnType<typeof setTimeout>> = [];
+	let filterTimers: ScheduledTask[] = [];
 
 	const clearFilterTimers = () => {
-		for (const timer of filterTimers) clearTimeout(timer);
+		for (const timer of filterTimers) scheduler.cancel(timer);
 		filterTimers = [];
 	};
 
 	const scheduleSectionFilter = (tui: StartupTui) => {
 		clearFilterTimers();
 		for (const delay of FILTER_DELAYS_MS) {
-			filterTimers.push(setTimeout(() => {
+			filterTimers.push(scheduler.after(delay, () => {
 				let changed = false;
 				while (removeHiddenSection(tui)) changed = true;
 				if (changed) tui.requestRender(true);
-			}, delay));
+			}));
 		}
 	};
 

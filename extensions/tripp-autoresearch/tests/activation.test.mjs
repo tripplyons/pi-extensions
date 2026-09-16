@@ -8,6 +8,7 @@ import test from "node:test";
 import autoresearchExtension, {
   shouldAutoActivateAutoresearch,
 } from "../index.ts";
+import { ManualScheduler } from "../../test-scheduler.ts";
 
 const ACTIVATION_ENTRY = "pi-autoresearch.activation";
 const AUTORESEARCH_TOOLS = ["init_experiment", "log_experiment", "run_experiment"];
@@ -21,6 +22,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
   const notifications = [];
   const appendedEntries = [];
   const sentMessages = [];
+  const scheduler = new ManualScheduler();
   let activeTools = [...initialActiveTools];
   let aborted = false;
 
@@ -60,7 +62,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
       sentMessages.push({ content, options });
     },
   };
-  autoresearchExtension(pi);
+  autoresearchExtension(pi, { scheduler });
 
   const ctx = {
     cwd,
@@ -93,6 +95,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
     ctx,
     notifications,
     sentMessages,
+    scheduler,
     widgets,
     activeTools: () => activeTools,
     aborted: () => aborted,
@@ -589,7 +592,7 @@ test("upstream owns compaction while active autoresearch rehydrates from disk af
     await nativeHarness.handlers.get("session_compact")?.({
       compactionEntry: { details: { kind: "openai-codex-native-compaction" } },
     }, nativeHarness.ctx);
-    await new Promise((resolve) => setTimeout(resolve, 850));
+    await nativeHarness.scheduler.advanceBy(800);
 
     assert.equal(nativeHarness.sentMessages.length, 1);
     assert.match(nativeHarness.sentMessages[0].content, /Re-read \.auto\/prompt\.md/);
@@ -636,7 +639,7 @@ for (const continuation of ["agent_start", "session_compact_failed", "session_sh
       await harness.handlers.get("session_start")({}, harness.ctx);
       await harness.handlers.get("session_compact")({}, harness.ctx);
       await harness.handlers.get(continuation)({}, harness.ctx);
-      await new Promise((resolve) => setTimeout(resolve, 850));
+      await harness.scheduler.advanceBy(800);
       assert.deepEqual(harness.sentMessages, []);
       await harness.handlers.get("session_shutdown")({}, harness.ctx);
     } finally {

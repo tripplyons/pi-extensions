@@ -15,16 +15,18 @@ import { defaultConfig, WORKER_ENV, type RequestKind } from "./types.ts";
 import { WorkerMailbox } from "./worker.ts";
 import { renderSwarmCall, renderSwarmResult } from "./tool-render.ts";
 import { SWARM_TOOL_NAMES } from "./tool-names.ts";
+import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 export { SWARM_TOOL_NAMES } from "./tool-names.ts";
 const swarmToolNames = new Set<string>(SWARM_TOOL_NAMES);
 
-export default async function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI, dependencies: { scheduler?: Scheduler } = {}) {
+	const scheduler = dependencies.scheduler ?? systemScheduler;
 	let runtime: SwarmRuntime | undefined;
 	let mailbox: WorkerMailbox | undefined;
 	let attachment: ReturnType<typeof publishSwarmAttachment> | undefined;
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+	let timer: ScheduledTask | undefined;
+	let heartbeatTimer: ScheduledTask | undefined;
 	let stopped = true;
 	const delivered = new Set<string>();
 	let pendingAcknowledgements: string[] = [];
@@ -176,7 +178,7 @@ export default async function (pi: ExtensionAPI) {
 			syncActiveTools(false);
 			ctx.ui.notify(`Swarm controller stopped polling: ${error}`, "error");
 		}
-		if (!stopped && runtime === active) timer = setTimeout(() => void poll(ctx), pollInterval);
+		if (!stopped && runtime === active) timer = scheduler.after(pollInterval, () => poll(ctx));
 	};
 	const attach = (ctx: ExtensionContext) => {
 		const live = !!runtime && runtime.run.status !== "stopped";
@@ -184,14 +186,14 @@ export default async function (pi: ExtensionAPI) {
 		syncActiveTools(live);
 		if (!live) {
 			stopped = true;
-			if (timer) clearTimeout(timer);
+			if (timer) scheduler.cancel(timer);
 			timer = undefined;
 			return;
 		}
 		pollInterval = runtime!.run.config.pollIntervalMs;
 		stopped = false;
-		if (timer) clearTimeout(timer);
-		timer = setTimeout(() => void poll(ctx), 250);
+		if (timer) scheduler.cancel(timer);
+		timer = scheduler.after(250, () => poll(ctx));
 	};
 	const startSession = async (ctx: ExtensionContext) => {
 		syncActiveTools(false);
@@ -219,17 +221,17 @@ export default async function (pi: ExtensionAPI) {
 						}
 						if (!ids.length) lastActivity = "";
 					} catch (error) { ctx.ui.notify(`Swarm activity: ${error}`, "error"); }
-					if (mailbox === worker) timer = setTimeout(wakeWorker, 250);
+					if (mailbox === worker) timer = scheduler.after(250, wakeWorker);
 				};
-				timer = setTimeout(wakeWorker, 250);
+				timer = scheduler.after(250, wakeWorker);
 				const heartbeat = async () => {
 					const current = mailbox;
 					if (!current || ["completed", "rejected", "failed", "stopped"].includes(current.snapshot().node.status)) return;
 					try { await current.request("heartbeat", {}); }
 					catch (error) { ctx.ui.notify(`Swarm heartbeat: ${error}`, "error"); }
-					if (mailbox === current) heartbeatTimer = setTimeout(() => void heartbeat(), 5000);
+					if (mailbox === current) heartbeatTimer = scheduler.after(5000, heartbeat);
 				};
-				heartbeatTimer = setTimeout(() => void heartbeat(), 5000);
+				heartbeatTimer = scheduler.after(5000, heartbeat);
 			} catch (error) {
 				mailbox = undefined;
 				attachment.set(false);
@@ -293,15 +295,15 @@ export default async function (pi: ExtensionAPI) {
 				for (const id of ids) delivered.add(id);
 				return;
 			}
-			await new Promise((resolve) => setTimeout(resolve, 500));
+			await new Promise<void>((resolve) => { scheduler.after(500, resolve); });
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		syncActiveTools(false);
 		stopped = true;
 		mailbox = undefined;
-		if (timer) clearTimeout(timer);
-		if (heartbeatTimer) clearTimeout(heartbeatTimer);
+		if (timer) scheduler.cancel(timer);
+		if (heartbeatTimer) scheduler.cancel(heartbeatTimer);
 		await runtime?.close();
 		runtime = undefined;
 		attachedSystemPrompt = undefined;
@@ -350,7 +352,7 @@ export default async function (pi: ExtensionAPI) {
 			try { await requireRuntime().setPaused(paused); }
 			catch (error) {
 				stopped = true;
-				if (timer) clearTimeout(timer);
+				if (timer) scheduler.cancel(timer);
 				attachment?.set(false);
 				syncActiveTools(false);
 				throw error;
@@ -397,16 +399,16 @@ export default async function (pi: ExtensionAPI) {
 		async handler(_args, ctx) {
 			if (mailbox) throw new Error("Root-only command");
 			const active = requireRuntime();
-			let refresh: ReturnType<typeof setInterval> | undefined;
+			let refresh: ScheduledTask | undefined;
 			try { await ctx.ui.custom<void>((tui, theme, _keys, done) => {
 				const tree = new SwarmTree(theme, () => active.run.clearedAt ? [] : active.nodes(), (node) => {
 					if (!node.tmuxSession || !node.tmuxWindow) return "No worker output";
 					try { return captureWindow(node.tmuxSession, node.tmuxWindow); }
 					catch (error) { return String(error); }
 				}, () => done(), (node) => node.role === "coordinator" || node.cleanedAt ? 0 : queuedRequests(node.runId, node.nodeId).length);
-				refresh = setInterval(() => tui.requestRender(), 500);
+				refresh = scheduler.every(500, () => tui.requestRender());
 				return { render: (width) => tree.render(width), invalidate: () => tree.invalidate(), handleInput: (data) => { tree.handleInput(data); tui.requestRender(); } };
-			}); } finally { if (refresh) clearInterval(refresh); }
+			}); } finally { if (refresh) scheduler.cancel(refresh); }
 		},
 	});
 	for (const action of ["kill", "clear"] as const) {
@@ -415,13 +417,13 @@ export default async function (pi: ExtensionAPI) {
 			await requireRuntime()[action]();
 			if (action === "clear") {
 				stopped = true;
-				if (timer) clearTimeout(timer);
+				if (timer) scheduler.cancel(timer);
 				await runtime!.close();
 				runtime = undefined;
 				context?.ui.setStatus("agent-swarm", undefined);
 			} else {
 				stopped = true;
-				if (timer) clearTimeout(timer);
+				if (timer) scheduler.cancel(timer);
 			}
 			attachment?.set(false);
 			syncActiveTools(false);

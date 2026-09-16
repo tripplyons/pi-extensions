@@ -143,7 +143,7 @@ describe("usage command", () => {
 		fetchResult = new Promise(() => {});
 		const run = harness();
 		void run.commands.get("codex-usage").handler("", run.ctx);
-		await Bun.sleep(0);
+		await Promise.resolve();
 		expect(fetchSignal?.aborted).toBeFalse();
 		await run.handlers.get("session_shutdown")?.({}, run.ctx);
 		expect(fetchSignal?.aborted).toBeTrue();
@@ -153,10 +153,10 @@ describe("usage command", () => {
 		fetchResult = new Promise(() => {});
 		const run = harness();
 		void run.commands.get("codex-usage").handler("", run.ctx);
-		await Bun.sleep(0);
+		await Promise.resolve();
 		const superseded = fetchSignal;
 		void run.commands.get("codex-usage").handler("", run.ctx);
-		await Bun.sleep(0);
+		await Promise.resolve();
 		expect(superseded?.aborted).toBeTrue();
 		await run.handlers.get("session_shutdown")?.({}, run.ctx);
 	});

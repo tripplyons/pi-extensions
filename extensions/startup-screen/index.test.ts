@@ -6,6 +6,7 @@ import startupScreenExtension, {
 	removeHiddenSection,
 	renderHeader,
 } from "./index.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
 
 const theme = {
 	bold: (text: string) => text,
@@ -129,7 +130,8 @@ describe("extension lifecycle", () => {
 	test("installs only in TUI mode and restores the built-in header", async () => {
 		const handlers = new Map<string, Function>();
 		const headers: unknown[] = [];
-		startupScreenExtension({ on: (name: string, handler: Function) => handlers.set(name, handler) } as any);
+		const scheduler = new ManualScheduler();
+		startupScreenExtension({ on: (name: string, handler: Function) => handlers.set(name, handler) } as any, { scheduler });
 		const ui = { setHeader: (header: unknown) => headers.push(header) };
 
 		await handlers.get("session_start")?.({}, { cwd: "/tmp", mode: "rpc", ui });
@@ -145,7 +147,8 @@ describe("extension lifecycle", () => {
 		}, theme);
 		await handlers.get("session_shutdown")?.({}, { mode: "tui", ui });
 		expect(headers).toEqual([expect.any(Function), undefined]);
-		await Bun.sleep(10);
+		await scheduler.advanceBy(10_000);
 		expect(renderRequests).toBe(0);
+		expect(scheduler.pending).toBe(0);
 	});
 });

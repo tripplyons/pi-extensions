@@ -49,6 +49,7 @@ import {
 import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
 import { formatScore as formatNum, scorePrecision } from "./scores.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
+import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 const AUTORESEARCH_CREATE_SKILL_PATH = fileURLToPath(
   new URL("./skills/autoresearch-create/SKILL.md", import.meta.url),
@@ -202,7 +203,7 @@ interface AutoresearchRuntime {
   runningExperiment: { startedAt: number; command: string } | null;
   state: ExperimentState;
   /** Pending auto-resume timer; cancelled when the agent starts a new run or compacts. */
-  pendingResumeTimer: ReturnType<typeof setTimeout> | null;
+  pendingResumeTimer: ScheduledTask | null;
   /** Resume message to send when the pending timer fires. */
   pendingResumeMessage: string | null;
 }
@@ -1069,7 +1070,8 @@ function renderDashboardLines(
 // Extension
 // ---------------------------------------------------------------------------
 
-export default function autoresearchExtension(pi: ExtensionAPI) {
+export default function autoresearchExtension(pi: ExtensionAPI, dependencies: { scheduler?: Scheduler } = {}) {
+  const scheduler = dependencies.scheduler ?? systemScheduler;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
@@ -1124,7 +1126,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const pausePendingResume = (runtime: AutoresearchRuntime): void => {
     if (!runtime.pendingResumeTimer) return;
-    clearTimeout(runtime.pendingResumeTimer);
+    scheduler.cancel(runtime.pendingResumeTimer);
     runtime.pendingResumeTimer = null;
   };
 
@@ -1161,9 +1163,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const schedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime, message: string): void => {
     pausePendingResume(runtime);
     runtime.pendingResumeMessage = message;
-    runtime.pendingResumeTimer = setTimeout(
-      () => sendPendingResumeIfReady(ctx, runtime),
+    runtime.pendingResumeTimer = scheduler.after(
       SETTLED_WINDOW_MS,
+      () => sendPendingResumeIfReady(ctx, runtime),
     );
   };
 
@@ -1246,14 +1248,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   // Running experiment state (for spinner in fullscreen overlay)
   let overlayTui: { requestRender: () => void } | null = null;
-  let spinnerInterval: ReturnType<typeof setInterval> | null = null;
+  let spinnerInterval: ScheduledTask | null = null;
   let spinnerFrame = 0;
   const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
   const clearOverlay = () => {
     overlayTui = null;
     if (spinnerInterval) {
-      clearInterval(spinnerInterval);
+      scheduler.cancel(spinnerInterval);
       spinnerInterval = null;
     }
   };
@@ -1792,7 +1794,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
 
         // Timer interval — update every second with elapsed time + tail output
-        const timerInterval = setInterval(() => {
+        const timerInterval = scheduler.every(1000, () => {
           if (!onUpdate) return;
           const elapsed = formatElapsed(Date.now() - t0);
           const trunc = truncateTail(getBufferText(), {
@@ -1808,7 +1810,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               fullOutputPath: tempFilePath,
             },
           });
-        }, 1000);
+        });
 
         const handleData = (data: Buffer) => {
           totalBytes += data.length;
@@ -1854,12 +1856,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         if (child.stderr) child.stderr.on("data", handleData);
 
         // Timeout
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        let timeoutHandle: ScheduledTask | undefined;
         if (timeout > 0) {
-          timeoutHandle = setTimeout(() => {
+          timeoutHandle = scheduler.after(timeout, () => {
             processTimedOut = true;
             if (child.pid) killTree(child.pid);
-          }, timeout);
+          });
         }
 
         // Abort signal — kill immediately if pid exists, otherwise queue for spawn.
@@ -1883,16 +1885,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
 
         child.on("error", (err) => {
-          clearInterval(timerInterval);
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+          scheduler.cancel(timerInterval);
+          if (timeoutHandle) scheduler.cancel(timeoutHandle);
           if (signal) signal.removeEventListener("abort", onAbort);
           if (tempFileStream) tempFileStream.end();
           reject(err);
         });
 
         child.on("close", (code) => {
-          clearInterval(timerInterval);
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+          scheduler.cancel(timerInterval);
+          if (timeoutHandle) scheduler.cancel(timeoutHandle);
           if (signal) signal.removeEventListener("abort", onAbort);
           if (tempFileStream) tempFileStream.end();
 
@@ -2596,10 +2598,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           let lastTotalRows = 0;
           overlayTui = tui;
 
-          spinnerInterval = setInterval(() => {
+          spinnerInterval = scheduler.every(80, () => {
             spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
             if (runtime.runningExperiment) tui.requestRender();
-          }, 80);
+          });
 
           const buildOverlayContent = (renderWidth: number): string[] => {
             const content = renderDashboardLines(state, renderWidth, theme, 0);

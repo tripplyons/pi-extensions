@@ -188,7 +188,8 @@ describe("asynchronous subagent", () => {
 
 		harness.children[0].stdout.write(assistantEvent("auth report"));
 		harness.children[0].emit("close", 0);
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 
 		expect(harness.messages).toHaveLength(1);
 		expect(harness.messages[0].message.content).toContain("auth report");
@@ -203,7 +204,8 @@ describe("asynchronous subagent", () => {
 		await harness.tools.get("subagent").execute("start", { task: "fail" }, undefined, undefined, harness.ctx);
 		harness.children[0].stdout.write(assistantEvent("partial", { stopReason: "error", errorMessage: "quota exceeded" }));
 		harness.children[0].emit("close", 0);
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 
 		expect(harness.messages[0].message.content).toContain("quota exceeded");
 		expect(harness.emitted.find(({ event }) => event?.source === "subagent")?.event.status).toBe("failed");
@@ -288,7 +290,8 @@ describe("asynchronous subagent", () => {
 		const answer = `HEAD-${"x".repeat(120_000)}-TAIL`;
 		harness.children[0].stdout.write(assistantEvent(answer));
 		harness.children[0].emit("close", 0);
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 
 		expect(harness.messages[0].message.content).toContain("HEAD-");
 		expect(harness.messages[0].message.content).toContain("-TAIL");
@@ -317,7 +320,8 @@ describe("asynchronous subagent", () => {
 		harness.children[0].stdout.write("null\n");
 		harness.children[0].stdout.write(assistantEvent("final answer"));
 		harness.children[0].emit("close", 0);
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 
 		const output = await harness.tools.get("subagent_process").execute("output", { action: "output", id: "sub_1" });
 		const job = output.details.jobs[0];

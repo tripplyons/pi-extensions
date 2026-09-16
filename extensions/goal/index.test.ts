@@ -13,6 +13,7 @@ mock.module("typebox", () => ({
 }));
 const { default: goalExtension } = await import("./index.ts");
 const { publishSwarmAttachment } = await import("../agent-swarm/events.ts");
+const { ManualScheduler } = await import("../test-scheduler.ts");
 
 type Handler = (...args: any[]) => unknown;
 
@@ -31,6 +32,7 @@ const createHarness = (storedGoal = true, status = "active", swarmAttached = fal
 	const sentMessages: any[] = [];
 	const notifications: string[] = [];
 	const statuses: Array<string | undefined> = [];
+	const scheduler = new ManualScheduler();
 	let activeTools: string[] = [];
 	let idle = true;
 	const eventHandlers = new Map<string, Set<Handler>>();
@@ -100,7 +102,7 @@ const createHarness = (storedGoal = true, status = "active", swarmAttached = fal
 		hasPendingMessages: () => false,
 	};
 
-	goalExtension(pi as any);
+	goalExtension(pi as any, { scheduler });
 
 	return {
 		ctx,
@@ -111,6 +113,7 @@ const createHarness = (storedGoal = true, status = "active", swarmAttached = fal
 		sentMessages,
 		notifications,
 		statuses,
+		scheduler,
 		activeTools: () => [...activeTools],
 		setIdle(value: boolean) {
 			idle = value;
@@ -143,7 +146,7 @@ describe("goal lifecycle", () => {
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
 		expect(harness.sentMessages).toHaveLength(0);
 
-		await Bun.sleep(5);
+		await harness.scheduler.advanceBy(0);
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.sentMessages[0].message.customType).toBe("goal-continuation");
 	});
@@ -153,13 +156,13 @@ describe("goal lifecycle", () => {
 		harness.setIdle(false);
 
 		await harness.handlers.get("session_start")?.({}, harness.ctx);
-		await Bun.sleep(5);
+		await harness.scheduler.advanceBy(0);
 		expect(harness.sentMessages).toHaveLength(0);
 
 		harness.setIdle(true);
 		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
 		expect(harness.sentMessages).toHaveLength(0);
-		await Bun.sleep(5);
+		await harness.scheduler.advanceBy(0);
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.sentMessages[0].message.customType).toBe("goal-continuation");
 	});
@@ -178,7 +181,7 @@ describe("goal lifecycle", () => {
 		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
 		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
 		expect(harness.sentMessages).toHaveLength(0);
-		await Bun.sleep(5);
+		await harness.scheduler.advanceBy(0);
 
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.sentMessages[0].message.customType).toBe("goal-continuation");
@@ -192,7 +195,7 @@ describe("goal lifecycle", () => {
 		await harness.handlers.get("agent_start")?.({}, harness.ctx);
 		await harness.handlers.get("agent_end")?.({ messages: [{ role: "assistant", stopReason: "aborted" }] }, harness.ctx);
 		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
-		await Bun.sleep(5);
+		await harness.scheduler.advanceBy(0);
 
 		expect(latestGoal(harness.entries).status).toBe("paused");
 		expect(harness.sentMessages).toHaveLength(0);
@@ -215,7 +218,7 @@ describe("goal lifecycle", () => {
 
 		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
 		expect(harness.sentMessages).toHaveLength(0);
-		await Bun.sleep(5);
+		await harness.scheduler.advanceBy(0);
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.sentMessages[0].message.customType).toBe("goal-continuation");
 	});

@@ -326,7 +326,8 @@ describe("sleep async completion", () => {
 		} as any);
 
 		const sleeping = tools.get("sleep").execute("sleep", { seconds: 30 }, undefined, undefined, {});
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 		eventHandlers.get("tripp:async-job-completed")?.({ source: "subagent", id: "sub_1", status: "exited" });
 		const result = await sleeping;
 
@@ -358,14 +359,16 @@ describe("sleep async completion", () => {
 		} as any);
 
 		const steeringSleep = tools.get("sleep").execute("sleep", { seconds: 30 }, undefined, undefined, {});
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 		inputHandler?.({ streamingBehavior: "steer" });
 		const steeringResult = await steeringSleep;
 		expect(steeringResult.content[0].text).toContain("steering arrived");
 		expect(steeringResult.details).toMatchObject({ wokeEarly: true, steering: true });
 
 		const swarmSleep = tools.get("sleep").execute("sleep", { seconds: 30 }, undefined, undefined, {});
-		await Bun.sleep(1);
+		await Promise.resolve();
+		await Promise.resolve();
 		eventHandlers.get("tripp:agent-swarm-activity")?.({ kind: "message", nodeId: "node_1" });
 		const swarmResult = await swarmSleep;
 		expect(swarmResult.content[0].text).toContain("agent-swarm activity arrived");

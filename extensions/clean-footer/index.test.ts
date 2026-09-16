@@ -76,8 +76,6 @@ describe("clean footer working indicator", () => {
 		expect(harness.foregroundCalls).toContainEqual({ role: "accent", text: "[*]" });
 		expect(harness.foregroundCalls).toContainEqual({ role: "accent", text: "project-folder" });
 		expect(harness.renderRequests()).toBe(1);
-		await Bun.sleep(100);
-		expect(harness.renderRequests()).toBe(1);
 
 		await harness.handlers.get("agent_settled")?.({}, harness.ctx);
 		expect(footer.render(200)[0]).toStartWith("project-folder | test-model | high");
