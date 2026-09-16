@@ -90,9 +90,10 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	expect(advice.details.model).toBe("fixture/advisor");
 	expect(h.roleOptions[1].reasoning).toBe("high");
 	expect(h.roleOptions[1].maxTokens).toBe(4_096);
+	await h.handlers.get("agent_end")({ messages: [] });
+	expect(h.releasedIds).toEqual(expect.arrayContaining([h.roleOptions[0].sessionId, h.roleOptions[1].sessionId]));
 	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "ordinary" } });
 	expect(h.activeTools).not.toContain(ASK_ADVISOR);
-	expect(h.releasedIds).toEqual(expect.arrayContaining([h.roleOptions[0].sessionId, h.roleOptions[1].sessionId]));
 });
 
 test("native Pi rows preserve lead previews through streaming, expansion and history rebuilds", async () => {

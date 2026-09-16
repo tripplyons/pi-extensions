@@ -340,7 +340,12 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		return { message: tagReceipts({ ...event.message, usage }, session.lastDrained) };
 	});
 	pi.on("turn_end", event => { if (selectedHandoff()) { session?.completeTurn(event.toolResults, event.message.role === "assistant" ? event.message : undefined); persist("turn"); } });
-	pi.on("agent_end", async () => { reservedAdvisorCalls.clear(); if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); } render(); });
+	pi.on("agent_end", async () => {
+		reservedAdvisorCalls.clear();
+		if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); }
+		else releaseRoleResources();
+		render();
+	});
 	pi.on("session_before_switch", () => detach("session switch"));
 	pi.on("session_before_fork", () => detach("session fork"));
 	pi.on("session_before_tree", () => detach("tree navigation"));
