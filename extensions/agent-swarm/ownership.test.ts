@@ -8,6 +8,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { acquireRunOwnership, processExists, type OwnershipDependencies } from "./ownership.ts";
 import { readRun, runFile, writeJson } from "./state.ts";
 import { defaultConfig, SCHEMA_VERSION, type RunRecord } from "./types.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
 
 test("permission-denied process probes still identify a live process", () => {
 	const error = Object.assign(new Error("kill EPERM"), { code: "EPERM" });
@@ -46,7 +47,7 @@ test("ownership lock rejects a second root, records heartbeats, and permits clea
 	let now = 100;
 	const live = new Set<number>([4242]);
 	const dependencies: OwnershipDependencies = {
-		platform: "darwin", pid: 4242, now: () => ++now,
+		platform: "darwin", pid: 4242, now: () => ++now, scheduler: new ManualScheduler(),
 		processExists: pid => live.has(pid),
 		spawnLock: () => {
 			const pid = nextPid++;

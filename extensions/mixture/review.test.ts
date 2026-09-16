@@ -7,6 +7,7 @@ import { defaultConfig } from "./config.ts";
 import { abortable, emptyUsage } from "./provider.ts";
 import { executionDelta, newReviewer, ReviewPool } from "./review.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
 
 const reply = (name: string, args: Record<string, unknown>): AssistantMessage => ({ role: "assistant", provider: "fixture", model: "reviewer", api: "fixture", timestamp: 1,
 	content: [{ type: "toolCall", id: `call_${Math.random().toString(36).slice(2)}`, name, arguments: args }], stopReason: "toolUse", usage: emptyUsage() });
@@ -229,9 +230,13 @@ test("deadline freezes late reviews without cancelling healthy results or callin
 	preset.reviewers.push({ model: "fixture/late-reviewer", thinking: "low" });
 	const states = preset.reviewers.map(newReviewer);
 	const late = deferred<AssistantMessage>();
-	const pool = new ReviewPool(preset, states, process.cwd(), async (index, _context, signal) => index === 0 ? report(7, [issue]) : abortable(late.promise, signal), () => true);
+	const scheduler = new ManualScheduler();
+	const pool = new ReviewPool(preset, states, process.cwd(), async (index, _context, signal) => index === 0 ? report(7, [issue]) : abortable(late.promise, signal), () => true, () => {}, () => 0, scheduler);
 	try {
-		const result = await pool.checkpoint(7, "Final answer candidate");
+		const checkpoint = pool.checkpoint(7, "Final answer candidate");
+		for (let index = 0; index < 5; index++) await Promise.resolve();
+		await scheduler.advanceBy(20);
+		const result = await checkpoint;
 		expect(result.findings).toHaveLength(1);
 		expect(result.warnings.join("\n")).toContain(preset.reviewers[1].model);
 		expect(result.warnings.join("\n")).toContain("deadline");

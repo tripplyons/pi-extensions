@@ -13,6 +13,7 @@ import {
 	type RunningAgent,
 	type SpawnChild,
 } from "./runner.ts";
+import { systemScheduler, type Scheduler } from "../scheduler.ts";
 import {
 	isSwarmAttached,
 	SWARM_ATTACHMENT_CHANGED_EVENT,
@@ -144,13 +145,14 @@ class SubagentManager {
 	constructor(
 		private readonly pi: ExtensionAPI,
 		private readonly spawnChild: SpawnChild,
+		private readonly scheduler: Scheduler,
 	) {}
 
 	start(options: AgentRunOptions) {
 		if (this.shuttingDown) throw new Error("Subagent manager is shutting down");
 
 		const id = `sub_${this.nextId++}`;
-		const job = { id, run: startAgentRun(options, this.spawnChild) };
+		const job = { id, run: startAgentRun(options, this.spawnChild, this.scheduler) };
 		this.jobs.set(id, job);
 		void job.run.completion.then(() => {
 			if (!this.shuttingDown) this.deliver(job);
@@ -232,8 +234,8 @@ const processResult = (
 	details: { action, jobs, ...(range ? { range } : {}) } satisfies SubagentProcessDetails,
 });
 
-export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild = spawn) {
-	const manager = new SubagentManager(pi, spawnChild);
+export function createSubagentExtension(pi: ExtensionAPI, spawnChild: SpawnChild = spawn, scheduler: Scheduler = systemScheduler) {
+	const manager = new SubagentManager(pi, spawnChild, scheduler);
 	let subagentVisible = true;
 	let restoreDirectSubagent = false;
 	let sessionStarted = false;

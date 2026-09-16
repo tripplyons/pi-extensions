@@ -13,6 +13,7 @@ import { compactStatus, configure, controlCall, controlCard, inspection, Inspect
 import { receiptIds, tagReceipts } from "./usage.ts";
 import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
+import { systemScheduler, type Scheduler } from "../scheduler.ts";
 
 export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
 	const running = jobs.jobs.filter(job => job.status === "running");
@@ -21,7 +22,8 @@ export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
 		: undefined;
 };
 
-export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry) {
+export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?: Registry, dependencies: { scheduler?: Scheduler } = {}) {
+	const scheduler = dependencies.scheduler ?? systemScheduler;
 	let registry = initialRegistry ?? new ModelRegistry(await ModelRuntime.create({ allowModelNetwork: false }));
 	let config: MixtureConfig | undefined;
 	let diagnostic: string | undefined;
@@ -123,7 +125,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				if (session !== created || ctx?.sessionManager.getSessionId() !== owner) return;
 				stateGeneration++;
 				render(); persist("response");
-			}, ctx.cwd, owner);
+			}, ctx.cwd, owner, scheduler);
 			session = created;
 			if (rootCompaction && created.state.rootCompactionId !== rootCompaction.id) {
 				if (restored.state) created.rebaseLeadAfterCompaction(rootCompaction.id);
@@ -168,7 +170,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 						...inheritedOptions, sessionId: requestLaneId(options?.sessionId ?? "detached", randomUUID(), `${name}/lead`, "helper"), timeoutMs: preset.limits.requestTimeoutMs,
 						signal: AbortSignal.any([controller.signal, ...(options?.signal ? [options.signal] : [])]),
 						maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.leadMaxTokens, preset.limits.leadMaxTokens),
-					}, undefined, id => { acquiredId = id; }));
+					}, undefined, id => { acquiredId = id; }, scheduler));
 				} finally {
 					helpers.delete(controller);
 					if (acquiredId) releaseProviderSessions(pi, [acquiredId]);

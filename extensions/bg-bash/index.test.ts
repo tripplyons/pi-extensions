@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { queryBackgroundJobs } from "./events.ts";
+import { ManualScheduler } from "../test-scheduler.ts";
 
 class MockBox {
 	children: any[] = [];
@@ -73,6 +74,7 @@ const cacheRoot = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), 
 
 const createHarness = (sessionId: string) => {
 	const handlers = new Map<string, Function>();
+	const scheduler = new ManualScheduler();
 	const tools = new Map<string, any>();
 	const listeners = new Map<string, Function>();
 	const events = {
@@ -84,11 +86,12 @@ const createHarness = (sessionId: string) => {
 		on(event: string, handler: Function) { handlers.set(event, handler); },
 		registerCommand() {},
 		registerTool(tool: any) { tools.set(tool.name, tool); },
-	} as any);
+	} as any, { scheduler });
 	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => sessionId } };
 	handlers.get("session_start")?.({}, ctx);
 	return {
 		tools,
+		scheduler,
 		query: (owner = sessionId) => queryBackgroundJobs({ events } as any, owner),
 		shutdown: () => handlers.get("session_shutdown")?.({}, ctx),
 	};
@@ -282,7 +285,10 @@ describe("sleep async completion", () => {
 		const harness = createHarness("sleep-cleanup-test");
 		const sleep = harness.tools.get("sleep");
 		try {
-			const timed = await sleep.execute("timeout", { seconds: 0.01 });
+			const timedResult = sleep.execute("timeout", { seconds: 0.01 });
+			for (let index = 0; index < 3; index++) await Promise.resolve();
+			await harness.scheduler.advanceBy(10);
+			const timed = await timedResult;
 			const setupSignal = new AbortController().signal;
 			let attached = 0;
 			let removed = 0;

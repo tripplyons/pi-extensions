@@ -7,6 +7,7 @@ import { assertMacSandboxAvailable } from "./isolation.ts";
 import { assertSpawnLimits } from "./lifecycle.ts";
 import { workerCost } from "./metrics.ts";
 import { acquireRunOwnership } from "./ownership.ts";
+import { systemScheduler, type Scheduler } from "../scheduler.ts";
 import { applyRequest, readRequest } from "./requests.ts";
 import { killWindow } from "./tmux.ts";
 import { validateConfig } from "./validation.ts";
@@ -49,7 +50,7 @@ export class SwarmRuntime {
 	private closed = false;
 	private constructor(readonly runId: string, private owner: Awaited<ReturnType<typeof acquireRunOwnership>>, private processes: WorkerProcesses, private changed: () => void) {}
 
-	static async create(input: { cwd: string; sessionId: string; objective: string; model?: string; thinking?: string; config?: SwarmConfig }, processes: WorkerProcesses, changed = () => {}) {
+	static async create(input: { cwd: string; sessionId: string; objective: string; model?: string; thinking?: string; config?: SwarmConfig }, processes: WorkerProcesses, changed = () => {}, scheduler: Scheduler = systemScheduler) {
 		assertMacSandboxAvailable();
 		const objective = text(input.objective, "objective");
 		const config = input.config ?? loadConfig();
@@ -74,11 +75,11 @@ export class SwarmRuntime {
 		};
 		writeJson(runFile(runId), run); writeJson(nodeFile(runId, root.nodeId), root);
 		writeJson(sessionFile(input.sessionId), { runId });
-		return SwarmRuntime.resume(runId, processes, changed);
+		return SwarmRuntime.resume(runId, processes, changed, scheduler);
 	}
 
-	static async resume(runId: string, processes: WorkerProcesses, changed = () => {}) {
-		const runtime = new SwarmRuntime(runId, await acquireRunOwnership(runId), processes, changed);
+	static async resume(runId: string, processes: WorkerProcesses, changed = () => {}, scheduler: Scheduler = systemScheduler) {
+		const runtime = new SwarmRuntime(runId, await acquireRunOwnership(runId, { scheduler }), processes, changed);
 		try {
 			if (runtime.run.clearedAt) throw new Error("Swarm has been cleared; generated branches remain available for manual recovery");
 			await runtime.poll(); return runtime;

@@ -4,6 +4,7 @@ import { Type, type Static } from "typebox";
 import { compactRole, estimateContextTokens, forModel, imageContent, interruptPending } from "./context.ts";
 import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
+import { systemScheduler, type Scheduler } from "../scheduler.ts";
 import type { Preset } from "./config.ts";
 import { addUsage, callRole, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RequestLane } from "./provider.ts";
 import { ASSESSMENTS, adoptLegacyPhase, assessPhase, closedPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
@@ -164,7 +165,8 @@ export class MixtureSession {
 	readonly reviews: ReviewPool;
 	constructor(readonly preset: Preset, readonly registry: Registry, state: MixtureState,
 		private readonly jobs: () => BackgroundJobQuery,
-		private readonly changed: () => void = () => {}, cwd = process.cwd(), private readonly branchId = state.id) {
+		private readonly changed: () => void = () => {}, cwd = process.cwd(), private readonly branchId = state.id,
+		private readonly scheduler: Scheduler = systemScheduler) {
 		this.state = state;
 		this.state.writerRetries ??= 0;
 		this.state.writerRetryDelegation ??= 0;
@@ -189,7 +191,7 @@ export class MixtureSession {
 				signal: AbortSignal.any([signal, ...(this.requestOptions.signal ? [this.requestOptions.signal] : [])]) });
 			return result.message;
 		}, id => resolveModel(id, registry.find.bind(registry)).input.includes("image"), changed,
-		id => resolveModel(id, registry.find.bind(registry)).contextWindow);
+		id => resolveModel(id, registry.find.bind(registry)).contextWindow, scheduler);
 		if (state.task || state.brief) this.reviews.configureScope(this.currentScope(), state.attachments);
 	}
 
@@ -578,7 +580,7 @@ export class MixtureSession {
 				timeoutMs: actor === "writer" ? this.preset.limits.writerRequestTimeoutMs : this.preset.limits.requestTimeoutMs,
 				...(actor === "writer" ? { idleTimeoutMs: this.preset.limits.writerIdleTimeoutMs } : {}), maxTokens,
 				sessionId: requestLaneId(options.sessionId ?? this.branchId, this.state.id, label, lane),
-			}, undefined, sessionId => this.acquiredSessionIds.add(sessionId));
+			}, undefined, sessionId => this.acquiredSessionIds.add(sessionId), this.scheduler);
 			addUsage(state.usage, message.usage);
 			state.calls++;
 			const recorded = receipt(label, id, message, "nested");

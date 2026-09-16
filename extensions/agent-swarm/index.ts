@@ -41,7 +41,7 @@ export default async function (pi: ExtensionAPI, dependencies: { scheduler?: Sch
 	let attachedSystemPrompt: string | undefined;
 	type TaskCursor = { runId: string; status: string; nodeId: string; nodeVersion: number; nodeVersions: Map<string, number>; messageIds: Set<string> };
 	let taskCursor: TaskCursor | undefined;
-	const processes = createWorkerProcesses(fileURLToPath(import.meta.url));
+	const processes = createWorkerProcesses(fileURLToPath(import.meta.url), { scheduler });
 	const requireRuntime = () => {
 		if (!runtime) throw new Error("No swarm attached. Use /swarm:start <objective> first.");
 		return runtime;
@@ -204,7 +204,7 @@ export default async function (pi: ExtensionAPI, dependencies: { scheduler?: Sch
 		attachment ??= publishSwarmAttachment(pi);
 		if (process.env[WORKER_ENV] === "1") {
 			try {
-				const worker = new WorkerMailbox();
+				const worker = new WorkerMailbox(scheduler);
 				mailbox = worker;
 				await worker.request("ready", { sessionId: ctx.sessionManager.getSessionId() });
 				attachment.set(true);
@@ -243,7 +243,7 @@ export default async function (pi: ExtensionAPI, dependencies: { scheduler?: Sch
 		const saved = readJson<{ runId: string }>(sessionFile(ctx.sessionManager.getSessionId()));
 		if (saved) {
 			try {
-				runtime = await SwarmRuntime.resume(saved.runId, processes);
+				runtime = await SwarmRuntime.resume(saved.runId, processes, undefined, scheduler);
 				attach(ctx);
 			} catch (error) {
 				runtime = undefined;
@@ -320,7 +320,7 @@ export default async function (pi: ExtensionAPI, dependencies: { scheduler?: Sch
 			const fast: { enabled?: boolean } = {};
 			pi.events.emit("fast:query", fast);
 			try {
-				runtime = await SwarmRuntime.create({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), objective, model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel(), config: { ...defaultConfig, fastMode: fast.enabled === true } }, processes);
+				runtime = await SwarmRuntime.create({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), objective, model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel(), config: { ...defaultConfig, fastMode: fast.enabled === true } }, processes, undefined, scheduler);
 				attach(ctx);
 			} catch (error) {
 				runtime = undefined;
@@ -336,7 +336,7 @@ export default async function (pi: ExtensionAPI, dependencies: { scheduler?: Sch
 		async handler(args, ctx) {
 			if (mailbox) throw new Error("Root-only command");
 			if (!paused && !runtime && args.trim()) {
-				const resumed = await SwarmRuntime.resume(args.trim(), processes);
+				const resumed = await SwarmRuntime.resume(args.trim(), processes, undefined, scheduler);
 				try {
 					await resumed.bindSession(ctx.sessionManager.getSessionId());
 					runtime = resumed;

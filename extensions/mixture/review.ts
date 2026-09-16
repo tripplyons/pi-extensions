@@ -8,6 +8,7 @@ import { estimateContextTokens } from "./context.ts";
 import type { RoleState } from "./session.ts";
 import { appendActiveMessage, commitContextTransition, contextRemaining, localHistory, localNotes, reconcileLocalContext, replaceActiveMessages, scheduleContextTransition } from "../pi-codex-conversion/local-context.ts";
 import { EmptyParameters, HistoryParameters, NotesParameters } from "../pi-codex-conversion/local-context-tools.ts";
+import { systemScheduler, type Scheduler } from "../scheduler.ts";
 
 export interface Finding {
 	id: string;
@@ -93,7 +94,8 @@ export class ReviewPool {
 		private readonly request: ReviewerRequest,
 		private readonly supportsImages: (model: string) => boolean,
 		private readonly changed: () => void = () => {},
-		private readonly contextWindowForModel: (model: string) => number = () => 0) {
+		private readonly contextWindowForModel: (model: string) => number = () => 0,
+		private readonly scheduler: Scheduler = systemScheduler) {
 		this.tools = createReadOnlyTools(cwd);
 		this.sequence = Math.max(0, ...states.flatMap(state => [state.sequence, ...state.pending.map(update => update.sequence)]));
 	}
@@ -343,8 +345,9 @@ export class ReviewPool {
 			this.start(index);
 		}
 		const complete = () => this.states.every((state, index) => state.sequence >= target || (state.status === "incomplete" && !this.running.has(index)));
-		const timeout = AbortSignal.timeout(this.preset.limits.catchUpMs);
-		const deadline = AbortSignal.any([timeout, ...(signal ? [signal] : [])]);
+		const timeout = new AbortController();
+		const timeoutTask = this.scheduler.after(this.preset.limits.catchUpMs, () => timeout.abort(new Error("Review catch-up deadline reached")));
+		const deadline = AbortSignal.any([timeout.signal, ...(signal ? [signal] : [])]);
 		let waiter: (() => void) | undefined;
 		try {
 			await abortable(new Promise<void>(resolve => {
@@ -358,6 +361,7 @@ export class ReviewPool {
 				state.status = "incomplete";
 			}
 		} finally {
+			this.scheduler.cancel(timeoutTask);
 			if (waiter) this.waiters.delete(waiter);
 			await this.freeze();
 		}

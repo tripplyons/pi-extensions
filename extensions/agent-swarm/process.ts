@@ -11,6 +11,7 @@ import { ensureDir, inboxDir, outboxDir, readJson, runDir, stateRoot, tokenFile,
 import { sessionExists, tmux, windowExists } from "./tmux.ts";
 import { WORKER_ENV, workerTimeoutFor, type NodeRecord } from "./types.ts";
 import type { WorkerProcesses } from "./runtime.ts";
+import { schedulerSleep, systemScheduler, type Scheduler } from "../scheduler.ts";
 
 interface ProcessStatus {
 	pid: number | null;
@@ -48,6 +49,7 @@ export interface WorkerProcessDependencies {
 	tmux?: (args: string[], allowFailure?: boolean) => unknown;
 	sessionExists?: (session: string) => boolean;
 	windowExists?: (session: string, window: string) => boolean;
+	scheduler?: Scheduler;
 }
 
 export function createWorkerProcesses(entryPoint: string, dependencies: WorkerProcessDependencies = {}): WorkerProcesses {
@@ -56,6 +58,7 @@ export function createWorkerProcesses(entryPoint: string, dependencies: WorkerPr
 	const runTmux = dependencies.tmux ?? tmux;
 	const hasSession = dependencies.sessionExists ?? sessionExists;
 	const hasWindow = dependencies.windowExists ?? windowExists;
+	const scheduler = dependencies.scheduler ?? systemScheduler;
 	const status = (node: NodeRecord) => readJson<ProcessStatus>(join(controlDirectory(node), "status.json"));
 	return {
 		status(node) {
@@ -139,12 +142,12 @@ export function createWorkerProcesses(entryPoint: string, dependencies: WorkerPr
 				throw new Error(`Worker supervisor is unavailable: ${node.nodeId}`);
 			}
 			writeJson(join(controlDirectory(node), "command.json"), { status: desired });
-			const deadline = Date.now() + 5000;
-			while (Date.now() < deadline) {
+			const deadline = scheduler.time() + 5000;
+			while (scheduler.time() < deadline) {
 				const observed = status(node);
 				if (desired === "stopped" ? !processExists(current.supervisorPid) : observed?.status === desired) return;
 				if (desired !== "stopped" && observed && ["failed", "exited", "timed-out"].includes(observed.status)) throw new Error(`Worker ${observed.status}`);
-				await new Promise((resolve) => setTimeout(resolve, 50));
+				await schedulerSleep(scheduler, 50);
 			}
 			throw new Error(`Worker did not acknowledge ${desired}: ${node.nodeId}`);
 		},

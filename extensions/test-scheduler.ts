@@ -14,6 +14,7 @@ export class ManualScheduler implements Scheduler {
 
 	get now(): number { return this.#now; }
 	get pending(): number { return this.#tasks.size; }
+	time(): number { return this.#now; }
 
 	after(delayMs: number, callback: () => void | Promise<void>): ScheduledTask {
 		return this.#add(delayMs, undefined, callback);

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
 import { ensureDir, newToken, readRun, runDir, runFile, writeJson } from "./state.ts";
+import { systemScheduler, type Scheduler } from "../scheduler.ts";
 
 export function processExists(pid: number) {
 	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -19,6 +20,7 @@ export interface OwnershipDependencies {
 	now: () => number;
 	processExists: (pid: number) => boolean;
 	spawnLock: (lockPath: string) => ChildProcessWithoutNullStreams;
+	scheduler: Scheduler;
 }
 
 const ownershipDependencies: OwnershipDependencies = {
@@ -26,12 +28,14 @@ const ownershipDependencies: OwnershipDependencies = {
 	pid: process.pid,
 	now: Date.now,
 	processExists,
+	scheduler: systemScheduler,
 	spawnLock: lockPath => spawn("/usr/bin/lockf", ["-k", "-t", "0", lockPath, "/bin/sh", "-c", "printf ready; exec /bin/cat >/dev/null"], {
 		stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" },
 	}),
 };
 
-export async function acquireRunOwnership(runId: string, dependencies: OwnershipDependencies = ownershipDependencies) {
+export async function acquireRunOwnership(runId: string, overrides: Partial<OwnershipDependencies> = {}) {
+	const dependencies = { ...ownershipDependencies, ...overrides };
 	if (dependencies.platform !== "darwin") throw new Error("Swarm ownership requires macOS lockf");
 	const control = join(runDir(runId), "control");
 	ensureDir(control);
@@ -43,14 +47,15 @@ export async function acquireRunOwnership(runId: string, dependencies: Ownership
 	holder.stderr.on("data", (chunk) => { diagnostics += String(chunk).slice(0, 4096 - diagnostics.length); });
 	try {
 		await new Promise<void>((resolve, reject) => {
-			const timeout = setTimeout(() => reject(new Error("Swarm ownership lock did not become ready")), 2000);
+			const timeout = dependencies.scheduler.after(2000, () => reject(new Error("Swarm ownership lock did not become ready")));
+			const finish = (callback: () => void) => { dependencies.scheduler.cancel(timeout); callback(); };
 			let output = "";
 			holder.stdout.on("data", (chunk) => {
 				output += chunk;
-				if (output === "ready") { clearTimeout(timeout); resolve(); }
+				if (output === "ready") finish(resolve);
 			});
-			holder.once("error", (error) => { clearTimeout(timeout); reject(error); });
-			holder.once("close", () => { clearTimeout(timeout); reject(new Error(`Swarm ownership unavailable: ${diagnostics.trim()}`)); });
+			holder.once("error", (error) => finish(() => reject(error)));
+			holder.once("close", () => finish(() => reject(new Error(`Swarm ownership unavailable: ${diagnostics.trim()}`))));
 		});
 		const run = readRun(runId);
 		if (dependencies.processExists(run.ownerPid)) throw new Error(`Swarm already has a live owner: ${run.ownerPid}`);

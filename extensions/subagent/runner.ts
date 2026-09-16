@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-coding-agent";
+import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 const MAX_CAPTURE_CHARS = 1_000_000;
 const MAX_DIAGNOSTIC_CHARS = 50_000;
@@ -112,7 +113,7 @@ const signalProcess = (child: ChildProcess, pid: number, signal: NodeJS.Signals)
 	}
 };
 
-export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild = spawn): RunningAgent => {
+export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild = spawn, scheduler: Scheduler = systemScheduler): RunningAgent => {
 	const args = [
 		"--mode", "json",
 		"--print",
@@ -155,8 +156,8 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 	let stdoutBuffer = "";
 	let requestedTermination: "killed" | undefined;
 	let finalized = false;
-	let killTimer: ReturnType<typeof setTimeout> | undefined;
-	let finalizationTimer: ReturnType<typeof setTimeout> | undefined;
+	let killTimer: ScheduledTask | undefined;
+	let finalizationTimer: ScheduledTask | undefined;
 	let resolveCompletion!: (result: AgentRunSnapshot) => void;
 	const completion = new Promise<AgentRunSnapshot>((resolve) => { resolveCompletion = resolve; });
 
@@ -231,8 +232,8 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 	});
 
 	const clearTimers = () => {
-		if (killTimer) clearTimeout(killTimer);
-		if (finalizationTimer) clearTimeout(finalizationTimer);
+		if (killTimer) scheduler.cancel(killTimer);
+		if (finalizationTimer) scheduler.cancel(finalizationTimer);
 	};
 	const finalize = (code: number | null, error?: Error) => {
 		if (finalized) return;
@@ -252,15 +253,15 @@ export const startAgentRun = (options: AgentRunOptions, spawnChild: SpawnChild =
 		requestedTermination = "killed";
 		debug("killed", { pid: state.pid });
 		signalProcess(child, state.pid, "SIGTERM");
-		killTimer = setTimeout(() => {
+		killTimer = scheduler.after(KILL_GRACE_MS, () => {
 			if (finalized) return;
 			signalProcess(child, state.pid, "SIGKILL");
-			finalizationTimer = setTimeout(() => {
+			finalizationTimer = scheduler.after(KILL_FINALIZATION_MS, () => {
 				if (finalized) return;
 				if (!state.error) state.error = "Subagent did not exit after SIGKILL";
 				finalize(null);
-			}, KILL_FINALIZATION_MS);
-		}, KILL_GRACE_MS);
+			});
+		});
 	};
 	child.once("error", (error) => finalize(1, error));
 	child.once("close", (code) => finalize(code));

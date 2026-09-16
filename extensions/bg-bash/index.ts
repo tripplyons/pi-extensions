@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { withStatusCard } from "../tool-status-style/style.ts";
 import { ASYNC_JOB_COMPLETED_EVENT, isAsyncJobCompletedEvent, type AsyncJobCompletedEvent } from "../subagent/events.ts";
 import { BG_JOB_QUERY_EVENT, isBackgroundJobQuery } from "./events.ts";
+import { schedulerSleep, systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 const DEFAULT_GRACE_SECONDS = 5;
 const MAX_BASH_TIMEOUT_SECONDS = 300;
@@ -169,26 +170,8 @@ const tmuxSessionExists = (session: string) => {
 	return result.status === 0;
 };
 
-const delay = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
-	if (signal?.aborted) {
-		reject(new Error("Sleep aborted"));
-		return;
-	}
-
-	const timeout = setTimeout(done, ms);
-
-	function done() {
-		if (signal) signal.removeEventListener("abort", abort);
-		resolve();
-	}
-
-	function abort() {
-		clearTimeout(timeout);
-		reject(new Error("Sleep aborted"));
-	}
-
-	if (signal) signal.addEventListener("abort", abort, { once: true });
-});
+const delay = (scheduler: Scheduler, ms: number, signal?: AbortSignal) => schedulerSleep(scheduler, ms, signal)
+	.catch(error => { throw signal?.aborted ? new Error("Sleep aborted") : error; });
 
 const TERMINAL_ESCAPE_SEQUENCE = /\x1b(?:\][\s\S]*?(?:\x07|\x1b\\)|[PX^_][\s\S]*?\x1b\\|\[[0-?]*[ -/]*[@-~]|[ -/]*[0-~])|\x9b[0-?]*[ -/]*[@-~]/g;
 
@@ -315,11 +298,11 @@ const tailFile = (path: string, lines: number) => {
 class BackgroundBashManager {
 	private jobs = new Map<string, TmuxJob>();
 	private jobExitWaiters = new Set<(job: TmuxJob) => void>();
-	private exitWatcher: ReturnType<typeof setInterval> | undefined;
+	private exitWatcher: ScheduledTask | undefined;
 	private watchIds = new Set<string>();
 	private currentSessionId: string | undefined;
 
-	constructor() {
+	constructor(private readonly scheduler: Scheduler = systemScheduler) {
 		mkdirSync(TMUX_JOB_ROOT, { recursive: true });
 	}
 
@@ -334,18 +317,18 @@ class BackgroundBashManager {
 		let aborted = false;
 
 		const completion = (() => {
-			let poll: ReturnType<typeof setInterval> | undefined;
+			let poll: ScheduledTask | undefined;
 			const promise = new Promise<TmuxJob>((resolve) => {
-				poll = setInterval(() => {
+				poll = this.scheduler.every(25, () => {
 					if (!existsSync(job.statusFile)) return;
-					if (poll) clearInterval(poll);
+					if (poll) this.scheduler.cancel(poll);
 					resolve(job);
-				}, 25);
+				});
 			});
 			return {
 				promise,
 				cancel: () => {
-					if (poll) clearInterval(poll);
+					if (poll) this.scheduler.cancel(poll);
 				},
 			};
 		})();
@@ -362,7 +345,7 @@ class BackgroundBashManager {
 
 		const completed = await Promise.race([
 			completion.promise,
-			delay(Math.max(0.1, foregroundSeconds) * 1000, signal).then(() => false),
+			delay(this.scheduler, Math.max(0.1, foregroundSeconds) * 1000, signal).then(() => false),
 		]).catch((error) => {
 			if (aborted || signal?.aborted) return false;
 			throw error;
@@ -382,7 +365,7 @@ class BackgroundBashManager {
 
 		if (completed) {
 			// Let the tmux pipe-pane flush the final output lines before reading logs.
-			await delay(120);
+			await delay(this.scheduler, 120);
 			const current = this.refreshTmuxJob(job, true);
 			const output = this.formatCompletedOutput(current);
 			this.removeJob(job);
@@ -505,7 +488,7 @@ class BackgroundBashManager {
 	shutdown() {
 		// Background jobs are persistent: leave tmux sessions and job stores
 		// alone so a later Pi instance can recover them.
-		if (this.exitWatcher) clearInterval(this.exitWatcher);
+		if (this.exitWatcher) this.scheduler.cancel(this.exitWatcher);
 		this.exitWatcher = undefined;
 		this.watchIds.clear();
 		this.jobExitWaiters.clear();
@@ -661,7 +644,7 @@ class BackgroundBashManager {
 
 	private ensureExitWatcher() {
 		if (this.exitWatcher) return;
-		this.exitWatcher = setInterval(() => {
+		this.exitWatcher = this.scheduler.every(250, () => {
 			if (this.jobExitWaiters.size === 0) {
 				this.watchIds.clear();
 				return;
@@ -677,7 +660,7 @@ class BackgroundBashManager {
 				if (exited) this.notifyJobExit(exited);
 			}
 			this.watchIds = running;
-		}, 250);
+		});
 	}
 
 	private removeJob(job: TmuxJob) {
@@ -744,8 +727,9 @@ const resultDetails = (action: ProcessDetails["action"], scope: JobScope, messag
 	details: { action, scope, message, jobs } satisfies ProcessDetails,
 });
 
-export default function bgBashExtension(pi: ExtensionAPI) {
-	const manager = new BackgroundBashManager();
+export default function bgBashExtension(pi: ExtensionAPI, dependencies: { scheduler?: Scheduler } = {}) {
+	const scheduler = dependencies.scheduler ?? systemScheduler;
+	const manager = new BackgroundBashManager(scheduler);
 	const unsubscribeJobQuery = pi.events?.on(BG_JOB_QUERY_EVENT, (query) => {
 		if (!isBackgroundJobQuery(query)) return;
 		query.available = true;
@@ -927,7 +911,7 @@ export default function bgBashExtension(pi: ExtensionAPI) {
 					asyncCompletionWait = waitForAsyncCompletion(signal);
 					externalWakeWait = waitForExternalWake(signal);
 					return await Promise.race([
-						delay(seconds * 1000, signal).then(() => ({ type: "timer" as const })),
+						delay(scheduler, seconds * 1000, signal).then(() => ({ type: "timer" as const })),
 						...(jobExitWait ? [jobExitWait.promise.then((job) => ({ type: "job" as const, job }))] : []),
 						...(asyncCompletionWait ? [asyncCompletionWait.promise.then((event) => ({ type: "async" as const, event }))] : []),
 						...(externalWakeWait ? [externalWakeWait.promise.then((wake) => ({ type: "external" as const, wake }))] : []),
