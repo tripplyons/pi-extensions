@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const VOICE_MODE_MESSAGE_TYPE = "codex-voice-mode";
+const ENABLE_FOCUS_REPORTING = "\x1b[?1004h";
+const DISABLE_FOCUS_REPORTING = "\x1b[?1004l";
 
 type VoiceModeDetails = {
   mode?: unknown;
@@ -17,8 +19,11 @@ function realtimeState(message: unknown): boolean | undefined {
 }
 
 export default function liveExtension(pi: ExtensionAPI) {
+  let liveEnabled = false;
   let realtimeActive = false;
-  let mutedByFocus = false;
+  let focused = true;
+  let suspendedByFocus = false;
+  let focusReporting = false;
   let stopInput: (() => void) | undefined;
 
   const dispatch = (command: string) => {
@@ -26,31 +31,46 @@ export default function liveExtension(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    liveEnabled = false;
     realtimeActive = false;
-    mutedByFocus = false;
+    focused = true;
+    suspendedByFocus = false;
+    focusReporting = false;
     stopInput?.();
     stopInput = undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "message") continue;
       const state = realtimeState(entry.message);
-      if (state !== undefined) realtimeActive = state;
+      if (state === undefined) continue;
+      realtimeActive = state;
+      liveEnabled = state;
     }
-    if (ctx.mode === "tui" && process.env.OVERSEER === "1") {
+    focusReporting = ctx.mode === "tui" && process.stdout.isTTY === true && process.env.OVERSEER === "1";
+    if (focusReporting) {
+      process.stdout.write(ENABLE_FOCUS_REPORTING);
       stopInput = ctx.ui.onTerminalInput((data) => {
-        if (data === "\x1b[O" && realtimeActive && !mutedByFocus) {
-          mutedByFocus = true;
+        if (data === "\x1b[O") {
+          focused = false;
+          if (!liveEnabled || !realtimeActive) return;
+          suspendedByFocus = true;
+          realtimeActive = false;
           try {
-            dispatch("/codex voice mute");
+            dispatch("/codex voice stop");
           } catch (error) {
-            mutedByFocus = false;
+            suspendedByFocus = false;
+            realtimeActive = true;
             throw error;
           }
-        } else if (data === "\x1b[I" && mutedByFocus) {
-          mutedByFocus = false;
+        } else if (data === "\x1b[I") {
+          focused = true;
+          if (!liveEnabled || !suspendedByFocus) return;
+          suspendedByFocus = false;
+          realtimeActive = true;
           try {
-            dispatch("/codex voice mute");
+            dispatch("/codex voice realtime");
           } catch (error) {
-            mutedByFocus = true;
+            suspendedByFocus = true;
+            realtimeActive = false;
             throw error;
           }
         }
@@ -62,14 +82,22 @@ export default function liveExtension(pi: ExtensionAPI) {
     const state = realtimeState(event.message);
     if (state === undefined) return;
     realtimeActive = state;
-    if (!state) mutedByFocus = false;
+    if (state) {
+      liveEnabled = true;
+      suspendedByFocus = false;
+    } else if (!suspendedByFocus) {
+      liveEnabled = false;
+    }
   });
 
   pi.on("session_shutdown", () => {
     stopInput?.();
     stopInput = undefined;
+    if (focusReporting) process.stdout.write(DISABLE_FOCUS_REPORTING);
+    liveEnabled = false;
     realtimeActive = false;
-    mutedByFocus = false;
+    suspendedByFocus = false;
+    focusReporting = false;
   });
 
   pi.registerCommand("live", {
@@ -79,15 +107,29 @@ export default function liveExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /live", "warning");
         return;
       }
-      const wasActive = realtimeActive;
-      const wasMutedByFocus = mutedByFocus;
-      realtimeActive = !wasActive;
-      if (wasActive) mutedByFocus = false;
+      const previous = { liveEnabled, realtimeActive, suspendedByFocus };
+      liveEnabled = !liveEnabled;
+      if (!liveEnabled) {
+        suspendedByFocus = false;
+        if (!realtimeActive) return;
+        realtimeActive = false;
+        try {
+          dispatch("/codex voice stop");
+        } catch (error) {
+          ({ liveEnabled, realtimeActive, suspendedByFocus } = previous);
+          throw error;
+        }
+        return;
+      }
+      if (!focused) {
+        suspendedByFocus = true;
+        return;
+      }
+      realtimeActive = true;
       try {
-        dispatch(wasActive ? "/codex voice stop" : "/codex voice realtime");
+        dispatch("/codex voice realtime");
       } catch (error) {
-        realtimeActive = wasActive;
-        mutedByFocus = wasMutedByFocus;
+        ({ liveEnabled, realtimeActive, suspendedByFocus } = previous);
         throw error;
       }
     },

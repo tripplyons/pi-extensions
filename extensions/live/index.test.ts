@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import liveExtension from "./index";
 
@@ -99,9 +99,12 @@ test("ignores dictation and malformed lifecycle messages", async () => {
   expect(session.sent[0]?.content).toBe("/codex voice realtime");
 });
 
-test("Overseer focus signals mute and unmute an active session", async () => {
+test("Overseer focus signals suspend and resume an enabled live session", async () => {
   const previous = process.env.OVERSEER;
+  const previousTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  const write = spyOn(process.stdout, "write").mockImplementation(() => true);
   process.env.OVERSEER = "1";
+  Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
   try {
     const session = setup();
     session.start();
@@ -115,18 +118,21 @@ test("Overseer focus signals mute and unmute an active session", async () => {
     session.focus("\x1b[I");
     expect(session.sent.map(({ content }) => content)).toEqual([
       "/codex voice realtime",
-      "/codex voice mute",
-      "/codex voice mute",
-      "/codex voice mute",
+      "/codex voice stop",
+      "/codex voice realtime",
       "/codex voice stop",
       "/codex voice realtime",
     ]);
     session.shutdown();
     session.focus("\x1b[O");
-    expect(session.sent).toHaveLength(6);
+    expect(session.sent).toHaveLength(5);
+    expect(write.mock.calls.map(([value]) => value)).toEqual(["\x1b[?1004h", "\x1b[?1004l"]);
   } finally {
+    write.mockRestore();
     if (previous === undefined) delete process.env.OVERSEER;
     else process.env.OVERSEER = previous;
+    if (previousTTY) Object.defineProperty(process.stdout, "isTTY", previousTTY);
+    else delete process.stdout.isTTY;
   }
 });
 
