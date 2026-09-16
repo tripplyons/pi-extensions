@@ -26,6 +26,7 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 	const roleOptions: Array<SimpleStreamOptions & { serviceTier?: string }> = [];
 	const definitions = new Map<string, any>();
 	const sentMessages: Array<{ message: any; options: any }> = [];
+	const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
 	const releasedIds: string[] = [];
 	const selectedModels: Array<{ provider: string; id: string }> = [];
 	let calls = 0;
@@ -54,7 +55,7 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 		setModel: async (model: { provider: string; id: string }) => { selectedModels.push(model); return true; },
 	};
 	await createMixtureExtension(pi as any, registry, scheduler ? { scheduler } : {});
-	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, selectedModels, sentMessages, get activeTools() { return activeTools; }, get calls() { return calls; } };
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, selectedModels, sentMessages, statusUpdates, get activeTools() { return activeTools; }, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -76,9 +77,10 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
 		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
 		isIdle: () => false, hasPendingMessages: () => false,
-		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus() {} },
+		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus(key: string, value: string | undefined) { h.statusUpdates.push({ key, value }); } },
 	};
 	await h.handlers.get("session_start")({}, context);
+	expect(h.statusUpdates.at(-1)).toEqual({ key: "mixture", value: "executor · advisor 0" });
 	expect(h.activeTools).toContain(ASK_ADVISOR);
 	expect(h.activeTools).not.toContain("mixture_control");
 	const provider = h.providers[0];
@@ -120,7 +122,7 @@ test("advisor mode nudges the Executor on its configured five-minute cadence", a
 		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
 		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
 		isIdle: () => false, hasPendingMessages: () => false,
-		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus() {} },
+		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus(key: string, value: string | undefined) { h.statusUpdates.push({ key, value }); } },
 	};
 	await h.handlers.get("session_start")({}, context);
 	await h.handlers.get("before_agent_start")({ prompt: "Keep working" }, context);

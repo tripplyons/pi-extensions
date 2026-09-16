@@ -97,7 +97,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		if (!ctx?.hasUI) return;
 		const advisor = selectedAdvisor();
 		const calls = advisor && ctx ? advisorCallCount(ctx.sessionManager.getBranch()) : 0;
-		ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : advisor ? `executor · advisor ${calls}; every ${advisorIntervalLabel(advisor.limits.advisorIntervalMs)}` : "handoff · unavailable · $?" : undefined);
+		ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : advisor ? `executor · advisor ${calls}` : "handoff · unavailable · $?" : undefined);
 	};
 	const releaseRoleResources = (target = session) => {
 		for (const helper of helpers) helper.abort(new Error("Mixture helper released"));
