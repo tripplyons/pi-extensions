@@ -35,7 +35,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Owns local Codex context, history, and notes; preserves native tools and voice with missing-microphone fallback. |
 | [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; swarm tools are active only while attached, and Mixture nodes receive a selected private roster. |
 | ask-user | Collects choices and free-text answers in an interactive form. |
-| auto-rename | Names sessions automatically. |
+| auto-rename | Names sessions automatically, including Mixture sessions. |
 | autocomplete | Adds editor completions for files, skills, and commands. |
 | bg-bash | Runs persistent shell jobs with five-line collapsed result cards and waits for background activity. |
 | btw | Answers side questions with `/btw`; `/btw:tools` allows the child's configured tools. |

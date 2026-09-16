@@ -1,4 +1,4 @@
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const MAX_CONVERSATION_CHARS = 60_000;
@@ -27,11 +27,14 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 	const model = ctx.model;
 	if (!model) throw new Error("No model selected");
 
+	const provider = ctx.modelRegistry.getProvider(model.provider);
+	if (!provider) throw new Error(`No provider registered for "${model.provider}"`);
+
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) throw new Error(auth.error);
 
-	const response = await completeSimple(
-		model,
+	const stream = provider.streamSimple(
+		auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
 		{
 			systemPrompt: SYSTEM_PROMPT,
 			messages: [{
@@ -50,6 +53,13 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 			maxTokens: 64,
 		},
 	);
+
+	let response: AssistantMessage | undefined;
+	for await (const event of stream) {
+		if (event.type === "done") response = event.message;
+		if (event.type === "error") response = event.error;
+	}
+	if (!response) throw new Error("Naming request ended without a terminal result");
 
 	if (response.stopReason === "error") throw new Error(response.errorMessage || "Naming request failed");
 	if (response.stopReason === "aborted") throw new Error("Naming request was aborted");
