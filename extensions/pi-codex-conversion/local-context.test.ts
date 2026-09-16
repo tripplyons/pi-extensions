@@ -101,6 +101,17 @@ test("archives retain original image messages as well as searchable text", () =>
 	expect(parseLocalContext(serializeLocalContext(state)).archives[0].messages).toEqual([message]);
 });
 
+test("legacy item-only archives gain a valid message projection when restored", () => {
+	const state = createLocalContext(identity, [user("old task"), assistant("old answer")]);
+	scheduleContextTransition(state); commitContextTransition(state);
+	const legacy = structuredClone(state) as any;
+	delete legacy.archives[0].messages;
+	const restored = parseLocalContext(legacy);
+	expect(restored.archives[0].messages).toHaveLength(2);
+	expect(restored.archives[0].items).toEqual(state.archives[0].items);
+	expect(parseLocalContext(serializeLocalContext(restored))).toEqual(restored);
+});
+
 for (const accepted of [false, true]) test(`restore ${accepted ? "commits recorded" : "cancels unconfirmed"} window transitions without replay`, () => {
 	const call = { ...assistant(""), content: [{ type: "toolCall", id: "switch", name: "new_context", arguments: {} }], stopReason: "toolUse" } as Message;
 	const state = createLocalContext(identity, [user("task"), call]);

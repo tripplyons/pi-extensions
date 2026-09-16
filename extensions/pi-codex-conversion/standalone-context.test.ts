@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { appendActiveMessage, createLocalContext, scheduleContextTransition } from "./local-context.ts";
-import { restoreStandaloneContext, snapshotStandaloneContext } from "./standalone-context.ts";
+import { encodeStandaloneContext, materializeStandaloneContext, restoreStandaloneContext, snapshotStandaloneContext, type StandaloneContextSnapshot } from "./standalone-context.ts";
 
 const identity = { branchId: "branch", preset: "standalone-codex", role: "/root" };
 const user = (content: string): Message => ({ role: "user", content, timestamp: 1 });
@@ -87,4 +88,91 @@ test("raw v1 snapshots remain readable and foreign cursors are rejected", () => 
 	const snapshot = snapshotStandaloneContext(state, manager.getBranch());
 	snapshot.cursor.entryId = "foreign";
 	expect(() => restoreStandaloneContext(snapshot, manager.getBranch(), index, [])).toThrow("not on the selected branch");
+});
+
+test("standalone context deltas restore the latest state without duplicating pending messages", () => {
+	const { manager, state } = fixture();
+	let persisted: StandaloneContextSnapshot | undefined;
+	for (let index = 0; index < 4; index++) {
+		const message = user(`follow-up-${index}`);
+		appendActiveMessage(state, message);
+		const snapshot = snapshotStandaloneContext(state, manager.getBranch(), true);
+		const entry = encodeStandaloneContext(snapshot, persisted);
+		expect(entry).toBeDefined();
+		manager.appendCustomEntry("local", entry!);
+		persisted = snapshot;
+		manager.appendMessage(message);
+	}
+	const restored = materializeStandaloneContext(manager.getBranch(), convertToLlm(manager.buildSessionContext().messages), "local");
+	expect(restored?.state.activeMessages.map(message => message.role === "user" ? message.content : message.role)).toEqual([
+		"task", "follow-up-0", "follow-up-1", "follow-up-2", "follow-up-3",
+	]);
+	expect(restored?.persisted).toEqual(persisted);
+});
+
+test("legacy insertion-order hashes remain readable after canonical hashing", () => {
+	const { manager, state } = fixture();
+	const legacyHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+	const first = snapshotStandaloneContext(state, manager.getBranch());
+	manager.appendCustomEntry("local", { version: 2, kind: "snapshot", hash: legacyHash(first), snapshot: first });
+	appendActiveMessage(state, user("legacy delta"));
+	const second = snapshotStandaloneContext(state, manager.getBranch());
+	const encoded = encodeStandaloneContext(second, first);
+	if (!encoded || encoded.kind !== "delta") throw new Error("Expected fixture delta");
+	manager.appendCustomEntry("local", { ...encoded, baseHash: legacyHash(first), hash: legacyHash(second) });
+	const restored = materializeStandaloneContext(manager.getBranch(), convertToLlm(manager.buildSessionContext().messages), "local");
+	expect(restored?.persisted).toEqual(second);
+});
+
+test("corrupt and orphaned delta chains fail without mutating stored session entries", () => {
+	const { manager, state } = fixture();
+	const first = snapshotStandaloneContext(state, manager.getBranch());
+	const base = encodeStandaloneContext(first)!;
+	manager.appendCustomEntry("local", base);
+	appendActiveMessage(state, user("changed"));
+	const second = snapshotStandaloneContext(state, manager.getBranch());
+	const delta = encodeStandaloneContext(second, first)!;
+	manager.appendCustomEntry("local", { ...delta, hash: "0".repeat(64) });
+	const before = structuredClone(manager.getEntries());
+	expect(() => materializeStandaloneContext(manager.getBranch(), convertToLlm(manager.buildSessionContext().messages), "local"))
+		.toThrow("Invalid standalone local context delta hash");
+	expect(manager.getEntries()).toEqual(before);
+
+	const orphan = SessionManager.inMemory(process.cwd());
+	orphan.appendCustomEntry("local", delta);
+	expect(() => materializeStandaloneContext(orphan.getBranch(), [], "local"))
+		.toThrow("Standalone local context delta has no base snapshot");
+});
+
+test("a later validated snapshot starts a fresh chain after obsolete corrupt data", () => {
+	const { manager, state } = fixture();
+	const first = snapshotStandaloneContext(state, manager.getBranch());
+	manager.appendCustomEntry("local", encodeStandaloneContext(first)!);
+	manager.appendCustomEntry("local", { version: 2, kind: "delta", baseHash: "bad", hash: "bad", changes: [] });
+	appendActiveMessage(state, user("fresh snapshot"));
+	const fresh = snapshotStandaloneContext(state, manager.getBranch());
+	manager.appendCustomEntry("local", encodeStandaloneContext(fresh)!);
+	const restored = materializeStandaloneContext(manager.getBranch(), convertToLlm(manager.buildSessionContext().messages), "local");
+	expect(restored?.persisted).toEqual(fresh);
+	expect(JSON.stringify(restored?.state.activeMessages)).toContain("fresh snapshot");
+});
+
+test("standalone persistence grows with new content instead of rewriting full history", () => {
+	const { manager, state } = fixture();
+	let persisted: StandaloneContextSnapshot | undefined;
+	let storedBytes = 0;
+	for (let index = 0; index < 100; index++) {
+		const message = user(`${index}:${"x".repeat(4_000)}`);
+		appendActiveMessage(state, message);
+		const snapshot = snapshotStandaloneContext(state, manager.getBranch(), true);
+		const entry = encodeStandaloneContext(snapshot, persisted);
+		expect(entry).toBeDefined();
+		storedBytes += JSON.stringify(entry).length;
+		manager.appendCustomEntry("local", entry!);
+		persisted = snapshot;
+		manager.appendMessage(message);
+	}
+	const finalSnapshotBytes = JSON.stringify(persisted).length;
+	expect(storedBytes).toBeLessThan(finalSnapshotBytes * 3);
+	expect(storedBytes).toBeLessThan(3_000_000);
 });

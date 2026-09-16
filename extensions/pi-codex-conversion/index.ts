@@ -10,7 +10,7 @@ import { isMixtureSessionRelease, MIXTURE_SESSION_RELEASE_EVENT } from "../mixtu
 import { appendActiveMessage, commitContextTransition, createLocalContext, reconcileLocalContext, scheduleContextTransition, type LocalContextState } from "./local-context.ts";
 import { createLocalContextTools, LOCAL_CONTEXT_QUERY_EVENT, LOCAL_CONTEXT_TOOLS, type LocalContextQuery, type LocalContextTarget } from "./local-context-tools.ts";
 import { preserveLocalCodexProvider, releaseLocalCodexLanes, sanitizeNativeCodexPayload } from "./local-codex-provider.ts";
-import { restoreStandaloneContext, snapshotStandaloneContext } from "./standalone-context.ts";
+import { encodeStandaloneContext, materializeStandaloneContext, snapshotStandaloneContext, type StandaloneContextSnapshot } from "./standalone-context.ts";
 
 export const LOCAL_CONTEXT_ENTRY = "pi-codex-local-context-v1";
 
@@ -156,6 +156,7 @@ export default async function piCodexConversion(pi: ExtensionAPI) {
 	let ctx: ExtensionContext | undefined;
 	let state: LocalContextState | undefined;
 	let stateSessionId: string | undefined;
+	let persistedSnapshot: StandaloneContextSnapshot | undefined;
 	let restoreFailure: string | undefined;
 	const ownedLanes = new Set<() => void>();
 	const releaseOwnedLanes = () => { for (const cancel of [...ownedLanes]) cancel(); };
@@ -170,7 +171,12 @@ export default async function piCodexConversion(pi: ExtensionAPI) {
 		if (violations.length) throw new Error(`Local Codex request refused incompatible settings: ${violations.join(", ")}. Disable these settings in pi-codex-conversion.json; configuration was not changed.`);
 	};
 	const persist = (pendingMessage = false) => {
-		if (ctx && state && isStandaloneCodex(ctx) && ctx.sessionManager.getSessionId() === stateSessionId) pi.appendEntry(LOCAL_CONTEXT_ENTRY, snapshotStandaloneContext(state, ctx.sessionManager.getBranch(), pendingMessage));
+		if (!ctx || !state || !isStandaloneCodex(ctx) || ctx.sessionManager.getSessionId() !== stateSessionId) return;
+		const snapshot = snapshotStandaloneContext(state, ctx.sessionManager.getBranch(), pendingMessage);
+		const entry = encodeStandaloneContext(snapshot, persistedSnapshot);
+		if (!entry) return;
+		pi.appendEntry(LOCAL_CONTEXT_ENTRY, entry);
+		persistedSnapshot = snapshot;
 	};
 	const target = (): LocalContextTarget | undefined => {
 		if (!state || !ctx || !isStandaloneCodex(ctx)) return undefined;
@@ -211,15 +217,16 @@ export default async function piCodexConversion(pi: ExtensionAPI) {
 		if (!isStandaloneCodex(context)) {
 			state = undefined;
 			stateSessionId = undefined;
+			persistedSnapshot = undefined;
 			return;
 		}
 		const identity = { branchId: context.sessionManager.getSessionId(), preset: "standalone-codex", role: "/root" };
 		stateSessionId = identity.branchId;
 		const branch = context.sessionManager.getBranch();
-		const storedIndex = branch.findLastIndex(entry => entry.type === "custom" && entry.customType === LOCAL_CONTEXT_ENTRY);
-		const stored = branch[storedIndex];
 		try {
-			const candidate = stored?.type === "custom" ? restoreStandaloneContext(stored.data, branch, storedIndex, contextMessages(context)) : undefined;
+			const materialized = materializeStandaloneContext(branch, contextMessages(context), LOCAL_CONTEXT_ENTRY);
+			const candidate = materialized?.state;
+			persistedSnapshot = materialized?.persisted;
 			if (candidate) {
 				if (candidate.identity.preset !== identity.preset || candidate.identity.role !== identity.role) throw new Error("Stored local context actor/preset identity does not match standalone Codex");
 				candidate.identity.branchId = identity.branchId;
@@ -230,6 +237,7 @@ export default async function piCodexConversion(pi: ExtensionAPI) {
 			}
 		} catch (error) {
 			state = undefined;
+			persistedSnapshot = undefined;
 			restoreFailure = `Local Codex context restore failed; requests are disabled and the stored entry was not changed: ${String(error)}`;
 			context.ui.notify(restoreFailure, "error");
 		}

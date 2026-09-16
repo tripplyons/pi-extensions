@@ -4,11 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, convertToLlm, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { fixtureToken, summaryResponse, toolResponse } from "./native-response-fixture.ts";
-import type { StandaloneContextSnapshot } from "./standalone-context.ts";
+import type { LocalContextState } from "./local-context.ts";
+import { materializeStandaloneContext } from "./standalone-context.ts";
 
 const entryType = "pi-codex-local-context-v1";
+
+function materialize(entries: SessionEntry[]) {
+	return materializeStandaloneContext(entries, convertToLlm(buildSessionContext(entries).messages), entryType)?.state;
+}
+
+function contextCheckpoints(entries: SessionEntry[]): Array<{ id: string; state: LocalContextState }> {
+	return entries.flatMap((entry, index) => entry.type === "custom" && entry.customType === entryType && (entry.data as any)?.version !== 0
+		? [{ id: entry.id, state: materialize(entries.slice(0, index + 1))! }]
+		: []);
+}
 
 test("native standalone prompts preserve local windows through disk resume and tree navigation", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-standalone-local-runtime-"));
@@ -31,7 +42,9 @@ test("native standalone prompts preserve local windows through disk resume and t
 		["history", { action: "read_item" }],
 		["history", { action: "search_contents", query: "standalone-private" }],
 	];
-	const server = Bun.serve({ port: 0, async fetch(request) {
+	const previousFetch = globalThis.fetch;
+	globalThis.fetch = async (input, init) => {
+		const request = input instanceof Request ? input : new Request(input, init);
 		const index = requests.length;
 		const bytes = Buffer.from(await request.arrayBuffer());
 		const encoding = request.headers.get("content-encoding");
@@ -45,7 +58,7 @@ test("native standalone prompts preserve local windows through disk resume and t
 			action = ["history", { action: "read_item", window_id: item.window_id, item_id: item.item_id }];
 		}
 		return new Response(action ? toolResponse(...action) : summaryResponse(helper ? "Native compaction summary sentinel." : "Completed without checkout changes."), { headers: { "content-type": "text/event-stream" } });
-	} });
+	};
 	try {
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		process.env.XDG_CACHE_HOME = join(dir, "cache");
@@ -69,7 +82,7 @@ test("native standalone prompts preserve local windows through disk resume and t
 			const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, modelsStorePath: join(agentDir, "models-cache"), allowModelNetwork: false });
 			// Fake credentials only; native request preparation and callbacks still run.
 			modelRuntime.hasConfiguredAuth = () => true;
-			modelRuntime.getAuth = async () => ({ auth: { apiKey: fixtureToken, baseUrl: `http://127.0.0.1:${server.port}/backend-api` }, source: "fixture" });
+			modelRuntime.getAuth = async () => ({ auth: { apiKey: fixtureToken, baseUrl: "https://fixture.invalid/backend-api" }, source: "fixture" });
 			const created = await createAgentSession({ cwd: dir, agentDir, settingsManager, resourceLoader, sessionManager: manager, modelRuntime, model: modelRuntime.getModels("openai-codex")[0] });
 			await created.session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
 			return created.session;
@@ -82,8 +95,8 @@ test("native standalone prompts preserve local windows through disk resume and t
 		expect(requests).toHaveLength(actions.length + 1);
 		expect(errors).toEqual([]);
 		expect(session.agent.state.messages.filter(message => message.role === "toolResult" && message.isError)).toEqual([]);
-		const snapshots = session.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === entryType ? [{ id: entry.id, data: entry.data as StandaloneContextSnapshot }] : []);
-		const saved = snapshots.at(-1)!.data.state;
+		const snapshots = contextCheckpoints(session.sessionManager.getBranch());
+		const saved = snapshots.at(-1)!.state;
 		expect(saved.archives).toHaveLength(2);
 		expect(saved.notes[0].text).toBe("standalone-private-two");
 		const remainingOutput = requests[8].body.input.findLast((item: any) => item.type === "function_call_output").output;
@@ -92,7 +105,7 @@ test("native standalone prompts preserve local windows through disk resume and t
 		for (const index of [2, 4]) expect(JSON.stringify(requests[index].body.input)).toContain("Keep this current task");
 		expect(JSON.stringify(requests[2].body.input)).toContain("standalone-private");
 		expect(JSON.stringify(requests[4].body.input)).toContain("standalone-private-two");
-		const firstBranch = snapshots.findLast(snapshot => snapshot.data.state.archives.length === 1 && snapshot.data.state.notes[0]?.text === "standalone-private")!;
+		const firstBranch = snapshots.findLast(snapshot => snapshot.state.archives.length === 1 && snapshot.state.notes[0]?.text === "standalone-private")!;
 		expect(firstBranch).toBeDefined();
 		const file = session.sessionManager.getSessionFile()!;
 		await session.extensionRunner.emit({ type: "session_shutdown" });
@@ -101,9 +114,7 @@ test("native standalone prompts preserve local windows through disk resume and t
 		session = await open(SessionManager.open(file));
 		await session.prompt("Continue after disk resume.");
 		expect(JSON.stringify(requests.at(-1)!.body.input)).toContain("standalone-private-two");
-		const resumedEntry = session.sessionManager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === entryType)!;
-		if (resumedEntry.type !== "custom") throw new Error("Expected resumed snapshot");
-		const resumed = (resumedEntry.data as StandaloneContextSnapshot).state;
+		const resumed = materialize(session.sessionManager.getBranch())!;
 		expect(resumed.activeWindowId).toBe(saved.activeWindowId);
 		expect(resumed.archives).toEqual(saved.archives);
 		expect(resumed.activeItems.slice(0, saved.activeItems.length)).toEqual(saved.activeItems);
@@ -111,16 +122,14 @@ test("native standalone prompts preserve local windows through disk resume and t
 		await session.prompt("Continue on the first branch.");
 		expect(JSON.stringify(requests.at(-1)!.body.input)).toContain("standalone-private");
 		expect(JSON.stringify(requests.at(-1)!.body.input)).not.toContain("standalone-private-two");
-		expect(firstBranch.data.state.notes[0].text).toBe("standalone-private");
+		expect(firstBranch.state.notes[0].text).toBe("standalone-private");
 		expect(errors).toEqual([]);
 		const requestsBeforeCompaction = requests.length;
 		await session.compact("Preserve private facts.");
 		const helpers = requests.slice(requestsBeforeCompaction);
 		expect(helpers.length).toBeGreaterThan(0);
 		expect(helpers.every(request => request.helper)).toBe(true);
-		const compactedEntry = session.sessionManager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === entryType)!;
-		if (compactedEntry.type !== "custom") throw new Error("Expected compaction snapshot");
-		const compacted = (compactedEntry.data as StandaloneContextSnapshot).state;
+		const compacted = materialize(session.sessionManager.getBranch())!;
 		expect(compacted.archives).toHaveLength(2);
 		expect(compacted.notes[0].text).toBe("standalone-private");
 		await session.prompt("Continue after native compaction.");
@@ -146,7 +155,7 @@ test("native standalone prompts preserve local windows through disk resume and t
 		}
 	} finally {
 		if (session) { await session.extensionRunner.emit({ type: "session_shutdown" }); session.dispose(); }
-		server.stop(true);
+		globalThis.fetch = previousFetch;
 		for (const [key, value] of environment) if (value === undefined) delete process.env[key]; else process.env[key] = value;
 		await rm(dir, { recursive: true, force: true });
 	}

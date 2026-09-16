@@ -87,7 +87,7 @@ function itemFromMessage(message: Message, id = randomUUID()): LocalContextItem 
 		role: message.role === "toolResult" ? "tool" : message.role,
 		content: renderMessage(message),
 		...(typeof record.toolName === "string" ? { toolName: record.toolName } : call ? { toolName: call.name } : {}),
-		...(call && typeof call.namespace === "string" ? { toolNamespace: call.namespace } : {}),
+		...(typeof record.toolNamespace === "string" ? { toolNamespace: record.toolNamespace } : call && typeof call.namespace === "string" ? { toolNamespace: call.namespace } : {}),
 	};
 }
 
@@ -136,6 +136,36 @@ function validateProjection(messages: Message[], items: LocalContextItem[]): voi
 	}
 }
 
+function messageFromLegacyItem(item: LocalContextItem): Message {
+	const content = [{ type: "text" as const, text: item.content }];
+	const metadata = {
+		...(item.toolName ? { toolName: item.toolName } : {}),
+		...(item.toolNamespace ? { toolNamespace: item.toolNamespace } : {}),
+	};
+	if (item.role === "user") return { role: "user", content: item.content, timestamp: 0, ...metadata } as Message;
+	if (item.role === "tool") return {
+		role: "toolResult",
+		toolCallId: item.id,
+		toolName: item.toolName ?? "legacy-tool",
+		content,
+		isError: false,
+		timestamp: 0,
+		...metadata,
+	} as Message;
+	if (item.role !== "assistant") throw new Error("Invalid legacy local context v1 history role");
+	return {
+		role: "assistant",
+		provider: "local-context-legacy",
+		model: "local-context-legacy",
+		api: "local-context-legacy",
+		content,
+		stopReason: "stop",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		timestamp: 0,
+		...metadata,
+	} as Message;
+}
+
 function validateNotes(notes: unknown, role: string): asserts notes is LocalContextNote[] {
 	if (!Array.isArray(notes)) throw new Error("Invalid local context v1 notes");
 	const paths = new Set<string>();
@@ -175,15 +205,18 @@ export function parseLocalContext(value: unknown): LocalContextState {
 	const ids = new Set(activeItems.map((item) => item.id));
 	if (ids.size !== activeItems.length) throw new Error("Duplicate local context v1 item ID");
 	const windowIds = new Set<string>([value.activeWindowId]);
-	for (const window of value.archives) {
-		if (!isRecord(window) || !isId(window.id) || windowIds.has(window.id) || !Array.isArray(window.items) || window.summary !== undefined && typeof window.summary !== "string") throw new Error("Invalid local context v1 archive");
-		if (!Array.isArray(window.messages) || window.messages.length !== window.items.length || !window.messages.every(validMessage)) throw new Error("Invalid local context v1 archived messages");
-		windowIds.add(window.id);
-		for (const item of window.items) validateItem(item);
-		validateProjection(window.messages, window.items);
+	const archives: LocalContextWindow[] = [];
+	for (const candidate of value.archives) {
+		if (!isRecord(candidate) || !isId(candidate.id) || windowIds.has(candidate.id) || !Array.isArray(candidate.items) || candidate.summary !== undefined && typeof candidate.summary !== "string") throw new Error("Invalid local context v1 archive");
+		for (const item of candidate.items) validateItem(item);
+		const messages = candidate.messages === undefined ? candidate.items.map(messageFromLegacyItem) : candidate.messages;
+		if (!Array.isArray(messages) || messages.length !== candidate.items.length || !messages.every(validMessage)) throw new Error("Invalid local context v1 archived messages");
+		validateProjection(messages, candidate.items);
+		windowIds.add(candidate.id);
+		archives.push({ id: candidate.id, items: candidate.items, messages, ...(candidate.summary === undefined ? {} : { summary: candidate.summary }) });
 	}
 	const itemIds = new Set<string>();
-	for (const window of value.archives) for (const item of window.items) {
+	for (const window of archives) for (const item of window.items) {
 		if (itemIds.has(item.id)) throw new Error("Duplicate local context v1 item ID");
 		itemIds.add(item.id);
 	}
@@ -196,6 +229,7 @@ export function parseLocalContext(value: unknown): LocalContextState {
 		throw new Error("Invalid local context v1 pending transition");
 	const state = clone(value) as unknown as LocalContextState;
 	state.activeItems = clone(activeItems);
+	state.archives = clone(archives);
 	return state;
 }
 
