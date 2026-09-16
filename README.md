@@ -52,7 +52,7 @@ Extensions and subagents run with your user permissions, including shell and fil
 | [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |
 | subagent | Runs asynchronous children with native tools; swarm attachment blocks new jobs. |
 | syntax-punctuation | Styles syntax punctuation. |
-| thinking-selector | Opens the active model's thinking-level picker with Ctrl+T and arrow or j/k navigation. |
+| thinking-selector | Opens a centered, styled thinking-level picker with Ctrl+T and arrow or j/k navigation. |
 | thinking-counter | Displays thinking progress. |
 | [tripp-autoresearch](extensions/tripp-autoresearch/README.md) | Runs experiment loops with benchmarks and keep/revert decisions. |
 | usage | Shows standard 5h/weekly Codex usage in a dismissible `/codex-usage` popup. |
