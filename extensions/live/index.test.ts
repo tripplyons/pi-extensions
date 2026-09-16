@@ -17,6 +17,9 @@ function setup(entries: any[] = []) {
   const notices: string[] = [];
   let command: { description: string; handler: Function };
   let terminalInput: ((data: string) => void) | undefined;
+  const forwardedInputs: string[] = [];
+  const baseEditor = { handleInput: (data: string) => forwardedInputs.push(data) };
+  let activeEditor = baseEditor;
   const ctx = {
     mode: "tui",
     sessionManager: { getBranch: () => entries },
@@ -25,6 +28,10 @@ function setup(entries: any[] = []) {
       onTerminalInput: (handler: (data: string) => void) => {
         terminalInput = handler;
         return () => { terminalInput = undefined; };
+      },
+      getEditorComponent: () => () => baseEditor,
+      setEditorComponent: (factory: Function) => {
+        activeEditor = factory({}, {}, {});
       },
     },
   } as unknown as ExtensionCommandContext;
@@ -42,7 +49,10 @@ function setup(entries: any[] = []) {
     notices,
     sent,
     description: () => command.description,
+    forwardedInputs,
     run: (args = "") => command.handler(args, ctx),
+    input: (data: string) => activeEditor.handleInput(data),
+    shortcut: () => activeEditor.handleInput("\x0c"),
     start: () => handlers.get("session_start")!({}, ctx),
     shutdown: () => handlers.get("session_shutdown")!({}, ctx),
     focus: (data: string) => terminalInput?.(data),
@@ -62,6 +72,21 @@ test("alternates start and stop without waiting for lifecycle messages", async (
     { content: "/codex voice realtime", options: dispatchOptions },
     { content: "/codex voice stop", options: dispatchOptions },
   ]);
+});
+
+test("Ctrl+L shares the /live toggle", async () => {
+  const session = setup();
+  session.start();
+  session.shortcut();
+  await session.run();
+  session.shortcut();
+  session.input("x");
+  expect(session.sent.map(({ content }) => content)).toEqual([
+    "/codex voice realtime",
+    "/codex voice stop",
+    "/codex voice realtime",
+  ]);
+  expect(session.forwardedInputs).toEqual(["x"]);
 });
 
 test("stops active realtime voice and starts again after it ends", async () => {

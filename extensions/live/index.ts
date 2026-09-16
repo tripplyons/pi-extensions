@@ -1,4 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
 
 const VOICE_MODE_MESSAGE_TYPE = "codex-voice-mode";
 const ENABLE_FOCUS_REPORTING = "\x1b[?1004h";
@@ -59,6 +60,23 @@ export default function liveExtension(pi: ExtensionAPI) {
         }
       });
     }
+
+    if (ctx.hasUI === false || ctx.mode !== "tui") return;
+    const previous = ctx.ui.getEditorComponent();
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      const editor = previous
+        ? previous(tui, theme, keybindings)
+        : new CustomEditor(tui, theme, keybindings);
+      const handleInput = editor.handleInput.bind(editor);
+      editor.handleInput = (data) => {
+        if (matchesKey(data, "ctrl+l")) {
+          toggle();
+          return;
+        }
+        handleInput(data);
+      };
+      return editor;
+    });
   });
 
   pi.on("message_end", (event) => {
@@ -81,6 +99,21 @@ export default function liveExtension(pi: ExtensionAPI) {
     focusReporting = false;
   });
 
+  const toggle = () => {
+    const wasActive = realtimeActive;
+    const wasMutedByFocus = mutedByFocus;
+    realtimeActive = !wasActive;
+    if (wasActive) mutedByFocus = false;
+    try {
+      dispatch(wasActive ? "/codex voice stop" : "/codex voice realtime");
+      if (!wasActive && !focused) setFocusMute(true);
+    } catch (error) {
+      realtimeActive = wasActive;
+      mutedByFocus = wasMutedByFocus;
+      throw error;
+    }
+  };
+
   pi.registerCommand("live", {
     description: "Toggle Codex realtime voice",
     handler: async (args, ctx) => {
@@ -88,18 +121,7 @@ export default function liveExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /live", "warning");
         return;
       }
-      const wasActive = realtimeActive;
-      const wasMutedByFocus = mutedByFocus;
-      realtimeActive = !wasActive;
-      if (wasActive) mutedByFocus = false;
-      try {
-        dispatch(wasActive ? "/codex voice stop" : "/codex voice realtime");
-        if (!wasActive && !focused) setFocusMute(true);
-      } catch (error) {
-        realtimeActive = wasActive;
-        mutedByFocus = wasMutedByFocus;
-        throw error;
-      }
+      toggle();
     },
   });
 }
