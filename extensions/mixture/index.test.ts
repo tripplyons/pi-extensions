@@ -7,7 +7,7 @@ import { initTheme, InteractiveMode } from "@earendil-works/pi-coding-agent";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { createAssistantMessageEventStream, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createMixtureExtension } from "./index.ts";
-import { ASK_ADVISOR } from "./advisor.ts";
+import { ADVISOR_BLOCKED_DETAIL, ASK_ADVISOR } from "./advisor.ts";
 import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { ManualScheduler } from "../test-scheduler.ts";
 import { emitMessage, emptyUsage, requestLaneId, type Registry } from "./provider.ts";
@@ -96,7 +96,16 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	const tool = h.definitions.get(ASK_ADVISOR);
 	const call = { toolCallId: "advisor-call", toolName: ASK_ADVISOR, input: {} };
 	expect(h.handlers.get("tool_call")(call, context)).toBeUndefined();
-	expect(h.handlers.get("tool_call")({ toolCallId: "advisor-call-too-soon", toolName: ASK_ADVISOR, input: {} }, context)).toMatchObject({ block: true, reason: expect.stringContaining("throttled") });
+	const blockedCall = { toolCallId: "advisor-call-too-soon", toolName: ASK_ADVISOR, input: {} };
+	const blocked = h.handlers.get("tool_call")(blockedCall, context);
+	expect(blocked).toMatchObject({ block: true, reason: expect.stringContaining("throttled") });
+	const blockedMessage = {
+		role: "toolResult", toolCallId: blockedCall.toolCallId, toolName: ASK_ADVISOR,
+		content: [{ type: "text", text: blocked.reason }], details: {}, isError: true, timestamp: Date.now(),
+	};
+	const marked = await h.handlers.get("message_end")({ message: blockedMessage });
+	expect(marked.message.details).toMatchObject({ [ADVISOR_BLOCKED_DETAIL]: true });
+	branch.push({ type: "message", message: marked.message });
 	const advice = await tool.execute("advisor-call", {}, undefined, undefined, context);
 	expect(advice.content[0].text).toBe("summary");
 	expect(advice.details.model).toBe("openai-codex/advisor");

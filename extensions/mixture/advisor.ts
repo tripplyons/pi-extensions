@@ -8,6 +8,13 @@ import { callRole, requestLaneId, resolveModel, type Registry, type RoleStreamOp
 import { systemScheduler, type Scheduler } from "../scheduler.ts";
 
 export const ASK_ADVISOR = "ask_advisor";
+export const ADVISOR_BLOCKED_DETAIL = "mixtureAdvisorBlocked";
+export const isAdvisorBlocked = (details: unknown) =>
+	!!details && typeof details === "object" && !Array.isArray(details) && (details as Record<string, unknown>)[ADVISOR_BLOCKED_DETAIL] === true;
+export const markAdvisorBlocked = (details: unknown) => ({
+	...(details && typeof details === "object" && !Array.isArray(details) ? details : {}),
+	[ADVISOR_BLOCKED_DETAIL]: true,
+});
 export const AdvisorParams = Type.Object({
 	question: Type.Optional(Type.String({ maxLength: 8_000, description: "A specific assumption or trade-off to examine. Omit for a general review." })),
 	draft: Type.Optional(Type.String({ maxLength: 16_000, description: "An unverified plan or completion draft for the Advisor to critique." })),
@@ -183,7 +190,7 @@ export function advisorGuidelines(preset: AdvisorPreset, calls: number) {
 const advisorResult = (entry: unknown): ToolResultMessage | undefined => {
 	if (!entry || typeof entry !== "object" || (entry as any).type !== "message") return;
 	const message = (entry as any).message as ToolResultMessage | undefined;
-	if (!message || typeof message !== "object") return;
+	if (!message || typeof message !== "object" || isAdvisorBlocked(message.details)) return;
 	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR ? message : undefined;
 };
 export const advisorUsageCost = (usage?: Usage) => {

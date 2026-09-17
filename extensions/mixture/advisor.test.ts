@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { advisorCallCount, advisorCost, advisorCooldownMs, advisorEvidence, advisorGuidelines, consultAdvisor, conversationEntry, recentConversation, repositoryContext } from "./advisor.ts";
+import { ADVISOR_BLOCKED_DETAIL, advisorCallCount, advisorCost, advisorCooldownMs, advisorEvidence, advisorGuidelines, consultAdvisor, conversationEntry, recentConversation, repositoryContext } from "./advisor.ts";
 import { estimateContextTokens } from "./context.ts";
 import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
@@ -54,6 +54,21 @@ test("advisor cost sums only persisted advisor results", () => {
 		{ type: "message", message: { role: "toolResult", toolName: "ask_advisor", usage: { cost: { total: Number.NaN } } } },
 	];
 	expect(advisorCost(entries)).toBeCloseTo(0.01);
+});
+
+test("blocked advisor attempts do not count or extend cooldown", () => {
+	const now = 1_000_000;
+	const entries = [
+		{ type: "message", message: { role: "toolResult", toolName: "ask_advisor", timestamp: now - MIN_ADVISOR_INTERVAL_MS + 10, usage: { cost: { total: 0.004 } } } },
+		...([now - 1, now].map(timestamp => ({ type: "message", message: { role: "toolResult", toolName: "ask_advisor", timestamp, isError: true, details: { [ADVISOR_BLOCKED_DETAIL]: true }, usage: { cost: { total: 10 } } } }))),
+	];
+	expect(advisorCallCount(entries)).toBe(1);
+	expect(advisorCost(entries)).toBeCloseTo(0.004);
+	expect(advisorCooldownMs(entries, now)).toBe(10);
+
+	const failed = { type: "message", message: { role: "toolResult", toolName: "ask_advisor", timestamp: now - MIN_ADVISOR_INTERVAL_MS + 10, isError: true } };
+	expect(advisorCallCount([failed])).toBe(1);
+	expect(advisorCooldownMs([failed], now)).toBe(10);
 });
 
 test("advisor evidence keeps every region inside one escaped budget", () => {

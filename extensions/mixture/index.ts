@@ -14,7 +14,7 @@ import { receiptIds, tagReceipts } from "./usage.ts";
 import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
 import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
-import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorCost, advisorCooldownMs, advisorGuidelines, advisorIntervalLabel, advisorTool, advisorUsageCost, consultAdvisor, type AdvisorInput } from "./advisor.ts";
+import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorCost, advisorCooldownMs, advisorGuidelines, advisorIntervalLabel, advisorTool, advisorUsageCost, consultAdvisor, isAdvisorBlocked, markAdvisorBlocked, type AdvisorInput } from "./advisor.ts";
 
 export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
 	const running = jobs.jobs.filter(job => job.status === "running");
@@ -45,6 +45,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	const helpers = new Set<AbortController>();
 	const directSessionIds = new Set<string>();
 	const reservedAdvisorCalls = new Set<string>();
+	const blockedAdvisorCalls = new Set<string>();
 	let advisorReminderTimer: ScheduledTask | undefined;
 	let advisorRun = 0;
 	let lastAdvisorStartedAt: number | undefined;
@@ -98,12 +99,13 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		].join("\n");
 		return `Mixture presets: ${Object.entries(config!.presets).map(([name, preset]) => `${name} (${preset.mode})`).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`;
 	};
-	const render = (pendingAdvisor?: { toolCallId: string; usage?: Usage }) => {
+	const render = (pendingAdvisor?: { toolCallId: string; usage?: Usage; details?: unknown }) => {
 		if (!ctx?.hasUI) return;
 		const advisor = selectedAdvisor();
 		const branch = advisor && ctx ? ctx.sessionManager.getBranch() : [];
-		const calls = advisor ? advisorCallCount(branch) + (pendingAdvisor ? 1 : 0) : 0;
-		const cost = advisor ? advisorCost(branch) + advisorUsageCost(pendingAdvisor?.usage) : 0;
+		const eligiblePending = pendingAdvisor && !isAdvisorBlocked(pendingAdvisor.details) ? pendingAdvisor : undefined;
+		const calls = advisor ? advisorCallCount(branch) + (eligiblePending ? 1 : 0) : 0;
+		const cost = advisor ? advisorCost(branch) + advisorUsageCost(eligiblePending?.usage) : 0;
 		ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : advisor ? `executor · advisor ${calls} · $${cost.toFixed(3)}` : "handoff · unavailable · $?" : undefined);
 	};
 	const releaseRoleResources = (target = session) => {
@@ -349,7 +351,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			} catch (error) { context.ui.notify(String(error), "error"); }
 		},
 	});
-	pi.on("session_start", async (_event, context) => { reservedAdvisorCalls.clear(); await activate(context, true); if (diagnostic) context.ui.notify(diagnostic, "error"); });
+	pi.on("session_start", async (_event, context) => { reservedAdvisorCalls.clear(); blockedAdvisorCalls.clear(); await activate(context, true); if (diagnostic) context.ui.notify(diagnostic, "error"); });
 	pi.on("model_select", (_event, context) => activate(context));
 	pi.on("before_agent_start", async (event, context) => {
 		await activate(context);
@@ -388,7 +390,10 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		const inMemoryCooldown = lastAdvisorStartedAt === undefined ? 0
 			: Math.max(0, MIN_ADVISOR_INTERVAL_MS - (now - lastAdvisorStartedAt));
 		const cooldown = Math.max(persistedCooldown, inMemoryCooldown);
-		if (cooldown) return { block: true, reason: `Advisor call throttled; try again in ${Math.ceil(cooldown / 1_000)} seconds` };
+		if (cooldown) {
+			blockedAdvisorCalls.add(event.toolCallId);
+			return { block: true, reason: `Advisor call throttled; try again in ${Math.ceil(cooldown / 1_000)} seconds` };
+		}
 		lastAdvisorStartedAt = now;
 		if (advisorActive && ctx) startAdvisorReminders(ctx, preset);
 		reservedAdvisorCalls.add(event.toolCallId);
@@ -408,6 +413,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		return { usage, details: { ...details, mixtureReceiptIds: [...new Set([...receiptIds(details), ...session.lastDrained])] } };
 	});
 	pi.on("message_end", async event => {
+		// Pi persists beforeToolCall blocks but does not run the tool_result hook for them.
+		if (event.message.role === "toolResult" && event.message.toolName === ASK_ADVISOR && blockedAdvisorCalls.delete(event.message.toolCallId)) {
+			render();
+			return { message: { ...event.message, details: markAdvisorBlocked(event.message.details) } };
+		}
 		if (!selectedHandoff() || !session || event.message.role !== "assistant" || !["aborted", "error"].includes(event.message.stopReason)) return;
 		const usage = await session.drainAfterAbort();
 		if (!usage.totalTokens && !usage.cost.total) return;
@@ -419,6 +429,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		advisorActive = false;
 		stopAdvisorReminders();
 		reservedAdvisorCalls.clear();
+		blockedAdvisorCalls.clear();
 		if (session) { await session.abort(); releaseRoleResources(); session.reconcile("request ended"); persist("idle"); }
 		else releaseRoleResources();
 		// Pi also infers a resumed model from assistant identity. Mixture exposes the
@@ -433,7 +444,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	pi.on("session_before_compact", () => { compacting = true; render(); return detach("compaction"); });
 	pi.on("session_compact", (_event, context) => { compacting = false; return activate(context, true); });
 	pi.on("session_compact_failed", (_event, context) => { compacting = false; return activate(context, true); });
-	pi.on("session_shutdown", async () => { reservedAdvisorCalls.clear(); await detach("session shutdown", true); releaseRoleResources(undefined); ctx = undefined; rootId = undefined; });
+	pi.on("session_shutdown", async () => { reservedAdvisorCalls.clear(); blockedAdvisorCalls.clear(); await detach("session shutdown", true); releaseRoleResources(undefined); ctx = undefined; rootId = undefined; });
 	if (config) {
 		try { registered = buildProvider(config); pi.registerProvider(registered); }
 		catch (error) { diagnostic = `Mixture registration failed: ${String(error)}`; }
