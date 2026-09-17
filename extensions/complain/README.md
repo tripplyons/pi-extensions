@@ -46,4 +46,4 @@ The extension flushes each appended report to disk before it reports success. It
 
 Agent-swarm explicitly loads this extension in spawned managers, workers, and reviewers. It sets `PI_COMPLAIN_LOG` to the coordinator's log path, so their reports survive worker cleanup and appear beside coordinator reports. `PI_COMPLAIN_LOG`, when set by a controller, must be absolute.
 
-The extension also loads the `complaint-resolution` skill. Use it when asked to investigate, resolve, audit, or clean the complaint log. It requires proof before removing a record and preserves unresolved or concurrently appended records.
+The extension also loads the `complaint-resolution` skill. Use it when asked to investigate, resolve, audit, or clean the complaint log. The skill answers the user's requested attribution or status question from existing evidence before considering reproduction. It requires proof before removing a record and preserves unresolved or concurrently appended records.

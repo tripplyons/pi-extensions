@@ -53,7 +53,10 @@ test("loads the complaint resolution skill from the extension", async () => {
 	const expected = fileURLToPath(new URL("./skills", import.meta.url));
 
 	expect(resources).toEqual({ skillPaths: [expected] });
-	expect(await readFile(join(expected, "complaint-resolution", "SKILL.md"), "utf8")).toContain("Remove only resolved records.");
+	const skill = await readFile(join(expected, "complaint-resolution", "SKILL.md"), "utf8");
+	expect(skill).toContain("Answer the user's requested attribution or status question from existing evidence first.");
+	expect(skill).toContain("Reproduce the reported failure only when reproduction is necessary");
+	expect(skill).toContain("Remove only resolved records.");
 });
 
 test("guidance proactively targets repeated material infrastructure failures", async () => {
