@@ -5,13 +5,15 @@ import {
 	type Model, type ModelThinkingLevel, type Provider, type SimpleStreamOptions, type Usage,
 } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { splitModel, type MixtureConfig, type Preset } from "./config.ts";
+import { splitModel, type MixtureConfig, type Preset, type RoleConfig } from "./config.ts";
 import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
 
 export type Registry = Pick<ModelRegistry, "find" | "getProvider" | "getApiKeyAndHeaders">;
 export type Lookup = (provider: string, model: string) => Model<Api> | undefined;
 export type MixtureStream = (preset: string, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 export type RoleStreamOptions = SimpleStreamOptions & { serviceTier?: "priority" | "default" };
+export const applyRoleFastMode = (role: Pick<RoleConfig, "fast"> | undefined, options?: RoleStreamOptions): RoleStreamOptions | undefined =>
+	role?.fast === undefined ? options : { ...options, serviceTier: role.fast ? "priority" : "default" };
 export type RequestLane = "ordinary" | "summary" | "overflow" | "helper";
 export function requestLaneId(root: string, run: string, role: string, lane: RequestLane): string {
 	return `mixture-lane/${createHash("sha256").update(JSON.stringify([root, run, role, lane])).digest("hex")}`;

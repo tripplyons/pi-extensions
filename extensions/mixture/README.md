@@ -55,7 +55,8 @@ An advisor preset can live beside handoff presets in the same file:
   "mode": "advisor",
   "executor": {
     "model": "openai-codex/gpt-5.6-luna",
-    "thinking": "medium"
+    "thinking": "medium",
+    "fast": true
   },
   "advisor": {
     "model": "openai-codex/gpt-5.6-sol",
@@ -85,15 +86,19 @@ An advisor preset can live beside handoff presets in the same file:
 - Preset names become model IDs: `mixture/<preset>` regardless of mode.
 - `/mixture configure [preset]` can create or switch either mode.
 - In handoff mode, set `reviewers` to `[]` to disable independent review. Up to four are allowed.
-- Each writer/reviewer can have optional `guidance`. Repository instructions
-  already supplied to Pi are included; no additional project config is loaded.
+- Each Executor, Advisor, writer, or reviewer can set optional `fast` and
+  `guidance` fields. `fast: true` forces OpenAI Codex priority service for that
+  role, while `fast: false` forces the default service tier. Repository
+  instructions already supplied to Pi are included; no additional project
+  config is loaded.
 - Lead thinking follows Pi's normal selector. Writer/reviewer levels are
   validated separately. Recursive `mixture/*` role models are rejected.
 - Standalone requests resolve each role's effective provider, authentication,
   headers and endpoint, including provider overrides. Agent Swarm copies only the
   selected node preset's underlying role-provider credentials into its private home.
 - An explicit session `/fast` override is inherited by every `openai-codex`
-  role request. Untoggled sessions leave the provider's existing tier unchanged.
+  role without a `fast` setting. Untoggled sessions leave the provider's
+  existing tier unchanged.
 - Role models must be present in Pi's catalog or model configuration. Discovery
   does not fetch missing metadata or make inference calls. Missing models and
   unsupported thinking levels produce diagnostics, not substitute models.

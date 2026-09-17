@@ -53,8 +53,12 @@ test("advisor presets are strict, default bounded context, and keep legacy hando
 	const customInterval = structuredClone(advisor) as any;
 	customInterval.presets.review.limits = { advisorIntervalMs: 600_000 };
 	expect(parseConfig(customInterval).presets.review.limits.advisorIntervalMs).toBe(600_000);
+	const forcedFast = structuredClone(advisor) as any;
+	forcedFast.presets.review.executor.fast = true;
+	expect(parseConfig(forcedFast).presets.review).toMatchObject({ executor: { fast: true } });
 	for (const mutate of [
 		(value: any) => { value.presets.review.executor.model = "mixture/default"; },
+		(value: any) => { value.presets.review.executor.fast = "yes"; },
 		(value: any) => { value.presets.review.context.git = "everything"; },
 		(value: any) => { value.presets.review.context.maxChars = 0; },
 		(value: any) => { value.presets.review.gates.failure = "yes"; },

@@ -7,7 +7,7 @@ import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeM
 import { configPath, loadConfig, MIN_ADVISOR_INTERVAL_MS, saveConfig, type AdvisorPreset, type MixtureConfig } from "./config.ts";
 import { cloneJson } from "./delta.ts";
 import { releaseProviderSessions } from "./events.ts";
-import { addUsage, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
+import { addUsage, applyRoleFastMode, callRole, createMixtureProvider, emitMessage, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RoleStreamOptions } from "./provider.ts";
 import { CONTROL, ControlParams, MixtureSession, controlTool, newState } from "./session.ts";
 import { compactStatus, configure, controlCall, controlCard, inspection, Inspector } from "./ui.ts";
 import { receiptIds, tagReceipts } from "./usage.ts";
@@ -216,10 +216,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				if (selected() && ctx?.model?.id === name && options?.sessionId === ctx.sessionManager.getSessionId()) {
 					if (preset.mode === "advisor") {
 						rootId = ctx.sessionManager.getSessionId();
+						const executorOptions = applyRoleFastMode(preset.executor, inheritedOptions);
 						const message = await callRole(registry, preset.executor.model, context, preset.executor.thinking, {
-							...inheritedOptions,
+							...executorOptions,
 							timeoutMs: preset.limits.requestTimeoutMs,
-							maxTokens: Math.min(inheritedOptions?.maxTokens ?? preset.limits.executorMaxTokens, preset.limits.executorMaxTokens),
+							maxTokens: Math.min(executorOptions?.maxTokens ?? preset.limits.executorMaxTokens, preset.limits.executorMaxTokens),
 							sessionId: requestLaneId(rootId, name, `${name}/executor`, "ordinary"),
 						}, undefined, id => directSessionIds.add(id), scheduler);
 						emitMessage(stream, message);
@@ -238,6 +239,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 				}
 				// Pi helper requests have a separate routing ID and never join a run.
 				const role = preset.mode === "advisor" ? preset.executor : { model: preset.lead, thinking: undefined };
+				const roleOptions = preset.mode === "advisor" ? applyRoleFastMode(preset.executor, inheritedOptions) : inheritedOptions;
 				const model = resolveModel(role.model, registry.find.bind(registry));
 				const helperState = createLocalContext({ branchId: options?.sessionId ?? `helper-${randomUUID()}`, preset: name, role: "/helper" }, context.messages);
 				const helperContext = { ...context, messages: helperState.activeMessages, tools: [] };
@@ -248,9 +250,9 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 					const maxTokens = preset.mode === "advisor" ? preset.limits.executorMaxTokens : preset.limits.leadMaxTokens;
 					const thinking = role.thinking ?? inheritedOptions?.reasoning ?? (model.reasoning ? ctx?.thinkingLevel ?? "high" : "off");
 					emitMessage(stream, await callRole(registry, role.model, helperContext, thinking, {
-						...inheritedOptions, sessionId: requestLaneId(options?.sessionId ?? "detached", randomUUID(), `${name}/helper`, "helper"), timeoutMs: preset.limits.requestTimeoutMs,
+						...roleOptions, sessionId: requestLaneId(options?.sessionId ?? "detached", randomUUID(), `${name}/helper`, "helper"), timeoutMs: preset.limits.requestTimeoutMs,
 						signal: AbortSignal.any([controller.signal, ...(options?.signal ? [options.signal] : [])]),
-						maxTokens: Math.min(inheritedOptions?.maxTokens ?? maxTokens, maxTokens),
+						maxTokens: Math.min(roleOptions?.maxTokens ?? maxTokens, maxTokens),
 					}, undefined, id => { acquiredId = id; }, scheduler));
 				} finally {
 					helpers.delete(controller);
@@ -292,7 +294,7 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 			const run = advisorRun;
 			let acquiredId: string | undefined;
 			try {
-				const advice = await consultAdvisor(preset, registry, input, context, { ...inheritFastMode(), signal: AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]) }, id => { acquiredId = id; }, scheduler);
+				const advice = await consultAdvisor(preset, registry, input, context, { ...applyRoleFastMode(preset.advisor, inheritFastMode()), signal: AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]) }, id => { acquiredId = id; }, scheduler);
 				return { content: [{ type: "text" as const, text: advice.text }], details: { model: advice.model }, usage: advice.usage };
 			} finally {
 				helpers.delete(controller);

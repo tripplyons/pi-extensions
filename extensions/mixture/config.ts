@@ -7,6 +7,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 export interface RoleConfig {
 	model: string;
 	thinking: ModelThinkingLevel;
+	fast?: boolean;
 	guidance?: string;
 }
 
@@ -122,14 +123,16 @@ function model(value: unknown, label: string): string {
 }
 function role(value: unknown, label: string): RoleConfig {
 	const input = object(value, label);
-	keys(input, ["model", "thinking", "guidance"], label);
+	keys(input, ["model", "thinking", "fast", "guidance"], label);
 	if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(input.thinking))) {
 		throw new Error(`${label}.thinking must name a Pi thinking level`);
 	}
+	if (input.fast !== undefined && typeof input.fast !== "boolean") throw new Error(`${label}.fast must be boolean`);
 	if (input.guidance !== undefined && (typeof input.guidance !== "string" || input.guidance.length > 16_000)) {
 		throw new Error(`${label}.guidance must be a string of at most 16000 characters`);
 	}
 	return { model: model(input.model, `${label}.model`), thinking: input.thinking as ModelThinkingLevel,
+		...(input.fast === undefined ? {} : { fast: input.fast }),
 		...(input.guidance === undefined ? {} : { guidance: input.guidance as string }) };
 }
 function advisorGates(value: unknown, label: string): AdvisorGates {

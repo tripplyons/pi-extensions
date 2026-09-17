@@ -52,6 +52,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	]);
 	expect(h.session.resourceSessionIds()).toEqual([]);
 	h.preset.writer.model = "openai-codex/gpt-5.6-luna";
+	h.preset.writer.fast = true;
 	h.preset.limits.requestTimeoutMs = 111_000;
 	h.preset.limits.writerRequestTimeoutMs = 222_000;
 	h.session.newRequest("Fix this without changing unrelated files");
@@ -67,7 +68,7 @@ test("the lead defines the initial brief before the writer starts", async () => 
 	expect((delegatedResult.details as any).controlSummary).toMatchObject({ phaseId: h.state.phase!.id, attempt: 1, findings: { total: 0, serious: 0 } });
 	expect(JSON.stringify((delegatedResult.details as any).controlSummary).length).toBeLessThan(1_000);
 	expect(h.session.active).toBe("writer");
-	await h.next({ serviceTier: "priority" });
+	await h.next({ serviceTier: "default" });
 	expect(h.calls.map(call => call.model)).toEqual(["gpt-6-astra", "gpt-5.6-luna"]);
 	expect(h.calls[0].options.timeoutMs).toBe(111_000);
 	expect(h.calls[1].options.timeoutMs).toBe(222_000);

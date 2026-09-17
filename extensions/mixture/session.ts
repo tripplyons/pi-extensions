@@ -6,7 +6,7 @@ import { SWARM_TOOL_NAMES } from "../agent-swarm/tool-names.ts";
 import type { BackgroundJobQuery } from "../bg-bash/events.ts";
 import { systemScheduler, type Scheduler } from "../scheduler.ts";
 import type { HandoffPreset } from "./config.ts";
-import { addUsage, callRole, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RequestLane } from "./provider.ts";
+import { addUsage, applyRoleFastMode, callRole, emptyUsage, failureMessage, requestLaneId, resolveModel, type Registry, type RequestLane } from "./provider.ts";
 import { ASSESSMENTS, adoptLegacyPhase, assessPhase, closedPhase, delegateFields, delegatePhase, phaseFields, phaseSummary, phaseUpdatesSummary, recordPhaseUpdate, type ImmediateAction, type PhaseState } from "./phase.ts";
 import { executionDelta, newReviewer, ReviewPool, type CheckpointReview, type ReviewerState } from "./review.ts";
 import { drainReceipts, receipt, receiptIds, tagReceipts, type UsageReceipt } from "./usage.ts";
@@ -581,7 +581,8 @@ export class MixtureSession {
 		try {
 			const thinking: ModelThinkingLevel = role?.thinking ?? this.leadThinking ?? options.reasoning ?? (model.reasoning ? "high" : "off");
 			const message = await callRole(this.registry, id, context, thinking, {
-				...options, signal: AbortSignal.any([this.signal, ...(options.signal ? [options.signal] : [])]),
+				...applyRoleFastMode(role, options),
+				signal: AbortSignal.any([this.signal, ...(options.signal ? [options.signal] : [])]),
 				timeoutMs: actor === "writer" ? this.preset.limits.writerRequestTimeoutMs : this.preset.limits.requestTimeoutMs,
 				...(actor === "writer" ? { idleTimeoutMs: this.preset.limits.writerIdleTimeoutMs } : {}), maxTokens,
 				sessionId: requestLaneId(options.sessionId ?? this.branchId, this.state.id, label, lane),

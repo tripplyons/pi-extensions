@@ -69,9 +69,9 @@ test("factory registers a native model without starting inference or old tools",
 });
 test("advisor mode is a selectable Mixture model whose executor owns tools and consults its configured advisor", async () => {
 	const preset = defaultAdvisorPreset();
-	preset.executor = { model: "fixture/executor", thinking: "medium" };
-	preset.advisor = { model: "fixture/advisor", thinking: "high" };
-	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	preset.executor = { model: "openai-codex/executor", thinking: "medium", fast: true };
+	preset.advisor = { model: "openai-codex/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }), false);
 	const branch: any[] = [{ type: "message", message: { role: "user", content: "Check the fixture" } }];
 	const context = {
 		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
@@ -87,6 +87,7 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	const output = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "Execute", timestamp: 1 }], tools: [] }, { sessionId: "advisor-root" }).result();
 	expect(output.model).toBe("executor");
 	expect(h.roleOptions[0].reasoning).toBe("medium");
+	expect(h.roleOptions[0].serviceTier).toBe("priority");
 	const prompt = await h.handlers.get("before_agent_start")({ prompt: "Execute" }, context);
 	expect(prompt.systemPrompt).toContain("Mixture advisor mode");
 	expect(prompt.systemPrompt).toContain("must call ask_advisor at least once");
@@ -98,8 +99,9 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	expect(h.handlers.get("tool_call")({ toolCallId: "advisor-call-too-soon", toolName: ASK_ADVISOR, input: {} }, context)).toMatchObject({ block: true, reason: expect.stringContaining("throttled") });
 	const advice = await tool.execute("advisor-call", {}, undefined, undefined, context);
 	expect(advice.content[0].text).toBe("summary");
-	expect(advice.details.model).toBe("fixture/advisor");
+	expect(advice.details.model).toBe("openai-codex/advisor");
 	expect(h.roleOptions[1].reasoning).toBe("high");
+	expect(h.roleOptions[1].serviceTier).toBe("default");
 	expect(h.roleOptions[1].maxTokens).toBe(4_096);
 	await h.handlers.get("agent_end")({ messages: [] });
 	expect(h.releasedIds).toEqual([h.roleOptions[1].sessionId, h.roleOptions[0].sessionId]);
