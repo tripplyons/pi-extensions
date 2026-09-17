@@ -110,12 +110,15 @@ Pi's selector. This keeps the execution model pinned for prompt-cache reuse.
 
 `ask_advisor` is active only while an advisor preset is selected. The Advisor gets
 no tools and cannot edit, run commands or take over. A consultation includes recent
-complete conversation entries, capped tool output, and repository disclosure up to
-the preset's configured ceiling. `summary` sends Git status, paths and line counts;
-`full` also sends the tracked patch; `off` sends no repository data. Untracked files
-are named by Git status but their contents are never attached. The Git region can
+complete conversation entries, capped tool output, a focused question or draft, and
+repository disclosure inside one `context.maxChars` evidence budget. The budget also
+reserves the Advisor model's system prompt and output allowance; models with smaller
+context windows receive a smaller package. `summary` sends Git status, paths and line
+counts; `full` also sends the tracked patch; `off` sends no repository data. Untracked
+files are named by Git status but their contents are never attached. The Git region can
 use at most half of `context.maxChars`, so it cannot displace the whole conversation.
-A call may narrow, but never expand, the configured Git level.
+Image attachments are represented by an omission notice; the Advisor never performs
+visual verification. A call may narrow, but never expand, the configured Git level.
 
 Secret redaction is enabled in the default advisor template. It covers common token,
 credential assignment, bearer-token and private-key patterns, but is not a complete
@@ -124,7 +127,7 @@ data-classification system or security boundary. Full patches require explicit
 themselves are sensitive. Conversation and tool output may still contain source or
 secrets, so select only an Advisor provider authorized to receive that data.
 The Advisor prompt treats conversation, tool results, summaries, repository changes,
-drafts and questions as untrusted evidence whose embedded instructions must not be followed.
+drafts and questions as untrusted evidence whose embedded instructions must not be followed. It returns a compact verdict followed by at most three high-value findings or an explicit uncertainty notice.
 
 The `plan`, `failure`, and `completion` gates are Executor instructions, not hidden
 model calls. Advisor mode also tells the Executor to make an initial review for

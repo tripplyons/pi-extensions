@@ -8,7 +8,7 @@ import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { createAssistantMessageEventStream, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createMixtureExtension } from "./index.ts";
 import { ASK_ADVISOR } from "./advisor.ts";
-import { defaultAdvisorPreset } from "./config.ts";
+import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { ManualScheduler } from "../test-scheduler.ts";
 import { emitMessage, emptyUsage, requestLaneId, type Registry } from "./provider.ts";
 
@@ -145,14 +145,15 @@ const advisorHarness = async () => {
 	preset.context.git = "off";
 	preset.advisor.model = "fixture/advisor";
 	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }), undefined, scheduler);
+	const branch: any[] = [];
 	const context = {
 		cwd: h.dir, modelRegistry: h.registry, model: { provider: "mixture", id: "advisor" },
-		sessionManager: { getSessionId: () => "root", getBranch: () => [], getEntries: () => [] },
+		sessionManager: { getSessionId: () => "root", getBranch: () => branch, getEntries: () => branch },
 		isIdle: () => false, hasPendingMessages: () => false, ui: { notify() {} },
 	};
 	await h.handlers.get("session_start")({}, context);
 	await h.handlers.get("agent_start")();
-	return { ...h, scheduler, context };
+	return { ...h, scheduler, context, branch };
 };
 
 test("consulting just before a tick restarts the full interval and reminders cannot accumulate", async () => {
@@ -179,6 +180,12 @@ for (const transition of ["agent_end", "session_before_switch", "session_before_
 		await h.scheduler.advanceBy(900_000);
 		expect(h.sentMessages).toHaveLength(0);
 	});
+
+test("resumed advisor sessions use wall-clock timestamps for persisted cooldowns", async () => {
+	const h = await advisorHarness();
+	h.branch.push({ type: "message", message: { role: "toolResult", toolName: ASK_ADVISOR, timestamp: Date.now() - MIN_ADVISOR_INTERVAL_MS - 1 } });
+	expect(h.handlers.get("tool_call")({ toolCallId: "expired", toolName: ASK_ADVISOR })).toBeUndefined();
+});
 
 test("session transitions clear the previous session's in-memory cooldown", async () => {
 	const h = await advisorHarness();

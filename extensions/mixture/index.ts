@@ -14,7 +14,7 @@ import { receiptIds, tagReceipts } from "./usage.ts";
 import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
 import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
-import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorGuidelines, advisorIntervalLabel, advisorLastCallAt, advisorTool, consultAdvisor, type AdvisorInput } from "./advisor.ts";
+import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorCooldownMs, advisorGuidelines, advisorIntervalLabel, advisorTool, consultAdvisor, type AdvisorInput } from "./advisor.ts";
 
 export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
 	const running = jobs.jobs.filter(job => job.status === "running");
@@ -376,11 +376,16 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		}
 		const preset = selectedAdvisor();
 		if (!preset || event.toolName !== ASK_ADVISOR) return;
-		const usedAt = ctx ? advisorLastCallAt(ctx.sessionManager.getBranch()) ?? 0 : 0;
-		const recent = Math.max(lastAdvisorStartedAt ?? -Infinity, usedAt || -Infinity);
-		const cooldown = Math.max(0, MIN_ADVISOR_INTERVAL_MS - (scheduler.time() - recent));
+		// Persisted message timestamps are wall-clock epoch milliseconds. The
+		// injected scheduler may use a different test clock, so never compare the
+		// two domains. Enforce each cooldown against its own clock instead.
+		const persistedCooldown = ctx ? advisorCooldownMs(ctx.sessionManager.getBranch()) : 0;
+		const now = scheduler.time();
+		const inMemoryCooldown = lastAdvisorStartedAt === undefined ? 0
+			: Math.max(0, MIN_ADVISOR_INTERVAL_MS - (now - lastAdvisorStartedAt));
+		const cooldown = Math.max(persistedCooldown, inMemoryCooldown);
 		if (cooldown) return { block: true, reason: `Advisor call throttled; try again in ${Math.ceil(cooldown / 1_000)} seconds` };
-		lastAdvisorStartedAt = scheduler.time();
+		lastAdvisorStartedAt = now;
 		if (advisorActive && ctx) startAdvisorReminders(ctx, preset);
 		reservedAdvisorCalls.add(event.toolCallId);
 	});
