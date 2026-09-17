@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { StringEnum, type Context, type Message, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
+import { StringEnum, type Context, type Message, type Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { MIN_ADVISOR_INTERVAL_MS, type AdvisorPreset } from "./config.ts";
@@ -8,6 +8,32 @@ import { callRole, requestLaneId, resolveModel, type Registry, type RoleStreamOp
 import { systemScheduler, type Scheduler } from "../scheduler.ts";
 
 export const ASK_ADVISOR = "ask_advisor";
+export const ADVISOR_PREFLIGHT_MESSAGE = "mixture-advisor-preflight";
+export const ADVISOR_PREFLIGHT_USAGE_ENTRY = "mixture-advisor-preflight-usage";
+export const ADVISOR_PREFLIGHT_ABORT_MARKER = "mixture-advisor-preflight-aborted:";
+export const ADVISOR_PREFLIGHT_DETAIL = "mixtureAdvisorPreflight";
+export type AdvisorPreflightStatus = "complete" | "failed" | "aborted" | "skipped" | "unavailable";
+export interface AdvisorPreflightDetails {
+	[ADVISOR_PREFLIGHT_DETAIL]: true;
+	callId: string;
+	status: AdvisorPreflightStatus;
+	sessionId: string;
+	preset: string;
+	model?: string;
+	usage?: Usage;
+	completedAt: number;
+}
+export const isAdvisorPreflight = (details: unknown): details is AdvisorPreflightDetails => {
+	if (!details || typeof details !== "object" || Array.isArray(details)) return false;
+	const value = details as Record<string, unknown>;
+	return value[ADVISOR_PREFLIGHT_DETAIL] === true
+		&& typeof value.callId === "string"
+		&& typeof value.sessionId === "string"
+		&& typeof value.preset === "string"
+		&& typeof value.completedAt === "number" && Number.isFinite(value.completedAt)
+		&& ["complete", "failed", "aborted", "skipped", "unavailable"].includes(String(value.status));
+};
+export const advisorPreflightCounts = (status: AdvisorPreflightStatus) => status === "complete" || status === "failed" || status === "aborted";
 export const ADVISOR_BLOCKED_DETAIL = "mixtureAdvisorBlocked";
 export const isAdvisorBlocked = (details: unknown) =>
 	!!details && typeof details === "object" && !Array.isArray(details) && (details as Record<string, unknown>)[ADVISOR_BLOCKED_DETAIL] === true;
@@ -173,10 +199,21 @@ export const advisorIntervalLabel = (milliseconds: number) => {
 	return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 };
 
-export function advisorGuidelines(preset: AdvisorPreset, calls: number) {
+export function advisorGuidelines(preset: AdvisorPreset, calls: number, preflight?: AdvisorPreflightStatus) {
+	const initialReview = preflight === "complete"
+		? "An automatic Advisor preflight has already reviewed this request. Use its guidance before acting; it satisfies the initial review requirement, so do not call again solely for that requirement."
+		: preflight === "failed"
+			? "The automatic Advisor preflight failed after reaching the provider. It does not satisfy the initial review requirement; make an explicit ask_advisor review when the cooldown allows."
+			: preflight === "aborted"
+				? "The automatic Advisor preflight was aborted and its advice was discarded. It does not satisfy the initial review requirement; make an explicit ask_advisor review when the cooldown allows."
+				: preflight === "skipped"
+					? "The automatic Advisor preflight was skipped by the call cooldown. Do not treat that as a review of this request; use a later reminder or explicit ask_advisor call when allowed."
+					: preflight === "unavailable"
+						? "The automatic Advisor preflight was unavailable before reaching the provider. It does not satisfy the initial review requirement; make an explicit ask_advisor review when the cooldown allows."
+						: "For every coding or repository task, you must call ask_advisor at least once before finalizing. Do not skip it because the task looks easy; a one-sentence draft or focused question is enough, and you must use the response.";
 	const lines: string[] = [
 		"You are the Executor in Mixture advisor mode. You own all tool use, edits, tests, and the final answer; the Advisor can only review and advise.",
-		"For every coding or repository task, you must call ask_advisor at least once before finalizing. Do not skip it because the task looks easy; a one-sentence draft or focused question is enough, and you must use the response.",
+		initialReview,
 		`While this request is active, expect an Advisor reminder every ${advisorIntervalLabel(preset.limits.advisorIntervalMs)}. Treat each reminder as a required review point before more edits or finalizing. Never call more often than once per minute.`,
 	];
 	if (preset.gates.plan) lines.push("Before committing to a materially consequential plan, investigate first, form a candidate direction, then call ask_advisor with that draft. Do not spend a consultation on a trivial explanation or no-op.");
@@ -187,24 +224,51 @@ export function advisorGuidelines(preset: AdvisorPreset, calls: number) {
 	return lines;
 }
 
-const advisorResult = (entry: unknown): ToolResultMessage | undefined => {
-	if (!entry || typeof entry !== "object" || (entry as any).type !== "message") return;
-	const message = (entry as any).message as ToolResultMessage | undefined;
-	if (!message || typeof message !== "object" || isAdvisorBlocked(message.details)) return;
-	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR ? message : undefined;
+interface AdvisorRecord { callId?: string; usage?: Usage; timestamp?: number }
+const finiteTimestamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+const advisorUsage = (value: unknown): Usage | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Usage : undefined;
+export class AdvisorConsultationError extends Error {
+	constructor(message: string, readonly usage: Usage, readonly model: string, readonly aborted: boolean) {
+		super(message);
+		this.name = "AdvisorConsultationError";
+	}
+}
+
+const advisorResult = (entry: unknown): AdvisorRecord | undefined => {
+	if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+	const value = entry as Record<string, unknown>;
+	if (value.type === "message") {
+		const message = value.message as Record<string, unknown> | undefined;
+		if (!message || typeof message !== "object" || Array.isArray(message) || isAdvisorBlocked(message.details)) return;
+		return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR
+			? { usage: advisorUsage(message.usage), timestamp: finiteTimestamp(message.timestamp) } : undefined;
+	}
+	if (value.type === "custom_message" && value.customType === ADVISOR_PREFLIGHT_MESSAGE && isAdvisorPreflight(value.details)) {
+		return advisorPreflightCounts(value.details.status)
+			? { callId: value.details.callId, usage: advisorUsage(value.details.usage), timestamp: value.details.completedAt } : undefined;
+	}
+	if (value.type === "custom" && value.customType === ADVISOR_PREFLIGHT_USAGE_ENTRY && isAdvisorPreflight(value.data)) {
+		return advisorPreflightCounts(value.data.status)
+			? { callId: value.data.callId, usage: advisorUsage(value.data.usage), timestamp: value.data.completedAt } : undefined;
+	}
 };
 export const advisorUsageCost = (usage?: Usage) => {
 	const value = usage?.cost?.total;
 	return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 };
-export const advisorCallCount = (entries: unknown[]) => entries.filter(entry => advisorResult(entry)).length;
-export const advisorCost = (entries: unknown[]) => entries.reduce((total, entry) => total + advisorUsageCost(advisorResult(entry)?.usage), 0);
-
-const advisorCallTimestamp = (entry: unknown): number | undefined => {
-	const message = advisorResult(entry);
-	return message && Number.isFinite((message as any).timestamp) ? (message as any).timestamp : undefined;
+const advisorRecords = (entries: unknown[]) => {
+	const seenPreflightIds = new Set<string>();
+	return entries.map(advisorResult).filter((record): record is AdvisorRecord => !!record).filter(record => {
+		if (!record.callId) return true;
+		if (seenPreflightIds.has(record.callId)) return false;
+		seenPreflightIds.add(record.callId);
+		return true;
+	});
 };
-export const advisorLastCallAt = (entries: unknown[]) => entries.map(advisorCallTimestamp).filter((value): value is number => value !== undefined).reduce<number | undefined>((latest, value) => latest === undefined ? value : Math.max(latest, value), undefined);
+export const advisorCallCount = (entries: unknown[]) => advisorRecords(entries).length;
+export const advisorCost = (entries: unknown[]) => advisorRecords(entries).reduce((total, record) => total + advisorUsageCost(record.usage), 0);
+
+export const advisorLastCallAt = (entries: unknown[]) => advisorRecords(entries).map(record => record.timestamp).filter((value): value is number => value !== undefined).reduce<number | undefined>((latest, value) => latest === undefined ? value : Math.max(latest, value), undefined);
 export const advisorCooldownMs = (entries: unknown[], now = Date.now()) => {
 	const last = advisorLastCallAt(entries);
 	if (last === undefined) return 0;
@@ -242,8 +306,12 @@ export async function consultAdvisor(preset: AdvisorPreset, registry: Registry, 
 		maxTokens: preset.limits.advisorMaxTokens,
 		sessionId: requestLaneId(ctx.sessionManager.getSessionId(), "advisor", preset.advisor.model, "ordinary"),
 	}, undefined, onAcquire, scheduler);
-	if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? `Advisor stopped: ${message.stopReason}`);
+	if (message.stopReason === "error" || message.stopReason === "aborted") {
+		throw new AdvisorConsultationError(message.errorMessage ?? `Advisor stopped: ${message.stopReason}`,
+			message.usage, `${message.provider}/${message.model}`, message.stopReason === "aborted");
+	}
+	const modelId = `${message.provider}/${message.model}`;
 	const text = message.content.filter(part => part.type === "text").map(part => part.text).join("\n").trim();
-	if (!text) throw new Error("Advisor returned no text");
-	return { text, usage: message.usage, model: `${message.provider}/${message.model}` };
+	if (!text) throw new AdvisorConsultationError("Advisor returned no text", message.usage, modelId, false);
+	return { text, usage: message.usage, model: modelId };
 }

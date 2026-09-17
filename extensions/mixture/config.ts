@@ -63,6 +63,7 @@ export interface HandoffPreset {
 }
 export interface AdvisorPreset {
 	mode: "advisor";
+	preflight: boolean;
 	executor: RoleConfig;
 	advisor: RoleConfig;
 	context: AdvisorContext;
@@ -79,6 +80,7 @@ export const agentDir = (override?: string) => override ?? process.env.PI_CODING
 export const configPath = (dir?: string) => join(agentDir(dir), "mixture.json");
 export const defaultAdvisorPreset = (): AdvisorPreset => ({
 	mode: "advisor",
+	preflight: true,
 	executor: { model: "openai-codex/gpt-5.6-luna", thinking: "medium" },
 	advisor: { model: "openai-codex/gpt-5.6-sol", thinking: "high" },
 	context: { ...DEFAULT_ADVISOR_CONTEXT },
@@ -162,7 +164,8 @@ export function parseConfig(value: unknown): MixtureConfig {
 		const preset = object(value, name);
 		const mode = preset.mode ?? "handoff";
 		if (mode === "advisor") {
-			keys(preset, ["mode", "executor", "advisor", "context", "gates", "limits"], name);
+			keys(preset, ["mode", "preflight", "executor", "advisor", "context", "gates", "limits"], name);
+			if (preset.preflight !== undefined && typeof preset.preflight !== "boolean") throw new Error(`${name}.preflight must be boolean`);
 			const context = preset.context === undefined ? {} : object(preset.context, `${name}.context`);
 			keys(context, Object.keys(DEFAULT_ADVISOR_CONTEXT), `${name}.context`);
 			if (context.maxChars !== undefined && (!Number.isInteger(context.maxChars) || Number(context.maxChars) < 1 || Number(context.maxChars) > 1_000_000)) throw new Error(`${name}.context.maxChars must be an integer from 1 to 1000000`);
@@ -175,6 +178,7 @@ export function parseConfig(value: unknown): MixtureConfig {
 			if (currentLimits.advisorIntervalMs !== undefined && Number(currentLimits.advisorIntervalMs) < MIN_ADVISOR_INTERVAL_MS) throw new Error(`${name}.limits.advisorIntervalMs must be at least ${MIN_ADVISOR_INTERVAL_MS}ms`);
 			parsed[name] = {
 				mode,
+				preflight: preset.preflight === undefined ? true : preset.preflight,
 				executor: role(preset.executor, `${name}.executor`),
 				advisor: role(preset.advisor, `${name}.advisor`),
 				context: { ...DEFAULT_ADVISOR_CONTEXT, ...context } as AdvisorPreset["context"],

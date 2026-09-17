@@ -53,6 +53,7 @@ An advisor preset can live beside handoff presets in the same file:
 ```json
 {
   "mode": "advisor",
+  "preflight": true,
   "executor": {
     "model": "openai-codex/gpt-5.6-luna",
     "thinking": "medium",
@@ -99,6 +100,10 @@ An advisor preset can live beside handoff presets in the same file:
 - An explicit session `/fast` override is inherited by every `openai-codex`
   role without a `fast` setting. Untoggled sessions leave the provider's
   existing tier unchanged.
+- `preflight` defaults to `true`; it runs the Advisor once for each new request
+  before the Executor's first provider request and injects the labeled review
+  into the Executor's context. Set it to `false` to keep consultation-based
+  kickoff behavior.
 - Role models must be present in Pi's catalog or model configuration. Discovery
   does not fetch missing metadata or make inference calls. Missing models and
   unsupported thinking levels produce diagnostics, not substitute models.
@@ -112,6 +117,15 @@ The Executor is the active worker behind the composite model. It receives Pi's
 ordinary context and tools, performs all reads, edits and tests, and produces the
 user-facing answer. Its configured thinking level is stable rather than following
 Pi's selector. This keeps the execution model pinned for prompt-cache reuse.
+
+With `preflight` enabled, Mixture calls the configured Advisor during
+`before_agent_start`, after the user prompt is assembled but before the first
+Executor request. The Advisor receives the current prompt explicitly, plus the
+bounded prior conversation and repository disclosure. Its visible, labeled
+review is passed to the Executor as context. A recent-call cooldown skips a new
+preflight; ordinary failures warn and continue without treating the review as
+approval. Cancellation or a stale session/model discards the review and stops
+the pending request. Preflight usage is recorded once in the Advisor footer.
 
 `ask_advisor` is active only while an advisor preset is selected. The Advisor gets
 no tools and cannot edit, run commands or take over. A consultation includes recent

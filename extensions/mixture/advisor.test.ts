@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { ADVISOR_BLOCKED_DETAIL, advisorCallCount, advisorCost, advisorCooldownMs, advisorEvidence, advisorGuidelines, consultAdvisor, conversationEntry, recentConversation, repositoryContext } from "./advisor.ts";
+import { ADVISOR_BLOCKED_DETAIL, ADVISOR_PREFLIGHT_DETAIL, ADVISOR_PREFLIGHT_MESSAGE, ADVISOR_PREFLIGHT_USAGE_ENTRY, advisorCallCount, advisorCost, advisorCooldownMs, advisorEvidence, advisorGuidelines, consultAdvisor, conversationEntry, recentConversation, repositoryContext } from "./advisor.ts";
 import { estimateContextTokens } from "./context.ts";
 import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
@@ -54,6 +54,24 @@ test("advisor cost sums only persisted advisor results", () => {
 		{ type: "message", message: { role: "toolResult", toolName: "ask_advisor", usage: { cost: { total: Number.NaN } } } },
 	];
 	expect(advisorCost(entries)).toBeCloseTo(0.01);
+});
+
+test("preflight records count provider attempts once and keep skipped records out of accounting", () => {
+	const now = 1_000_000;
+	const usage = { ...emptyUsage(), input: 10, output: 2, totalTokens: 12, cost: { ...emptyUsage().cost, total: 0.123 } };
+	const details = (status: "complete" | "aborted" | "skipped", total = 0.123) => ({
+		[ADVISOR_PREFLIGHT_DETAIL]: true as const, callId: status, status, sessionId: "root", preset: "default",
+		completedAt: now, usage: { ...usage, cost: { ...usage.cost, total } },
+	});
+	const entries = [
+		{ type: "custom_message", customType: ADVISOR_PREFLIGHT_MESSAGE, details: details("complete") },
+		{ type: "custom_message", customType: ADVISOR_PREFLIGHT_MESSAGE, details: details("complete") },
+		{ type: "custom", customType: ADVISOR_PREFLIGHT_USAGE_ENTRY, data: details("aborted", 0.456) },
+		{ type: "custom_message", customType: ADVISOR_PREFLIGHT_MESSAGE, details: details("skipped", 10) },
+	];
+	expect(advisorCallCount(entries)).toBe(2);
+	expect(advisorCost(entries)).toBeCloseTo(0.579);
+	expect(advisorCooldownMs(entries, now)).toBe(MIN_ADVISOR_INTERVAL_MS);
 });
 
 test("blocked advisor attempts do not count or extend cooldown", () => {
@@ -132,6 +150,23 @@ test("consultation reserves the advisor output allowance inside a small context 
 	await consultAdvisor(preset, registry, { draft: "A bounded draft" }, ctx);
 	expect(estimateContextTokens(calls[0].context).tokens + preset.limits.advisorMaxTokens).toBeLessThanOrEqual(5_200);
 	expect(calls[0].context.messages[0].content.length).toBeLessThan(2_000 * 18);
+});
+
+test("consultation failures preserve usage from an otherwise completed provider response", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const usage = { ...emptyUsage(), input: 12, output: 1, totalTokens: 13, cost: { ...emptyUsage().cost, total: 0.013 } };
+	const registry: Registry = {
+		find: (_provider, id) => model(id) as any,
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
+		getProvider: () => ({ streamSimple: (selected: any) => {
+			const stream = createAssistantMessageEventStream();
+			emitMessage(stream, { role: "assistant", provider: selected.provider, model: selected.id, api: selected.api, content: [], usage, stopReason: "stop", timestamp: 1 });
+			return stream;
+		} }) as any,
+	};
+	const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [], getSessionId: () => "root" } } as any;
+	await expect(consultAdvisor(preset, registry, {}, ctx)).rejects.toMatchObject({ name: "AdvisorConsultationError", usage, model: "fixture/advisor", aborted: false });
 });
 
 test("consultation calls only the configured advisor, carries usage, and enforces the persisted call budget", async () => {

@@ -7,7 +7,7 @@ import { initTheme, InteractiveMode } from "@earendil-works/pi-coding-agent";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { createAssistantMessageEventStream, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createMixtureExtension } from "./index.ts";
-import { ADVISOR_BLOCKED_DETAIL, ASK_ADVISOR } from "./advisor.ts";
+import { ADVISOR_BLOCKED_DETAIL, ADVISOR_PREFLIGHT_DETAIL, ADVISOR_PREFLIGHT_MESSAGE, ADVISOR_PREFLIGHT_USAGE_ENTRY, ASK_ADVISOR, advisorCallCount, advisorCost } from "./advisor.ts";
 import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { ManualScheduler } from "../test-scheduler.ts";
 import { emitMessage, emptyUsage, requestLaneId, type Registry } from "./provider.ts";
@@ -24,8 +24,11 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 	const commands = new Map<string, any>(); const handlers = new Map<string, any>(); const providers: Provider[] = []; const tools: string[] = [];
 	let activeTools = ["read", "write", "edit", "bash"];
 	const roleOptions: Array<SimpleStreamOptions & { serviceTier?: string }> = [];
+	const roleModels: string[] = [];
+	const roleContexts: any[] = [];
 	const definitions = new Map<string, any>();
 	const sentMessages: Array<{ message: any; options: any }> = [];
+	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 	const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
 	const releasedIds: string[] = [];
 	const selectedModels: Array<{ provider: string; id: string }> = [];
@@ -33,8 +36,8 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 	const registry: Registry = {
 		find: (provider, id) => ({ provider, id, name: id, api: "fixture", baseUrl: "", reasoning: true, input: ["text"], contextWindow: 100_000, maxTokens: 20_000, cost: emptyUsage().cost }),
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
-		getProvider: () => ({ streamSimple: (model, _context, options) => {
-			calls++; roleOptions.push(options ?? {}); const stream = createAssistantMessageEventStream();
+		getProvider: () => ({ streamSimple: (model, context, options) => {
+			calls++; roleModels.push(model.id); roleContexts.push(context); roleOptions.push(options ?? {}); const stream = createAssistantMessageEventStream();
 			emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content: [{ type: "text", text: "summary" }], usage: emptyUsage(), stopReason: "stop", timestamp: 1 });
 			return stream;
 		} }) as any,
@@ -45,6 +48,7 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 		on: (event: string, handler: any) => handlers.set(event, handler),
 		registerProvider: (provider: Provider) => providers.push(provider),
 		unregisterProvider: (id: string) => { const index = providers.findIndex(provider => provider.id === id); if (index >= 0) providers.splice(index, 1); },
+		appendEntry: (customType: string, data: unknown) => { appendedEntries.push({ customType, data }); },
 		getActiveTools: () => activeTools,
 		setActiveTools: (names: string[]) => { activeTools = names; },
 		events: { emit(name: string, value: { enabled?: boolean; sessionIds?: string[] }) {
@@ -55,7 +59,7 @@ const harness = async (config?: string, fast?: boolean, scheduler?: ManualSchedu
 		setModel: async (model: { provider: string; id: string }) => { selectedModels.push(model); return true; },
 	};
 	await createMixtureExtension(pi as any, registry, scheduler ? { scheduler } : {});
-	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, releasedIds, selectedModels, sentMessages, statusUpdates, get activeTools() { return activeTools; }, get calls() { return calls; } };
+	return { dir, commands, handlers, providers, tools, definitions, registry, roleOptions, roleModels, roleContexts, releasedIds, selectedModels, sentMessages, statusUpdates, appendedEntries, get activeTools() { return activeTools; }, get calls() { return calls; } };
 };
 test("factory registers a native model without starting inference or old tools", async () => {
 	const h = await harness();
@@ -67,8 +71,218 @@ test("factory registers a native model without starting inference or old tools",
 	await h.handlers.get("session_start")({}, { modelRegistry: h.registry, thinkingLevel: "high", model: { provider: "ordinary" }, ui: { notify() {} } });
 	expect(h.calls).toBe(0);
 });
+test("advisor preflight reviews the request before the Executor and persists one review record", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	const branch: any[] = [];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false,
+		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus(key: string, value: string | undefined) { h.statusUpdates.push({ key, value }); } },
+	};
+	await h.handlers.get("session_start")({}, context);
+	const preflight = await h.handlers.get("before_agent_start")({ prompt: "Fix the parser without changing the public API" }, context);
+	expect(h.roleModels).toEqual(["advisor"]);
+	expect(h.roleContexts[0].messages[0].content).toContain("Fix the parser without changing the public API");
+	expect(preflight.message.customType).toBe(ADVISOR_PREFLIGHT_MESSAGE);
+	expect(preflight.message.content).toContain("Advisor preflight");
+	expect(preflight.message.content).toContain("summary");
+	expect(preflight.message.details).toMatchObject({ [ADVISOR_PREFLIGHT_DETAIL]: true, status: "complete", sessionId: "advisor-root", preset: "advisor" });
+	branch.push({ type: "custom_message", customType: preflight.message.customType, content: preflight.message.content, display: true, details: preflight.message.details });
+	expect(advisorCallCount(branch)).toBe(1);
+	expect(advisorCost(branch)).toBe(0);
+	expect(preflight.systemPrompt).toContain("automatic Advisor preflight has already reviewed this request");
+	const provider = h.providers[0];
+	const output = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "Fix", timestamp: 1 }], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(h.roleModels).toEqual(["advisor", "executor"]);
+	expect(output.model).toBe("executor");
+});
+test("advisor preflight skips a recent review without blocking the Executor", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	const details = {
+		[ADVISOR_PREFLIGHT_DETAIL]: true as const, callId: "recent", status: "complete" as const,
+		sessionId: "advisor-root", preset: "advisor", completedAt: Date.now(), usage: emptyUsage(),
+	};
+	const branch: any[] = [{ type: "custom_message", customType: ADVISOR_PREFLIGHT_MESSAGE, details }];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false, ui: { notify() {}, setStatus() {} },
+		getSystemPrompt: () => "Base prompt",
+	};
+	await h.handlers.get("session_start")({}, context);
+	const preflight = await h.handlers.get("before_agent_start")({ prompt: "Continue the parser task" }, context);
+	expect(h.roleModels).toEqual([]);
+	expect(preflight.message.details).toMatchObject({ status: "skipped" });
+	expect(preflight.systemPrompt).toContain("preflight was skipped");
+	const provider = h.providers[0];
+	const output = await provider.streamSimple(provider.getModels()[0], { messages: [{ role: "user", content: "Continue", timestamp: 1 }], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(h.roleModels).toEqual(["executor"]);
+	expect(output.model).toBe("executor");
+});
+test("advisor preflight failure is visible and still lets the Executor start", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	const originalProvider = h.registry.getProvider;
+	h.registry.getProvider = () => ({ streamSimple: (model: any, context: any, options: any) => {
+		if (model.id !== "advisor") return originalProvider()!.streamSimple(model, context, options);
+		h.roleModels.push(model.id); h.roleContexts.push(context); h.roleOptions.push(options ?? {});
+		const stream = createAssistantMessageEventStream();
+		emitMessage(stream, { role: "assistant", provider: model.provider, model: model.id, api: model.api, content: [], usage: { ...emptyUsage(), input: 4, cost: { ...emptyUsage().cost, input: 0.004, total: 0.004 } }, stopReason: "error", errorMessage: "fixture failure", timestamp: 1 });
+		return stream;
+	} }) as any;
+	const branch: any[] = [];
+	const notices: string[] = [];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false, ui: { notify(message: string) { notices.push(message); }, setStatus() {} },
+		getSystemPrompt: () => "Base prompt",
+	};
+	await h.handlers.get("session_start")({}, context);
+	const preflight = await h.handlers.get("before_agent_start")({ prompt: "Review the fixture" }, context);
+	expect(h.roleModels).toEqual(["advisor"]);
+	expect(preflight.message.details).toMatchObject({ [ADVISOR_PREFLIGHT_DETAIL]: true, status: "failed", model: "fixture/advisor" });
+	expect(preflight.message.details.usage.cost.total).toBe(0.004);
+	expect(notices).toEqual(["Advisor preflight failed; continuing with the Executor."]);
+	branch.push({ type: "custom_message", customType: preflight.message.customType, details: preflight.message.details });
+	expect(advisorCallCount(branch)).toBe(1);
+	expect(advisorCost(branch)).toBeCloseTo(0.004);
+	const output = await h.providers[0].streamSimple(h.providers[0].getModels()[0], { messages: [{ role: "user", content: "Review", timestamp: 1 }], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(h.roleModels).toEqual(["advisor", "executor"]);
+	expect(output.model).toBe("executor");
+});
+test("stale advisor preflight discards advice and does not start the Executor", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	let started!: () => void;
+	const ready = new Promise<void>(resolve => { started = resolve; });
+	const usage = { ...emptyUsage(), input: 10, totalTokens: 10, cost: { ...emptyUsage().cost, input: 0.01, total: 0.01 } };
+	const originalProvider = h.registry.getProvider;
+	h.registry.getProvider = () => ({ streamSimple: (model: any, context: any, options: any) => {
+		if (model.id !== "advisor") return originalProvider()!.streamSimple(model, context, options);
+		h.roleModels.push(model.id);
+		const stream = createAssistantMessageEventStream();
+		stream.push({ type: "start", partial: { role: "assistant", provider: model.provider, model: model.id, api: model.api, content: [], usage, stopReason: "pending", timestamp: 1 } } as any);
+		started();
+		return stream;
+	} }) as any;
+	const branch: any[] = [];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false, ui: { notify() {}, setStatus() {} },
+		getSystemPrompt: () => "Base prompt",
+	};
+	await h.handlers.get("session_start")({}, context);
+	const request = h.handlers.get("before_agent_start")({ prompt: "Start carefully" }, context);
+	await ready;
+	await new Promise(resolve => setTimeout(resolve, 0));
+	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "other" } });
+	const canceled = await request;
+	expect(canceled?.message.details).toMatchObject({ [ADVISOR_PREFLIGHT_DETAIL]: true, status: "aborted" });
+	expect(h.roleModels).toEqual(["advisor"]);
+	const output = await h.providers[0].streamSimple(h.providers[0].getModels()[0], { messages: [
+		{ role: "user", content: "Start carefully", timestamp: 1 },
+		{ role: "user", content: canceled.message.content, timestamp: 2 },
+	], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(output.stopReason).toBe("aborted");
+	expect(h.roleModels).toEqual(["advisor"]);
+	expect(h.appendedEntries).toHaveLength(1);
+	expect(h.appendedEntries[0]).toMatchObject({ customType: ADVISOR_PREFLIGHT_USAGE_ENTRY, data: { [ADVISOR_PREFLIGHT_DETAIL]: true, status: "aborted", usage: { cost: { total: 0.01 } } } });
+	branch.push({ type: "custom", customType: ADVISOR_PREFLIGHT_USAGE_ENTRY, data: h.appendedEntries[0].data });
+	branch.push({ type: "custom_message", customType: canceled.message.customType, details: canceled.message.details });
+	expect(advisorCallCount(branch)).toBe(1);
+	expect(advisorCost(branch)).toBeCloseTo(0.01);
+	await h.handlers.get("model_select")({}, context);
+	const nextPreflight = await h.handlers.get("before_agent_start")({ prompt: "Start carefully" }, context);
+	expect(nextPreflight.message.details).toMatchObject({ status: "skipped" });
+	const next = await h.providers[0].streamSimple(h.providers[0].getModels()[0], { messages: [
+		{ role: "user", content: canceled.message.content, timestamp: 3 },
+		{ role: "user", content: "Start carefully", timestamp: 4 },
+		{ role: "user", content: nextPreflight.message.content, timestamp: 5 },
+	], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(next.model).toBe("executor");
+});
+test("model changes after a completed preflight do not start the Executor", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	const branch: any[] = [];
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager: { getSessionId: () => "advisor-root", getBranch: () => branch, getEntries: () => branch },
+		isIdle: () => false, hasPendingMessages: () => false, ui: { notify() {}, setStatus() {} },
+		getSystemPrompt: () => "Base prompt",
+	};
+	await h.handlers.get("session_start")({}, context);
+	const preflight = await h.handlers.get("before_agent_start")({ prompt: "Do not race the model switch" }, context);
+	expect(h.roleModels).toEqual(["advisor"]);
+	await h.handlers.get("model_select")({}, { ...context, model: { provider: "fixture", id: "other" } });
+	await h.handlers.get("model_select")({}, context);
+	const output = await h.providers[0].streamSimple(h.providers[0].getModels()[0], { messages: [
+		{ role: "user", content: "Do not race the model switch", timestamp: 1 },
+		{ role: "user", content: preflight.message.content, timestamp: 2 },
+	], tools: [] }, { sessionId: "advisor-root" }).result();
+	expect(output.stopReason).toBe("aborted");
+	expect(h.roleModels).toEqual(["advisor"]);
+});
+test("session switches wait for a preflight and attribute discarded usage to the old session", async () => {
+	const preset = defaultAdvisorPreset();
+	preset.executor = { model: "fixture/executor", thinking: "medium" };
+	preset.advisor = { model: "fixture/advisor", thinking: "high" };
+	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }));
+	let started!: () => void;
+	const ready = new Promise<void>(resolve => { started = resolve; });
+	const originalProvider = h.registry.getProvider;
+	h.registry.getProvider = () => ({ streamSimple: (model: any, providerContext: any, options: any) => {
+		if (model.id !== "advisor") return originalProvider()!.streamSimple(model, providerContext, options);
+		const stream = createAssistantMessageEventStream();
+		started();
+		return stream;
+	} }) as any;
+	let sessionId = "old-root";
+	const branch: any[] = [];
+	const sessionManager = { getSessionId: () => sessionId, getBranch: () => branch, getEntries: () => branch };
+	const context = {
+		cwd: h.dir, modelRegistry: h.registry, thinkingLevel: "max", model: { provider: "mixture", id: "advisor" }, hasUI: true,
+		sessionManager, isIdle: () => false, hasPendingMessages: () => false, ui: { notify() {}, setStatus() {} },
+		getSystemPrompt: () => "Base prompt",
+	};
+	await h.handlers.get("session_start")({}, context);
+	const request = h.handlers.get("before_agent_start")({ prompt: "Switch safely" }, context);
+	await ready;
+	await h.handlers.get("session_before_switch")({ reason: "resume" }, context);
+	sessionId = "new-root";
+	const canceled = await request;
+	expect(canceled?.message.details).toMatchObject({ [ADVISOR_PREFLIGHT_DETAIL]: true, status: "aborted" });
+	expect(h.appendedEntries).toHaveLength(1);
+	expect(h.appendedEntries[0].data).toMatchObject({ sessionId: "old-root", status: "aborted" });
+	branch.push({ type: "custom", customType: ADVISOR_PREFLIGHT_USAGE_ENTRY, data: h.appendedEntries[0].data });
+	await h.handlers.get("session_start")({}, context);
+	const nextPreflight = await h.handlers.get("before_agent_start")({ prompt: "Switch safely" }, context);
+	expect(nextPreflight.message.details).toMatchObject({ status: "skipped" });
+	const next = await h.providers[0].streamSimple(h.providers[0].getModels()[0], { messages: [
+		{ role: "user", content: canceled.message.content, timestamp: 3 },
+		{ role: "user", content: "Switch safely", timestamp: 4 },
+		{ role: "user", content: nextPreflight.message.content, timestamp: 5 },
+	], tools: [] }, { sessionId: "new-root" }).result();
+	expect(next.model).toBe("executor");
+});
 test("advisor mode is a selectable Mixture model whose executor owns tools and consults its configured advisor", async () => {
 	const preset = defaultAdvisorPreset();
+	preset.preflight = false;
 	preset.executor = { model: "openai-codex/executor", thinking: "medium", fast: true };
 	preset.advisor = { model: "openai-codex/advisor", thinking: "high" };
 	const h = await harness(JSON.stringify({ version: 3, presets: { advisor: preset } }), false);
