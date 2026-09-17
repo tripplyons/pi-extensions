@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { advisorCallCount, advisorCooldownMs, advisorEvidence, advisorGuidelines, consultAdvisor, conversationEntry, recentConversation, repositoryContext } from "./advisor.ts";
+import { advisorCallCount, advisorCost, advisorCooldownMs, advisorEvidence, advisorGuidelines, consultAdvisor, conversationEntry, recentConversation, repositoryContext } from "./advisor.ts";
 import { estimateContextTokens } from "./context.ts";
 import { defaultAdvisorPreset, MIN_ADVISOR_INTERVAL_MS } from "./config.ts";
 import { emitMessage, emptyUsage, type Registry } from "./provider.ts";
@@ -43,6 +43,17 @@ test("advisor cooldown handles future and malformed persisted timestamps safely"
 	expect(advisorCooldownMs(entry(now + 86_400_000), now)).toBe(MIN_ADVISOR_INTERVAL_MS);
 	expect(advisorCooldownMs(entry(Number.NaN), now)).toBe(0);
 	expect(advisorCooldownMs(entry(now - MIN_ADVISOR_INTERVAL_MS), now)).toBe(0);
+});
+
+test("advisor cost sums only persisted advisor results", () => {
+	const entries = [
+		{ type: "message", message: { role: "toolResult", toolName: "ask_advisor", usage: { cost: { total: 0.004 } } } },
+		{ type: "message", message: { role: "tool", toolName: "ask_advisor", usage: { cost: { total: 0.006 } } } },
+		{ type: "message", message: { role: "toolResult", toolName: "read", usage: { cost: { total: 10 } } } },
+		{ type: "message", message: { role: "toolResult", toolName: "ask_advisor", usage: { cost: { total: -1 } } } },
+		{ type: "message", message: { role: "toolResult", toolName: "ask_advisor", usage: { cost: { total: Number.NaN } } } },
+	];
+	expect(advisorCost(entries)).toBeCloseTo(0.01);
 });
 
 test("advisor evidence keeps every region inside one escaped budget", () => {

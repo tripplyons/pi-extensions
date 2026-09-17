@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Provider, type SimpleStreamOptions, type Usage } from "@earendil-works/pi-ai";
 import { queryBackgroundJobs, type BackgroundJobQuery } from "../bg-bash/events.ts";
 import { CHECKPOINT, CHECKPOINT_BLOB, checkpointBlobs, encodeCheckpoint, encodeMarker, MAX_DELTA_CHAIN, restoreCheckpoint, type CheckpointStage } from "./checkpoint.ts";
 import { configPath, loadConfig, MIN_ADVISOR_INTERVAL_MS, saveConfig, type AdvisorPreset, type MixtureConfig } from "./config.ts";
@@ -14,7 +14,7 @@ import { receiptIds, tagReceipts } from "./usage.ts";
 import { LOCAL_CONTEXT_QUERY_EVENT, type LocalContextQuery } from "../pi-codex-conversion/local-context-tools.ts";
 import { createLocalContext } from "../pi-codex-conversion/local-context.ts";
 import { systemScheduler, type ScheduledTask, type Scheduler } from "../scheduler.ts";
-import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorCooldownMs, advisorGuidelines, advisorIntervalLabel, advisorTool, consultAdvisor, type AdvisorInput } from "./advisor.ts";
+import { ASK_ADVISOR, AdvisorParams, advisorCallCount, advisorCost, advisorCooldownMs, advisorGuidelines, advisorIntervalLabel, advisorTool, advisorUsageCost, consultAdvisor, type AdvisorInput } from "./advisor.ts";
 
 export const backgroundDetachWarning = (jobs: BackgroundJobQuery) => {
 	const running = jobs.jobs.filter(job => job.status === "running");
@@ -98,11 +98,13 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 		].join("\n");
 		return `Mixture presets: ${Object.entries(config!.presets).map(([name, preset]) => `${name} (${preset.mode})`).join(", ")}. Select mixture/<preset> with /model. Config: ${configPath()}`;
 	};
-	const render = () => {
+	const render = (pendingAdvisor?: { toolCallId: string; usage?: Usage }) => {
 		if (!ctx?.hasUI) return;
 		const advisor = selectedAdvisor();
-		const calls = advisor && ctx ? advisorCallCount(ctx.sessionManager.getBranch()) : 0;
-		ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : advisor ? `executor · advisor ${calls}` : "handoff · unavailable · $?" : undefined);
+		const branch = advisor && ctx ? ctx.sessionManager.getBranch() : [];
+		const calls = advisor ? advisorCallCount(branch) + (pendingAdvisor ? 1 : 0) : 0;
+		const cost = advisor ? advisorCost(branch) + advisorUsageCost(pendingAdvisor?.usage) : 0;
+		ctx.ui.setStatus("mixture", selected() ? session ? compactStatus(session, compacting) : advisor ? `executor · advisor ${calls} · $${cost.toFixed(3)}` : "handoff · unavailable · $?" : undefined);
 	};
 	const releaseRoleResources = (target = session) => {
 		for (const helper of helpers) helper.abort(new Error("Mixture helper released"));
@@ -393,7 +395,11 @@ export async function createMixtureExtension(pi: ExtensionAPI, initialRegistry?:
 	});
 	pi.on("tool_result", (event, context) => {
 		reservedAdvisorCalls.delete(event.toolCallId);
-		if (!session || context.sessionManager.getSessionId() !== rootId) { render(); return; }
+		if (!session || context.sessionManager.getSessionId() !== rootId) {
+			const pendingAdvisor = context.sessionManager.getSessionId() === rootId && event.toolName === ASK_ADVISOR ? event : undefined;
+			render(pendingAdvisor);
+			return;
+		}
 		const nested = session.takeUsage();
 		if (!nested.totalTokens && !nested.cost.total) return;
 		const usage = structuredClone(event.usage ?? emptyUsage());

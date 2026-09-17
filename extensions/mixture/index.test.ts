@@ -80,7 +80,7 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 		getSystemPrompt: () => "Base prompt", ui: { notify() {}, setStatus(key: string, value: string | undefined) { h.statusUpdates.push({ key, value }); } },
 	};
 	await h.handlers.get("session_start")({}, context);
-	expect(h.statusUpdates.at(-1)).toEqual({ key: "mixture", value: "executor · advisor 0" });
+	expect(h.statusUpdates.at(-1)).toEqual({ key: "mixture", value: "executor · advisor 0 · $0.000" });
 	expect(h.activeTools).toContain(ASK_ADVISOR);
 	expect(h.activeTools).not.toContain("mixture_control");
 	const provider = h.providers[0];
@@ -100,10 +100,15 @@ test("advisor mode is a selectable Mixture model whose executor owns tools and c
 	const advice = await tool.execute("advisor-call", {}, undefined, undefined, context);
 	expect(advice.content[0].text).toBe("summary");
 	expect(advice.details.model).toBe("openai-codex/advisor");
+	const advisorUsage = { ...advice.usage, cost: { ...advice.usage.cost, total: 0.004 } };
+	h.handlers.get("tool_result")({ toolCallId: "advisor-call", toolName: ASK_ADVISOR, usage: advisorUsage }, context);
+	expect(h.statusUpdates.at(-1)).toEqual({ key: "mixture", value: "executor · advisor 1 · $0.004" });
+	branch.push({ type: "message", message: { role: "toolResult", toolCallId: "advisor-call", toolName: ASK_ADVISOR, usage: advisorUsage, timestamp: Date.now() } });
 	expect(h.roleOptions[1].reasoning).toBe("high");
 	expect(h.roleOptions[1].serviceTier).toBe("default");
 	expect(h.roleOptions[1].maxTokens).toBe(4_096);
 	await h.handlers.get("agent_end")({ messages: [] });
+	expect(h.statusUpdates.at(-1)).toEqual({ key: "mixture", value: "executor · advisor 1 · $0.004" });
 	expect(h.releasedIds).toEqual([h.roleOptions[1].sessionId, h.roleOptions[0].sessionId]);
 	// Keep the composite newer than the underlying Executor message for Pi's resume lookup.
 	expect(h.selectedModels).toEqual([{ provider: "mixture", id: "advisor" }]);

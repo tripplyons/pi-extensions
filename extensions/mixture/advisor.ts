@@ -180,16 +180,22 @@ export function advisorGuidelines(preset: AdvisorPreset, calls: number) {
 	return lines;
 }
 
-export const advisorCallCount = (entries: unknown[]) => entries.filter(entry => {
-	if (!entry || typeof entry !== "object" || (entry as any).type !== "message") return false;
-	const message = (entry as any).message as ToolResultMessage;
-	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR;
-}).length;
+const advisorResult = (entry: unknown): ToolResultMessage | undefined => {
+	if (!entry || typeof entry !== "object" || (entry as any).type !== "message") return;
+	const message = (entry as any).message as ToolResultMessage | undefined;
+	if (!message || typeof message !== "object") return;
+	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR ? message : undefined;
+};
+export const advisorUsageCost = (usage?: Usage) => {
+	const value = usage?.cost?.total;
+	return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+};
+export const advisorCallCount = (entries: unknown[]) => entries.filter(entry => advisorResult(entry)).length;
+export const advisorCost = (entries: unknown[]) => entries.reduce((total, entry) => total + advisorUsageCost(advisorResult(entry)?.usage), 0);
 
 const advisorCallTimestamp = (entry: unknown): number | undefined => {
-	if (!entry || typeof entry !== "object" || (entry as any).type !== "message") return;
-	const message = (entry as any).message as ToolResultMessage;
-	return (message.role === "toolResult" || message.role === "tool") && message.toolName === ASK_ADVISOR && Number.isFinite((message as any).timestamp) ? (message as any).timestamp : undefined;
+	const message = advisorResult(entry);
+	return message && Number.isFinite((message as any).timestamp) ? (message as any).timestamp : undefined;
 };
 export const advisorLastCallAt = (entries: unknown[]) => entries.map(advisorCallTimestamp).filter((value): value is number => value !== undefined).reduce<number | undefined>((latest, value) => latest === undefined ? value : Math.max(latest, value), undefined);
 export const advisorCooldownMs = (entries: unknown[], now = Date.now()) => {
