@@ -6,6 +6,7 @@ export type Status = "starting" | "running" | "review" | "accepted" | "rejected"
 export const terminal = (status: Status) => ["accepted", "rejected", "stopped", "failed"].includes(status);
 export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
+  launch?: { model?: string; thinking?: string };
   worktree?: Worktree; branch?: string; session?: string; pane?: string; result?: string; feedback?: string;
 };
 export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean };

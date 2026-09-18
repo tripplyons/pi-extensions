@@ -10,8 +10,11 @@ export class Swarm {
   }
   async launch(run: Run, node: Node, options: Pick<Launch, "model" | "thinking"> = {}) {
     if (!node.worktree) throw new Error("Worker has no worktree");
+    const launch = { ...node.launch, ...options };
+    // Save before process creation so a failed launch can be retried faithfully.
+    await this.store.update(run.id, state => { state.nodes[node.id].launch = launch; });
     const launched = await this.workers.start({ run: run.id, node: node.id, cwd: node.worktree.cwd,
-      directory: join(this.store.path(run.id), "workers", node.id), extensions: this.extensions, ...options });
+      directory: join(this.store.path(run.id), "workers", node.id), extensions: this.extensions, ...launch });
     try {
       await this.store.update(run.id, state => {
         Object.assign(state.nodes[node.id], launched, { status: "running" });
