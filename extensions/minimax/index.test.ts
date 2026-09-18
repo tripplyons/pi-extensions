@@ -9,7 +9,7 @@ import files from "../files/index.ts";
 import pruner from "../context-pruner/index.ts";
 import { installCompaction } from "../codex-compaction/index.ts";
 import { harness } from "../../lib/harness.ts";
-import { Archive, archiveMessages } from "./archive.ts";
+import { Archive, archiveMessages, capToolOutput, maxInlineBytes } from "./archive.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -325,4 +325,74 @@ test("MiniMax does not activate ask_user when it was unavailable", async () => {
   expect(h.active()).not.toContain("ask_user");
   await h.command("minimax", "off");
   expect(h.active()).not.toContain("ask_user");
+});
+
+
+test("result cap measures UTF-8 text and preserves errors, images, and original artifacts", async () => {
+  const archive = new Archive(await temp());
+  const output = messages(1, 0)[1];
+  output.content = [{ type: "text", text: "🙂".repeat(maxInlineBytes / 4) }];
+  expect(await capToolOutput(output, archive)).toBeUndefined();
+  output.content[0].text += "x";
+  output.content.push({ type: "image", data: "aGVsbG8=", mimeType: "image/png" });
+  output.isError = true;
+  output.details = { diagnostic: "retained" };
+  const snapshot = structuredClone(output);
+  const capped = await capToolOutput(output, archive);
+  expect(capped!.output.content[0].text).toStartWith("Tool failed. [minimax archive ");
+  expect(capped!.output.content[1]).toEqual(output.content[1]);
+  expect(capped!.output.isError).toBe(true);
+  expect(capped!.output.details).toEqual(output.details);
+  expect(JSON.parse(await archive.read(capped!.artifact.id))).toEqual(snapshot);
+  expect(output).toEqual(snapshot);
+  for (const toolName of ["ask_user", "todo_write", "create_goal", "archive_read"]) {
+    expect(await capToolOutput({ ...output, toolName }, archive)).toBeUndefined();
+  }
+  const broken = new Archive(join(await temp(), "not-a-directory"));
+  await writeFile(broken.root, "file");
+  await expect(capToolOutput(output, broken)).rejects.toThrow();
+  expect(output).toEqual(snapshot);
+});
+
+test("result cap is mode-scoped and its durable receipt remains retrievable after disabling", async () => {
+  const h = setup(); await h.emit("session_start");
+  const output = messages(1)[1];
+  expect(await h.emit("tool_result", output)).toEqual([undefined]);
+  await h.command("minimax", "on");
+  const [capped] = await h.emit("tool_result", output);
+  expect(capped.content[0].text).toContain("[minimax archive ");
+  const artifact = h.entries.find(entry => entry.customType === "rework:minimax-archive").data[0];
+  await h.command("minimax", "off");
+  const retrieved = await h.call("archive_read", { id: artifact.id, offset: 0, limit: 32000 });
+  expect(retrieved.details.content).toContain(output.content[0].text.slice(0, 100));
+  expect(retrieved.details.nextOffset).toBe(32000);
+});
+
+test("automatic checkpoint admission measures retained history; manual and overflow still summarize", async () => {
+  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
+  h.ctx.getSystemPrompt = () => "test";
+  h.pi.getAllTools = () => [...h.tools.values()];
+  let summaries = 0;
+  h.ctx.modelRegistry = { complete: async () => {
+    summaries++; return { content: [{ type: "text", text: "checkpoint" }], stopReason: "stop" };
+  } };
+  h.ctx.sessionManager.getBranch = () => h.entries.map((entry, i) => ({
+    ...entry, id: `entry-${i}`, parentId: i ? `entry-${i - 1}` : null,
+  }));
+  // No tool_result cap ran: archive-first must also work on old session history.
+  for (const [i, message] of messages(8, 25000).entries()) {
+    h.entries.push({ type: "message", id: `history-${i}`, message });
+  }
+  const event = { ...compactionEvent(), customInstructions: undefined, reason: "threshold" };
+  expect(await h.emit("session_before_compact", event)).toEqual([{ cancel: true }]);
+  expect(summaries).toBe(0);
+  expect(h.entries.some(entry => entry.customType === "rework:minimax-archive")).toBe(true);
+  for (const reason of ["manual", "overflow"]) {
+    expect((await h.emit("session_before_compact", { ...event, reason }))[0].compaction).toBeDefined();
+  }
+  expect(summaries).toBe(2);
+  h.entries.push({ type: "message", id: "retained", message: { role: "user", content: "x".repeat(800000), timestamp: 0 } });
+  expect((await h.emit("session_before_compact", event))[0].compaction).toBeDefined();
+  expect(summaries).toBe(3);
 });

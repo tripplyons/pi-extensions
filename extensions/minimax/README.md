@@ -70,8 +70,15 @@ turn, create goals, mark work complete, or declare a task blocked.
 
 ## Archiving
 
-Before model requests, the archiver follows MiniMax's public default selection
-policy:
+New tool results exceeding 64 KiB of UTF-8 text are immediately saved as
+artifacts and replaced with retrieval receipts. This applies even to the newest
+round and to errors; error status and image blocks remain intact. Control tools
+and `archive_read` are exempt. The artifact is written and verified before
+replacement. If saving fails, the original output stays visible with a warning.
+The session stores the receipt; the artifact holds the original result.
+
+Before model requests, a separate cumulative archiver follows MiniMax's public
+default selection policy:
 
 - Tool-result text must exceed 256 KiB in total.
 - Estimated savings must exceed 256 KiB, subtracting 512 bytes per receipt.
@@ -80,11 +87,11 @@ policy:
 - Exclude errors, control tools (skills, questions, todos, goals, planning), and
   archive retrieval. Leave malformed tool histories alone.
 
-Only the model-input projection changes; calls and original session results
-remain intact. Content-addressed artifacts live under
+Cumulative archiving changes only the model-input projection; calls and existing
+session results remain intact. Content-addressed artifacts live under
 `~/.local/state/pi-rework/minimax/artifacts` (or `PI_REWORK_STATE_DIR`). References
-are scoped to the active session branch. Missing artifacts leave original
-results visible. There is no automatic artifact deletion.
+are scoped to the active session branch. Missing artifacts leave existing
+session results visible; recovering immediately capped text requires its artifact. There is no automatic artifact deletion.
 
 Policy reference: [MiniMax's archiver](https://github.com/MiniMax-AI/minimax-code/blob/main/packages/local-runtime-v2/src/service/turn-system/compaction/algorithm/tool-result-archiver.ts).
 This implementation is independent, not copied upstream code. It matches the
@@ -108,9 +115,14 @@ is no automatic artifact deletion.
 
 `/threshold` controls automatic compaction (default 100k input tokens), checked
 before model requests and when an agent run settles. A tool loop that crosses
-the threshold stops at the next request boundary, compacts while idle, and resumes
-the interrupted request. Completed requests do not receive a continuation.
-`/compact` and overflow recovery also work. MiniMax mode takes precedence over the normal pruner and Codex compactor, without
+the threshold first tries archiving. If receipts are present and the full projected
+history, system prompt, and active tools fit below both `/threshold` and the
+estimated model budget, it skips the checkpoint request. This uses the same
+output reserve and safety margin as reminder admission, not exact provider counts.
+If archiving is insufficient, the loop stops at the next request boundary,
+compacts while idle, and resumes the interrupted request. Completed requests do not receive a continuation.
+`/compact` and provider-overflow recovery still generate checkpoints rather than
+taking the archive-only shortcut. MiniMax mode takes precedence over the normal pruner and Codex compactor, without
 changing their saved settings.
 
 The selected model generates a structured checkpoint covering goals,

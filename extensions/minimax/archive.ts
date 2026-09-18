@@ -7,6 +7,7 @@ import { stateRoot } from "../../lib/common.ts";
 type Output = Extract<AgentMessage, { role: "toolResult" }>;
 export type Artifact = { id: string; toolCallId: string; bytes: number };
 // MiniMax's public defaults, in bytes (not tokens).
+export const maxInlineBytes = 64 * 1024;
 export const archiveThreshold = 256 * 1024;
 const minCandidateBytes = 2 * 1024;
 const receiptEstimateBytes = 512;
@@ -46,6 +47,18 @@ function candidateResults(messages: AgentMessage[]) {
   return rounds.filter(round => round.settled).slice(0, -5).flatMap(round => round.results);
 }
 const marker = (artifact: Artifact) => `[minimax archive ${artifact.id}] ${artifact.bytes} bytes. Retrieve with archive_read({id:"${artifact.id}",offset:0,limit:16000}).`;
+export function archiveReceipt(output: Output, artifact: Artifact): Output {
+  return { ...output, content: [{ type: "text", text: `${output.isError ? "Tool failed. " : ""}${marker(artifact)}` }, ...output.content.filter(block => block.type !== "text")] };
+}
+
+// Preserve control-plane replies and bounded artifact retrieval. Never replace
+// output until the durable artifact has been written and verified.
+export async function capToolOutput(output: Output, archive: Archive) {
+  if (controlTools.has(output.toolName.trim().toLowerCase()) || textBytes(output) <= maxInlineBytes) return;
+  const artifact = await archive.save(output);
+  await archive.read(artifact.id);
+  return { artifact, output: archiveReceipt(output, artifact) };
+}
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 
 export class Archive {
@@ -73,7 +86,7 @@ export async function archiveMessages(messages: AgentMessage[], known: Artifact[
   // Reapply receipts before measuring; archived originals must not inflate the watermark.
   const visible = messages.map(message => {
     const artifact = message.role === "toolResult" ? saved.get(message.toolCallId) : undefined;
-    return artifact ? { ...message as Output, content: [{ type: "text" as const, text: marker(artifact) }] } : message;
+    return artifact ? archiveReceipt(message as Output, artifact) : message;
   });
   const totalTextBytes = visible.reduce((total, message) => total + (message.role === "toolResult" ? textBytes(message) : 0), 0);
   const candidates = candidateResults(visible).filter(message => !saved.has(message.toolCallId) && textBytes(message) >= minCandidateBytes);
@@ -94,7 +107,7 @@ export async function archiveMessages(messages: AgentMessage[], known: Artifact[
     // Never emit a reference to a missing or corrupt artifact.
     try { await archive.read(artifact.id); }
     catch { projected.push(message); baseline.push(message); continue; }
-    const receipt = { ...message as Output, content: [{ type: "text" as const, text: marker(artifact) }] };
+    const receipt = archiveReceipt(message as Output, artifact);
     projected.push(receipt);
     baseline.push(known.some(item => item.id === artifact.id) ? receipt : message);
   }

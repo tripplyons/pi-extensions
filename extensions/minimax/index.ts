@@ -1,13 +1,14 @@
 import { compactionThreshold } from "../codex-compaction/settings.ts";
 import { randomUUID } from "node:crypto";
 import { Type, type Static } from "typebox";
-import { convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { buildSessionContext, convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { result, restore } from "../../lib/common.ts";
 import { minimaxEnabled, minimaxKey } from "../../lib/minimax.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
-import { admitsArchive, admitsReminder } from "./admission.ts";
+import { admitsArchive, admitsReminder, requestTokens } from "./admission.ts";
 import { todoKey, todoReminderKey, loopReminderKey, staleTodos, todoReminder, loopReminder } from "./reminders.ts";
-import { Archive, archiveMessages, type Artifact } from "./archive.ts";
+import { Archive, archiveMessages, capToolOutput, type Artifact } from "./archive.ts";
 import { modeTools, companionTool, allowedTool, registerTools } from "./tools.ts";
 
 import { checkpointPrompt, checkpointControl, harnessPrompt } from "./prompts.ts";
@@ -44,7 +45,33 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
     ctx.ui.setStatus("minimax", applied ? "minimax" : undefined);
   }
   registerTools(pi, tasks);
-  installThresholdCompaction(pi);
+  async function project(messages: AgentMessage[], ctx: ExtensionContext) {
+    const projected = await archiveMessages(messages, artifacts(ctx), archive, admitsArchive);
+    if (projected.added.length) pi.appendEntry(archiveKey, projected.added);
+    return projected.messages;
+  }
+  async function archiveFits(ctx: ExtensionContext, messages = buildSessionContext(ctx.sessionManager.getBranch()).messages) {
+    const projected = await project(messages, ctx);
+    // Only receipts actually present in this context justify bypassing Pi's
+    // usage-based trigger. Full history, including retained messages, must fit.
+    const ids = new Set(artifacts(ctx).map(artifact => artifact.toolCallId));
+    return projected.some(message => message.role === "toolResult" && ids.has(message.toolCallId) &&
+      message.content.some(block => block.type === "text" && block.text.includes("[minimax archive "))) &&
+      admitsReminder(projected, pi, ctx) && requestTokens(projected, pi, ctx) < compactionThreshold(ctx);
+  }
+  installThresholdCompaction(pi, archiveFits);
+  pi.on("tool_result", async (event, ctx) => {
+    if (!minimaxEnabled(ctx)) return;
+    try {
+      const capped = await capToolOutput({ role: "toolResult", toolCallId: event.toolCallId, toolName: event.toolName,
+        content: event.content, details: event.details, isError: event.isError, timestamp: Date.now() }, archive);
+      if (!capped) return;
+      pi.appendEntry(archiveKey, [capped.artifact]);
+      return { content: capped.output.content };
+    } catch (error) {
+      ctx.ui.notify(`MiniMax output archive failed; keeping original output: ${error instanceof Error ? error.message : String(error)}`, "warning");
+    }
+  });
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, (_event, ctx) => apply(ctx));
   pi.registerCommand("minimax", {
     description: "Toggle MiniMax-style context and tools: [on|off]",
@@ -69,9 +96,7 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
   });
   pi.on("context", async (event, ctx) => {
     if (!minimaxEnabled(ctx)) return;
-    const projected = await archiveMessages(event.messages, artifacts(ctx), archive, admitsArchive);
-    if (projected.added.length) pi.appendEntry(archiveKey, projected.added);
-    let messages = projected.messages;
+    let messages = await project(event.messages, ctx);
     if (ctx.signal?.aborted) return { messages };
     const loop = loopReminder(event.messages);
     const pending = todos(ctx).some(todo => todo.status === "pending" || todo.status === "in_progress");
@@ -120,6 +145,7 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
     if (event.reason === "threshold" && preparation.tokensBefore < compactionThreshold(ctx)) return { cancel: true };
     try {
       if (!ctx.model) throw new Error("Select a model before compacting");
+      if (event.reason === "threshold" && !event.customInstructions && await archiveFits(ctx)) return { cancel: true };
       const projected = await archiveMessages([...preparation.messagesToSummarize, ...preparation.turnPrefixMessages], artifacts(ctx), archive, admitsArchive);
       if (projected.added.length) pi.appendEntry(archiveKey, projected.added);
       const response = await ctx.modelRegistry.complete(ctx.model, {

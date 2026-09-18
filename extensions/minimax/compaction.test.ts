@@ -40,7 +40,7 @@ test("failed compaction does not retry forever and stale callbacks cannot resume
   await h.emit("session_tree"); options.onComplete(); expect(h.sent).toEqual([]);
 });
 
-test("Pi SDK interrupts a tool loop at /threshold, stores a checkpoint and resumes without rerunning tools", async () => {
+test.each([false, true])("Pi SDK uses a checkpoint only when archiving cannot suffice (archive-only: %s)", async (archiveOnly) => {
   const root = await mkdtemp(join(tmpdir(), "minimax-sdk-"));
   const tasks = new Tasks(join(root, "tasks"));
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -52,20 +52,29 @@ test("Pi SDK interrupts a tool loop at /threshold, stores a checkpoint and resum
     const settings = SettingsManager.inMemory({ compaction: { enabled: true, keepRecentTokens: 100 }, retry: { enabled: false } });
     const manager = SessionManager.inMemory(root);
     manager.appendCustomEntry("rework:minimax", { enabled: true });
-    manager.appendCustomEntry("rework:codex-compaction", { threshold: 1000 });
-    const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, agentsFilesOverride: () => ({ agentsFiles: [] }), extensionFactories: [pi => minimax(pi, tasks)] });
+    manager.appendCustomEntry("rework:codex-compaction", { threshold: archiveOnly ? 100000 : 1000 });
+    const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, agentsFilesOverride: () => ({ agentsFiles: [] }), extensionFactories: [pi => {
+      // Simulate a verbose integration result before MiniMax's admission hook.
+      if (archiveOnly) pi.on("tool_result", event => event.toolName === "bash" ? { content: [{ type: "text", text: "verbose output\n".repeat(60000) }] } : undefined);
+      minimax(pi, tasks);
+    }] });
     await loader.reload();
     let requests = 0; let summaries = 0;
     const assistant = (content: AssistantMessage["content"], tokens: number, stopReason: AssistantMessage["stopReason"]): AssistantMessage => ({ role: "assistant", content, api: model.api, provider: model.provider, model: model.id, stopReason, timestamp: Date.now(), usage: { input: tokens, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: tokens + 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
-    runtime.streamSimple = (_model, _context, options) => {
+    runtime.streamSimple = (_model, context, options) => {
       const stream = createAssistantMessageEventStream();
       if (options?.signal?.aborted) {
         stream.push({ type: "error", reason: "aborted", error: assistant([], 0, "aborted") }); return stream;
       }
       requests++;
+      if (archiveOnly && requests === 2) {
+        const result = context.messages.find(message => message.role === "toolResult");
+        expect(JSON.stringify(result)).toContain("minimax archive");
+        expect(JSON.stringify(context.messages).length).toBeLessThan(20000);
+      }
       if (requests > 2) throw new Error("Unexpected continuation loop");
       const message = requests === 1
-        ? assistant([{ type: "toolCall", id: "once", name: "bash", arguments: { command: "echo executed >> executions; printf %06000d 0" } }], 2000, "toolUse")
+        ? assistant([{ type: "toolCall", id: "once", name: "bash", arguments: { command: "echo executed >> executions; printf %06000d 0" } }], archiveOnly ? 120000 : 2000, "toolUse")
         : assistant([{ type: "text", text: "Finished after checkpoint" }], 100, "stop");
       stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message });
       return stream;
@@ -84,8 +93,8 @@ test("Pi SDK interrupts a tool loop at /threshold, stores a checkpoint and resum
     for (let i = 0; i < 200 && !session.messages.some(message => message.role === "assistant" && message.content.some(block => block.type === "text" && block.text === "Finished after checkpoint")); i++) await new Promise(resolve => setTimeout(resolve, 10));
     await session.waitForIdle();
     expect(errors).toEqual([]);
-    expect(summaries).toBe(1); expect(requests).toBe(2);
-    expect(manager.getBranch().filter(entry => entry.type === "compaction")).toHaveLength(1);
+    expect(summaries).toBe(archiveOnly ? 0 : 1); expect(requests).toBe(2);
+    expect(manager.getBranch().filter(entry => entry.type === "compaction")).toHaveLength(archiveOnly ? 0 : 1);
     const { readFile } = await import("node:fs/promises");
     expect(await readFile(join(root, "executions"), "utf8")).toBe("executed\n");
     expect(session.messages.some(message => message.role === "assistant" && message.content.some(block => block.type === "text" && block.text === "Finished after checkpoint"))).toBe(true);
