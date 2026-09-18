@@ -1,3 +1,4 @@
+import { minimaxEnabled } from "../../lib/minimax.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { restore } from "../../lib/common.ts";
 import { compactRemote } from "./transport.ts";
@@ -18,7 +19,7 @@ export function installCompaction(pi: ExtensionAPI, request = compactRemote) {
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
   pi.on("session_shutdown", cancel);
   pi.on("model_select", cancel);
-  pi.registerCommand("threshold", { description: "Show/set Codex compaction token threshold (e.g. 100k)", async handler(args, ctx) {
+  pi.registerCommand("threshold", { description: "Show/set Codex and MiniMax compaction token threshold (e.g. 100k)", async handler(args, ctx) {
     const text = args.trim();
     if (text) {
       if (!/^\d+k?$/i.test(text)) throw new Error("Usage: /threshold [positive token count]");
@@ -30,23 +31,27 @@ export function installCompaction(pi: ExtensionAPI, request = compactRemote) {
   } });
   pi.registerCommand("codex-compact", { description: "Queue opaque Codex compaction for the next request", async handler(args, ctx) {
     if (args.trim()) throw new Error("Usage: /codex-compact");
+    if (minimaxEnabled(ctx)) throw new Error("MiniMax mode owns compaction; use /compact");
     if (ctx.model?.provider !== "openai-codex") throw new Error("Select a Codex model first");
     manual = true; ctx.ui.notify("Codex compaction queued for the next request", "info");
   } });
   // Pi's summary compactor cannot preserve opaque Codex checkpoints.
   pi.on("session_before_compact", (_event, ctx) => {
+    if (minimaxEnabled(ctx)) { cancel(); return; }
     if (ctx.model?.provider !== "openai-codex") return;
     manual = true;
     ctx.ui.notify("Codex uses opaque compaction on the next request", "info");
     return { cancel: true };
   });
-  pi.on("message_end", event => {
+  pi.on("message_end", (event, ctx) => {
+    if (minimaxEnabled(ctx)) return;
     const message = event.message;
     if (message.role !== "assistant" || message.provider !== "openai-codex" || message.stopReason === "error" || message.stopReason === "aborted") return;
     state.usage = { model: message.model, tokens: message.usage.input + message.usage.output + message.usage.cacheRead + message.usage.cacheWrite };
     pi.appendEntry(key, state);
   });
   pi.on("before_provider_request", async (event, ctx) => {
+    if (minimaxEnabled(ctx)) { cancel(); return; }
     if (ctx.model?.provider !== "openai-codex") return;
     const body = event.payload as Item;
     const input = body.input;

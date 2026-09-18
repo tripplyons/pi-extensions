@@ -4,7 +4,7 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extension bundle, conversion provider, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (23)
+## Extensions (24)
 
 | Extension | Behavior |
 | --- | --- |
@@ -12,6 +12,7 @@ subagent framework, or compatibility shims are loaded.
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
+| [minimax](extensions/minimax) | Opt-in context archiving, structured checkpoints, and MiniMax-style tools |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |

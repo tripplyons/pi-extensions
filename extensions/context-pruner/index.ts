@@ -1,3 +1,4 @@
+import { minimaxEnabled } from "../../lib/minimax.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -96,6 +97,7 @@ export default function contextPruner(pi: ExtensionAPI) {
     ctx.ui.notify(`Automatic pruning ${state.enabled ? "on" : "off"}`, "info");
   } });
   pi.on("context", (event, ctx) => {
+    if (minimaxEnabled(ctx)) { manual = false; ctx.ui.setStatus("pruner", undefined); return; }
     const pruned = prune(event.messages, state, manual);
     manual = false;
     if (pruned.changed) pi.appendEntry(key, state);

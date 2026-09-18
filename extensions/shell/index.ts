@@ -1,3 +1,4 @@
+import { minimaxEnabled } from "../../lib/minimax.ts";
 import { renderSleepCall, renderSleepResult } from "./sleep-preview.ts";
 import { renderCall } from "./command-preview.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
@@ -9,7 +10,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { result, stateRoot } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
 export default function shell(pi: ExtensionAPI) {
-  const disableBash = () => {
+  const disableBash = (_event: unknown, ctx: import("@earendil-works/pi-coding-agent").ExtensionContext) => {
+    if (minimaxEnabled(ctx)) return;
     pi.setActiveTools(pi.getActiveTools().filter(name => name !== "bash"));
   };
   pi.on("session_start", disableBash);

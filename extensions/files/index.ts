@@ -1,3 +1,5 @@
+import { minimaxEnabled } from "../../lib/minimax.ts";
+import { modeReadTool } from "../minimax/tools.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -16,7 +18,7 @@ export default function files(pi: ExtensionAPI) {
   pi.on("session_start", () => {
     pi.setActiveTools(pi.getActiveTools().filter(name => name !== "edit" && name !== "write"));
   });
-  pi.registerTool({ renderCall: toolCall("read"), renderResult, name: "read", label: "Read", description: "Read a bounded UTF-8 byte range. Offset and limit must not split a character. Binary files are rejected. Absolute and outside-workspace paths supported.",
+  const registerByteRead = () => pi.registerTool({ renderCall: toolCall("read"), renderResult, name: "read", label: "Read", description: "Read a bounded UTF-8 byte range. Offset and limit must not split a character. Binary files are rejected. Absolute and outside-workspace paths supported.",
     parameters: Type.Object({ path: pathSchema, offset: Type.Integer({ minimum: 0 }), limit: limitSchema }),
     async execute(_id, args, signal, _update, ctx) {
       signal?.throwIfAborted();
@@ -30,6 +32,13 @@ export default function files(pi: ExtensionAPI) {
         return result({ content: decode(buffer.subarray(0, bytesRead)), truncated: args.offset + bytesRead < info.size });
       } finally { await file.close(); }
     } });
+  registerByteRead();
+  const syncRead = (_event: unknown, ctx: import("@earendil-works/pi-coding-agent").ExtensionContext) => {
+    if (minimaxEnabled(ctx)) pi.registerTool(modeReadTool(ctx.cwd));
+    else registerByteRead();
+  };
+  for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, syncRead);
+  pi.events.on("rework:minimax-changed", ctx => syncRead(undefined, ctx));
   pi.registerTool({ renderCall: toolCall("list"), renderResult, name: "list", label: "List", description: "List directory entries, optionally recursively. Does not descend through symlink directories.",
     parameters: Type.Object({ path: pathSchema, recursive: Type.Boolean(), max_results: limitSchema }),
     async execute(_id, args, signal, _update, ctx) {
