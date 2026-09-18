@@ -42,3 +42,14 @@ selection/dismissal and fuzzy `@` workspace lookup still need interactive checks
 Stack's ranking algorithm and two-row footer are not reproduced by this test.
 
 Session commands and tested persistence guarantees are described in [sessions](sessions.md).
+
+## Retry audit
+
+Dotfiles now sets Pi's agent retry budget to three retries with a 2-second base
+(2/4/8 seconds), matching `builtin/retry.lua`; migration tests cover idempotence
+and rejection of malformed retry settings. Provider-level retries remain separate.
+Pi's `isRetryableAssistantError` classifies error strings without checking partial
+output, whereas Stack rejects partial output and structured auth/quota/protocol
+errors. Exact retry eligibility and layered retry budgets remain open; matching
+the schedule alone is not full parity. Stack's approval policy allows shell,
+write, and edit by default, matching our direct tool execution for those tools.
