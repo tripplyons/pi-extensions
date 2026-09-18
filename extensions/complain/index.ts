@@ -1,3 +1,4 @@
+import { renderResult } from "../../lib/tool-preview.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,7 @@ import { Type } from "typebox";
 import { result, stateRoot, text } from "../../lib/common.ts";
 
 export default function complain(pi: ExtensionAPI) {
-  pi.registerTool({
+  pi.registerTool({ renderResult,
     name: "complain", label: "Record harness issue",
     description: "Record problems in Pi or this extension package for later review, not project bugs or missing dependencies. Report suspected harness problems proactively, explain impact and uncertainty, avoid duplicates, and never include secrets. This does not authorize edits or dependency installation in other projects.",
     parameters: Type.Object({ message: Type.String({ minLength: 1 }) }),

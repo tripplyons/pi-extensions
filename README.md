@@ -25,12 +25,15 @@ subagent framework, or compatibility shims are loaded.
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
 | [shell](extensions/shell) | Persistent tmux PTY jobs and wakeable waits |
 | [files](extensions/files) | Byte-range reads, search, listing, images; no edit/write tools |
-| [goal](extensions/goal) | Persistent objectives and continuation |
+| [goal](extensions/goal) | Persistent objectives and continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Automatic session names |
 | [btw](extensions/btw) | Side questions with optional tools |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with keep/revert decisions |
+
+Tool result previews use readable text, including nested records and multiline output.
+Structured data stays unchanged for the model and session history.
 
 The remaining target includes swarm, compaction, usage, sessions,
 retry/approval policy. Runtime audits are also pending; see

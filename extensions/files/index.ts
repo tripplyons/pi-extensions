@@ -1,3 +1,4 @@
+import { renderResult } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { open, readFile, readdir, realpath, stat } from "node:fs/promises";
@@ -15,7 +16,7 @@ export default function files(pi: ExtensionAPI) {
   pi.on("session_start", () => {
     pi.setActiveTools(pi.getActiveTools().filter(name => name !== "edit" && name !== "write"));
   });
-  pi.registerTool({ name: "read", label: "Read", description: "Read a bounded UTF-8 byte range. Offset and limit must not split a character. Binary files are rejected. Absolute and outside-workspace paths supported.",
+  pi.registerTool({ renderResult, name: "read", label: "Read", description: "Read a bounded UTF-8 byte range. Offset and limit must not split a character. Binary files are rejected. Absolute and outside-workspace paths supported.",
     parameters: Type.Object({ path: pathSchema, offset: Type.Integer({ minimum: 0 }), limit: limitSchema }),
     async execute(_id, args, signal, _update, ctx) {
       signal?.throwIfAborted();
@@ -29,7 +30,7 @@ export default function files(pi: ExtensionAPI) {
         return result({ content: decode(buffer.subarray(0, bytesRead)), truncated: args.offset + bytesRead < info.size });
       } finally { await file.close(); }
     } });
-  pi.registerTool({ name: "list", label: "List", description: "List directory entries, optionally recursively. Does not descend through symlink directories.",
+  pi.registerTool({ renderResult, name: "list", label: "List", description: "List directory entries, optionally recursively. Does not descend through symlink directories.",
     parameters: Type.Object({ path: pathSchema, recursive: Type.Boolean(), max_results: limitSchema }),
     async execute(_id, args, signal, _update, ctx) {
       const entries: { path: string; directory: boolean; symlink: boolean }[] = [];
@@ -46,7 +47,7 @@ export default function files(pi: ExtensionAPI) {
       }
       await visit(resolve(ctx.cwd, args.path)); return result({ entries, truncated });
     } });
-  pi.registerTool({ name: "search", label: "Search", description: "Search UTF-8 files for a literal string. Skips binary files, files over 1 MiB, and links outside the requested tree; reports skipped_files and truncated.",
+  pi.registerTool({ renderResult, name: "search", label: "Search", description: "Search UTF-8 files for a literal string. Skips binary files, files over 1 MiB, and links outside the requested tree; reports skipped_files and truncated.",
     parameters: Type.Object({ path: pathSchema, query: Type.String({ minLength: 1 }), max_results: limitSchema }),
     async execute(_id, args, signal, _update, ctx) {
       const root = await realpath(resolve(ctx.cwd, args.path));

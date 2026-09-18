@@ -1,3 +1,4 @@
+import { renderResult } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { result, restore, text } from "../../lib/common.ts";
@@ -45,7 +46,7 @@ export default function goals(pi: ExtensionAPI) {
   pi.on("session_switch", load);
   pi.on("session_tree", load);
   pi.on("session_fork", load);
-  pi.registerTool({
+  pi.registerTool({ renderResult,
     name: "create_goal", label: "Create goal",
     description: "Create a goal only when the user explicitly requests one; never infer one from an ordinary task. Fails if an unfinished goal exists.",
     parameters: Type.Object({ objective: Type.String({ minLength: 1, maxLength: 4000 }) }),
@@ -57,12 +58,12 @@ export default function goals(pi: ExtensionAPI) {
       return result(goal);
     },
   });
-  pi.registerTool({
+  pi.registerTool({ renderResult,
     name: "get_goal", label: "Get goal", description: "Get the objective, status, active elapsed time, token usage, and continuation count.",
     parameters: Type.Object({}),
     async execute() { account(); return result(goal ?? null); },
   });
-  pi.registerTool({
+  pi.registerTool({ renderResult,
     name: "update_goal", label: "Finish goal",
     description: "Mark complete only after verifying the full objective. Mark blocked only after the same impasse repeats for at least three consecutive goal turns with no meaningful progress possible. Difficulty is not blocked. Only users may pause/resume.",
     parameters: Type.Object({ status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")]) }),

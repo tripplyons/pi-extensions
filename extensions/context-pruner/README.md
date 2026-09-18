@@ -13,3 +13,6 @@ outgoing projection, never the source messages in Pi's session file.
 The footer shows bytes still reclaimable, not bytes already archived. It resets
 to `0.0/100 KB` after a pass. Removed reasoning stays removed on later requests
 and session reloads, while the original session history remains intact.
+
+Tool results display as plain-text previews instead of JSON. Expand a result to
+see all fields and output; structured result data is unchanged.

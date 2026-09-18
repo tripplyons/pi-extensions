@@ -28,3 +28,6 @@ preflights all worktrees before stopping anything. No operation merges or pushes
 
 Public hooks are now registered and activation/session ownership is tested.
 End-to-end interactive worker orchestration and recovery audits remain pending.
+
+Tool results display as plain-text previews instead of JSON. Expand a result to
+see all fields and output; structured result data is unchanged.

@@ -1,3 +1,4 @@
+import { renderResult } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolve, join } from "node:path";
@@ -10,7 +11,7 @@ export default function shell(pi: ExtensionAPI) {
   let activity = 0;
   pi.events.on("rework:swarm-activity", () => { activity++; });
   pi.on("input", () => { activity++; });
-  pi.registerTool({ name: "shell", label: "Shell", description: "Run zsh in a tmux PTY. timeout is foreground grace, not a kill deadline. Returns a persistent job ID when still running. Cancellation kills the foreground job. Supports outside-workspace cwd.",
+  pi.registerTool({ renderResult, name: "shell", label: "Shell", description: "Run zsh in a tmux PTY. timeout is foreground grace, not a kill deadline. Returns a persistent job ID when still running. Cancellation kills the foreground job. Supports outside-workspace cwd.",
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), cwd: Type.String(), timeout: Type.Number({ minimum: 0.1, maximum: 300 }), max_output_bytes: Type.Integer({ minimum: 1, maximum: 1048576 }) }),
     async execute(_id, args, signal, _update, ctx) {
       signal?.throwIfAborted();
@@ -20,7 +21,7 @@ export default function shell(pi: ExtensionAPI) {
       const output = await jobs.output(job, args.max_output_bytes);
       return result({ ...output, background: output.status === "running" });
     } });
-  pi.registerTool({ name: "bg_process", label: "Background jobs", description: "Manage persistent shell jobs. Current session by default; scope=all explicitly permits foreign jobs. Actions: list, output, write PTY input, kill, clear finished jobs. end=true sends EOF.",
+  pi.registerTool({ renderResult, name: "bg_process", label: "Background jobs", description: "Manage persistent shell jobs. Current session by default; scope=all explicitly permits foreign jobs. Actions: list, output, write PTY input, kill, clear finished jobs. end=true sends EOF.",
     parameters: Type.Object({ action: Type.Union(["list", "output", "write", "kill", "clear"].map(Type.Literal)), id: Type.Optional(Type.String()), scope: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("all")])), lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })), input: Type.Optional(Type.String()), end: Type.Optional(Type.Boolean()) }),
     async execute(_id, args, signal, _update, ctx) {
       signal?.throwIfAborted(); const session = ctx.sessionManager.getSessionId(); const all = args.scope === "all";
@@ -36,7 +37,7 @@ export default function shell(pi: ExtensionAPI) {
       if (args.action === "kill") await jobs.kill(job);
       return result(await jobs.output(job, 1024 * 1024, args.lines ?? 100));
     } });
-  pi.registerTool({ name: "sleep", label: "Wait", description: "Wait up to 120 seconds. Wake early for current-session job exit, swarm activity, or queued steering. Does not consume steering or kill jobs.",
+  pi.registerTool({ renderResult, name: "sleep", label: "Wait", description: "Wait up to 120 seconds. Wake early for current-session job exit, swarm activity, or queued steering. Does not consume steering or kill jobs.",
     parameters: Type.Object({ seconds: Type.Number({ minimum: 0, maximum: 120 }) }),
     async execute(_id, { seconds }, signal, _update, ctx) {
       const generation = activity;

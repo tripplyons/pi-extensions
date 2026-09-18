@@ -1,3 +1,4 @@
+import { renderResult } from "../../lib/tool-preview.ts";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -101,7 +102,7 @@ export default function contextPruner(pi: ExtensionAPI) {
     ctx.ui.setStatus("pruner", state.enabled || state.serial ? `${(pruned.reclaimable / 1000).toFixed(1)}/100 KB` : undefined);
     return { messages: pruned.messages };
   });
-  pi.registerTool({
+  pi.registerTool({ renderResult,
     name: "tool_pruner_view", label: "Retrieve archived interaction",
     description: "Retrieve one original tool call and result using its context-pruner marker ID.",
     parameters: Type.Object({ ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 1 }) }),

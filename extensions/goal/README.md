@@ -14,3 +14,6 @@ Errors and aborts pause continuation to avoid runaway paid requests.
 Stack-style `/goal:status`, `/goal:edit`, `/goal:pause`, `/goal:resume`, and
 `/goal:clear` are also supported. A user can resume blocked or completed goals;
 every resume resets the minimum continuation count for a new blocked audit.
+
+Tool results display as plain-text previews instead of JSON. Expand a result to
+see all fields and output; structured result data is unchanged.

@@ -13,3 +13,6 @@ not kill jobs. `write` sends literal PTY input; include a newline to submit a
 line, or use `end=true` for terminal EOF. Output is bounded; complete output and
 job metadata remain in the private job directory until cleared. A dead tmux
 server is reported as a lost job, not a successful exit.
+
+Tool results display as plain-text previews instead of JSON. Expand a result to
+see all fields and output; structured result data is unchanged.
