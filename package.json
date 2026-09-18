@@ -17,7 +17,8 @@
       "./extensions/context-pruner/index.ts",
       "./extensions/goal/index.ts",
       "./extensions/files/index.ts",
-      "./extensions/shell/index.ts"
+      "./extensions/shell/index.ts",
+      "./extensions/overseer/index.ts"
     ]
   },
   "peerDependencies": {

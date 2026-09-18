@@ -15,10 +15,10 @@ registration or documentation. This list tracks deliverables, not completion.
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
 | Pruner | Off default, 50 KB, keep five, skill/retrieval protection, reasoning, durable archive, /prune /pruner | Implemented; unit tested; reasoning persistence audit pending |
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
-| Overseer | Session file and terminal notification integration, lifecycle and input waits | Pending |
+| Overseer | Terminal OSC glow, lifecycle and input waits | Implemented; state test; TTY audit pending |
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Pending |
-| Shell/background/sleep | tmux zsh PTY, bounded foreground wait, persistent jobs, input/EOF, scope ownership, cancellation, wakeups | Implemented; real tmux tests | |
-| Files/images | Bounded UTF-8 read, atomic write, exact unique edit, listing/search limits and skipped counts, images | Implemented; unit tested | |
+| Shell/background/sleep | tmux zsh PTY, bounded foreground wait, persistent jobs, input/EOF, scope ownership, cancellation, wakeups | Implemented; real tmux tests |
+| Files/images | Bounded UTF-8 read, atomic write, exact unique edit, listing/search limits and skipped counts, images | Implemented; unit tested |
 | Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Pending |
 | Compaction | Codex native compaction, checkpoints, restore, manual/automatic controls | Pending |
 | Fast mode | Priority tier request setting and persisted toggle | Pending |
