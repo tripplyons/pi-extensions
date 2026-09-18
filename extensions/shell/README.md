@@ -30,3 +30,6 @@ are unchanged.
 Sleep calls show the requested duration and a live remaining-time countdown while
 waiting, refreshed about every 100 ms. The countdown clears on completion, early
 wake, or cancellation.
+
+The shell `$` prefix and other tool names use the theme accent color, matching
+the footer folder name. Command text and sleep timing keep their normal color.

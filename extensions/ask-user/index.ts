@@ -1,3 +1,4 @@
+import { toolCall } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { text } from "../../lib/common.ts";
@@ -5,6 +6,7 @@ import { text } from "../../lib/common.ts";
 export default function askUser(pi: ExtensionAPI) {
   let pending = false;
   pi.registerTool({
+    renderCall: toolCall("ask_user"),
     name: "ask_user", label: "Ask user",
     description: "Ask one question and wait for free text. Supply suggestions or []. Do not request secrets. Call alone, not in parallel. Workers must ask their parent. Times out after ten minutes; cancellation is not an answer.",
     parameters: Type.Object({

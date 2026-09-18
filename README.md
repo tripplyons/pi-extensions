@@ -32,7 +32,8 @@ subagent framework, or compatibility shims are loaded.
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with keep/revert decisions |
 
-Tool result previews use readable text, including nested records and multiline output.
+Tool names use the footer folder’s accent color; shell calls color only the `$`
+prefix. Preview arguments use the normal foreground color. Tool result previews use readable text, including nested records and multiline output.
 Structured data stays unchanged for the model and session history.
 
 The remaining target includes swarm, compaction, usage, sessions,

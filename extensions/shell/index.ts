@@ -1,6 +1,6 @@
 import { renderSleepCall, renderSleepResult } from "./sleep-preview.ts";
 import { renderCall } from "./command-preview.ts";
-import { renderResult } from "../../lib/tool-preview.ts";
+import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolve, join } from "node:path";
@@ -29,7 +29,7 @@ export default function shell(pi: ExtensionAPI) {
       const output = await jobs.output(job, args.max_output_bytes);
       return result({ ...output, background: output.status === "running" });
     } });
-  pi.registerTool({ renderResult, name: "bg_process", label: "Background jobs", description: "Manage persistent shell jobs. Current session by default; scope=all explicitly permits foreign jobs. Actions: list, output, write PTY input, kill, clear finished jobs. end=true sends EOF.",
+  pi.registerTool({ renderCall: toolCall("bg_process"), renderResult, name: "bg_process", label: "Background jobs", description: "Manage persistent shell jobs. Current session by default; scope=all explicitly permits foreign jobs. Actions: list, output, write PTY input, kill, clear finished jobs. end=true sends EOF.",
     parameters: Type.Object({ action: Type.Union(["list", "output", "write", "kill", "clear"].map(Type.Literal)), id: Type.Optional(Type.String()), scope: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("all")])), lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })), input: Type.Optional(Type.String()), end: Type.Optional(Type.Boolean()) }),
     async execute(_id, args, signal, _update, ctx) {
       signal?.throwIfAborted(); const session = ctx.sessionManager.getSessionId(); const all = args.scope === "all";

@@ -24,6 +24,6 @@ export const renderCall: NonNullable<ToolDefinition["renderCall"]> = (args, them
   const preview = !context.expanded && hidden > 0
     ? [...lines.slice(0, 3), `... (${hidden} ${hidden === 1 ? "line" : "lines"} hidden)`, ...lines.slice(-3)]
     : lines;
-  text.setText(theme.fg("toolTitle", `$ ${preview.join("\n")}`));
+  text.setText(theme.fg("accent", "$") + " " + theme.fg("text", preview.join("\n")));
   return text;
 };

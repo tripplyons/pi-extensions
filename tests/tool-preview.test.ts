@@ -1,3 +1,4 @@
+import askUser from "../extensions/ask-user/index.ts";
 import { renderSleepResult } from "../extensions/shell/sleep-preview.ts";
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -64,4 +65,46 @@ test("collapsed previews bound wrapped output; expanded previews show all lines"
   expect(collapsed.join("\n")).toContain("Expand for more");
   expect(render(value, true, 20).length).toBeGreaterThan(collapsed.length);
   for (const line of collapsed) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
+});
+
+test("tool names use accent, without coloring shell commands or sleep timing", () => {
+  const h = harness();
+  for (const install of [goals, files, shell, complain, pruner, swarm]) install(h.pi);
+  for (const [name, tool] of h.tools) {
+    const colors: [string, string][] = [];
+    const theme = {
+      bold: (text: string) => text,
+      fg(color: string, text: string) { colors.push([color, text]); return text; },
+    };
+    tool.renderCall({ command: "echo hello", seconds: 30 }, theme, { state: {}, expanded: false }).render(100);
+    expect(colors.filter(([color]) => color === "accent")).toEqual([["accent", name === "shell" ? "$" : name]]);
+    if (name === "shell") expect(colors).toContainEqual(["text", "echo hello"]);
+    if (name === "sleep") expect(colors).toContainEqual(["text", " 30s"]);
+  }
+});
+
+
+test("read preview keeps streamed path and byte arguments in foreground", () => {
+  const h = harness(); files(h.pi);
+  const tool = h.tools.get("read");
+  for (const args of [{}, { path: "/tmp/file.ts" }, { path: "/tmp/file.ts", offset: 0, limit: 2000 }]) {
+    const colors: [string, string][] = [];
+    const theme = { bold: (text: string) => text, fg(color: string, text: string) { colors.push([color, text]); return text; } };
+    tool.renderCall(args, theme, {}).render(100);
+    expect(colors[0]).toEqual(["accent", "read"]);
+    expect(colors[1]).toEqual(["text", "limit" in args ? " /tmp/file.ts (offset: 0, limit: 2000)" : "path" in args ? " /tmp/file.ts" : " ..."]);
+  }
+});
+
+
+test("ask_user preview shows the streamed question in foreground after its accent name", () => {
+  const h = harness(); askUser(h.pi);
+  const tool = h.tools.get("ask_user");
+  for (const question of [undefined, "Which", "Which option should I use?"]) {
+    const colors: [string, string][] = [];
+    const theme = { bold: (text: string) => text, fg(color: string, text: string) { colors.push([color, text]); return text; } };
+    const lines = tool.renderCall({ question }, theme, {}).render(100);
+    expect(colors).toEqual([["accent", "ask_user"], ["text", ` ${question ?? "..."}`]]);
+    expect(lines.join("\n").trim()).toBe(`ask_user ${question ?? "..."}`);
+  }
 });

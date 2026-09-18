@@ -1,4 +1,4 @@
-import { renderResult } from "../../lib/tool-preview.ts";
+import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readFile, rm } from "node:fs/promises";
@@ -72,7 +72,7 @@ export default function install(pi: ExtensionAPI) {
   const empty = Type.Object({});
   const child = Type.Object({ nodeId: Type.String() });
   function tool(name: string, description: string, parameters: any, execute: (args: any, ctx: ExtensionContext) => Promise<unknown>) {
-    pi.registerTool({ renderResult, name, label: name, description: `${description} Requires user activation through /swarm:start.`, parameters,
+    pi.registerTool({ renderCall: toolCall(name), renderResult, name, label: name, description: `${description} Requires user activation through /swarm:start.`, parameters,
       async execute(_id, args, signal, _update, ctx) { signal?.throwIfAborted(); return result(await execute(args, ctx)); } });
   }
   tool("swarm_task", "Read your durable assignment and root objective.", empty, async (_, ctx) => {

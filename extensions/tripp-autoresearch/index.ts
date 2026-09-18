@@ -1663,8 +1663,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     },
 
     renderCall(args, theme) {
-      let text = theme.fg("toolTitle", theme.bold("init_experiment "));
-      text += theme.fg("accent", args.name ?? "");
+      let text = theme.fg("accent", theme.bold("init_experiment "));
+      text += theme.fg("text", args.name ?? "");
       return new Text(text, 0, 0);
     },
 
@@ -2068,10 +2068,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     },
 
     renderCall(args, theme) {
-      let text = theme.fg("toolTitle", theme.bold("run_experiment "));
-      text += theme.fg("muted", args.command);
+      let text = theme.fg("accent", theme.bold("run_experiment "));
+      text += theme.fg("text", args.command);
       if (args.timeout_seconds) {
-        text += theme.fg("dim", ` (timeout: ${args.timeout_seconds}s)`);
+        text += theme.fg("text", ` (timeout: ${args.timeout_seconds}s)`);
       }
       return new Text(text, 0, 0);
     },
@@ -2494,15 +2494,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     },
 
     renderCall(args, theme) {
-      let text = theme.fg("toolTitle", theme.bold("log_experiment "));
-      const color =
-        args.status === "keep"
-          ? "success"
-          : args.status === "crash" || args.status === "checks_failed"
-            ? "error"
-            : "warning";
-      text += theme.fg(color, args.status);
-      text += " " + theme.fg("dim", args.description);
+      let text = theme.fg("accent", theme.bold("log_experiment "));
+      text += theme.fg("text", args.status);
+      text += " " + theme.fg("text", args.description);
       return new Text(text, 0, 0);
     },
 

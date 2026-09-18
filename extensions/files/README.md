@@ -13,3 +13,6 @@ skipped counts. Images return native image blocks for PNG/JPEG/GIF/WebP up to
 
 Tool results display as plain-text previews instead of JSON. Expand a result to
 see all fields and output; structured result data is unchanged.
+
+Read previews show the file path and byte offset/limit in the normal foreground
+color, with the tool name in accent. The range is in bytes, not lines.

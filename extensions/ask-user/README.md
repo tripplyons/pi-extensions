@@ -7,3 +7,6 @@ workers ask their parent instead. Questions must not request secrets.
 
 Answers are returned as plain text, not JSON. Structured results retain
 `details.answer`.
+
+The tool preview shows `ask_user` in accent followed by the streamed question in
+the normal foreground color.

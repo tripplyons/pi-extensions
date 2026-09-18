@@ -31,3 +31,21 @@ export const renderResult: NonNullable<ToolDefinition["renderResult"]> = (result
     },
   };
 };
+
+export function toolCall(name: string): NonNullable<ToolDefinition["renderCall"]> {
+  return (args, theme) => {
+    const title = theme.fg("accent", theme.bold(name));
+    if (name === "ask_user") {
+      const question = typeof args?.question === "string" ? args.question : "...";
+      return new Text(title + theme.fg("text", ` ${question}`), 0, 0);
+    }
+    if (name !== "read") return new Text(title, 0, 0);
+    const path = typeof args?.path === "string" ? args.path : "...";
+    const range = [
+      typeof args?.offset === "number" ? `offset: ${args.offset}` : undefined,
+      typeof args?.limit === "number" ? `limit: ${args.limit}` : undefined,
+    ].filter(Boolean);
+    const suffix = range.length ? ` (${range.join(", ")})` : "";
+    return new Text(title + theme.fg("text", ` ${path}${suffix}`), 0, 0);
+  };
+}
