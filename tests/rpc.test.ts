@@ -1,17 +1,21 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import manifest from "../package.json";
 
-test("real Pi RPC loads the package and activates swarm without model requests", async () => {
+test("real Pi RPC loads without local dependencies and activates MiniMax and swarm without model requests", async () => {
   const home = await mkdtemp(join(tmpdir(), "pi-rpc-rework-"));
   const project = resolve(import.meta.dir, "..");
+  // Test the shipped package, not imports accidentally supplied by test-only
+  // node_modules links. Pi must supply its documented extension imports.
+  const installed = join(home, "package");
+  for (const directory of ["extensions", "lib"]) await cp(join(project, directory), join(installed, directory), { recursive: true });
   const args = [join(project, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"),
     "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"];
-  for (const path of manifest.pi.extensions) args.push("--extension", join(project, path));
+  for (const path of manifest.pi.extensions) args.push("--extension", join(installed, path));
   // Allowlist environment: never inherit provider credentials or the live agent directory.
   const child = spawn("node", args, { cwd: home, env: {
     PATH: process.env.PATH, HOME: home, TERM: "dumb", PI_CODING_AGENT_DIR: join(home, "agent"),
@@ -50,8 +54,12 @@ test("real Pi RPC loads the package and activates swarm without model requests",
   }
   try {
     const { commands } = await request("get_commands");
-    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "pruner", "btw", "btw:tools", "nvim", "autoresearch"])
+    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "pruner", "btw", "btw:tools", "nvim", "autoresearch", "minimax"])
       expect(commands.some((command: any) => command.name === name)).toBe(true);
+    await request("prompt", { message: "/minimax on" });
+    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message.startsWith("MiniMax mode on:"))).toBe(true);
+    await request("prompt", { message: "/minimax off" });
+    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "MiniMax mode off")).toBe(true);
     await request("prompt", { message: "/swarm:start Verify isolated RPC activation" });
     const runs = await readdir(join(home, "state", "swarm"));
     expect(runs).toHaveLength(1);
