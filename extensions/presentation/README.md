@@ -9,9 +9,6 @@ Tool calls keep one blank separator line, with no vertical shell padding.
 Custom self-rendered shells and spacing within tool output are unchanged. This
 overrides Pi’s tool component renderer and restores it on shutdown.
 
-Pi controls its collapsed-tool line count; exact Stack
-five-line previews require custom tool renderers (parity audit pending).
-
 The built-in Working row is hidden entirely, including its label and animation.
 
 User messages have no background-only rows above or below their content. Pi has

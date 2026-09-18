@@ -23,3 +23,17 @@ test("shell tools retain jobs, wake on completion, and clear finished records", 
    await rm(root, { recursive: true, force: true });
  }
 }, 10000);
+
+test("shell removes bash on startup, session switch and before each agent turn", async () => {
+ const h = harness();
+ let active = ["bash", "shell", "bg_process", "sleep", "read"];
+ h.pi.getActiveTools = () => [...active];
+ h.pi.setActiveTools = (names: string[]) => { active = names; };
+ install(h.pi);
+ expect(h.tools.has("bash")).toBe(false);
+ for (const event of ["session_start", "session_switch", "before_agent_start"]) {
+   active = ["bash", "shell", "bg_process", "sleep", "read"];
+   await h.emit(event);
+   expect(active).toEqual(["shell", "bg_process", "sleep", "read"]);
+ }
+});

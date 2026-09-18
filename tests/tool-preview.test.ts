@@ -1,3 +1,4 @@
+import { renderSleepResult } from "../extensions/shell/sleep-preview.ts";
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { result } from "../lib/common.ts";
@@ -21,7 +22,7 @@ test("all JSON-result tools register the text preview renderer", () => {
   for (const install of [goals, files, shell, complain, pruner, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
     if (name === "view_image") continue;
-    expect(tool.renderResult).toBe(renderResult);
+    expect(tool.renderResult).toBe(name === "sleep" ? renderSleepResult : renderResult);
   }
   expect(h.tools.get("view_image").renderResult).toBeUndefined();
 });

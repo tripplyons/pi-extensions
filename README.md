@@ -23,7 +23,7 @@ subagent framework, or compatibility shims are loaded.
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
-| [shell](extensions/shell) | Persistent tmux PTY jobs and wakeable waits |
+| [shell](extensions/shell) | Replaces Bash with persistent tmux PTY jobs, compact command previews and live sleep countdowns |
 | [files](extensions/files) | Byte-range reads, search, listing, images; no edit/write tools |
 | [goal](extensions/goal) | Persistent objectives and continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |

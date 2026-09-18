@@ -1,3 +1,5 @@
+import { renderSleepCall, renderSleepResult } from "./sleep-preview.ts";
+import { renderCall } from "./command-preview.ts";
 import { renderResult } from "../../lib/tool-preview.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -7,11 +9,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { result, stateRoot } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
 export default function shell(pi: ExtensionAPI) {
+  const disableBash = () => {
+    pi.setActiveTools(pi.getActiveTools().filter(name => name !== "bash"));
+  };
+  pi.on("session_start", disableBash);
+  pi.on("session_switch", disableBash);
+  pi.on("before_agent_start", disableBash);
   const jobs = new Jobs(join(stateRoot(), "jobs"));
   let activity = 0;
   pi.events.on("rework:swarm-activity", () => { activity++; });
   pi.on("input", () => { activity++; });
-  pi.registerTool({ renderResult, name: "shell", label: "Shell", description: "Run zsh in a tmux PTY. timeout is foreground grace, not a kill deadline. Returns a persistent job ID when still running. Cancellation kills the foreground job. Supports outside-workspace cwd.",
+  pi.registerTool({ renderCall, renderResult, name: "shell", label: "Shell", description: "Run zsh in a tmux PTY. timeout is foreground grace, not a kill deadline. Returns a persistent job ID when still running. Cancellation kills the foreground job. Supports outside-workspace cwd.",
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), cwd: Type.String(), timeout: Type.Number({ minimum: 0.1, maximum: 300 }), max_output_bytes: Type.Integer({ minimum: 1, maximum: 1048576 }) }),
     async execute(_id, args, signal, _update, ctx) {
       signal?.throwIfAborted();
@@ -37,17 +45,19 @@ export default function shell(pi: ExtensionAPI) {
       if (args.action === "kill") await jobs.kill(job);
       return result(await jobs.output(job, 1024 * 1024, args.lines ?? 100));
     } });
-  pi.registerTool({ renderResult, name: "sleep", label: "Wait", description: "Wait up to 120 seconds. Wake early for current-session job exit, swarm activity, or queued steering. Does not consume steering or kill jobs.",
+  pi.registerTool({ renderCall: renderSleepCall, renderResult: renderSleepResult, name: "sleep", label: "Wait", description: "Wait up to 120 seconds. Wake early for current-session job exit, swarm activity, or queued steering. Does not consume steering or kill jobs.",
     parameters: Type.Object({ seconds: Type.Number({ minimum: 0, maximum: 120 }) }),
-    async execute(_id, { seconds }, signal, _update, ctx) {
+    async execute(_id, { seconds }, signal, update, ctx) {
       const generation = activity;
       const running = (await jobs.list(ctx.sessionManager.getSessionId())).filter(job => job.status === "running");
       const until = Date.now() + seconds * 1000;
       let reason = "timeout";
+      update?.(result({ remaining: seconds }));
       while (Date.now() < until) {
         signal?.throwIfAborted();
         if (activity !== generation || ctx.hasPendingMessages()) { reason = "activity"; break; }
         if ((await Promise.all(running.map(job => jobs.status(job)))).some(job => job.status !== "running")) { reason = "job_exit"; break; }
+        update?.(result({ remaining: Math.max(0, (until - Date.now()) / 1000) }));
         await delay(Math.min(100, Math.max(1, until - Date.now())), undefined, { signal });
       }
       return result({ reason });
