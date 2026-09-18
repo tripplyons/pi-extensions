@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { result, text } from "../../lib/common.ts";
+import { text } from "../../lib/common.ts";
 
 export default function askUser(pi: ExtensionAPI) {
   let pending = false;
@@ -28,7 +28,7 @@ export default function askUser(pi: ExtensionAPI) {
         const title = args.question + (args.choices.length ? `\nSuggestions: ${args.choices.join(" | ")}` : "");
         const answer = await ctx.ui.input(title, "Free-text answer", { signal: controller.signal });
         if (controller.signal.aborted || answer === undefined) throw new Error("Question cancelled or timed out; no answer received");
-        return result({ answer });
+        return { content: [{ type: "text", text: answer }], details: { answer } };
       } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);

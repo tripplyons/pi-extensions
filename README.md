@@ -9,14 +9,14 @@ subagent framework, or compatibility shims are loaded.
 | Extension | Behavior |
 | --- | --- |
 | [swarm](extensions/swarm) | User-activated workers, messaging, review and worktrees |
-| [ask-user](extensions/ask-user) | Free-text questions with cancellation |
+| [ask-user](extensions/ask-user) | Free-text questions, plain-text answers, cancellation |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
-| [skills](extensions/skills) | Stack and shared skill discovery |
+| [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
 | [usage](extensions/usage) | Codex quota and reset times |
 | [models](extensions/models) | Model listing and selection |
