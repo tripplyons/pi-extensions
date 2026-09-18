@@ -37,3 +37,18 @@ test("users can edit and resume blocked goals with a fresh blocked audit", async
   await h.command("goal:clear");
   expect((await h.call("get_goal", {})).details).toBeNull();
 });
+
+test("swarm attachment pauses goals and prevents competing continuation loops", async () => {
+  const h = harness(); install(h.pi);
+  await h.call("create_goal", { objective: "Verify" });
+  h.pi.appendEntry("rework:swarm", { run: "run", node: "root" });
+  h.pi.events.emit("rework:swarm-attached", h.ctx);
+  expect((await h.call("get_goal", {})).details.status).toBe("paused");
+  await h.emit("agent_end"); expect(h.sent).toHaveLength(0);
+  await expect(h.command("goal:resume")).rejects.toThrow("attached swarm");
+  await expect(h.call("create_goal", { objective: "Other" })).rejects.toThrow("attached swarm");
+  h.pi.appendEntry("rework:swarm", null);
+  await h.emit("agent_end"); expect(h.sent).toHaveLength(0);
+  await h.command("goal:resume");
+  expect((await h.call("get_goal", {})).details.status).toBe("active");
+});

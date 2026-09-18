@@ -65,6 +65,7 @@ export default function install(pi: ExtensionAPI) {
     if (identity) throw new Error("A swarm is already associated with this session");
     const run = await store.create(ctx.sessionManager.getSessionId(), ctx.cwd, objective);
     identity = { run: run.id, node: run.root }; pi.appendEntry(key, identity);
+    pi.events.emit("rework:swarm-attached", ctx);
     await load({}, ctx); ctx.ui.notify("Swarm activated. Workers start only when spawned.", "info");
   } });
   const empty = Type.Object({});

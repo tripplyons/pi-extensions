@@ -24,6 +24,16 @@ export default function goals(pi: ExtensionAPI) {
     pi.appendEntry(key, goal ?? null);
     ctx.ui.setStatus("goal", goal?.status === "active" ? "goal" : undefined);
   }
+  function attached(ctx: ExtensionContext) {
+    return Boolean(process.env.PI_SWARM_NODE || restore(ctx, "rework:swarm"));
+  }
+  function requireStandalone(ctx: ExtensionContext) {
+    if (attached(ctx)) throw new Error("Finish or clear the attached swarm first");
+  }
+  pi.events.on("rework:swarm-attached", (ctx: ExtensionContext) => {
+    if (goal?.status !== "active") return;
+    account(); goal.status = "paused"; save(ctx);
+  });
   function load(_event: unknown, ctx: ExtensionContext) {
     goal = restore<Goal | null>(ctx, key) ?? undefined;
     // Resuming a file never silently restarts an autonomous loop.
@@ -40,6 +50,7 @@ export default function goals(pi: ExtensionAPI) {
     description: "Create a goal only when the user explicitly requests one; never infer one from an ordinary task. Fails if an unfinished goal exists.",
     parameters: Type.Object({ objective: Type.String({ minLength: 1, maxLength: 4000 }) }),
     async execute(_id, args, _signal, _update, ctx) {
+      requireStandalone(ctx);
       if (goal && ["active", "paused"].includes(goal.status)) throw new Error("An unfinished goal already exists");
       goal = { objective: text(args.objective, "objective", 4000).trim(), status: "active", createdAt: Date.now(), elapsedMs: 0, tokens: 0, continuations: 0 };
       save(ctx);
@@ -64,6 +75,7 @@ export default function goals(pi: ExtensionAPI) {
   });
   async function command(args: string, ctx: ExtensionCommandContext) {
       const [action = "status", ...words] = args.trim().split(/\s+/);
+      if (action === "new" || action === "resume") requireStandalone(ctx);
       if (action === "new") {
         if (goal && ["active", "paused"].includes(goal.status)) throw new Error("Clear or finish the existing goal first");
         goal = { objective: text(words.join(" "), "objective", 4000), status: "active", createdAt: Date.now(), elapsedMs: 0, tokens: 0, continuations: 0 };
@@ -98,7 +110,9 @@ export default function goals(pi: ExtensionAPI) {
     save(ctx);
   });
   pi.on("agent_end", (_event, ctx) => {
-    if (!goal || goal.status !== "active" || ctx.hasPendingMessages()) return;
+    if (!goal || goal.status !== "active") return;
+    if (attached(ctx)) { account(); goal.status = "paused"; save(ctx); return; }
+    if (ctx.hasPendingMessages()) return;
     goal.continuations++;
     save(ctx);
     pi.sendUserMessage(`Continue the goal: ${goal.objective}\nCheck get_goal. Do not finish until the full objective is verified. If stuck, try a different approach; blocked requires the same impasse on at least three consecutive goal turns.`, { deliverAs: "followUp" });
