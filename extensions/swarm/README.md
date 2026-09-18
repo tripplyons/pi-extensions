@@ -12,3 +12,7 @@ Durable task records, atomic state updates, depth-three limits, direct-relative
 messages, inbox acknowledgment, and parent-only result review are implemented and
 tested. Failed updates leave the previous state intact. Worker orchestration,
 user activation, and the public swarm tools are not wired yet. This directory has no package entry point yet.
+
+The worker launcher now starts attachable tmux sessions with explicit extension
+paths and dedicated Pi session files. Stop, capture, and restart are tested using
+a fake executable in an isolated tmux server; no model requests are made.
