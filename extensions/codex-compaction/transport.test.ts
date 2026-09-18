@@ -44,8 +44,10 @@ test("abort prevents the request and invalid credentials never reach transport",
 test("cancels an in-flight response rather than accepting an incomplete checkpoint", async () => {
   let began!: () => void;
   const ready = new Promise<void>(resolve => { began = resolve; });
+  let streamController: ReadableStreamDefaultController;
   const server = Bun.serve({ port: 0, fetch() {
     return new Response(new ReadableStream({ start(controller) {
+      streamController = controller;
       controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
       began();
     } }));
@@ -54,7 +56,17 @@ test("cancels an in-flight response rather than accepting an incomplete checkpoi
   try {
     const pending = compactRemote({ model: "gpt-5.4", input: [] }, "session", token, controller.signal,
       { endpoint: `http://localhost:${server.port}/backend-api/codex/responses` });
-    const rejection = expect(pending).rejects.toThrow();
-    await ready; controller.abort(); await rejection;
-  } finally { await server.stop(true); }
+    const outcome = pending.then(() => null, error => error);
+    await ready; controller.abort();
+    expect(await outcome).toBeInstanceOf(Error);
+  } finally { try { streamController!.close(); } catch {} await server.stop(true); }
+});
+test("reader cancellation interrupts a stalled stream after headers", async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const response = new Response(new ReadableStream({ cancel() { cancelled = true; } }));
+  const outcome = readCheckpoint(response, controller.signal).then(() => null, error => error);
+  controller.abort();
+  expect(await outcome).toBeInstanceOf(Error);
+  expect(cancelled).toBe(true);
 });

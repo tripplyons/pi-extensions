@@ -1,10 +1,12 @@
 import { checkpoint, compactRequest, type Item } from "./protocol.ts";
 
 // Never include response bodies or credential material in errors.
-export async function readCheckpoint(response: Response): Promise<Item> {
+export async function readCheckpoint(response: Response, signal?: AbortSignal): Promise<Item> {
   if (!response.ok) throw new Error(`Codex compaction failed (HTTP ${response.status})`);
   if (!response.body) throw new Error("Empty Codex compaction response");
   const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener("abort", cancel, { once: true });
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   let total = 0;
@@ -24,7 +26,9 @@ export async function readCheckpoint(response: Response): Promise<Item> {
   }
   try {
     for (;;) {
+      signal?.throwIfAborted();
       const { done, value } = await reader.read();
+      signal?.throwIfAborted();
       if (done) break;
       total += value.byteLength;
       if (total > 16 * 1024 * 1024) throw new Error("Codex compaction stream exceeds 16 MiB");
@@ -40,7 +44,7 @@ export async function readCheckpoint(response: Response): Promise<Item> {
     if (buffer.trim()) event(buffer.replaceAll("\r\n", "\n"));
     if (!found) throw new Error("Codex compaction stream ended without a checkpoint");
     return found;
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  } finally { signal?.removeEventListener("abort", cancel); await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 export async function compactRemote(
@@ -51,11 +55,13 @@ export async function compactRemote(
   try { account = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString())["https://api.openai.com/auth"]?.chatgpt_account_id; } catch { /* sanitized boundary error below */ }
   if (!token || /[\r\n]/.test(token) || typeof account !== "string" || !account || /[\r\n]/.test(account)) throw new Error("Codex OAuth credentials unavailable; use /login");
   const prepared = compactRequest(body, sessionId, options.headers ?? {});
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(300_000)]);
+  bounded.throwIfAborted();
   const response = await (options.request ?? fetch)(options.endpoint ?? "https://chatgpt.com/backend-api/codex/responses", {
-    method: "POST", redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]),
+    method: "POST", redirect: "error", signal: bounded,
     headers: { ...prepared.headers, Authorization: `Bearer ${token}`, "ChatGPT-Account-Id": account,
       "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(prepared.body),
   });
-  return [...prepared.retained, await readCheckpoint(response)];
+  return [...prepared.retained, await readCheckpoint(response, bounded)];
 }
