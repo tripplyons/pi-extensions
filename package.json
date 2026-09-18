@@ -18,7 +18,9 @@
       "./extensions/goal/index.ts",
       "./extensions/files/index.ts",
       "./extensions/shell/index.ts",
-      "./extensions/overseer/index.ts"
+      "./extensions/overseer/index.ts",
+      "./extensions/presentation/index.ts",
+      "./extensions/fast-mode/index.ts"
     ]
   },
   "peerDependencies": {
