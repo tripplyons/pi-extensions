@@ -18,3 +18,22 @@ test("answers are plain text with structured details preserved", async () => {
   expect(response.content).toEqual([{ type: "text", text: answer }]);
   expect(response.details).toEqual({ answer });
 });
+
+test("suggestions appear on separate numbered lines beneath the question", async () => {
+  const h = harness(); install(h.pi);
+  let title: string | undefined;
+  h.ctx.ui.input = async (value: string) => { title = value; return "Something else"; };
+  const response = await h.call("ask_user", {
+    question: "Which settings?", choices: ["Pi defaults", "全て", "Custom | settings"],
+  });
+  expect(title).toBe("Which settings?\n\nSuggestions:\n1. Pi defaults\n2. 全て\n3. Custom | settings");
+  expect(response.details.answer).toBe("Something else");
+});
+
+test("questions without suggestions omit the list", async () => {
+  const h = harness(); install(h.pi);
+  let title: string | undefined;
+  h.ctx.ui.input = async (value: string) => { title = value; return "Answer"; };
+  await h.call("ask_user", { question: "Which settings?", choices: [] });
+  expect(title).toBe("Which settings?");
+});

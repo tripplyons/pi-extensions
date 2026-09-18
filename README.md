@@ -9,7 +9,7 @@ subagent framework, or compatibility shims are loaded.
 | Extension | Behavior |
 | --- | --- |
 | [swarm](extensions/swarm) | User-activated workers, messaging, review and worktrees |
-| [ask-user](extensions/ask-user) | Free-text questions, plain-text answers, cancellation |
+| [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |

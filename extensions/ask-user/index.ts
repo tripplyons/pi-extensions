@@ -25,7 +25,7 @@ export default function askUser(pi: ExtensionAPI) {
       signal?.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(abort, 600_000);
       try {
-        const title = args.question + (args.choices.length ? `\nSuggestions: ${args.choices.join(" | ")}` : "");
+        const title = args.question + (args.choices.length ? `\n\nSuggestions:\n${args.choices.map((choice, index) => `${index + 1}. ${choice}`).join("\n")}` : "");
         const answer = await ctx.ui.input(title, "Free-text answer", { signal: controller.signal });
         if (controller.signal.aborted || answer === undefined) throw new Error("Question cancelled or timed out; no answer received");
         return { content: [{ type: "text", text: answer }], details: { answer } };
