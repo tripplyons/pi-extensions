@@ -4,16 +4,18 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extension bundle, conversion provider, patches, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (16)
+## Extensions (18)
 
 | Extension | Behavior |
 | --- | --- |
 | [swarm](extensions/swarm) | User-activated workers, messaging, review and worktrees |
 | [ask-user](extensions/ask-user) | Free-text questions with cancellation |
+| [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
 | [hide-empty-editor](extensions/hide-empty-editor) | Hide the input box while empty |
 | [presentation](extensions/presentation) | Compact display and status footer; no working indicator |
+| [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Stack and shared skill discovery |
 | [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
 | [usage](extensions/usage) | Codex quota and reset times |
@@ -26,7 +28,7 @@ subagent framework, or compatibility shims are loaded.
 | [goal](extensions/goal) | Persistent objectives and continuation |
 
 The remaining target includes swarm, compaction, usage, sessions,
-retry/approval policy, and autocomplete. Runtime audits are also pending; see
+retry/approval policy. Runtime audits are also pending; see
 [the parity checklist](docs/parity.md). Implementation is in progress.
 
 Run `npm test` (requires Bun). Install with `pi install /absolute/path/to/pi-extensions`.

@@ -11,7 +11,7 @@ registration or documentation. This list tracks deliverables, not completion.
 | Area | Required behavior | State |
 | --- | --- | --- |
 | Ask user | Suggestions, free text, timeout/cancel, worker restriction | Implemented; unit tested |
-| Autocomplete | Commands, skills, files, editor integration | Native provider tested; interactive keyboard audit pending |
+| Autocomplete | Commands, skills, files, editor integration | Restored fuzzy provider; unit tested; interactive keyboard audit pending |
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
 | Pruner | Off default, 50 KB, keep five, skill/retrieval protection, reasoning, durable archive, /prune /pruner | Implemented; unit tested; reasoning persistence audit pending |
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
@@ -34,7 +34,7 @@ as verified. Network checks must not expose credentials.
 
 ### Native completion boundary
 
-`tests/autocomplete.test.ts` exercises Pi's actual CombinedAutocompleteProvider:
+`tests/autocomplete.test.ts` exercises Pi's actual CombinedAutocompleteProvider, while `extensions/autocomplete/index.test.ts` covers the restored fuzzy provider:
 command and skill suggestions, relative file suggestions, accepting each result,
 and cursor placement. The interactive runtime registers extension commands and
 loaded skills with this provider. No replacement editor is installed. Keyboard

@@ -13,6 +13,7 @@
   "pi": {
     "extensions": [
       "./extensions/ask-user/index.ts",
+      "./extensions/autocomplete/index.ts",
       "./extensions/complain/index.ts",
       "./extensions/context-pruner/index.ts",
       "./extensions/goal/index.ts",
@@ -20,6 +21,7 @@
       "./extensions/shell/index.ts",
       "./extensions/overseer/index.ts",
       "./extensions/presentation/index.ts",
+      "./extensions/startup-screen/index.ts",
       "./extensions/hide-empty-editor/index.ts",
       "./extensions/fast-mode/index.ts",
       "./extensions/models/index.ts",
