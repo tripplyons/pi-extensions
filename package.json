@@ -4,9 +4,20 @@
   "private": true,
   "type": "module",
   "description": "Clean Pi equivalents of Tripp's Stack Agent configuration",
-  "keywords": ["pi-package"],
-  "scripts": { "test": "bun test" },
-  "pi": { "extensions": [] },
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/ask-user/index.ts",
+      "./extensions/complain/index.ts",
+      "./extensions/context-pruner/index.ts",
+      "./extensions/goal/index.ts"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
@@ -14,9 +25,17 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": true },
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true },
-    "typebox": { "optional": true }
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   }
 }

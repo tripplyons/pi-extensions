@@ -4,12 +4,20 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extensions, conversion provider, patches, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (0)
+## Extensions (4)
 
-The old implementation has been removed. Replacement entry points are added in
-subsequent commits. The target is all seven configured plugins plus Stack's shell,
-file tools, swarm, compaction, fast mode, model/reasoning controls, usage, sessions,
-skills, and retry/approval policy. Pi's public runtime owns native equivalents;
-new extensions own only missing behavior.
+| Extension | Behavior |
+| --- | --- |
+| [ask-user](extensions/ask-user) | Free-text questions with cancellation |
+| [complain](extensions/complain) | Private harness issue records |
+| [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
+| [goal](extensions/goal) | Persistent objectives and continuation |
+
+The remaining target includes shell/file tools, swarm, compaction, fast mode,
+model/reasoning controls, usage, sessions, skills, retry/approval policy,
+autocomplete, overseer, and presentation. Implementation is in progress.
+
+Run `npm test` (requires Bun). Install with `pi install /absolute/path/to/pi-extensions`.
+The manifest discovers entry points only, never adjacent tests.
 
 Historical third-party license notices are retained under `licenses/`.
