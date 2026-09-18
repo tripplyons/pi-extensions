@@ -19,7 +19,7 @@ registration or documentation. This list tracks deliverables, not completion.
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Implemented; formatting tests; TTY audit pending |
 | Shell/background/sleep | tmux zsh PTY, bounded foreground wait, persistent jobs, input/EOF, scope ownership, cancellation, wakeups | Implemented; real tmux tests |
 | Files/images | Bounded UTF-8 read, atomic write, exact unique edit, listing/search limits and skipped counts, images | Implemented; unit tested |
-| Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Git isolation and cleanup tested; orchestration pending |
+| Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Git isolation, durable state, messaging permissions and review tested; orchestration pending |
 | Compaction | Codex native compaction, checkpoints, restore, manual/automatic controls | Implemented; synthetic protocol/transport/hook tests; provider integration audit pending |
 | Fast mode | Priority tier request setting and persisted toggle | Implemented; payload tests; runtime audit pending |
 | Models/reasoning | List/select models, supported reasoning, persistence | Implemented via Pi registry/session APIs; command tests; persistence runtime audit pending |
