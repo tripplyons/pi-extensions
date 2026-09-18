@@ -20,7 +20,8 @@
       "./extensions/shell/index.ts",
       "./extensions/overseer/index.ts",
       "./extensions/presentation/index.ts",
-      "./extensions/fast-mode/index.ts"
+      "./extensions/fast-mode/index.ts",
+      "./extensions/models/index.ts"
     ]
   },
   "peerDependencies": {

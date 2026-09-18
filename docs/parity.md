@@ -21,8 +21,8 @@ registration or documentation. This list tracks deliverables, not completion.
 | Files/images | Bounded UTF-8 read, atomic write, exact unique edit, listing/search limits and skipped counts, images | Implemented; unit tested |
 | Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Pending |
 | Compaction | Codex native compaction, checkpoints, restore, manual/automatic controls | Pending |
-| Fast mode | Priority tier request setting and persisted toggle | Pending |
-| Models/reasoning | List/select models, supported reasoning, persistence | Pending |
+| Fast mode | Priority tier request setting and persisted toggle | Implemented; payload tests; runtime audit pending |
+| Models/reasoning | List/select models, supported reasoning, persistence | Implemented via Pi registry/session APIs; command tests; persistence runtime audit pending |
 | Usage/cost | Codex limits/reset information and API cost reporting | Pending |
 | Sessions | New/resume/fork/tree/name/export, command discoverability | Pending |
 | Skills | Shared and Stack-specific skills, read-before-use policy | Pending |
