@@ -7,7 +7,7 @@ export const renderSleepCall: NonNullable<ToolDefinition["renderCall"]> = (args,
   render(width) {
     const duration = typeof args?.seconds === "number" ? `${args.seconds}s` : "...";
     const remaining = context.state.remaining;
-    const countdown = typeof remaining === "number" ? ` - ${remaining.toFixed(1)}s remaining` : "";
+    const countdown = typeof remaining === "number" ? ` - ${Math.ceil(remaining)}s remaining` : "";
     return [truncateToWidth(theme.fg("accent", "sleep") + theme.fg("text", ` ${duration}${countdown}`), width)];
   },
 });

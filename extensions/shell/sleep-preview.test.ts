@@ -24,7 +24,7 @@ test("sleep preview shows streamed duration, live remaining time and completion"
   const result = await tool.execute("test", { seconds: 0.4 }, undefined, (update: any) => {
     remaining.push(update.details.remaining);
     row.updateResult({ ...update, isError: false }, true);
-    expect(text()).toContain(`sleep 0.4s - ${update.details.remaining.toFixed(1)}s remaining`);
+    expect(text()).toContain(`sleep 0.4s - ${Math.ceil(update.details.remaining)}s remaining`);
   }, h.ctx);
   expect(remaining.length).toBeGreaterThan(2);
   expect(remaining.at(-1)!).toBeLessThan(remaining[0]);
