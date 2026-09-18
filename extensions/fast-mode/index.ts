@@ -13,6 +13,16 @@ export default function fastMode(pi: ExtensionAPI) {
   const display = (ctx: ExtensionContext) => ctx.ui.setStatus("fast", enabled ? "fast" : undefined);
   const load = (_event: unknown, ctx: ExtensionContext) => { enabled = restore<boolean>(ctx, key) ?? false; display(ctx); };
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
+  function setEnabled(value: boolean, ctx: ExtensionContext) {
+    if (value && !["openai", "openai-codex"].includes(ctx.model?.provider ?? "")) {
+      ctx.ui.notify("Fast mode requires an OpenAI model", "warning"); return;
+    }
+    enabled = value; pi.appendEntry(key, enabled); display(ctx);
+  }
+  pi.registerShortcut("ctrl+f", {
+    description: "Toggle fast mode",
+    handler: async ctx => setEnabled(!enabled, ctx),
+  });
   pi.registerCommand("fast", {
     description: "OpenAI priority service: [on|off] (may incur additional cost)",
     async handler(args, ctx) {
@@ -20,7 +30,7 @@ export default function fastMode(pi: ExtensionAPI) {
       if (!["", "on", "off"].includes(value)) throw new Error("Usage: /fast [on|off]");
       const next = value ? value === "on" : !enabled;
       if (next && !["openai", "openai-codex"].includes(ctx.model?.provider ?? "")) throw new Error("Fast mode requires OpenAI or OpenAI Codex");
-      enabled = next; pi.appendEntry(key, enabled); display(ctx);
+      setEnabled(next, ctx);
       ctx.ui.notify(`Fast mode ${enabled ? "on (priority service requested)" : "off"}`, "info");
     },
   });

@@ -1,3 +1,4 @@
+import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
@@ -19,10 +20,13 @@ export function usage(ctx: ExtensionContext) {
   return { cost, last };
 }
 export default function presentation(pi: ExtensionAPI) {
+  let restoreUserMessages: (() => void) | undefined;
   const install = (_event: unknown, ctx: ExtensionContext) => {
     if (!ctx.hasUI) return;
     ctx.ui.setToolsExpanded(false);
+    if (ctx.hasUI && ctx.mode === "tui") restoreUserMessages ??= installCompactUserMessages();
     ctx.ui.setWorkingIndicator({ frames: [] });
+    ctx.ui.setWorkingVisible(false);
     ctx.ui.setTitle(`pi · ${basename(ctx.cwd)}`);
     ctx.ui.setFooter((_tui, theme, data) => ({
       invalidate() {},
@@ -38,5 +42,5 @@ export default function presentation(pi: ExtensionAPI) {
   };
   pi.on("session_start", install);
   pi.on("session_switch", install);
-  pi.on("session_shutdown", (_event, ctx) => { ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); });
+  pi.on("session_shutdown", (_event, ctx) => { restoreUserMessages?.(); restoreUserMessages = undefined; ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); });
 }

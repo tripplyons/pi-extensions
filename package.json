@@ -8,7 +8,7 @@
     "pi-package"
   ],
   "scripts": {
-    "test": "bun test"
+    "test": "bash tests/run.sh"
   },
   "pi": {
     "extensions": [
@@ -29,7 +29,12 @@
       "./extensions/usage/index.ts",
       "./extensions/skills/index.ts",
       "./extensions/codex-compaction/index.ts",
-      "./extensions/swarm/index.ts"
+      "./extensions/swarm/index.ts",
+      "./extensions/stash/index.ts",
+      "./extensions/auto-rename/index.ts",
+      "./extensions/btw/index.ts",
+      "./extensions/nvim-session-export/index.ts",
+      "./extensions/tripp-autoresearch/index.ts"
     ]
   },
   "peerDependencies": {

@@ -50,7 +50,7 @@ test("real Pi RPC loads the package and activates swarm without model requests",
   }
   try {
     const { commands } = await request("get_commands");
-    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "pruner"])
+    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "pruner", "btw", "btw:tools", "nvim", "autoresearch"])
       expect(commands.some((command: any) => command.name === name)).toBe(true);
     await request("prompt", { message: "/swarm:start Verify isolated RPC activation" });
     const runs = await readdir(join(home, "state", "swarm"));

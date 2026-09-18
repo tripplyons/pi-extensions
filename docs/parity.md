@@ -13,7 +13,7 @@ registration or documentation. This list tracks deliverables, not completion.
 | Ask user | Suggestions, free text, timeout/cancel, worker restriction | Implemented; unit tested |
 | Autocomplete | Commands, skills, files, editor integration | Restored fuzzy provider; unit tested; interactive keyboard audit pending |
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
-| Pruner | Off default, 50 KB, keep five, skill/retrieval protection, reasoning, durable archive, /prune /pruner | Implemented; unit tested; reasoning persistence audit pending |
+| Pruner | Off default, 100 KB, keep five, skill/retrieval protection, reasoning, durable archive, /prune /pruner | Implemented; unit tested; reasoning persistence regression tested |
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
 | Overseer | Terminal OSC glow, lifecycle and input waits | Implemented; state test; TTY audit pending |
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Implemented; formatting tests; TTY audit pending |

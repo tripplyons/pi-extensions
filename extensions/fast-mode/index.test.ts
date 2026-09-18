@@ -18,3 +18,17 @@ test("fast preference restores from active branch, off is always available", asy
   await h.command("fast", "off");
   expect((await h.emit("before_provider_request", { payload: {} }))[0]).toBeUndefined();
 });
+
+test("Ctrl+F toggles the persisted request tier and can turn off on any provider", async () => {
+  const h = harness(); install(h.pi);
+  h.ctx.model = { provider: "openai-codex" };
+  const toggle = h.shortcuts.get("ctrl+f").handler;
+  await toggle(h.ctx);
+  expect((await h.emit("before_provider_request", { payload: {} }))[0]).toEqual({ service_tier: "priority" });
+  expect(h.entries.at(-1).data).toBe(true);
+  h.ctx.model = { provider: "anthropic" };
+  await toggle(h.ctx);
+  expect(h.entries.at(-1).data).toBe(false);
+  await toggle(h.ctx);
+  expect(h.entries.at(-1).data).toBe(false);
+});

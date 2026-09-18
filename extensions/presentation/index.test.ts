@@ -12,9 +12,11 @@ test("footer formats tokens and accounts only for the active branch", () => {
 test("hides the working indicator and keeps the footer unchanged while busy", async () => {
   const h = harness();
   const indicators: unknown[] = [];
+  const visibility: unknown[] = [];
   let footer: any;
   h.ctx.ui.setToolsExpanded = () => {};
   h.ctx.ui.setTitle = () => {};
+  h.ctx.ui.setWorkingVisible = (message: unknown) => visibility.push(message);
   h.ctx.ui.setWorkingIndicator = (options: unknown) => indicators.push(options);
   h.ctx.ui.setFooter = (factory: any) => {
     footer = factory?.({}, { fg: (_color: string, text: string) => text }, {
@@ -24,6 +26,7 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   install(h.pi);
   await h.emit("session_start");
   expect(indicators).toEqual([{ frames: [] }]);
+  expect(visibility).toEqual([false]);
   const idle = footer.render(120);
   await h.emit("agent_start");
   expect(footer.render(120)).toEqual(idle);
@@ -34,4 +37,5 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   await h.emit("session_shutdown");
   expect(indicators.at(-1)).toBeUndefined();
   expect(footer).toBeUndefined();
+  expect(visibility).toEqual([false, false, true]);
 });

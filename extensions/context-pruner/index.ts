@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
@@ -6,7 +7,9 @@ import { result, restore } from "../../lib/common.ts";
 type Call = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Output = Extract<AgentMessage, { role: "toolResult" }>;
 type Archived = { call: Call; output: Output; pruneCall: boolean; pruneOutput: boolean };
-type State = { enabled: boolean; serial: number; archive: Record<string, Archived> };
+type State = { enabled: boolean; serial: number; archive: Record<string, Archived>; reasoning?: string[] };
+export const threshold = 100_000;
+const fingerprint = (message: AgentMessage) => createHash("sha256").update(JSON.stringify(message)).digest("hex");
 const key = "rework:pruner";
 const marker = "[context-pruner]";
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
@@ -14,6 +17,13 @@ const large = (value: unknown) => bytes(value) > 250 && !JSON.stringify(value).i
 
 export function prune(messages: AgentMessage[], state: State, force: boolean) {
   const copy = structuredClone(messages);
+  const fingerprints = copy.map(fingerprint);
+  const removedReasoning = new Set(state.reasoning ?? []);
+  for (const [index, message] of copy.entries()) {
+    if (message.role === "assistant" && removedReasoning.has(fingerprints[index])) {
+      message.content = message.content.filter(block => block.type !== "thinking");
+    }
+  }
   const calls = new Map<string, { call: Call; index: number }>();
   for (const [index, message] of copy.entries()) {
     if (message.role !== "assistant") continue;
@@ -47,17 +57,22 @@ export function prune(messages: AgentMessage[], state: State, force: boolean) {
   if (eligible.length >= 5) for (const message of copy.slice(0, boundary)) {
     if (message.role === "assistant") for (const block of message.content) if (block.type === "thinking") reclaimable += bytes(block);
   }
-  if (!force && (!state.enabled || reclaimable < 50_000)) return { messages: copy, reclaimable, changed: false };
+  if (!force && (!state.enabled || reclaimable < threshold)) return { messages: copy.filter(message => message.role !== "assistant" || message.content.length > 0), reclaimable, changed: false };
   for (const entry of eligible.slice(0, count)) {
     const id = `tp_${++state.serial}`;
     state.archive[id] = structuredClone(entry);
     if (entry.pruneCall) entry.call.arguments = { _pruned: `${marker} Use tool_pruner_view: ${id}` };
     if (entry.pruneOutput) entry.output.content = [{ type: "text", text: `${marker} Archived; use tool_pruner_view with {"ids":["${id}"]}.` }];
   }
-  if (eligible.length >= 5) for (const message of copy.slice(0, boundary)) {
-    if (message.role === "assistant") message.content = message.content.filter(block => block.type !== "thinking");
+  let reasoningChanged = false;
+  if (eligible.length >= 5) for (const [index, message] of copy.slice(0, boundary).entries()) {
+    if (message.role !== "assistant" || !message.content.some(block => block.type === "thinking")) continue;
+    removedReasoning.add(fingerprints[index]);
+    message.content = message.content.filter(block => block.type !== "thinking");
+    reasoningChanged = true;
   }
-  return { messages: copy.filter(message => message.role !== "assistant" || message.content.length > 0), reclaimable, changed: count > 0 };
+  if (reasoningChanged) state.reasoning = [...removedReasoning];
+  return { messages: copy.filter(message => message.role !== "assistant" || message.content.length > 0), reclaimable: 0, changed: count > 0 || reasoningChanged };
 }
 
 export default function contextPruner(pi: ExtensionAPI) {
@@ -83,7 +98,7 @@ export default function contextPruner(pi: ExtensionAPI) {
     const pruned = prune(event.messages, state, manual);
     manual = false;
     if (pruned.changed) pi.appendEntry(key, state);
-    ctx.ui.setStatus("pruner", state.enabled || state.serial ? `${(pruned.reclaimable / 1000).toFixed(1)}/50 KB` : undefined);
+    ctx.ui.setStatus("pruner", state.enabled || state.serial ? `${(pruned.reclaimable / 1000).toFixed(1)}/100 KB` : undefined);
     return { messages: pruned.messages };
   });
   pi.registerTool({

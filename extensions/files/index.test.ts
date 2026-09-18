@@ -1,23 +1,17 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, readFile, rm, symlink, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harness } from "../../lib/harness.ts";
 import install from "./index.ts";
 
-test("UTF-8 byte boundaries, atomic writes and unique edits", async () => {
+test("UTF-8 byte boundaries and binary rejection", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-files-"));
   try {
     const h = harness(); h.ctx.cwd = root; install(h.pi);
-    await h.call("write", { path: "a", content: "héllo" });
+    await writeFile(join(root, "a"), "héllo");
     expect((await h.call("read", { path: "a", offset: 1, limit: 2 })).details.content).toBe("é");
     await expect(h.call("read", { path: "a", offset: 2, limit: 1 })).rejects.toThrow("UTF-8");
-    await expect(h.call("edit", { path: "a", old_text: "l", new_text: "x" })).rejects.toThrow("unique");
-    await h.call("edit", { path: "a", old_text: "hé", new_text: "he" });
-    expect(await readFile(join(root, "a"), "utf8")).toBe("hello");
-    await symlink(join(root, "a"), join(root, "link"));
-    await h.call("write", { path: "link", content: "new" });
-    expect(await readFile(join(root, "a"), "utf8")).toBe("new");
     await writeFile(join(root, "binary"), Buffer.from([0, 1]));
     await expect(h.call("read", { path: "binary", offset: 0, limit: 2 })).rejects.toThrow("Binary");
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -54,4 +48,16 @@ test("image tool returns actual pixels and rejects text", async () => {
     await writeFile(join(root, "text"), "not an image");
     await expect(h.call("view_image", { path: "text" })).rejects.toThrow("Unsupported");
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("removes built-in write and edit without disabling other tools", async () => {
+  const h = harness();
+  let active = ["read", "edit", "write", "bash", "shell", "search"];
+  h.pi.getActiveTools = () => active;
+  h.pi.setActiveTools = (names: string[]) => { active = names; };
+  install(h.pi);
+  expect(h.tools.has("edit")).toBe(false);
+  expect(h.tools.has("write")).toBe(false);
+  await h.emit("session_start");
+  expect(active).toEqual(["read", "bash", "shell", "search"]);
 });

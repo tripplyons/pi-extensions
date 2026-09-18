@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { open, readFile, readdir, realpath, stat, rename, unlink, mkdir } from "node:fs/promises";
-import { dirname, resolve, relative, isAbsolute, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { open, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { resolve, relative, isAbsolute, join } from "node:path";
 import { result } from "../../lib/common.ts";
 
 function decode(bytes: Uint8Array) {
@@ -10,23 +9,12 @@ function decode(bytes: Uint8Array) {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
   catch { throw new Error("Invalid UTF-8 or byte range splits a character"); }
 }
-export async function atomicWrite(path: string, content: string) {
-  // Follow an existing symlink, without replacing the link itself.
-  let target = path;
-  try { target = await realpath(path); } catch (error: any) { if (error.code !== "ENOENT") throw error; }
-  await mkdir(dirname(target), { recursive: true });
-  const temporary = join(dirname(target), `.pi-${randomUUID()}`);
-  let mode = 0o666;
-  try { mode = (await stat(target)).mode & 0o777; } catch (error: any) { if (error.code !== "ENOENT") throw error; }
-  try {
-    const file = await open(temporary, "wx", mode);
-    try { await file.writeFile(content, "utf8"); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, target);
-  } finally { await unlink(temporary).catch((error) => { if (error.code !== "ENOENT") throw error; }); }
-}
 const pathSchema = Type.String({ minLength: 1 });
 const limitSchema = Type.Integer({ minimum: 1 });
 export default function files(pi: ExtensionAPI) {
+  pi.on("session_start", () => {
+    pi.setActiveTools(pi.getActiveTools().filter(name => name !== "edit" && name !== "write"));
+  });
   pi.registerTool({ name: "read", label: "Read", description: "Read a bounded UTF-8 byte range. Offset and limit must not split a character. Binary files are rejected. Absolute and outside-workspace paths supported.",
     parameters: Type.Object({ path: pathSchema, offset: Type.Integer({ minimum: 0 }), limit: limitSchema }),
     async execute(_id, args, signal, _update, ctx) {
@@ -40,20 +28,6 @@ export default function files(pi: ExtensionAPI) {
         const { bytesRead } = await file.read(buffer, 0, length, args.offset);
         return result({ content: decode(buffer.subarray(0, bytesRead)), truncated: args.offset + bytesRead < info.size });
       } finally { await file.close(); }
-    } });
-  pi.registerTool({ name: "write", label: "Write", description: "Atomically write UTF-8 text. Supports absolute and outside-workspace paths.",
-    parameters: Type.Object({ path: pathSchema, content: Type.String() }),
-    async execute(_id, args, signal, _update, ctx) { signal?.throwIfAborted(); await atomicWrite(resolve(ctx.cwd, args.path), args.content); return result({ path: args.path, bytes: Buffer.byteLength(args.content) }); } });
-  pi.registerTool({ name: "edit", label: "Edit", description: "Replace one exact, unique string in a UTF-8 file. Reject missing or ambiguous matches.",
-    parameters: Type.Object({ path: pathSchema, old_text: Type.String({ minLength: 1 }), new_text: Type.String() }),
-    async execute(_id, args, signal, _update, ctx) {
-      signal?.throwIfAborted(); const path = resolve(ctx.cwd, args.path);
-      const source = decode(await readFile(path));
-      const index = source.indexOf(args.old_text);
-      if (!args.old_text || index < 0) throw new Error("old_text not found");
-      if (source.indexOf(args.old_text, index + 1) >= 0) throw new Error("old_text is not unique");
-      await atomicWrite(path, source.slice(0, index) + args.new_text + source.slice(index + args.old_text.length));
-      return result({ path: args.path, replacements: 1 });
     } });
   pi.registerTool({ name: "list", label: "List", description: "List directory entries, optionally recursively. Does not descend through symlink directories.",
     parameters: Type.Object({ path: pathSchema, recursive: Type.Boolean(), max_results: limitSchema }),
