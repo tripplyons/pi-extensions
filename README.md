@@ -1,60 +1,15 @@
-# pi-extensions
+# Pi extensions
 
-24 extensions for [Pi](https://pi.dev/): Codex conversion and 23 local extensions. Use native Pi file tools and bg-bash with Codex tool overrides disabled.
+Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rework`;
+`main` is unchanged. No legacy extensions, conversion provider, patches, Mixture,
+subagent framework, or compatibility shims are loaded.
 
-## Install
+## Extensions (0)
 
-```sh
-git clone https://github.com/tripplyons/pi-extensions.git
-cd pi-extensions
-npm ci --omit=dev
-npm install --prefix "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm" --legacy-peer-deps @howaboua/pi-codex-conversion@3.0.33
-pi install "$PWD"
-pi install npm:@howaboua/pi-codex-web-run@0.0.2
-pi install npm:@howaboua/pi-codex-imagegen@0.0.4
-```
+The old implementation has been removed. Replacement entry points are added in
+subsequent commits. The target is all seven configured plugins plus Stack's shell,
+file tools, swarm, compaction, fast mode, model/reasoning controls, usage, sessions,
+skills, and retry/approval policy. Pi's public runtime owns native equivalents;
+new extensions own only missing behavior.
 
-The dependency in Pi's user-wide npm directory lets the two addons import conversion. It is not registered separately with Pi. Do not also install canonical or Lite Codex conversion, the npm ask addon, or copies of these extensions under `~/.pi/agent/extensions/`.
-
-Disable Code mode and Codex tool overrides before starting a fresh session. See [conversion setup and migration](extensions/pi-codex-conversion/README.md). The sibling dotfiles repository manages installation and configuration. Local source edits load after `/reload` or a restart. Dependency changes require `npm ci --omit=dev` first.
-
-## Dependencies
-
-- Pi 0.85.1 or newer, Node.js 22.19 or newer, npm, and Git.
-- OpenAI Codex authentication in Pi for web search and image generation.
-- tmux and zsh for bg-bash.
-- Neovim for `/nvim`.
-- Bun and Python 3 for tests. Run `npm test` from the checkout. The runner uses four isolated workers and a 30-second per-file timeout; override them with `PI_TEST_JOBS` and `PI_TEST_FILE_TIMEOUT_MS`.
-
-Extensions and subagents run with your user permissions, including shell and file-write access.
-
-## Extensions
-
-| Extension | What it does |
-| --- | --- |
-| [pi-codex-conversion](extensions/pi-codex-conversion/README.md) | Owns local Codex context, history, and notes; preserves native tools and voice with missing-microphone fallback. |
-| [agent-swarm](extensions/agent-swarm/README.md) | Runs bounded macOS worker hierarchies; explicitly authorized coordinator commits stay in the root checkout while child Git and integration remain controller-owned. |
-| ask-user | Collects choices and free-text answers in an interactive form. |
-| auto-rename | Names sessions automatically, including Mixture sessions. |
-| autocomplete | Adds editor completions for files, skills, and commands. |
-| [bg-bash](extensions/bg-bash/README.md) | Runs persistent non-paging shell jobs with five-line collapsed result cards and waits for background activity. |
-| btw | Answers side questions with `/btw`; `/btw:tools` allows the child's configured tools. |
-| clean-footer | Shows agent and compaction activity, session metrics, and extension statuses. |
-| [complain](extensions/complain/README.md) | Records timestamped environment and tool issues for later review. |
-| [fast](extensions/fast/README.md) | Toggles session Codex priority requests, including Mixture's Codex roles, with `/fast` or Ctrl+F. |
-| goal | Persists a long-running objective, budgets its work, and continues until complete, blocked, paused, or limited. |
-| hide-empty-editor | Hides the empty editor. |
-| live | Toggles Codex realtime voice with `/live` or Ctrl+L and follows Overseer terminal focus for microphone ownership. |
-| message-window | Limits the visible transcript window and restores completed tool previews when rebuilding history. |
-| [mixture](extensions/mixture/README.md) | Native lead/writer or Executor/Advisor presets with consultation-based reminders, plus Agent Swarm support. |
-| nvim-session-export | Exports the local session to Neovim with `/nvim`. |
-| stash | Stashes and restores editor text with Ctrl+S. |
-| [startup-screen](extensions/startup-screen/README.md) | Shows a compact PI header and project-only context, skills, and extensions. |
-| subagent | Runs asynchronous children with native tools; swarm attachment blocks new jobs. |
-| syntax-punctuation | Styles syntax punctuation. |
-| thinking-selector | Opens a centered, styled thinking-level picker with Ctrl+T and arrow or j/k navigation. |
-| thinking-counter | Displays thinking progress. |
-| [tripp-autoresearch](extensions/tripp-autoresearch/README.md) | Runs experiment loops with benchmarks and keep/revert decisions. |
-| usage | Shows standard 5h/weekly Codex usage in a dismissible `/codex-usage` popup. |
-
-Autoresearch includes its skills and retains its [upstream license](extensions/tripp-autoresearch/LICENSE). Codex conversion is an npm dependency with its own license and attribution.
+Historical third-party license notices are retained under `licenses/`.

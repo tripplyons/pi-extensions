@@ -1,47 +1,12 @@
 {
   "name": "@tripplyons/pi-extensions",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Personal Pi extensions, bundled skills, and tests",
-  "keywords": [
-    "pi-package"
-  ],
-  "scripts": {
-    "test": "bash extensions/run-tests.sh",
-    "postinstall": "patch-package"
-  },
-  "pi": {
-    "extensions": [
-      "./extensions/pi-codex-conversion/index.ts",
-      "./extensions/agent-swarm/index.ts",
-      "./extensions/ask-user/index.ts",
-      "./extensions/auto-rename/index.ts",
-      "./extensions/autocomplete/index.ts",
-      "./extensions/bg-bash/index.ts",
-      "./extensions/btw/index.ts",
-      "./extensions/clean-footer/index.ts",
-      "./extensions/complain/index.ts",
-      "./extensions/fast/index.ts",
-      "./extensions/goal/index.ts",
-      "./extensions/hide-empty-editor/index.ts",
-      "./extensions/live/index.ts",
-      "./extensions/message-window/index.ts",
-      "./extensions/mixture/index.ts",
-      "./extensions/nvim-session-export/index.ts",
-      "./extensions/stash/index.ts",
-      "./extensions/startup-screen/index.ts",
-      "./extensions/subagent/index.ts",
-      "./extensions/syntax-punctuation/index.ts",
-      "./extensions/thinking-selector/index.ts",
-      "./extensions/thinking-counter/index.ts",
-      "./extensions/tripp-autoresearch/index.ts",
-      "./extensions/usage/index.ts"
-    ]
-  },
-  "dependencies": {
-    "@howaboua/pi-codex-conversion": "3.0.33"
-  },
+  "description": "Clean Pi equivalents of Tripp's Stack Agent configuration",
+  "keywords": ["pi-package"],
+  "scripts": { "test": "bun test" },
+  "pi": { "extensions": [] },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
@@ -49,20 +14,9 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": {
-      "optional": true
-    },
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "@earendil-works/pi-tui": {
-      "optional": true
-    },
-    "typebox": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "patch-package": "^8.0.1"
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
   }
 }
