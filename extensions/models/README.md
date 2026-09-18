@@ -1,9 +1,8 @@
-# Models and reasoning
+# Models
 
 `/models` lists authenticated models; `/models provider/id` selects an exact ID.
-Pi's native `/model` picker is unchanged. `/reasoning`, `/thinking`, and `/effort`
-show the current level and supported levels, or set one supplied as an argument.
-Unsupported levels fail rather than silently choosing a different effort.
+Pi's native `/model` picker is unchanged. Use
+[thinking-selector](../thinking-selector) for the Ctrl+T reasoning effort picker.
 
 Selection uses Pi's registry and session APIs. Pi owns persistence and restores
 model/thinking entries when resuming a session; this extension does not maintain

@@ -15,15 +15,7 @@ test("models select exact authenticated IDs without shadowing Pi's picker", asyn
   h.pi.setModel = async () => false;
   await expect(h.command("models", "test/a")).rejects.toThrow("authentication");
 });
-test("reasoning aliases reject unsupported levels before changing state", async () => {
+test("reasoning command aliases are not registered", () => {
   const h = harness(); install(h.pi);
-  h.ctx.model = { id: "simple", provider: "test", reasoning: false };
-  let effort = "off";
-  h.pi.setThinkingLevel = (level: string) => { effort = level; };
-  h.pi.getThinkingLevel = () => effort;
-  for (const name of ["reasoning", "thinking", "effort"]) {
-    await h.command(name, "off");
-    await expect(h.command(name, "xhigh")).rejects.toThrow("Unsupported");
-    expect(effort).toBe("off");
-  }
+  for (const name of ["reasoning", "thinking", "effort"]) expect(h.commands.has(name)).toBe(false);
 });

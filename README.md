@@ -1,10 +1,10 @@
 # Pi extensions
 
 Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rework`;
-`main` is unchanged. No legacy extensions, conversion provider, patches, Mixture,
+`main` is unchanged. No legacy extension bundle, conversion provider, patches, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (14)
+## Extensions (16)
 
 | Extension | Behavior |
 | --- | --- |
@@ -12,11 +12,13 @@ subagent framework, or compatibility shims are loaded.
 | [ask-user](extensions/ask-user) | Free-text questions with cancellation |
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
+| [hide-empty-editor](extensions/hide-empty-editor) | Hide the input box while empty |
 | [presentation](extensions/presentation) | Compact display and status footer |
 | [skills](extensions/skills) | Stack and shared skill discovery |
 | [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
 | [usage](extensions/usage) | Codex quota and reset times |
-| [models](extensions/models) | Model listing and reasoning controls |
+| [models](extensions/models) | Model listing and selection |
+| [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
 | [shell](extensions/shell) | Persistent tmux PTY jobs and wakeable waits |
