@@ -45,13 +45,13 @@ test("toggle swaps unprefixed tool schemas and restores the original selection",
   expect(h.active()).not.toContain("shell");
   expect(h.active()).not.toContain("bg_process");
   expect(h.active()).not.toContain("sleep");
-  expect(h.active()).not.toContain("ask_user");
+  expect(h.active()).toContain("ask_user");
   expect(h.active()).toContain("get_goal");
   expect(h.active()).toContain("swarm_task");
-  for (const name of ["shell", "bg_process", "sleep", "ask_user", "unknown_tool"]) {
+  for (const name of ["shell", "bg_process", "sleep", "unknown_tool"]) {
     expect((await h.emit("tool_call", { toolName: name }))[0].block).toBe(true);
   }
-  for (const name of ["read", "bash", "get_goal", "swarm_task", "run_experiment"]) {
+  for (const name of ["read", "bash", "ask_user", "get_goal", "swarm_task", "run_experiment"]) {
     expect(await h.emit("tool_call", { toolName: name })).toEqual([undefined]);
   }
   expect(h.active().some(name => name.startsWith("minimax_"))).toBe(false);
@@ -256,4 +256,73 @@ test("policy protects errors, control results and incomplete rounds", async () =
   incomplete.at(-1).content.push({ type: "toolCall", id: "extra", name: "read", arguments: {} });
   incomplete.push({ ...messages()[1], toolCallId: "call-8" });
   expect((await archiveMessages(incomplete, [], archive)).added.map(item => item.toolCallId)).toEqual(["call-0", "call-1", "call-2"]);
+});
+
+test("reminders enter only existing requests and persist branch-local cadence", async () => {
+  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
+  h.ctx.getSystemPrompt = () => "test system";
+  h.pi.getAllTools = () => [...h.tools.values()];
+  await h.call("todo_write", { todos: [{ id: "a", content: "Verify", status: "pending" }] });
+  for (let i = 0; i < 15; i++) h.entries.push({ type: "message", message: { role: "assistant", stopReason: "toolUse" } });
+  const before = structuredClone(h.entries);
+  const context = { messages: [{ role: "user", content: "Continue", timestamp: 0 }] };
+  const output = (await h.emit("context", context)).at(-1);
+  expect(output.messages.at(-1).content).toContain("15 assistant iterations");
+  expect(context.messages).toHaveLength(1); expect(h.sent).toEqual([]);
+  expect((await h.emit("context", context)).at(-1).messages).toHaveLength(1);
+  const reload = setup(); reload.entries.push(...structuredClone(h.entries));
+  reload.ctx.model = h.ctx.model; reload.ctx.getSystemPrompt = h.ctx.getSystemPrompt; reload.pi.getAllTools = h.pi.getAllTools;
+  await reload.emit("session_start");
+  expect((await reload.emit("context", context)).at(-1).messages).toHaveLength(1);
+  h.entries.splice(0, h.entries.length, ...before);
+  h.ctx.model.contextWindow = 10;
+  expect((await h.emit("context", context)).at(-1).messages).toHaveLength(1);
+  expect(h.entries).toEqual(before); // A rejected reminder does not reset cadence.
+  h.ctx.model.contextWindow = 200000;
+  h.ctx.signal = AbortSignal.abort();
+  expect((await h.emit("context", context)).at(-1).messages).toHaveLength(1);
+  expect(h.entries).toEqual(before);
+  h.ctx.signal = undefined;
+  await h.call("todo_write", { todos: [{ id: "a", content: "Verify", status: "completed" }] });
+  for (let i = 0; i < 20; i++) h.entries.push({ type: "message", message: { role: "assistant", stopReason: "stop" } });
+  expect((await h.emit("context", context)).at(-1).messages).toHaveLength(1);
+  await h.command("minimax", "off");
+  expect((await h.emit("context", context)).at(-1)).toBeUndefined(); expect(h.sent).toEqual([]);
+});
+
+test("loop reminder is request-local, deduplicated and never triggers continuation", async () => {
+  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
+  h.ctx.getSystemPrompt = () => "test"; h.pi.getAllTools = () => [...h.tools.values()];
+  const repeated = messages(3, 1);
+  for (const message of repeated) if (message.role === "toolResult") { message.isError = true; message.content = [{ type: "text", text: "missing file" }]; }
+  const output = (await h.emit("context", { messages: repeated })).at(-1);
+  expect(output.messages.at(-1).content).toContain("MiniMax loop reminder");
+  expect((await h.emit("context", { messages: repeated })).at(-1).messages).toHaveLength(repeated.length);
+  expect(h.sent).toEqual([]);
+});
+
+test("rejected archive admission preserves earlier receipts without publishing new ones", async () => {
+  const archive = new Archive(await temp());
+  const input = messages(9);
+  const known = [await archive.save(input[1])];
+  let checked = false;
+  const output = await archiveMessages(input, known, archive, (before, after) => {
+    checked = true; expect(before[1].content[0].text).toContain("minimax archive");
+    expect(after[3].content[0].text).toContain("minimax archive"); return false;
+  });
+  expect(checked).toBe(true); expect(output.added).toEqual([]);
+  expect(output.messages[1].content[0].text).toContain("minimax archive");
+  expect(output.messages[3]).toEqual(input[3]);
+});
+
+
+test("MiniMax does not activate ask_user when it was unavailable", async () => {
+  const h = setup(); await h.emit("session_start");
+  h.pi.setActiveTools(h.active().filter(name => name !== "ask_user"));
+  await h.command("minimax", "on");
+  expect(h.active()).not.toContain("ask_user");
+  await h.command("minimax", "off");
+  expect(h.active()).not.toContain("ask_user");
 });

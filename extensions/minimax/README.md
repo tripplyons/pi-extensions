@@ -10,7 +10,7 @@ to interrupted compaction and background-task completion.
 ## Tools
 
 While enabled, the local tools are `read`, `edit`, `write`, `bash`, `grep`, and
-`glob`, using Pi's native implementations and a managed Bash wrapper. `read` uses
+`glob`, using Pi's file implementations, ripgrep search, and a managed Bash wrapper. `read` uses
 1-based line offsets in this mode, not the normal byte ranges. `bash` uses a terminating timeout, not
 the normal shell's persistent tmux jobs. Existing jobs are not killed.
 
@@ -25,8 +25,48 @@ Unicode character ranges of saved tool-result JSON. It remains available after
 disabling the mode so checkpoint references can still be resolved.
 
 Goal, autoresearch, and swarm tools keep their existing activation rules. Other
-tools, including `shell`, `bg_process`, `sleep`, and `ask_user`, are hidden and
-blocked. Disabling restores the displaced tools.
+tools, including `shell`, `bg_process`, and `sleep`, are hidden and blocked.
+The existing `ask_user` stays available if it was already active; this extension
+does not register or activate another question tool. Disabling restores the displaced tools.
+
+## Search pages
+
+Search requires `rg` on `PATH`.
+
+- `grep` supports `mode: "content"` (default), `"files"` (filenames only), and
+  `"count"` (matching lines per file, not regex occurrences).
+- `offset` is a zero-based result offset. Follow `next_offset` until it is `null`.
+  Keep the same arguments between pages. Each page reruns the search, so file
+  changes can shift results.
+- Defaults: 100 records for `grep`, 1000 for `glob`. Pages cap at 1000 records
+  and 48 KiB. Content and context lines each count as one record; long content
+  lines are clipped to 500 characters. Use `read` for the full line.
+- Results sort by path. `glob` also accepts `sort: "modified"` for newest first.
+- Hidden and ignored files are excluded by default. `includeIgnored: true`
+  requires an explicit `path`; use a narrow directory rather than the repo root.
+- Searches stop after 30 seconds. Oversized records fail with a request to
+  narrow the search. Paths are JSON-quoted to preserve unusual filenames.
+
+For example, `grep({pattern: "createClient", mode: "files", limit: 20})` finds
+candidate files without returning matching source lines.
+
+## Reminders
+
+After three assistant iterations repeat the same tool failure or poll a task
+without advancing its output, the next request includes a strategy/wait
+reminder. Further reminders follow every three matching iterations. New user
+turns, changed errors, successful calls, or advancing output break the streak.
+Parallel duplicates within one iteration do not count as separate iterations.
+Loop streaks reset when their messages leave context during compaction.
+
+Unfinished todos receive a review reminder after 15 assistant iterations without
+a todo write or reminder. The cadence follows active-branch session history,
+including across reloads and compaction. Completed or cancelled lists do not
+receive reminders.
+
+Reminders are mode-scoped and added only to an already scheduled model request,
+when its estimated budget allows. They do not send messages that trigger another
+turn, create goals, mark work complete, or declare a task blocked.
 
 ## Archiving
 
@@ -49,8 +89,20 @@ results visible. There is no automatic artifact deletion.
 Policy reference: [MiniMax's archiver](https://github.com/MiniMax-AI/minimax-code/blob/main/packages/local-runtime-v2/src/service/turn-system/compaction/algorithm/tool-result-archiver.ts).
 This implementation is independent, not copied upstream code. It matches the
 selection defaults, not MiniMax's remote configuration overrides or its
-provider-specific token/serialized-request admission layer. Pi handles provider
-limits and overflow recovery; archive selection itself is byte-based.
+provider-specific tokenizer. After byte-based selection, new receipts are admitted
+only if both the estimated token count and serialized LLM-message bytes decrease.
+Original session details are excluded from this measurement.
+
+Reminder admission includes the system prompt, active tool schemas, estimated
+message tokens, an output reserve, and a 10% margin against the selected model's
+context window. Unknown model limits suppress reminders.
+
+Pi exposes a final `before_provider_request` payload hook, but no public dry-run
+provider serializer/token-count API for comparing candidate contexts. These are
+model-limit-aware estimates, **not exact provider request measurements**. No
+extra API requests are made. Pi still handles provider limits and overflow
+recovery. Rejected archive candidates may leave unreferenced artifacts; there
+is no automatic artifact deletion.
 
 ## Compaction
 

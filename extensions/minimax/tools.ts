@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { createReadTool, createEditTool, createWriteTool, createGrepTool, createFindTool, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createReadTool, createEditTool, createWriteTool, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { registerSearchTools } from "./search.ts";
 import { minimaxEnabled } from "../../lib/minimax.ts";
 import { registerTaskTools, type Tasks } from "./tasks.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
@@ -17,16 +18,15 @@ const renderFileResult: NonNullable<ToolDefinition["renderResult"]> = (result, o
 const factories = {
   edit: createEditTool,
   write: createWriteTool,
-  grep: createGrepTool,
-  glob: createFindTool,
 };
-export const modeTools = ["read", ...Object.keys(factories), "bash", "task_query", "task_output", "task_stop", "todo_write"];
+export const modeTools = ["read", ...Object.keys(factories), "grep", "glob", "bash", "task_query", "task_output", "task_stop", "todo_write"];
 export const companionTool = (name: string) => name.startsWith("swarm_") ||
-  ["create_goal", "get_goal", "update_goal", "init_experiment", "run_experiment", "log_experiment"].includes(name);
+  ["ask_user", "create_goal", "get_goal", "update_goal", "init_experiment", "run_experiment", "log_experiment"].includes(name);
 export const allowedTool = (name: string) => modeTools.includes(name) || name === "archive_read" || companionTool(name);
 
 export function registerTools(pi: ExtensionAPI, tasks?: Tasks) {
   registerTaskTools(pi, tasks);
+  registerSearchTools(pi);
   for (const [name, create] of Object.entries(factories)) {
     const tool = create(process.cwd());
     pi.registerTool({

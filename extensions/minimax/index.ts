@@ -5,6 +5,8 @@ import { convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionC
 import { result, restore } from "../../lib/common.ts";
 import { minimaxEnabled, minimaxKey } from "../../lib/minimax.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
+import { admitsArchive, admitsReminder } from "./admission.ts";
+import { todoKey, todoReminderKey, loopReminderKey, staleTodos, todoReminder, loopReminder } from "./reminders.ts";
 import { Archive, archiveMessages, type Artifact } from "./archive.ts";
 import { modeTools, companionTool, allowedTool, registerTools } from "./tools.ts";
 
@@ -13,7 +15,7 @@ import { Tasks } from "./tasks.ts";
 import { installThresholdCompaction } from "./compaction.ts";
 
 const archiveKey = "rework:minimax-archive";
-const todoKey = "rework:minimax-todos";
+
 const todosSchema = Type.Object({ todos: Type.Array(Type.Object({
   id: Type.String({ minLength: 1, maxLength: 100 }),
   content: Type.String({ minLength: 1, maxLength: 2000 }),
@@ -58,7 +60,7 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
     },
   });
   pi.on("tool_call", (event, ctx) => {
-    if (minimaxEnabled(ctx) && !allowedTool(event.toolName)) return { block: true, reason: `${event.toolName} is unavailable in MiniMax mode. Use read, edit, write, bash, grep, glob, task_query, task_output, task_stop, todo_write, or archive_read.` };
+    if (minimaxEnabled(ctx) && !allowedTool(event.toolName)) return { block: true, reason: `${event.toolName} is unavailable in MiniMax mode. Use read, edit, write, bash, grep, glob, task_query, task_output, task_stop, todo_write, archive_read, or the existing ask_user.` };
   });
   pi.on("before_agent_start", (event, ctx) => {
     if (!minimaxEnabled(ctx)) return;
@@ -67,9 +69,23 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
   });
   pi.on("context", async (event, ctx) => {
     if (!minimaxEnabled(ctx)) return;
-    const projected = await archiveMessages(event.messages, artifacts(ctx), archive);
+    const projected = await archiveMessages(event.messages, artifacts(ctx), archive, admitsArchive);
     if (projected.added.length) pi.appendEntry(archiveKey, projected.added);
-    return { messages: projected.messages };
+    let messages = projected.messages;
+    if (ctx.signal?.aborted) return { messages };
+    const loop = loopReminder(event.messages);
+    const pending = todos(ctx).some(todo => todo.status === "pending" || todo.status === "in_progress");
+    const reminders = [
+      ...(loop && restore<string>(ctx, loopReminderKey) !== loop.id ? [{ key: loopReminderKey, data: loop.id, content: loop.content }] : []),
+      ...(pending && pi.getActiveTools().includes("todo_write") && staleTodos(ctx) ? [{ key: todoReminderKey, data: true, content: todoReminder }] : []),
+    ];
+    for (const reminder of reminders) {
+      const candidate = [...messages, { role: "custom" as const, customType: reminder.key, content: reminder.content, display: false, timestamp: Date.now() }];
+      if (!admitsReminder(candidate, pi, ctx)) continue;
+      messages = candidate;
+      pi.appendEntry(reminder.key, reminder.data);
+    }
+    return { messages };
   });
   pi.registerTool({
     name: "todo_write", label: "Update task list", renderCall: toolCall("todo_write"), renderResult,
@@ -104,7 +120,7 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
     if (event.reason === "threshold" && preparation.tokensBefore < compactionThreshold(ctx)) return { cancel: true };
     try {
       if (!ctx.model) throw new Error("Select a model before compacting");
-      const projected = await archiveMessages([...preparation.messagesToSummarize, ...preparation.turnPrefixMessages], artifacts(ctx), archive);
+      const projected = await archiveMessages([...preparation.messagesToSummarize, ...preparation.turnPrefixMessages], artifacts(ctx), archive, admitsArchive);
       if (projected.added.length) pi.appendEntry(archiveKey, projected.added);
       const response = await ctx.modelRegistry.complete(ctx.model, {
         systemPrompt: checkpointPrompt,

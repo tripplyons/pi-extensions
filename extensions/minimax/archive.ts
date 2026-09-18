@@ -68,7 +68,7 @@ export class Archive {
 }
 
 // Only project model input. The session's original calls and results stay intact.
-export async function archiveMessages(messages: AgentMessage[], known: Artifact[], archive: Archive) {
+export async function archiveMessages(messages: AgentMessage[], known: Artifact[], archive: Archive, admit?: (before: AgentMessage[], after: AgentMessage[]) => boolean) {
   const saved = new Map(known.map(artifact => [artifact.toolCallId, artifact]));
   // Reapply receipts before measuring; archived originals must not inflate the watermark.
   const visible = messages.map(message => {
@@ -86,14 +86,18 @@ export async function archiveMessages(messages: AgentMessage[], known: Artifact[
       added.push(artifact);
     }
   }
+  const baseline: AgentMessage[] = [];
   const projected: AgentMessage[] = [];
   for (const message of messages) {
     const artifact = message.role === "toolResult" ? saved.get(message.toolCallId) : undefined;
-    if (!artifact) { projected.push(message); continue; }
+    if (!artifact) { projected.push(message); baseline.push(message); continue; }
     // Never emit a reference to a missing or corrupt artifact.
     try { await archive.read(artifact.id); }
-    catch { projected.push(message); continue; }
-    projected.push({ ...message as Output, content: [{ type: "text", text: marker(artifact) }] });
+    catch { projected.push(message); baseline.push(message); continue; }
+    const receipt = { ...message as Output, content: [{ type: "text" as const, text: marker(artifact) }] };
+    projected.push(receipt);
+    baseline.push(known.some(item => item.id === artifact.id) ? receipt : message);
   }
+  if (added.length && admit && !admit(baseline, projected)) return { messages: baseline, added: [] };
   return { messages: projected, added };
 }
