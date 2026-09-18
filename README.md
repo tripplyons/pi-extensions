@@ -4,7 +4,7 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extensions, conversion provider, patches, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (12)
+## Extensions (13)
 
 | Extension | Behavior |
 | --- | --- |
@@ -13,6 +13,7 @@ subagent framework, or compatibility shims are loaded.
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
 | [presentation](extensions/presentation) | Compact display and status footer |
 | [skills](extensions/skills) | Stack and shared skill discovery |
+| [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
 | [usage](extensions/usage) | Codex quota and reset times |
 | [models](extensions/models) | Model listing and reasoning controls |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service |

@@ -23,7 +23,8 @@
       "./extensions/fast-mode/index.ts",
       "./extensions/models/index.ts",
       "./extensions/usage/index.ts",
-      "./extensions/skills/index.ts"
+      "./extensions/skills/index.ts",
+      "./extensions/codex-compaction/index.ts"
     ]
   },
   "peerDependencies": {
