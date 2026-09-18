@@ -4,15 +4,16 @@ import { compactRemote } from "./transport.ts";
 import { projectCheckpoint, saveCheckpoint, type SavedCheckpoint } from "./state.ts";
 import type { Item } from "./protocol.ts";
 
+import { compactionKey as key, defaultThreshold } from "./settings.ts";
+
 type State = { threshold: number; checkpoint?: SavedCheckpoint; usage?: { model: string; tokens: number } };
-const key = "rework:codex-compaction";
 export function installCompaction(pi: ExtensionAPI, request = compactRemote) {
-  let state: State = { threshold: 100000 };
+  let state: State = { threshold: defaultThreshold };
   let manual = false;
   let pending: AbortController | undefined;
   const cancel = () => { pending?.abort(); pending = undefined; manual = false; };
   const load = (_event: unknown, ctx: ExtensionContext) => {
-    cancel(); state = restore<State>(ctx, key) ?? { threshold: 100000 };
+    cancel(); state = restore<State>(ctx, key) ?? { threshold: defaultThreshold };
   };
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
   pi.on("session_shutdown", cancel);

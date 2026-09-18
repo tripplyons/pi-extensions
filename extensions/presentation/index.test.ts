@@ -39,3 +39,33 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   expect(footer).toBeUndefined();
   expect(visibility).toEqual([false, false, true]);
 });
+
+test("context footer uses input over the active compaction threshold", async () => {
+  const { installCompaction } = await import("../codex-compaction/index.ts");
+  const h = harness();
+  let footer: any;
+  Object.assign(h.ctx.ui, {
+    setToolsExpanded() {}, setTitle() {}, setWorkingVisible() {}, setWorkingIndicator() {},
+    setFooter(factory: any) {
+      footer = factory?.({}, { fg: (_color: string, text: string) => text }, {
+        getExtensionStatuses: () => new Map(),
+      });
+    },
+  });
+  install(h.pi);
+  installCompaction(h.pi);
+  await h.emit("session_start");
+  expect(footer.render(200)[0]).toContain("0%/100k");
+  h.entries.push({ type: "message", message: { role: "assistant", usage: {
+    input: 10_000, cacheRead: 35_000, cacheWrite: 5_000, output: 20_000, cost: { total: 0.02 },
+  } } });
+  expect(footer.render(200)[0]).toContain("50%/100k");
+  expect(footer.render(200)[0]).not.toContain(" out");
+  await h.command("threshold", "200k");
+  expect(footer.render(200)[0]).toContain("25%/200k");
+  await h.command("threshold", "25k");
+  expect(footer.render(200)[0]).toContain("200%/25k");
+  h.entries.splice(1);
+  await h.emit("session_tree");
+  expect(footer.render(200)[0]).toContain("50%/100k");
+});

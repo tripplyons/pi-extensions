@@ -1,3 +1,4 @@
+import { compactionThreshold } from "../codex-compaction/settings.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
@@ -33,7 +34,8 @@ export default function presentation(pi: ExtensionAPI) {
       render(width: number) {
         const { cost, last } = usage(ctx);
         const parts = [theme.fg("accent", basename(ctx.cwd)), ctx.model?.id ?? "?", pi.getThinkingLevel()];
-        if (last) parts.push(`last ${tokens(last.input)} in + ${tokens(last.output)} out`);
+        const threshold = compactionThreshold(ctx);
+        parts.push(`${Math.round((last?.input ?? 0) / threshold * 100)}%/${tokens(threshold)}`);
         parts.push(`$${cost.toFixed(2)}`);
         parts.push(...data.getExtensionStatuses().values());
         return [truncateToWidth(parts.join(theme.fg("dim", " | ")), width)];
