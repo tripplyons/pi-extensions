@@ -4,17 +4,18 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extensions, conversion provider, patches, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (5)
+## Extensions (6)
 
 | Extension | Behavior |
 | --- | --- |
 | [ask-user](extensions/ask-user) | Free-text questions with cancellation |
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
+| [shell](extensions/shell) | Persistent tmux PTY jobs and wakeable waits |
 | [files](extensions/files) | Byte-range text, exact edits, search, listing, images |
 | [goal](extensions/goal) | Persistent objectives and continuation |
 
-The remaining target includes shell/background tools, swarm, compaction, fast mode,
+The remaining target includes swarm, compaction, fast mode,
 model/reasoning controls, usage, sessions, skills, retry/approval policy,
 autocomplete, overseer, and presentation. Implementation is in progress.
 

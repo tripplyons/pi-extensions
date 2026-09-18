@@ -16,7 +16,8 @@
       "./extensions/complain/index.ts",
       "./extensions/context-pruner/index.ts",
       "./extensions/goal/index.ts",
-      "./extensions/files/index.ts"
+      "./extensions/files/index.ts",
+      "./extensions/shell/index.ts"
     ]
   },
   "peerDependencies": {

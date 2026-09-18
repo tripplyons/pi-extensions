@@ -15,7 +15,7 @@ export function harness() {
     registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (name: string, fn: Function) => hooks.set(name, [...(hooks.get(name) ?? []), fn]),
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data: structuredClone(data) }),
-    events: { emit() {} }, getThinkingLevel: () => "high",
+    events: { emit() {}, on() {} }, getThinkingLevel: () => "high",
     sendUserMessage: (message: string) => sent.push(message),
   };
   return { pi, ctx, tools, commands, entries, sent,
