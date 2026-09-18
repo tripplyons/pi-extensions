@@ -31,3 +31,12 @@ registration or documentation. This list tracks deliverables, not completion.
 Runtime differences must be stated explicitly and tested at the actual API seam.
 Do not replace a required feature with a stub or count an untested native feature
 as verified. Network checks must not expose credentials.
+
+### Native completion boundary
+
+`tests/autocomplete.test.ts` exercises Pi's actual CombinedAutocompleteProvider:
+command and skill suggestions, relative file suggestions, accepting each result,
+and cursor placement. The interactive runtime registers extension commands and
+loaded skills with this provider. No replacement editor is installed. Keyboard
+selection/dismissal and fuzzy `@` workspace lookup still need interactive checks;
+Stack's ranking algorithm and two-row footer are not reproduced by this test.
