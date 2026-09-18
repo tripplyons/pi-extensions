@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import minimax from "./index.ts";
+import { Tasks } from "./tasks.ts";
+import { mkdtempSync } from "node:fs";
 import files from "../files/index.ts";
 import pruner from "../context-pruner/index.ts";
 import { installCompaction } from "../codex-compaction/index.ts";
@@ -19,8 +21,11 @@ function setup() {
   h.pi.getActiveTools = () => [...active];
   h.pi.setActiveTools = (names: string[]) => { active = [...names]; };
   h.ctx.isIdle = () => true;
+  h.ctx.getContextUsage = () => undefined;
+  h.pi.sendMessage = (message: any) => h.sent.push(message.content);
   files(h.pi);
-  minimax(h.pi);
+  const taskRoot = mkdtempSync(join(tmpdir(), "minimax-tasks-")); roots.push(taskRoot);
+  minimax(h.pi, new Tasks(taskRoot));
   return { ...h, active: () => active };
 }
 function messages(rounds = 8, size = 40_000): any[] {
@@ -69,7 +74,7 @@ test("mode and todos follow the active session branch, including reload", async 
   expect(h.active()).toContain("shell"); expect(h.active()).not.toContain("todo_write");
   h.entries.push(...branch); await h.emit("session_tree");
   expect(h.active()).toContain("todo_write");
-  const [prompt] = await h.emit("before_agent_start", { systemPrompt: "base" });
+  const prompt = (await h.emit("before_agent_start", { systemPrompt: "base" })).find(value => value?.systemPrompt);
   expect(prompt.systemPrompt).toContain("Verify the change");
   const fresh = setup(); fresh.entries.push(...branch); await fresh.emit("session_start");
   expect(fresh.active()).toContain("bash");
@@ -89,6 +94,26 @@ test("native file tools perform line reads, edits, writes, regex search, globs a
   await expect(h.call("read", { path: "example.txt", offset: 0 })).rejects.toThrow("positive line");
   await h.command("minimax", "off");
   expect((await h.call("read", { path: "example.txt", offset: 0, limit: 5 })).details.content).toBe("first");
+});
+
+test("Bash passes upstream timeout defaults and cap to the executor", async () => {
+  const received: (number | undefined)[] = [];
+  const tasks = new Tasks(await temp(), {
+    async exec(_command, _cwd, options) {
+      received.push(options.timeout);
+      options.onData(Buffer.from("verified"));
+      return { exitCode: 0 };
+    },
+  });
+  for (const timeout of [undefined, 0, -1, NaN, Infinity, 0.25, 120, 300, 301, 1e10]) {
+    expect((await tasks.run(process.cwd(), { command: "ignored", timeout }, undefined, () => {}, () => {})).content[0]).toEqual({ type: "text", text: "verified" });
+  }
+  expect(received).toEqual([120, 120, 120, 120, 120, 0.25, 120, 300, 300, 300]);
+  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const registered = h.tools.get("bash");
+  expect(registered.parameters.properties.timeout.description).toContain("defaults to 120");
+  expect(registered.description).not.toContain("no default timeout");
+  await expect(h.call("bash", { command: "sleep 5", timeout: 0.05 })).rejects.toThrow("Command timed out after 0.05 seconds");
 });
 
 test("archiver preserves five rounds, arguments, original output, and bounded retrieval", async () => {
@@ -138,7 +163,7 @@ test("structured compaction includes split turns, previous checkpoint, exact sto
   const [response] = await h.emit("session_before_compact", compactionEvent());
   expect(request.messages[0].content).toContain("Split-turn context");
   expect(request.messages[0].content).toContain("Previous checkpoint");
-  expect(request.messages[0].content).toContain("Keep the test command");
+  expect(request.messages[1].content).toContain("Keep the test command");
   expect(request.systemPrompt).toContain("Do not invent completion");
   expect(options.cacheRetention).toBe("none");
   expect(response.compaction.firstKeptEntryId).toBe("keep-me");
@@ -168,7 +193,7 @@ test("MiniMax takes precedence over pruner and Codex hooks without changing thei
   await h.command("codex-compact"); await h.command("minimax", "on");
   await expect(h.command("codex-compact")).rejects.toThrow("MiniMax mode owns compaction");
   const results = await h.emit("context", { messages: messages(5) });
-  expect(results[1]).toBeUndefined();
+  expect(results.at(-1)).toBeUndefined();
   expect(await h.emit("before_provider_request", { payload: { model: "test", input: [{ role: "user", content: "hello" }] } })).toEqual([undefined]);
   expect(requests).toBe(0);
   expect((await h.emit("session_before_compact", compactionEvent()))[1]).toBeUndefined();
