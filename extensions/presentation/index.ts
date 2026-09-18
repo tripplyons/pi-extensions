@@ -1,4 +1,5 @@
 import { compactionThreshold } from "../codex-compaction/settings.ts";
+import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
@@ -21,11 +22,15 @@ export function usage(ctx: ExtensionContext) {
   return { cost, last };
 }
 export default function presentation(pi: ExtensionAPI) {
+  let restoreToolSpacing: (() => void) | undefined;
   let restoreUserMessages: (() => void) | undefined;
   const install = (_event: unknown, ctx: ExtensionContext) => {
     if (!ctx.hasUI) return;
     ctx.ui.setToolsExpanded(false);
-    if (ctx.hasUI && ctx.mode === "tui") restoreUserMessages ??= installCompactUserMessages();
+    if (ctx.mode === "tui") {
+      restoreUserMessages ??= installCompactUserMessages();
+      restoreToolSpacing ??= installCompactToolSpacing();
+    }
     ctx.ui.setWorkingIndicator({ frames: [] });
     ctx.ui.setWorkingVisible(false);
     ctx.ui.setTitle(`pi · ${basename(ctx.cwd)}`);
@@ -44,5 +49,5 @@ export default function presentation(pi: ExtensionAPI) {
   };
   pi.on("session_start", install);
   pi.on("session_switch", install);
-  pi.on("session_shutdown", (_event, ctx) => { restoreUserMessages?.(); restoreUserMessages = undefined; ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); });
+  pi.on("session_shutdown", (_event, ctx) => { restoreUserMessages?.(); restoreUserMessages = undefined; restoreToolSpacing?.(); restoreToolSpacing = undefined; ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); });
 }

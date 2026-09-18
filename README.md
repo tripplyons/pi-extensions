@@ -14,7 +14,7 @@ subagent framework, or compatibility shims are loaded.
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input; hidden while empty |
-| [presentation](extensions/presentation) | Compact display and input/compaction threshold footer; no working indicator |
+| [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Stack and shared skill discovery |
 | [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
