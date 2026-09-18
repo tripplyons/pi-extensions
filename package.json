@@ -22,7 +22,8 @@
       "./extensions/presentation/index.ts",
       "./extensions/fast-mode/index.ts",
       "./extensions/models/index.ts",
-      "./extensions/usage/index.ts"
+      "./extensions/usage/index.ts",
+      "./extensions/skills/index.ts"
     ]
   },
   "peerDependencies": {

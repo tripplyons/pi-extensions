@@ -25,7 +25,7 @@ registration or documentation. This list tracks deliverables, not completion.
 | Models/reasoning | List/select models, supported reasoning, persistence | Implemented via Pi registry/session APIs; command tests; persistence runtime audit pending |
 | Usage/cost | Codex limits/reset information and API cost reporting | Pending |
 | Sessions | New/resume/fork/tree/name/export, command discoverability | Pending |
-| Skills | Shared and Stack-specific skills, read-before-use policy | Pending |
+| Skills | Shared and Stack-specific skills, read-before-use policy | Implemented; real Pi loader and prompt tests; TUI invocation audit pending |
 | Retry/approval | Retry settings and cancellation; Stack approval policy equivalents | Pending |
 
 Runtime differences must be stated explicitly and tested at the actual API seam.
