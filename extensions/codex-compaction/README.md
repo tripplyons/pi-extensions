@@ -7,7 +7,8 @@ checkpoint validation. It does not substitute a generated text summary.
 
 The protocol and HTTP transport have synthetic and local-server regression
 coverage, including split SSE frames, cancellation, and invalid responses.
-Model/session-bound persistence, payload projection, and threshold integration
-are not connected yet. This directory is deliberately absent from Pi's extension
+Checkpoint serialization and exact-prefix projection are tested, including
+model/session binding and edited-history rejection. Session lifecycle hooks and
+automatic threshold integration are not connected yet. This directory is deliberately absent from Pi's extension
 manifest until those paths are implemented and tested. No live request is made by
 these tests.
