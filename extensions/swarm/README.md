@@ -20,3 +20,11 @@ a fake executable in an isolated tmux server; no model requests are made.
 The controller connects spawning, parent-only subtree stop/restart, result review,
 job shutdown, and preflighted cleanup. Integration tests exercise real Git
 worktrees with a fake process runtime. Public extension registration is pending.
+
+`/swarm:start <objective>` activates the twelve swarm tools. Activation is persisted
+on the root session branch. Workers load the same package entry points, inherit
+the model/effort at spawn, and poll durable direct-relative messages. Root clear
+preflights all worktrees before stopping anything. No operation merges or pushes.
+
+Public hooks are now registered and activation/session ownership is tested.
+End-to-end interactive worker orchestration and recovery audits remain pending.

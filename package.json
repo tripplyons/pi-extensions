@@ -24,7 +24,8 @@
       "./extensions/models/index.ts",
       "./extensions/usage/index.ts",
       "./extensions/skills/index.ts",
-      "./extensions/codex-compaction/index.ts"
+      "./extensions/codex-compaction/index.ts",
+      "./extensions/swarm/index.ts"
     ]
   },
   "peerDependencies": {

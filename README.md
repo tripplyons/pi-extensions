@@ -4,10 +4,11 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extensions, conversion provider, patches, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (13)
+## Extensions (14)
 
 | Extension | Behavior |
 | --- | --- |
+| [swarm](extensions/swarm) | User-activated workers, messaging, review and worktrees |
 | [ask-user](extensions/ask-user) | Free-text questions with cancellation |
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
