@@ -14,6 +14,12 @@ While enabled, the local tools are `read`, `edit`, `write`, `bash`, `grep`, and
 1-based line offsets in this mode, not the normal byte ranges. `bash` uses a terminating timeout, not
 the normal shell's persistent tmux jobs. Existing jobs are not killed.
 
+Previews use this repo's tool styles. Bash shows the same `$` command preview as
+`shell`, including collapsed first/last lines and expansion. File calls show paths
+and search patterns beside accent-colored tool names. Results show plain text,
+including edit diffs, with eight-line previews and full output on expansion.
+Native file-tool metadata does not replace the visible output.
+
 `todo_write` replaces a persistent task list. `archive_read` retrieves bounded
 Unicode character ranges of saved tool-result JSON. It remains available after
 disabling the mode so checkpoint references can still be resolved.

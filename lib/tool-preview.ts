@@ -39,7 +39,12 @@ export function toolCall(name: string): NonNullable<ToolDefinition["renderCall"]
       const question = typeof args?.question === "string" ? args.question : "...";
       return new Text(title + theme.fg("text", ` ${question}`), 0, 0);
     }
-    if (name !== "read") return new Text(title, 0, 0);
+    if (name === "grep" || name === "glob") {
+      const pattern = typeof args?.pattern === "string" ? args.pattern : "...";
+      const path = typeof args?.path === "string" ? ` in ${args.path}` : "";
+      return new Text(title + theme.fg("text", ` ${pattern}${path}`), 0, 0);
+    }
+    if (!["read", "edit", "write"].includes(name)) return new Text(title, 0, 0);
     const path = typeof args?.path === "string" ? args.path : "...";
     const range = [
       typeof args?.offset === "number" ? `offset: ${args.offset}` : undefined,

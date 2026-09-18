@@ -5,6 +5,15 @@ import { minimaxEnabled } from "../../lib/minimax.ts";
 import { registerTaskTools, type Tasks } from "./tasks.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 
+// Native details contain truncation metadata, not the payload shown by our previews.
+const renderFileResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, context) => {
+  const diff = (result.details as { diff?: string } | undefined)?.diff;
+  const content = !context.isError && diff
+    ? [...result.content, { type: "text" as const, text: diff }]
+    : result.content;
+  return renderResult({ ...result, content, details: undefined }, options, theme, context);
+};
+
 const factories = {
   edit: createEditTool,
   write: createWriteTool,
@@ -22,7 +31,7 @@ export function registerTools(pi: ExtensionAPI, tasks?: Tasks) {
     const tool = create(process.cwd());
     pi.registerTool({
       name, label: name, description: `MiniMax mode only. ${tool.description}`,
-      parameters: tool.parameters, renderCall: toolCall(name), renderResult,
+      parameters: tool.parameters, renderCall: toolCall(name), renderResult: renderFileResult,
       async execute(id, args, signal, update, ctx) {
         if (!minimaxEnabled(ctx)) throw new Error("Enable /minimax before using this tool");
         signal?.throwIfAborted();
@@ -38,7 +47,7 @@ export function modeReadTool(cwd: string): ToolDefinition<ReturnType<typeof crea
   const tool = createReadTool(cwd);
   return {
     name: "read", label: "Read", description: tool.description, parameters: tool.parameters,
-    renderCall: toolCall("read"), renderResult,
+    renderCall: toolCall("read"), renderResult: renderFileResult,
     async execute(id, args, signal, update, ctx) {
       signal?.throwIfAborted();
       for (const value of [args.offset, args.limit]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw new Error("Read offset and limit must be positive line counts");
