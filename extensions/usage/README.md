@@ -12,3 +12,7 @@ no live account request has been made as part of verification.
 
 API cost is separately displayed by presentation using Pi's recorded usage cost.
 Priority-tier pricing and compaction-cost completeness still need auditing.
+
+`/api-cost` totals assistant token usage and estimated API costs on the active
+session branch, including failed responses with reported usage. It is not a
+billing statement; subscription responses may report zero cost.

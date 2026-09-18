@@ -19,3 +19,23 @@ test('request uses fixed HTTPS endpoint, private headers and blocks redirects', 
   await expect(fetchUsage('invalid', new AbortController().signal, request)).rejects.toThrow('credentials');
   await expect(fetchUsage(token, new AbortController().signal, (async () => new Response('x'.repeat(1048577))) as any)).rejects.toThrow('1 MiB');
 });
+
+test("API cost uses only active-branch assistant usage, including failed responses", async () => {
+  const { harness } = await import("../../lib/harness.ts");
+  const { default: install } = await import("./index.ts");
+  const h = harness(); install(h.pi);
+  let notice = "";
+  h.ctx.ui.notify = (text: string) => { notice = text; };
+  h.entries.push({ type: "message", message: { role: "user", content: "hello" } });
+  for (const stopReason of ["stop", "error"]) h.entries.push({ type: "message", message: {
+    role: "assistant", stopReason,
+    usage: { input: 10, output: 2, cacheRead: 3, cacheWrite: 4, cost: { total: 0.125 } },
+  } });
+  await h.command("api-cost");
+  expect(notice).toContain("2 responses · input 20 · output 4");
+  expect(notice).toContain("$0.250000");
+  h.entries.length = 0;
+  await h.command("api-cost");
+  expect(notice).toContain("$0.000000");
+  await expect(h.command("api-cost", "reset")).rejects.toThrow("Usage");
+});

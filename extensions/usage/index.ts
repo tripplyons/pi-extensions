@@ -57,6 +57,21 @@ export async function fetchUsage(token: string, signal: AbortSignal, request: ty
   return parseUsage(payload);
 }
 export default function usage(pi: ExtensionAPI) {
+  pi.registerCommand("api-cost", {
+    description: "Show active-branch token usage and estimated API cost",
+    async handler(args, ctx) {
+      if (args.trim()) throw new Error("Usage: /api-cost");
+      let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0, requests = 0;
+      for (const entry of ctx.sessionManager.getBranch()) {
+        if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+        const usage = entry.message.usage;
+        input += usage.input; output += usage.output;
+        cacheRead += usage.cacheRead; cacheWrite += usage.cacheWrite;
+        cost += usage.cost.total; requests++;
+      }
+      ctx.ui.notify(`${requests} responses · input ${input} · output ${output} · cache read ${cacheRead} · cache write ${cacheWrite}\nEstimated API cost: $${cost.toFixed(6)} (not a billing statement; subscription usage may report $0)`, "info");
+    },
+  });
   let pending: AbortController | undefined;
   const cancel = () => { pending?.abort(); pending = undefined; };
   for (const event of ["session_switch", "session_shutdown", "model_select", "session_fork", "session_tree"] as const) pi.on(event, cancel);
