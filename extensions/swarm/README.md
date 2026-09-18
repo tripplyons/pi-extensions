@@ -16,3 +16,7 @@ user activation, and the public swarm tools are not wired yet. This directory ha
 The worker launcher now starts attachable tmux sessions with explicit extension
 paths and dedicated Pi session files. Stop, capture, and restart are tested using
 a fake executable in an isolated tmux server; no model requests are made.
+
+The controller connects spawning, parent-only subtree stop/restart, result review,
+job shutdown, and preflighted cleanup. Integration tests exercise real Git
+worktrees with a fake process runtime. Public extension registration is pending.
