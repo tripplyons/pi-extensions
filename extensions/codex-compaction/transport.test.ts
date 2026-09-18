@@ -70,3 +70,24 @@ test("reader cancellation interrupts a stalled stream after headers", async () =
   expect(await outcome).toBeInstanceOf(Error);
   expect(cancelled).toBe(true);
 });
+
+test("assembles checkpoints delivered before an output-less completion", async () => {
+  for (const response of [{}, { status: "completed", output: [] }]) {
+    const events = [
+      { type: "response.output_item.added", output_index: 0, item: { type: "compaction" } },
+      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.completed", response },
+    ];
+    expect(await readCheckpoint(new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")))).toEqual(item);
+  }
+});
+
+test("stream assembly still rejects unfinished or extra output", async () => {
+  for (const events of [
+    [{ type: "response.output_item.done", output_index: 0, item }],
+    [{ type: "response.output_item.done", output_index: 1, item }, { type: "response.completed", response: {} }],
+    [{ type: "response.output_item.done", output_index: 0, item },
+      { type: "response.output_item.done", output_index: 1, item: { type: "message" } },
+      { type: "response.completed", response: {} }],
+  ]) await expect(readCheckpoint(new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")))).rejects.toThrow();
+});

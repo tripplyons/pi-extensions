@@ -11,6 +11,7 @@ export async function readCheckpoint(response: Response, signal?: AbortSignal): 
   let buffer = "";
   let total = 0;
   let found: Item | undefined;
+  const outputs = new Map<number, Item>();
   function event(text: string) {
     const data = text.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
     if (!data || data === "[DONE]") return;
@@ -18,10 +19,27 @@ export async function readCheckpoint(response: Response, signal?: AbortSignal): 
     try { parsed = JSON.parse(data); } catch { throw new Error("Invalid Codex compaction stream JSON"); }
     if (!parsed || typeof parsed !== "object") throw new Error("Invalid Codex compaction event");
     if (["error", "response.failed", "response.incomplete"].includes(String(parsed.type))) throw new Error("Codex compaction stream failed");
+    if (parsed.type === "response.output_item.done") {
+      if (!Number.isSafeInteger(parsed.output_index) || Number(parsed.output_index) < 0 ||
+          !parsed.item || typeof parsed.item !== "object" || Array.isArray(parsed.item)) {
+        throw new Error("Invalid Codex compaction output item");
+      }
+      const index = Number(parsed.output_index);
+      if (outputs.has(index)) throw new Error("Duplicate Codex compaction output item");
+      outputs.set(index, parsed.item as Item);
+    }
     if (parsed.type === "response.completed") {
       if (found) throw new Error("Duplicate Codex compaction completion");
       if (!parsed.response || typeof parsed.response !== "object") throw new Error("Missing Codex compaction response");
-      found = checkpoint(parsed.response as Item);
+      const response = parsed.response as Item;
+      const output = response.output;
+      // Responses may deliver output only through output_item.done events.
+      // Prefer an explicit nonempty terminal output, as Stack's assembler does.
+      const assembled = [...outputs.entries()].sort(([a], [b]) => a - b);
+      if (assembled.some(([index], position) => index !== position)) throw new Error("Incomplete Codex compaction output sequence");
+      found = checkpoint({ ...response, status: response.status ?? "completed",
+        output: output === undefined || (Array.isArray(output) && output.length === 0)
+          ? assembled.map(([, item]) => item) : output });
     }
   }
   try {
