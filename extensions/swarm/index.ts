@@ -46,6 +46,7 @@ export default function install(pi: ExtensionAPI) {
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
         pi.sendMessage({ customType: "swarm-message", content: JSON.stringify(message), display: true }, { triggerTurn: true, deliverAs: "followUp" });
+        await store.acknowledge(run.id, node.id, message.id);
         pi.events.emit("rework:swarm-activity", message);
       }
     } catch (error) { ctx.ui.setStatus("swarm-error", String(error)); }

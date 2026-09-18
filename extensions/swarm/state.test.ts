@@ -16,6 +16,10 @@ test("durable tasks, direct-relative messaging and parent-only authority", () =>
   await expect(store.send(run.id, a.id, run.root, "instruction", "Do this")).rejects.toThrow("parents");
   const other = new SwarmStore(store.root);
   expect((await other.inbox(run.id, a.id))[0].text).toBe("Do the task");
+  const pending = await store.inbox(run.id, a.id);
+  expect(pending).toHaveLength(1); // Failed delivery remains retryable.
+  await expect(store.acknowledge(run.id, b.id, pending[0].id)).rejects.toThrow("belong");
+  await other.acknowledge(run.id, a.id, pending[0].id);
   expect(await store.inbox(run.id, a.id)).toEqual([]);
   expect((await other.read(run.id)).nodes[a.id].task).toBe("Task A");
   expect((await stat(join(store.path(run.id), "run.json"))).mode & 0o777).toBe(0o600);

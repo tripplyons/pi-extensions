@@ -80,11 +80,15 @@ export class SwarmStore {
     });
   }
   async inbox(id: string, actor: string) {
+    const run = await this.read(id);
+    if (!run.nodes[actor]) throw new Error("Unknown swarm node");
+    return run.messages.filter(message => message.to === actor && !message.read);
+  }
+  async acknowledge(id: string, actor: string, messageId: string) {
     return this.update(id, run => {
-      if (!run.nodes[actor]) throw new Error("Unknown swarm node");
-      const messages = run.messages.filter(message => message.to === actor && !message.read);
-      for (const message of messages) message.read = true;
-      return messages;
+      const message = run.messages.find(message => message.id === messageId);
+      if (!message || message.to !== actor) throw new Error("Message does not belong to this node");
+      message.read = true;
     });
   }
   async complete(id: string, actor: string, result: string) {
