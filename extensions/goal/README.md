@@ -9,3 +9,8 @@ verify the same impasse repeated without progress. Only the user can pause/resum
 Objectives, active elapsed time, and token usage persist on the session branch.
 Resume/fork/tree navigation loads goals paused; use `/goal resume` to restart.
 Errors and aborts pause continuation to avoid runaway paid requests.
+
+`/goal edit <objective>` changes the objective without changing its status.
+Stack-style `/goal:status`, `/goal:edit`, `/goal:pause`, `/goal:resume`, and
+`/goal:clear` are also supported. A user can resume blocked or completed goals;
+every resume resets the minimum continuation count for a new blocked audit.

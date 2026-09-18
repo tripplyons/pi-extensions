@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { result, restore, text } from "../../lib/common.ts";
 
@@ -62,23 +62,34 @@ export default function goals(pi: ExtensionAPI) {
       return result(goal);
     },
   });
-  pi.registerCommand("goal", {
-    description: "Goal: new <objective> | status | pause | resume | clear",
-    async handler(args, ctx) {
+  async function command(args: string, ctx: ExtensionCommandContext) {
       const [action = "status", ...words] = args.trim().split(/\s+/);
       if (action === "new") {
         if (goal && ["active", "paused"].includes(goal.status)) throw new Error("Clear or finish the existing goal first");
         goal = { objective: text(words.join(" "), "objective", 4000), status: "active", createdAt: Date.now(), elapsedMs: 0, tokens: 0, continuations: 0 };
+      } else if (action === "edit") {
+        if (!goal) throw new Error("Create a goal before editing it");
+        goal.objective = text(words.join(" "), "objective", 4000).trim();
       } else if (action === "clear") { account(); goal = undefined; }
       else if (action === "pause" || action === "resume") {
-        if (!goal || !["active", "paused"].includes(goal.status)) throw new Error("No unfinished goal");
+        if (!goal) throw new Error("No goal is currently set");
         account(); goal.status = action === "pause" ? "paused" : "active";
-      } else if (action !== "status") throw new Error("Use /goal new <objective>, status, pause, resume, or clear");
+        if (action === "resume") goal.continuations = 0;
+      } else if (action !== "status") throw new Error("Use /goal new <objective>, edit <objective>, status, pause, resume, or clear");
       save(ctx);
       ctx.ui.notify(goal ? JSON.stringify(goal) : "No goal", "info");
       if ((action === "new" || action === "resume") && goal) pi.sendUserMessage(`Continue the explicitly requested goal: ${goal.objective}`, { deliverAs: "followUp" });
-    },
+  }
+  pi.registerCommand("goal", {
+    description: "Goal: new <objective> | edit <objective> | status | pause | resume | clear",
+    handler: command,
   });
+  for (const action of ["status", "edit", "pause", "resume", "clear"]) {
+    pi.registerCommand(`goal:${action}`, {
+      description: `Goal ${action}`,
+      handler: (args, ctx) => command(`${action} ${args}`, ctx),
+    });
+  }
   pi.on("before_agent_start", event => ({ systemPrompt: event.systemPrompt + "\nCreate goals only on explicit user request. Verify the full objective before completion. Only users can pause/resume goals." }));
   pi.on("message_end", (event, ctx) => {
     if (!goal || goal.status !== "active" || event.message.role !== "assistant") return;
