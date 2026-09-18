@@ -22,7 +22,7 @@ before each agent turn. Use `shell` to start commands and `bg_process` to manage
 running jobs.
 
 Collapsed shell calls show the first three and last three command lines, with a
-hidden-line count between them. The tail follows streamed argument updates,
+hidden-line count in the theme’s dim color between them. The tail follows streamed argument updates,
 including the unfinished last line. Long lines are clipped rather than wrapped.
 Expanded mode shows the full command with wrapping. Execution and stored arguments
 are unchanged.

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { renderCall } from "./command-preview.ts";
 import install from "./index.ts";
 import { harness } from "../../lib/harness.ts";
 
@@ -49,3 +50,9 @@ test("collapsed command lines clip at terminal width and resize without wrapping
   expect(plain(20).length).toBeGreaterThan(2);
 });
 
+
+test("collapsed hidden-line marker uses the dim theme color", () => {
+  const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+  const component = renderCall({ command: "1\n2\n3\n4\n5\n6\n7" }, theme as any, { expanded: false } as any);
+  expect(component.render(100)[3]).toBe("<dim>... (1 line hidden)</dim>");
+});

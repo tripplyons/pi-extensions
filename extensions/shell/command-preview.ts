@@ -22,7 +22,7 @@ export const renderCall: NonNullable<ToolDefinition["renderCall"]> = (args, them
   const lines = typeof args?.command === "string" ? args.command.split(/\r?\n/) : ["..."];
   const hidden = lines.length - 6;
   const preview = !context.expanded && hidden > 0
-    ? [...lines.slice(0, 3), `... (${hidden} ${hidden === 1 ? "line" : "lines"} hidden)`, ...lines.slice(-3)]
+    ? [...lines.slice(0, 3), theme.fg("dim", `... (${hidden} ${hidden === 1 ? "line" : "lines"} hidden)`), ...lines.slice(-3)]
     : lines;
   text.setText(theme.fg("accent", "$") + " " + theme.fg("text", preview.join("\n")));
   return text;
