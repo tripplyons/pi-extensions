@@ -21,7 +21,8 @@
       "./extensions/overseer/index.ts",
       "./extensions/presentation/index.ts",
       "./extensions/fast-mode/index.ts",
-      "./extensions/models/index.ts"
+      "./extensions/models/index.ts",
+      "./extensions/usage/index.ts"
     ]
   },
   "peerDependencies": {
