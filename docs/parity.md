@@ -53,3 +53,9 @@ output, whereas Stack rejects partial output and structured auth/quota/protocol
 errors. Exact retry eligibility and layered retry budgets remain open; matching
 the schedule alone is not full parity. Stack's approval policy allows shell,
 write, and edit by default, matching our direct tool execution for those tools.
+
+Real CLI boundary: `tests/rpc.test.ts` starts the installed Pi CLI with every
+manifest extension, an isolated HOME/state directory, and an allowlisted
+environment without provider credentials. It verifies command registration,
+user-command swarm activation, durable run creation, no extension errors, and no
+agent/model turn. This does not yet verify an actual worker model turn.
