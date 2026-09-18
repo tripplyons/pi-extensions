@@ -19,18 +19,16 @@ export function usage(ctx: ExtensionContext) {
   return { cost, last };
 }
 export default function presentation(pi: ExtensionAPI) {
-  let busy = false;
   const install = (_event: unknown, ctx: ExtensionContext) => {
     if (!ctx.hasUI) return;
-    busy = false;
     ctx.ui.setToolsExpanded(false);
-    ctx.ui.setWorkingIndicator({ frames: ["[*]"] });
+    ctx.ui.setWorkingIndicator({ frames: [] });
     ctx.ui.setTitle(`pi · ${basename(ctx.cwd)}`);
     ctx.ui.setFooter((_tui, theme, data) => ({
       invalidate() {},
       render(width: number) {
         const { cost, last } = usage(ctx);
-        const parts = [theme.fg("accent", `${busy ? "[*] " : ""}${basename(ctx.cwd)}`), ctx.model?.id ?? "?", pi.getThinkingLevel()];
+        const parts = [theme.fg("accent", basename(ctx.cwd)), ctx.model?.id ?? "?", pi.getThinkingLevel()];
         if (last) parts.push(`last ${tokens(last.input)} in + ${tokens(last.output)} out`);
         parts.push(`$${cost.toFixed(2)}`);
         parts.push(...data.getExtensionStatuses().values());
@@ -40,7 +38,5 @@ export default function presentation(pi: ExtensionAPI) {
   };
   pi.on("session_start", install);
   pi.on("session_switch", install);
-  pi.on("agent_start", () => { busy = true; });
-  pi.on("agent_end", () => { busy = false; });
   pi.on("session_shutdown", (_event, ctx) => { ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); });
 }

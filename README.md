@@ -13,7 +13,7 @@ subagent framework, or compatibility shims are loaded.
 | [complain](extensions/complain) | Private harness issue records |
 | [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
 | [hide-empty-editor](extensions/hide-empty-editor) | Hide the input box while empty |
-| [presentation](extensions/presentation) | Compact display and status footer |
+| [presentation](extensions/presentation) | Compact display and status footer; no working indicator |
 | [skills](extensions/skills) | Stack and shared skill discovery |
 | [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
 | [usage](extensions/usage) | Codex quota and reset times |
