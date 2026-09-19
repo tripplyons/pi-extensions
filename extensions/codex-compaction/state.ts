@@ -5,6 +5,7 @@ type Binding = { session: string; provider: string; model: string };
 export type SavedCheckpoint = Binding & {
   version: 1;
   prefixLength: number;
+  protectedCallIds?: string[];
   prefixHash: string;
   replacement: Item[];
 };
@@ -26,7 +27,7 @@ export function saveCheckpoint(binding: Binding, input: Item[], replacement: Ite
   const last = replacement.at(-1);
   if (last?.type !== "compaction" || typeof last.encrypted_content !== "string" || !last.encrypted_content ||
     replacement.slice(0, -1).some(item => item.role !== "user")) throw new Error("Invalid checkpoint replacement");
-  return { ...binding, version: 1, prefixLength: input.length, prefixHash: digest(input), replacement: structuredClone(replacement) };
+  return { ...binding, version: 1, protectedCallIds: input.flatMap(item => typeof item.call_id === "string" ? [item.call_id] : []), prefixLength: input.length, prefixHash: digest(input), replacement: structuredClone(replacement) };
 }
 
 export function projectCheckpoint(binding: Binding, input: Item[], saved: SavedCheckpoint | undefined): Item[] {

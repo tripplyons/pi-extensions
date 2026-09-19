@@ -113,7 +113,7 @@ is no automatic artifact deletion.
 
 ## Compaction
 
-`/threshold` controls automatic compaction (default 100k input tokens), checked
+`/threshold` controls automatic compaction (default 60k input tokens), checked
 before model requests and when an agent run settles. A tool loop that crosses
 the threshold first tries archiving. If receipts are present and the full projected
 history, system prompt, and active tools fit below both `/threshold` and the

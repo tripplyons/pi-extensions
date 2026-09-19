@@ -35,7 +35,8 @@
       "./extensions/btw/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/tripp-autoresearch/index.ts",
-      "./extensions/minimax/index.ts"
+      "./extensions/minimax/index.ts",
+      "./extensions/jev-policy/index.ts"
     ]
   },
   "peerDependencies": {

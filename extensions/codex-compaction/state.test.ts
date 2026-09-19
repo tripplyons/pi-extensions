@@ -32,3 +32,8 @@ test("replacement ownership is isolated and malformed checkpoints cannot be crea
   expect(() => saveCheckpoint(binding, [], compact)).toThrow("empty");
   expect(() => saveCheckpoint(binding, input, [])).toThrow("replacement");
 });
+
+test("checkpoint records covered tool IDs for pruning protection", () => {
+  const saved = saveCheckpoint(binding, [...input, { type: "function_call", call_id: "call_a", arguments: "{}" }, { type: "function_call_output", call_id: "call_a", output: "result" }], compact);
+  expect(saved.protectedCallIds).toContain("call_a");
+});

@@ -37,3 +37,14 @@ test("transport failure aborts provider request and saves no checkpoint", async 
   await expect(h.emit("before_provider_request", event)).rejects.toThrow("failure");
   expect(h.ctx.aborted).toBe(true); expect(h.entries).toHaveLength(0);
 });
+
+test("default threshold compacts at 60k tokens, not below", async () => {
+  let calls = 0;
+  const h = setup(async () => { calls++; return compact; });
+  await h.emit("session_start");
+  for (const tokens of [59_999, 60_000]) {
+    await h.emit("message_end", { message: { role: "assistant", provider: "openai-codex", model: "gpt-5.4", stopReason: "stop", usage: { input: tokens, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+    await h.emit("before_provider_request", event);
+    expect(calls).toBe(tokens < 60_000 ? 0 : 1);
+  }
+});

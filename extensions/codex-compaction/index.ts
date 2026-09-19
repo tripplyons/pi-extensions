@@ -19,7 +19,7 @@ export function installCompaction(pi: ExtensionAPI, request = compactRemote) {
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
   pi.on("session_shutdown", cancel);
   pi.on("model_select", cancel);
-  pi.registerCommand("threshold", { description: "Show/set Codex and MiniMax compaction token threshold (e.g. 100k)", async handler(args, ctx) {
+  pi.registerCommand("threshold", { description: "Show/set Codex and MiniMax compaction token threshold (e.g. 60k)", async handler(args, ctx) {
     const text = args.trim();
     if (text) {
       if (!/^\d+k?$/i.test(text)) throw new Error("Usage: /threshold [positive token count]");

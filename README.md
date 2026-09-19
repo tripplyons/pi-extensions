@@ -4,7 +4,7 @@ Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rewor
 `main` is unchanged. No legacy extension bundle, conversion provider, Mixture,
 subagent framework, or compatibility shims are loaded.
 
-## Extensions (24)
+## Extensions (25)
 
 | Extension | Behavior |
 | --- | --- |
@@ -13,7 +13,8 @@ subagent framework, or compatibility shims are loaded.
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
 | [minimax](extensions/minimax) | Opt-in output caps, archive-first checkpoints, paged search, and task reminders with repo-style previews |
-| [context-pruner](extensions/context-pruner) | Archived context trimming and retrieval |
+| [jev-policy](extensions/jev-policy) | OpenRouter Jev ranks pruning candidates using conversation and readable summary history |
+| [context-pruner](extensions/context-pruner) | Prune at 100 KB to a ranked 50 KB budget; newest-five protection and archive retrieval |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |

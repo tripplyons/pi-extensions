@@ -205,11 +205,11 @@ test("MiniMax takes precedence over pruner and Codex hooks without changing thei
 test("/threshold controls MiniMax automatic compaction and does not block manual or overflow recovery", async () => {
   const h = setup(); installCompaction(h.pi, async () => { throw new Error("Not Codex compaction"); });
   await h.emit("session_start"); await h.command("minimax", "on");
-  let tokens: number | null = 99999, calls = 0;
+  let tokens: number | null = 59999, calls = 0;
   h.ctx.getContextUsage = () => ({ tokens });
   h.ctx.compact = (options: any) => { calls++; options.onComplete({}); };
   await h.emit("agent_settled"); expect(calls).toBe(0);
-  tokens = 100000; await h.emit("agent_settled"); expect(calls).toBe(1);
+  tokens = 60000; await h.emit("agent_settled"); expect(calls).toBe(1);
   await h.command("threshold", "200k");
   await h.emit("agent_settled"); expect(calls).toBe(1);
   tokens = 200000; await h.emit("agent_settled"); expect(calls).toBe(2);
@@ -369,7 +369,8 @@ test("result cap is mode-scoped and its durable receipt remains retrievable afte
 });
 
 test("automatic checkpoint admission measures retained history; manual and overflow still summarize", async () => {
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup();
+  h.pi.appendEntry("rework:codex-compaction", { threshold: 100_000 }); await h.emit("session_start"); await h.command("minimax", "on");
   h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
   h.ctx.getSystemPrompt = () => "test";
   h.pi.getAllTools = () => [...h.tools.values()];
