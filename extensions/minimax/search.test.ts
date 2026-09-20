@@ -3,7 +3,6 @@ import { mkdtemp, mkdir, writeFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { harness } from "../../lib/harness.ts";
-import { minimaxKey } from "../../lib/minimax.ts";
 import { registerSearchTools } from "./search.ts";
 
 const roots: string[] = [];
@@ -11,7 +10,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 async function setup() {
   const h = harness();
   h.ctx.cwd = await mkdtemp(join(tmpdir(), "minimax-search-")); roots.push(h.ctx.cwd);
-  h.pi.appendEntry(minimaxKey, { enabled: true }); registerSearchTools(h.pi);
+  registerSearchTools(h.pi);
   await mkdir(join(h.ctx.cwd, ".git"));
   await writeFile(join(h.ctx.cwd, "a.txt"), "needle one\nneedle two\nother\n");
   await writeFile(join(h.ctx.cwd, "b.txt"), "needle three\n");
@@ -49,7 +48,7 @@ test("glob pages stable paths, supports newest first and scoped ignored searches
   await expect(h.call("glob", { pattern: "*", includeIgnored: true })).rejects.toThrow("explicit scoped path");
 });
 
-test("search reports errors, cancellation, empty pages and mode restrictions", async () => {
+test("search reports errors, cancellation, empty pages and empty history", async () => {
   const h = await setup();
   await expect(h.call("grep", { pattern: "[" })).rejects.toThrow();
   await expect(h.call("grep", { pattern: "x", path: "missing" })).rejects.toThrow();
@@ -57,8 +56,6 @@ test("search reports errors, cancellation, empty pages and mode restrictions", a
   expect((await h.call("glob", { pattern: "*", offset: 100 })).details.next_offset).toBeNull();
   const abort = new AbortController(); abort.abort();
   await expect(h.call("grep", { pattern: "needle" }, abort.signal)).rejects.toThrow();
-  h.pi.appendEntry(minimaxKey, { enabled: false });
-  await expect(h.call("grep", { pattern: "x" })).rejects.toThrow("Enable /minimax");
 });
 
 test("content pages preserve context records and bound Unicode output by bytes", async () => {

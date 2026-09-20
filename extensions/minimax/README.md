@@ -1,7 +1,8 @@
-# MiniMax mode
+# MiniMax harness
 
-Run `/minimax` to toggle, or `/minimax on|off`. Reload Pi after installing this
-extension. Mode and todos follow the current session branch.
+MiniMax's tools and context policy are always active. Reload Pi after installing
+or updating this extension. Todos, thresholds, and task ownership follow the
+current session branch. Old `/minimax` toggle entries are ignored.
 
 This is a Pi adaptation of MiniMax's public context policy, not its runtime or
 model. It does not change models or create goals. Automatic resumption is limited
@@ -9,25 +10,23 @@ to interrupted compaction and background-task completion.
 
 ## Tools
 
-While enabled, the local tools are `read`, `edit`, `write`, `bash`, `grep`, and
-`glob`, using Pi's file implementations, ripgrep search, and a managed Bash wrapper. `read` uses
-1-based line offsets in this mode, not the normal byte ranges. `bash` uses a terminating timeout, not
-the normal shell's persistent tmux jobs. Existing jobs are not killed.
+The local tools are `read`, `edit`, `write`, `bash`, `grep`, and `glob`, using Pi's
+file implementations, ripgrep search, and a managed Bash wrapper. `read` uses
+1-based line offsets. Bash deadlines terminate the process tree.
 
-Previews use this repo's tool styles. Bash shows the same `$` command preview as
-`shell`, including collapsed first/last lines and expansion. File calls show paths
+Previews use this repo's tool styles. Bash shows a `$` command preview, including collapsed first/last lines and expansion. File calls show paths
 and search patterns beside accent-colored tool names. Results show plain text,
 including edit diffs, with eight-line previews and full output on expansion.
 Native file-tool metadata does not replace the visible output.
 
 `todo_write` replaces a persistent task list. `archive_read` retrieves bounded
-Unicode character ranges of saved tool-result JSON. It remains available after
-disabling the mode so checkpoint references can still be resolved.
+Unicode character ranges of saved tool-result JSON. It remains available across checkpoints and reloads.
 
-Goal, autoresearch, and swarm tools keep their existing activation rules. Other
-tools, including `shell`, `bg_process`, and `sleep`, are hidden and blocked.
+Goal, complain, autoresearch, and swarm tools keep their existing activation rules. Legacy
+`shell`, `bg_process`, and `sleep` tools are removed. Non-conflicting extensions,
+including `/btw`, goal, and presentation, remain installed.
 The existing `ask_user` stays available if it was already active; this extension
-does not register or activate another question tool. Disabling restores the displaced tools.
+does not register or activate another question tool.
 
 ## Search pages
 
@@ -64,7 +63,7 @@ a todo write or reminder. The cadence follows active-branch session history,
 including across reloads and compaction. Completed or cancelled lists do not
 receive reminders.
 
-Reminders are mode-scoped and added only to an already scheduled model request,
+Reminders are added only to an already scheduled model request,
 when its estimated budget allows. They do not send messages that trigger another
 turn, create goals, mark work complete, or declare a task blocked.
 
@@ -122,8 +121,8 @@ output reserve and safety margin as reminder admission, not exact provider count
 If archiving is insufficient, the loop stops at the next request boundary,
 compacts while idle, and resumes the interrupted request. Completed requests do not receive a continuation.
 `/compact` and provider-overflow recovery still generate checkpoints rather than
-taking the archive-only shortcut. MiniMax mode takes precedence over the normal pruner and Codex compactor, without
-changing their saved settings.
+taking the archive-only shortcut. This replaces the pruner and opaque Codex
+compactor. Existing saved `/threshold` values are preserved.
 
 The selected model generates a structured checkpoint covering goals,
 constraints, completed work and evidence, current state, decisions, blockers,
@@ -150,10 +149,9 @@ usage cost.
   Aborting a foreground call cancels it; promoted and explicit background tasks
   survive the launching turn.
 
-Completion sends one notification and resumes the owning branch when Pi is idle
-and MiniMax mode is enabled. Switching branches or disabling mode defers that
-notification. Runtime shutdown stops managed tasks. Task metadata and full output
-are stored outside the repo under `minimax/tasks` in the same state root as
+Completion sends one notification and resumes the owning branch when Pi is idle.
+Switching branches defers that notification until the owning branch is active.
+Runtime shutdown stops managed tasks. Task metadata and full output are stored outside the repo under `minimax/tasks` in the same state root as
 archives. Output survives reload; unfinished records from a previous runtime
 become `lost`, not reattached. Output cursors and pending notifications are
 runtime-local. There is no automatic task-file deletion.

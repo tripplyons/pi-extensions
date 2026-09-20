@@ -11,7 +11,6 @@ import { installThresholdCompaction } from "./compaction.ts";
 
 function setup() {
   const h = harness();
-  h.entries.push({ type: "custom", customType: "rework:minimax", data: { enabled: true } });
   h.ctx.getContextUsage = () => ({ tokens: 100_000 });
   h.ctx.isIdle = () => true;
   h.ctx.abort = () => {};
@@ -51,7 +50,6 @@ test.each([false, true])("Pi SDK uses a checkpoint only when archiving cannot su
     await runtime.setRuntimeApiKey(model.provider, "test-key-never-sent");
     const settings = SettingsManager.inMemory({ compaction: { enabled: true, keepRecentTokens: 100 }, retry: { enabled: false } });
     const manager = SessionManager.inMemory(root);
-    manager.appendCustomEntry("rework:minimax", { enabled: true });
     manager.appendCustomEntry("rework:codex-compaction", { threshold: archiveOnly ? 100000 : 1000 });
     const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, agentsFilesOverride: () => ({ agentsFiles: [] }), extensionFactories: [pi => {
       // Simulate a verbose integration result before MiniMax's admission hook.

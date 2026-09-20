@@ -13,14 +13,14 @@ registration or documentation. This list tracks deliverables, not completion.
 | Ask user | Suggestions, free text, timeout/cancel, worker restriction | Implemented; unit tested |
 | Autocomplete | Commands, skills, files, editor integration | Restored fuzzy provider; unit tested; interactive keyboard audit pending |
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
-| Pruner | Off default, 100 KB, keep five, skill/retrieval protection, reasoning, durable archive, /prune /pruner | Implemented; unit tested; reasoning persistence regression tested |
+| Context | Always-on MiniMax output caps, archive retrieval, reminders and structured checkpoints; legacy pruner removed | Unit and SDK tests |
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
 | Overseer | Terminal OSC glow, lifecycle and input waits | Implemented; state test; TTY audit pending |
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Implemented; formatting tests; TTY audit pending |
-| Shell/background/sleep | tmux zsh PTY, bounded foreground wait, persistent jobs, input/EOF, scope ownership, cancellation, wakeups | Implemented; real tmux tests |
-| Files/images | Bounded UTF-8 read, atomic write, exact unique edit, listing/search limits and skipped counts, images | Implemented; unit tested |
+| Shell/background | Managed Bash, deadlines, branch-owned tasks and completion notifications; legacy shell/sleep tools removed | Unit and process tests; swarm retains its internal tmux runner |
+| Files/images | MiniMax line reads, exact edits, writes, paged ripgrep and glob, native images | Unit tested |
 | Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Git isolation, durable state, messaging permissions and review tested; orchestration pending |
-| Compaction | Codex native compaction, checkpoints, restore, manual/automatic controls | Implemented; synthetic protocol/transport/hook tests; provider integration audit pending |
+| Compaction | MiniMax structured checkpoints with /threshold, archive-first admission and manual/overflow recovery | Unit and SDK tests; provider integration audit pending |
 | Fast mode | Priority tier request setting and persisted toggle | Implemented; payload tests; runtime audit pending |
 | Models/reasoning | List/select models, supported reasoning, persistence | Implemented via Pi registry/session APIs; command tests; persistence runtime audit pending |
 | Usage/cost | Codex limits/reset information and API cost reporting | Pending |

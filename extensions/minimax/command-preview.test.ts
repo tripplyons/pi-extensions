@@ -9,13 +9,13 @@ function setup() {
   initTheme();
   const h = harness();
   install(h.pi);
-  const definition = h.tools.get("shell");
-  const row = new ToolExecutionComponent("shell", "test", {}, {}, definition, { requestRender() {} } as any);
+  const definition = h.tools.get("bash");
+  const row = new ToolExecutionComponent("bash", "test", {}, {}, definition, { requestRender() {} } as any);
   const plain = (width = 100) => row.render(width).map(line => stripTerminalSequences(line).trim()).filter(Boolean);
   return { row, plain, definition: definition! };
 }
 
-test("collapsed shell follows streamed arguments and expansion without mutating the command", () => {
+test("collapsed Bash follows streamed arguments and expansion without mutating the command", () => {
   const { row, plain } = setup();
   expect(plain()).toEqual(["$ ..."]);
   for (let count = 1; count <= 10; count++) {

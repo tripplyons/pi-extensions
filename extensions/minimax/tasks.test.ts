@@ -102,11 +102,10 @@ test("persisted output survives reload and unfinished tasks become lost", async 
   expect(backgroundTimeout(1e12)).toBe(2147483.647);
 });
 
-test("tool authorization and notifications follow the owning branch and mode", async () => {
+test("tool authorization and notifications follow the owning branch", async () => {
   const { root, tasks } = await setup();
   const h = harness(); h.ctx.cwd = root; h.ctx.isIdle = () => true;
   h.pi.sendMessage = (message: any) => h.sent.push(message.content);
-  h.entries.push({ type: "custom", customType: "rework:minimax", data: { enabled: true } });
   registerTaskTools(h.pi, tasks);
   await h.emit("session_start");
   await h.call("bash", { command: "sleep 0.05; echo complete", run_in_background: true });
@@ -114,8 +113,7 @@ test("tool authorization and notifications follow the owning branch and mode", a
   const id = branch.find(entry => entry.customType === taskKey).data;
   h.entries.length = 0; await h.emit("session_switch");
   await settled(tasks, id); expect(h.sent).toEqual([]);
-  await expect(h.call("task_query", { task_id: id })).rejects.toThrow("Enable /minimax");
-  h.entries.push(branch[0]);
+  await expect(h.call("task_query", { task_id: id })).rejects.toThrow("not on this session branch");
   await expect(h.call("task_output", { task_id: id })).rejects.toThrow("not on this session branch");
   h.entries.splice(0, h.entries.length, ...branch); await h.emit("session_tree");
   expect(h.sent).toHaveLength(1); expect(h.sent[0]).toContain(id);
@@ -129,7 +127,6 @@ test("completion waits for idle and automatic output cursors are session-scoped"
   let idle = false;
   h.ctx.isIdle = () => idle;
   h.pi.sendMessage = (message: any) => h.sent.push(message.content);
-  h.entries.push({ type: "custom", customType: "rework:minimax", data: { enabled: true } });
   registerTaskTools(h.pi, tasks);
   await h.emit("session_start");
   await h.call("bash", { command: "printf completed", run_in_background: true });

@@ -41,7 +41,7 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
 });
 
 test("context footer uses input over the active compaction threshold", async () => {
-  const { installCompaction } = await import("../codex-compaction/index.ts");
+  const { registerThreshold } = await import("../minimax/settings.ts");
   const h = harness();
   let footer: any;
   Object.assign(h.ctx.ui, {
@@ -53,7 +53,7 @@ test("context footer uses input over the active compaction threshold", async () 
     },
   });
   install(h.pi);
-  installCompaction(h.pi);
+  registerThreshold(h.pi);
   await h.emit("session_start");
   expect(footer.render(200)[0]).toContain("0%/60k");
   h.entries.push({ type: "message", message: { role: "assistant", usage: {

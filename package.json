@@ -15,10 +15,7 @@
       "./extensions/ask-user/index.ts",
       "./extensions/autocomplete/index.ts",
       "./extensions/complain/index.ts",
-      "./extensions/context-pruner/index.ts",
       "./extensions/goal/index.ts",
-      "./extensions/files/index.ts",
-      "./extensions/shell/index.ts",
       "./extensions/overseer/index.ts",
       "./extensions/presentation/index.ts",
       "./extensions/startup-screen/index.ts",
@@ -28,15 +25,13 @@
       "./extensions/thinking-selector/index.ts",
       "./extensions/usage/index.ts",
       "./extensions/skills/index.ts",
-      "./extensions/codex-compaction/index.ts",
       "./extensions/swarm/index.ts",
       "./extensions/stash/index.ts",
       "./extensions/auto-rename/index.ts",
       "./extensions/btw/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/tripp-autoresearch/index.ts",
-      "./extensions/minimax/index.ts",
-      "./extensions/jev-policy/index.ts"
+      "./extensions/minimax/index.ts"
     ]
   },
   "peerDependencies": {

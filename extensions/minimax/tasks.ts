@@ -6,8 +6,7 @@ import { EventEmitter } from "node:events";
 import { Type } from "typebox";
 import { createBashTool, createLocalBashOperations, type BashOperations, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { result, stateRoot } from "../../lib/common.ts";
-import { minimaxEnabled } from "../../lib/minimax.ts";
-import { renderCall as renderCommandCall } from "../shell/command-preview.ts";
+import { renderCall as renderCommandCall } from "./command-preview.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 
 export const taskKey = "rework:minimax-task";
@@ -163,7 +162,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
   const notifications = new Set<string>();
   const ids = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === taskKey ? [entry.data as string] : []);
   function flush() {
-    if (!current || shuttingDown || !minimaxEnabled(current)) return;
+    if (!current || shuttingDown) return;
     if (!notifications.size) return;
     // sendMessage(triggerTurn) can start a run during compaction. Wait for the
     // runtime to become idle instead of racing its history replacement.
@@ -180,15 +179,13 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
     }
   }
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree", "before_agent_start"] as const) pi.on(event, (_event, ctx) => { current = ctx; flush(); });
-  pi.events.on("rework:minimax-changed", (ctx: ExtensionContext) => { current = ctx; flush(); });
   pi.on("session_shutdown", async () => { shuttingDown = true; clearTimeout(notificationTimer); await tasks.shutdown(); });
   const check = (ctx: ExtensionContext, id?: string) => {
-    if (!minimaxEnabled(ctx)) throw new Error("Enable /minimax before using this tool");
     if (id && !ids(ctx).includes(id)) throw new Error("Task ID is not on this session branch");
   };
   pi.registerTool({
     name: "bash", label: "Bash", renderCall: renderCommandCall, renderResult,
-    description: "MiniMax mode only. Execute Bash in the current working directory. Foreground defaults to 120 seconds (maximum 300); after 15 seconds the same process returns a background task ID, retaining its deadline. run_in_background starts a managed task immediately. Do not rerun a returned task; use task_query, task_output, or task_stop. Output is bounded to 2000 lines or 50KB; full output is saved.",
+    description: "Execute Bash in the current working directory. Foreground defaults to 120 seconds (maximum 300); after 15 seconds the same process returns a background task ID, retaining its deadline. run_in_background starts a managed task immediately. Do not rerun a returned task; use task_query, task_output, or task_stop. Output is bounded to 2000 lines or 50KB; full output is saved.",
     parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Timeout in seconds; foreground defaults to 120, non-positive values use 120, maximum 300. Explicit background defaults to 1800 seconds; positive timeouts are capped at 2147483.647. Expiry kills the process tree." })), run_in_background: Type.Optional(Type.Boolean()) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
@@ -204,7 +201,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
       run: (args: { task_id: string; reason?: string }) => tasks.stop(args.task_id, args.reason) },
   ];
   for (const definition of definitions) pi.registerTool({
-    name: definition.name, label: definition.name, description: `MiniMax mode only. ${definition.description}`, parameters: definition.parameters,
+    name: definition.name, label: definition.name, description: definition.description, parameters: definition.parameters,
     renderCall: toolCall(definition.name), renderResult,
     async execute(_id, args, signal, _update, ctx) {
       check(ctx, args.task_id); signal?.throwIfAborted();

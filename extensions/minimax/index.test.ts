@@ -5,16 +5,13 @@ import { tmpdir } from "node:os";
 import minimax from "./index.ts";
 import { Tasks } from "./tasks.ts";
 import { mkdtempSync } from "node:fs";
-import files from "../files/index.ts";
-import pruner from "../context-pruner/index.ts";
-import { installCompaction } from "../codex-compaction/index.ts";
 import { harness } from "../../lib/harness.ts";
 import { Archive, archiveMessages, capToolOutput, maxInlineBytes } from "./archive.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function temp() { const root = await mkdtemp(join(tmpdir(), "minimax-test-")); roots.push(root); return root; }
-const baseline = ["read", "shell", "search", "list", "view_image", "bg_process", "sleep", "ask_user", "get_goal", "swarm_task"];
+const baseline = ["read", "shell", "search", "list", "view_image", "bg_process", "sleep", "ask_user", "complain", "get_goal", "swarm_task"];
 function setup() {
   const h = harness();
   let active = [...baseline, "edit", "write", "bash", "grep", "glob", "todo_write", "archive_read"];
@@ -23,7 +20,6 @@ function setup() {
   h.ctx.isIdle = () => true;
   h.ctx.getContextUsage = () => undefined;
   h.pi.sendMessage = (message: any) => h.sent.push(message.content);
-  files(h.pi);
   const taskRoot = mkdtempSync(join(tmpdir(), "minimax-tasks-")); roots.push(taskRoot);
   minimax(h.pi, new Tasks(taskRoot));
   return { ...h, active: () => active };
@@ -35,54 +31,44 @@ function messages(rounds = 8, size = 40_000): any[] {
   ]).flat();
 }
 
-test("toggle swaps unprefixed tool schemas and restores the original selection", async () => {
-  const h = setup(); await h.emit("session_start");
-  expect(h.active().sort()).toEqual([...baseline, "archive_read"].sort());
-  expect(h.tools.get("read").description).toContain("byte range");
-  await h.command("minimax");
-  expect(h.active()).toContain("bash");
-  expect(h.active()).toContain("edit");
-  expect(h.active()).not.toContain("shell");
-  expect(h.active()).not.toContain("bg_process");
-  expect(h.active()).not.toContain("sleep");
-  expect(h.active()).toContain("ask_user");
-  expect(h.active()).toContain("get_goal");
-  expect(h.active()).toContain("swarm_task");
+test("MiniMax is always active, ignores old toggles and preserves companion activation", async () => {
+  const h = setup();
+  h.pi.appendEntry("rework:minimax", { enabled: false });
+  await h.emit("session_start");
+  expect(h.commands.has("minimax")).toBe(false);
+  expect(h.active().sort()).toEqual(["read", "edit", "write", "grep", "glob", "bash", "task_query", "task_output", "task_stop", "todo_write", "archive_read", "ask_user", "complain", "get_goal", "swarm_task"].sort());
+  expect(h.tools.get("read").parameters.properties.offset.minimum).not.toBe(0);
   for (const name of ["shell", "bg_process", "sleep", "unknown_tool"]) {
     expect((await h.emit("tool_call", { toolName: name }))[0].block).toBe(true);
   }
-  for (const name of ["read", "bash", "ask_user", "get_goal", "swarm_task", "run_experiment"]) {
+  for (const name of ["read", "bash", "ask_user", "complain", "get_goal", "swarm_task", "run_experiment"]) {
     expect(await h.emit("tool_call", { toolName: name })).toEqual([undefined]);
   }
-  expect(h.active().some(name => name.startsWith("minimax_"))).toBe(false);
-  expect(h.tools.get("read").description).not.toContain("byte range");
-  await h.command("minimax", "on"); // Idempotent.
-  await h.command("minimax", "off");
-  expect(h.active().sort()).toEqual([...baseline, "archive_read"].sort());
-  expect(h.tools.get("read").description).toContain("byte range");
-  await expect(h.call("write", { path: "no", content: "no" })).rejects.toThrow("Enable /minimax");
-  h.ctx.isIdle = () => false;
-  await expect(h.command("minimax")).rejects.toThrow("Wait");
+  for (const event of ["session_switch", "session_fork", "session_tree"]) {
+    await h.emit(event);
+    expect(h.active()).toContain("bash");
+    expect(h.active()).not.toContain("shell");
+  }
 });
 
-test("mode and todos follow the active session branch, including reload", async () => {
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+test("todos follow the active session branch, including reload", async () => {
+  const h = setup(); await h.emit("session_start");
   const todos = [{ id: "a", content: "Verify the change", status: "in_progress" }];
   await h.call("todo_write", { todos });
   const branch = structuredClone(h.entries);
   h.entries.length = 0; await h.emit("session_switch");
-  expect(h.active()).toContain("shell"); expect(h.active()).not.toContain("todo_write");
+  expect(h.active()).not.toContain("shell"); expect(h.active()).toContain("todo_write");
+  expect((await h.emit("before_agent_start", { systemPrompt: "base" })).at(-1).systemPrompt).not.toContain("Verify the change");
   h.entries.push(...branch); await h.emit("session_tree");
   expect(h.active()).toContain("todo_write");
   const prompt = (await h.emit("before_agent_start", { systemPrompt: "base" })).find(value => value?.systemPrompt);
   expect(prompt.systemPrompt).toContain("Verify the change");
   const fresh = setup(); fresh.entries.push(...branch); await fresh.emit("session_start");
   expect(fresh.active()).toContain("bash");
-  await fresh.command("minimax", "off"); expect(fresh.active()).toContain("shell");
 });
 
 test("native file tools perform line reads, edits, writes, regex search, globs and bash", async () => {
-  const h = setup(); h.ctx.cwd = await temp(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup(); h.ctx.cwd = await temp(); await h.emit("session_start");
   await h.call("write", { path: "example.txt", content: "first\nsecond\nthird\n" });
   expect((await h.call("read", { path: "example.txt", offset: 2, limit: 1 })).content[0].text).toContain("second");
   await h.call("edit", { path: "example.txt", edits: [{ oldText: "second", newText: "changed" }] });
@@ -92,8 +78,6 @@ test("native file tools perform line reads, edits, writes, regex search, globs a
   expect((await h.call("bash", { command: "printf verified", timeout: 2 })).content[0].text).toBe("verified");
   await expect(h.call("read", { path: "." })).rejects.toThrow("Not a regular file");
   await expect(h.call("read", { path: "example.txt", offset: 0 })).rejects.toThrow("positive line");
-  await h.command("minimax", "off");
-  expect((await h.call("read", { path: "example.txt", offset: 0, limit: 5 })).details.content).toBe("first");
 });
 
 test("Bash passes upstream timeout defaults and cap to the executor", async () => {
@@ -109,7 +93,7 @@ test("Bash passes upstream timeout defaults and cap to the executor", async () =
     expect((await tasks.run(process.cwd(), { command: "ignored", timeout }, undefined, () => {}, () => {})).content[0]).toEqual({ type: "text", text: "verified" });
   }
   expect(received).toEqual([120, 120, 120, 120, 120, 0.25, 120, 300, 300, 300]);
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup(); await h.emit("session_start");
   const registered = h.tools.get("bash");
   expect(registered.parameters.properties.timeout.description).toContain("defaults to 120");
   expect(registered.description).not.toContain("no default timeout");
@@ -150,7 +134,7 @@ function compactionEvent() {
 }
 
 test("structured compaction includes split turns, previous checkpoint, exact stored todos and usage", async () => {
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup(); await h.emit("session_start");
   const todos = [{ id: "x", content: "Run npm test", status: "pending" }];
   await h.call("todo_write", { todos });
   let request: any, options: any;
@@ -170,11 +154,10 @@ test("structured compaction includes split turns, previous checkpoint, exact sto
   expect(response.compaction.summary).toContain(JSON.stringify(todos));
   expect(response.compaction.details.todos).toEqual(todos);
   expect(response.compaction.usage).toEqual(usage);
-  await h.command("minimax", "off"); expect(await h.emit("session_before_compact", compactionEvent())).toEqual([undefined]);
 });
 
 test("failed, truncated, empty and aborted checkpoints never replace the session", async () => {
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup(); await h.emit("session_start");
   h.ctx.model = { maxTokens: 8192 };
   for (const stopReason of ["error", "aborted", "length", "stop"]) {
     h.ctx.modelRegistry = { complete: async () => ({ content: [], stopReason }) };
@@ -184,27 +167,9 @@ test("failed, truncated, empty and aborted checkpoints never replace the session
   expect(await h.emit("session_before_compact", compactionEvent())).toEqual([{ cancel: true }]);
 });
 
-test("MiniMax takes precedence over pruner and Codex hooks without changing their saved settings", async () => {
-  const h = setup(); pruner(h.pi);
-  let requests = 0;
-  installCompaction(h.pi, async () => { requests++; throw new Error("Should not run"); });
-  h.ctx.model = { provider: "openai-codex", id: "test" };
-  await h.emit("session_start"); await h.command("pruner", "on");
-  await h.command("codex-compact"); await h.command("minimax", "on");
-  await expect(h.command("codex-compact")).rejects.toThrow("MiniMax mode owns compaction");
-  const results = await h.emit("context", { messages: messages(5) });
-  expect(results.at(-1)).toBeUndefined();
-  expect(await h.emit("before_provider_request", { payload: { model: "test", input: [{ role: "user", content: "hello" }] } })).toEqual([undefined]);
-  expect(requests).toBe(0);
-  expect((await h.emit("session_before_compact", compactionEvent()))[1]).toBeUndefined();
-  await h.command("minimax", "off");
-  expect((await h.emit("session_before_compact", compactionEvent()))[1]).toEqual({ cancel: true });
-  expect(h.entries.filter(entry => entry.customType === "rework:pruner").at(-1).data.enabled).toBe(true);
-});
-
 test("/threshold controls MiniMax automatic compaction and does not block manual or overflow recovery", async () => {
-  const h = setup(); installCompaction(h.pi, async () => { throw new Error("Not Codex compaction"); });
-  await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup();
+  await h.emit("session_start");
   let tokens: number | null = 59999, calls = 0;
   h.ctx.getContextUsage = () => ({ tokens });
   h.ctx.compact = (options: any) => { calls++; options.onComplete({}); };
@@ -223,8 +188,6 @@ test("/threshold controls MiniMax automatic compaction and does not block manual
     expect((await h.emit("session_before_compact", { ...compactionEvent(), reason }))[0].compaction.summary).toContain("checkpoint");
   }
   expect(summaries).toBe(2);
-  await h.command("minimax", "off"); tokens = 300000;
-  await h.emit("agent_settled"); expect(calls).toBe(2);
 });
 
 test("upstream byte policy uses strict net-savings gate, not gross bytes or tokens", async () => {
@@ -259,7 +222,7 @@ test("policy protects errors, control results and incomplete rounds", async () =
 });
 
 test("reminders enter only existing requests and persist branch-local cadence", async () => {
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup(); await h.emit("session_start");
   h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
   h.ctx.getSystemPrompt = () => "test system";
   h.pi.getAllTools = () => [...h.tools.values()];
@@ -287,12 +250,11 @@ test("reminders enter only existing requests and persist branch-local cadence", 
   await h.call("todo_write", { todos: [{ id: "a", content: "Verify", status: "completed" }] });
   for (let i = 0; i < 20; i++) h.entries.push({ type: "message", message: { role: "assistant", stopReason: "stop" } });
   expect((await h.emit("context", context)).at(-1).messages).toHaveLength(1);
-  await h.command("minimax", "off");
-  expect((await h.emit("context", context)).at(-1)).toBeUndefined(); expect(h.sent).toEqual([]);
+  expect(h.sent).toEqual([]);
 });
 
 test("loop reminder is request-local, deduplicated and never triggers continuation", async () => {
-  const h = setup(); await h.emit("session_start"); await h.command("minimax", "on");
+  const h = setup(); await h.emit("session_start");
   h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
   h.ctx.getSystemPrompt = () => "test"; h.pi.getAllTools = () => [...h.tools.values()];
   const repeated = messages(3, 1);
@@ -321,9 +283,9 @@ test("rejected archive admission preserves earlier receipts without publishing n
 test("MiniMax does not activate ask_user when it was unavailable", async () => {
   const h = setup(); await h.emit("session_start");
   h.pi.setActiveTools(h.active().filter(name => name !== "ask_user"));
-  await h.command("minimax", "on");
+
   expect(h.active()).not.toContain("ask_user");
-  await h.command("minimax", "off");
+  await h.emit("session_tree");
   expect(h.active()).not.toContain("ask_user");
 });
 
@@ -354,15 +316,14 @@ test("result cap measures UTF-8 text and preserves errors, images, and original 
   expect(output).toEqual(snapshot);
 });
 
-test("result cap is mode-scoped and its durable receipt remains retrievable after disabling", async () => {
+test("result cap is always active and its durable receipt remains retrievable after reload", async () => {
   const h = setup(); await h.emit("session_start");
   const output = messages(1)[1];
-  expect(await h.emit("tool_result", output)).toEqual([undefined]);
-  await h.command("minimax", "on");
+
   const [capped] = await h.emit("tool_result", output);
   expect(capped.content[0].text).toContain("[minimax archive ");
   const artifact = h.entries.find(entry => entry.customType === "rework:minimax-archive").data[0];
-  await h.command("minimax", "off");
+  await h.emit("session_start");
   const retrieved = await h.call("archive_read", { id: artifact.id, offset: 0, limit: 32000 });
   expect(retrieved.details.content).toContain(output.content[0].text.slice(0, 100));
   expect(retrieved.details.nextOffset).toBe(32000);
@@ -370,7 +331,7 @@ test("result cap is mode-scoped and its durable receipt remains retrievable afte
 
 test("automatic checkpoint admission measures retained history; manual and overflow still summarize", async () => {
   const h = setup();
-  h.pi.appendEntry("rework:codex-compaction", { threshold: 100_000 }); await h.emit("session_start"); await h.command("minimax", "on");
+  h.pi.appendEntry("rework:codex-compaction", { threshold: 100_000 }); await h.emit("session_start");
   h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
   h.ctx.getSystemPrompt = () => "test";
   h.pi.getAllTools = () => [...h.tools.values()];

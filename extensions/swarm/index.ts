@@ -5,7 +5,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { result, restore, stateRoot } from "../../lib/common.ts";
-import { Jobs } from "../shell/jobs.ts";
+import { Jobs } from "./jobs.ts";
 import { SwarmStore, descendants } from "./state.ts";
 import { Swarm } from "./controller.ts";
 import { Workers } from "./worker.ts";

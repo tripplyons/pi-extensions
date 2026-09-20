@@ -2,19 +2,19 @@ import { expect, test } from "bun:test";
 import { initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { harness } from "../../lib/harness.ts";
-import { modeReadTool, registerTools } from "./tools.ts";
+import { readTool, registerTools } from "./tools.ts";
 
 function setup(name: string, args: Record<string, unknown> = {}) {
   initTheme();
   const h = harness();
   registerTools(h.pi);
-  const definition = name === "read" ? modeReadTool(process.cwd()) : h.tools.get(name)!;
+  const definition = name === "read" ? readTool(process.cwd()) : h.tools.get(name)!;
   const row = new ToolExecutionComponent(name, "preview", args, {}, definition, { requestRender() {} } as any);
   const plain = (width = 100) => row.render(width).map(line => stripTerminalSequences(line).trim()).filter(Boolean).join("\n");
   return { row, plain };
 }
 
-test("MiniMax Bash previews streamed commands and expands like shell", () => {
+test("MiniMax Bash previews streamed commands and expands multiline commands", () => {
   const { row, plain } = setup("bash");
   expect(plain()).toBe("$ ...");
   row.updateArgs({ command: "one\ntwo\nthree\nfour\nfive\nsix\nseven" });

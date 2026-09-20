@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { minimaxEnabled } from "../../lib/minimax.ts";
 import { toolCall, renderResult } from "../../lib/tool-preview.ts";
 
 const searchResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, context) =>
@@ -88,9 +87,8 @@ function searchPage(args: string[], cwd: string, offset: number, limit: number, 
 export function registerSearchTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "grep", label: "grep", parameters: grepSchema, renderCall: toolCall("grep"), renderResult: searchResult,
-    description: "MiniMax mode only. Search with ripgrep. Modes: content (default), files (filenames only), count (matching lines per file). Stable path order; zero-based offset pages, next_offset in result. Default 100 records, max 1000 and 48 KiB. Content/context lines are separate records, clipped to 500 characters. Respects ignore files by default. Requires rg on PATH.",
+    description: "Search with ripgrep. Modes: content (default), files (filenames only), count (matching lines per file). Stable path order; zero-based offset pages, next_offset in result. Default 100 records, max 1000 and 48 KiB. Content/context lines are separate records, clipped to 500 characters. Respects ignore files by default. Requires rg on PATH.",
     async execute(_id, input, signal, _update, ctx) {
-      if (!minimaxEnabled(ctx)) throw new Error("Enable /minimax before using this tool");
       if (input.includeIgnored && !input.path) throw new Error("includeIgnored requires an explicit scoped path");
       const mode = input.mode ?? "content";
       const args = ["--no-config", "--color", "never", "--sort", "path", ...(mode === "files" ? ["--files-with-matches", "--null"] : ["--json"])];
@@ -105,9 +103,8 @@ export function registerSearchTools(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "glob", label: "glob", parameters: globSchema, renderCall: toolCall("glob"), renderResult: searchResult,
-    description: "MiniMax mode only. Find files with ripgrep globs. Zero-based offset pages with next_offset; default 1000 records, max 1000 and 48 KiB. Sort by path (default) or modified (newest first). Respects ignore files by default. Pages rerun the search; keep the same arguments and avoid file changes between pages. Requires rg on PATH.",
+    description: "Find files with ripgrep globs. Zero-based offset pages with next_offset; default 1000 records, max 1000 and 48 KiB. Sort by path (default) or modified (newest first). Respects ignore files by default. Pages rerun the search; keep the same arguments and avoid file changes between pages. Requires rg on PATH.",
     async execute(_id, input, signal, _update, ctx) {
-      if (!minimaxEnabled(ctx)) throw new Error("Enable /minimax before using this tool");
       if (input.includeIgnored && !input.path) throw new Error("includeIgnored requires an explicit scoped path");
       const args = ["--no-config", "--files", "--null", input.sort === "modified" ? "--sortr" : "--sort", input.sort === "modified" ? "modified" : "path", "--glob", input.pattern];
       if (input.includeIgnored) args.push("--hidden", "--no-ignore");

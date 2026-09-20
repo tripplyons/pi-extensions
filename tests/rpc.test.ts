@@ -54,12 +54,12 @@ test("real Pi RPC loads without local dependencies and activates MiniMax and swa
   }
   try {
     const { commands } = await request("get_commands");
-    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "pruner", "btw", "btw:tools", "nvim", "autoresearch", "minimax"])
+    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "btw", "btw:tools", "nvim", "autoresearch", "threshold"])
       expect(commands.some((command: any) => command.name === name)).toBe(true);
-    await request("prompt", { message: "/minimax on" });
-    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message.startsWith("MiniMax mode on:"))).toBe(true);
-    await request("prompt", { message: "/minimax off" });
-    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "MiniMax mode off")).toBe(true);
+    for (const name of ["minimax", "pruner", "prune", "jev", "codex-compact"])
+      expect(commands.some((command: any) => command.name === name)).toBe(false);
+    await request("prompt", { message: "/threshold" });
+    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "Compaction threshold 60000 tokens")).toBe(true);
     await request("prompt", { message: "/swarm:start Verify isolated RPC activation" });
     const runs = await readdir(join(home, "state", "swarm"));
     expect(runs).toHaveLength(1);

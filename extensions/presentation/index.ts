@@ -1,4 +1,4 @@
-import { compactionThreshold } from "../codex-compaction/settings.ts";
+import { compactionThreshold } from "../minimax/settings.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

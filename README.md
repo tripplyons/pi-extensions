@@ -1,10 +1,14 @@
 # Pi extensions
 
-Clean-room rework of Tripp's Stack Agent configuration for Pi. Work is on `rework`;
-`main` is unchanged. No legacy extension bundle, conversion provider, Mixture,
-subagent framework, or compatibility shims are loaded.
+Pi extensions for coding tools, context management, background tasks, and session UI.
 
-## Extensions (25)
+[MiniMax](extensions/minimax) is the always-on tool and context harness, not a
+model selection. It replaces the old file, shell, pruner, and Codex-compaction
+extensions; there is no `/minimax` toggle. `/threshold` still controls automatic
+compaction. Other extensions, including `btw`, `goal`, and `presentation`, remain
+installed with their existing activation rules.
+
+## Extensions (20)
 
 | Extension | Behavior |
 | --- | --- |
@@ -12,21 +16,16 @@ subagent framework, or compatibility shims are loaded.
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
-| [minimax](extensions/minimax) | Opt-in output caps, archive-first checkpoints, paged search, and task reminders with repo-style previews |
-| [jev-policy](extensions/jev-policy) | OpenRouter Jev ranks pruning candidates using conversation and readable summary history |
-| [context-pruner](extensions/context-pruner) | Prune at 100 KB to a ranked 50 KB budget; newest-five protection and archive retrieval |
+| [minimax](extensions/minimax) | Always-on file/Bash tools, paged search, archives, structured checkpoints and todos |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
-| [codex-compaction](extensions/codex-compaction) | Opaque Codex checkpoints |
 | [usage](extensions/usage) | Codex quota and reset times |
 | [models](extensions/models) | Model listing and selection |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
-| [shell](extensions/shell) | Replaces Bash with persistent tmux PTY jobs, compact command previews and live sleep countdowns |
-| [files](extensions/files) | Byte-range reads, search, listing, images; no edit/write tools |
 | [goal](extensions/goal) | Persistent objectives and continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Automatic session names |
@@ -34,15 +33,15 @@ subagent framework, or compatibility shims are loaded.
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with keep/revert decisions |
 
-Tool names use the footer folder’s accent color; shell calls color only the `$`
-prefix. Preview arguments use the normal foreground color. Tool result previews use readable text, including nested records and multiline output.
+Tool names use the footer folder's accent color; Bash calls color only the `$`
+prefix. Preview arguments use the normal foreground color. Tool result previews
+use readable text, including nested records and multiline output.
 Structured data stays unchanged for the model and session history.
 
-The remaining target includes swarm, compaction, usage, sessions,
-retry/approval policy. Runtime audits are also pending; see
-[the parity checklist](docs/parity.md). Implementation is in progress.
+Implementation and runtime audits are ongoing.
 
 Run `npm test` (requires Bun). Install with `pi install /absolute/path/to/pi-extensions`.
-The manifest discovers entry points only, never adjacent tests.
+Reload Pi after installation or updates. The manifest discovers entry points
+only, never adjacent tests.
 
 Historical third-party license notices are retained under `licenses/`.

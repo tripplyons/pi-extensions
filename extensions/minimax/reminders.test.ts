@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { loopReminder, staleTodos, todoKey, todoReminderKey } from "./reminders.ts";
 import { admitsArchive, admitsReminder, footprint } from "./admission.ts";
 import { harness } from "../../lib/harness.ts";
-import { minimaxKey } from "../../lib/minimax.ts";
 
 function rounds(count: number, polling = false): any[] {
   return Array.from({ length: count }, (_, i) => [
@@ -33,7 +32,7 @@ test("loop warnings require three iterations, ignore call IDs and poll waits, an
 });
 
 test("todo cadence follows canonical branch history across compaction and resets on writes", () => {
-  const h = harness(); h.pi.appendEntry(minimaxKey, { enabled: true }); h.pi.appendEntry(todoKey, []);
+  const h = harness(); h.pi.appendEntry(todoKey, []);
   const iteration = () => h.entries.push({ type: "message", message: { role: "assistant", stopReason: "toolUse" } });
   for (let i = 0; i < 14; i++) iteration();
   expect(staleTodos(h.ctx)).toBe(false); iteration(); expect(staleTodos(h.ctx)).toBe(true);
@@ -42,8 +41,8 @@ test("todo cadence follows canonical branch history across compaction and resets
   h.pi.appendEntry(todoReminderKey, true); expect(staleTodos(h.ctx)).toBe(false);
   h.entries.splice(0, h.entries.length, ...branch); expect(staleTodos(h.ctx)).toBe(true);
   h.pi.appendEntry(todoKey, []); expect(staleTodos(h.ctx)).toBe(false);
-  h.pi.appendEntry(minimaxKey, { enabled: false }); for (let i = 0; i < 20; i++) iteration();
-  expect(staleTodos(h.ctx)).toBe(false);
+  h.pi.appendEntry("rework:minimax", { enabled: false }); for (let i = 0; i < 20; i++) iteration();
+  expect(staleTodos(h.ctx)).toBe(true);
 });
 
 test("admission uses projected tokens and bytes, includes schemas and selected model limits", () => {

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { minimaxKey } from "../../lib/minimax.ts";
 
 export const todoKey = "rework:minimax-todos";
 export const todoReminderKey = "rework:minimax-todo-reminder";
@@ -11,7 +10,6 @@ export const todoReminder = "MiniMax task reminder: unfinished todos have not be
 export function staleTodos(ctx: ExtensionContext) {
   let iterations = 0;
   for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-    if (entry.type === "custom" && entry.customType === minimaxKey) return (entry.data as { enabled: boolean }).enabled && iterations >= 15;
     if (entry.type === "custom" && (entry.customType === todoKey || entry.customType === todoReminderKey)) return iterations >= 15;
     if (entry.type === "message" && entry.message.role === "assistant" && !["error", "aborted"].includes(entry.message.stopReason)) iterations++;
   }

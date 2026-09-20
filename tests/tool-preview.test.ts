@@ -1,15 +1,12 @@
+import minimax from "../extensions/minimax/index.ts";
 import askUser from "../extensions/ask-user/index.ts";
-import { renderSleepResult } from "../extensions/shell/sleep-preview.ts";
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { result } from "../lib/common.ts";
 import { harness } from "../lib/harness.ts";
 import { previewText, renderResult } from "../lib/tool-preview.ts";
 import goals from "../extensions/goal/index.ts";
-import files from "../extensions/files/index.ts";
-import shell from "../extensions/shell/index.ts";
 import complain from "../extensions/complain/index.ts";
-import pruner from "../extensions/context-pruner/index.ts";
 import swarm from "../extensions/swarm/index.ts";
 
 const theme = { fg: (_color: string, text: string) => text } as any;
@@ -20,12 +17,11 @@ function render(value: any, expanded = true, width = 100, isError = false) {
 
 test("all JSON-result tools register the text preview renderer", () => {
   const h = harness();
-  for (const install of [goals, files, shell, complain, pruner, swarm]) install(h.pi);
+  for (const install of [goals, minimax, complain, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
-    if (name === "view_image") continue;
-    expect(tool.renderResult).toBe(name === "sleep" ? renderSleepResult : renderResult);
+    if (["read", "edit", "write", "grep", "glob"].includes(name)) { expect(tool.renderResult).toBeFunction(); continue; }
+    expect(tool.renderResult).toBe(renderResult);
   }
-  expect(h.tools.get("view_image").renderResult).toBeUndefined();
 });
 
 test("goal tools preview text while retaining structured results", async () => {
@@ -67,9 +63,9 @@ test("collapsed previews bound wrapped output; expanded previews show all lines"
   for (const line of collapsed) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
 });
 
-test("tool names use accent, without coloring shell commands or sleep timing", () => {
+test("tool names use accent, without coloring Bash commands", () => {
   const h = harness();
-  for (const install of [goals, files, shell, complain, pruner, swarm]) install(h.pi);
+  for (const install of [goals, minimax, complain, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
     const colors: [string, string][] = [];
     const theme = {
@@ -77,22 +73,21 @@ test("tool names use accent, without coloring shell commands or sleep timing", (
       fg(color: string, text: string) { colors.push([color, text]); return text; },
     };
     tool.renderCall({ command: "echo hello", seconds: 30 }, theme, { state: {}, expanded: false }).render(100);
-    expect(colors.filter(([color]) => color === "accent")).toEqual([["accent", name === "shell" ? "$" : name]]);
-    if (name === "shell") expect(colors).toContainEqual(["text", "echo hello"]);
-    if (name === "sleep") expect(colors).toContainEqual(["text", " 30s"]);
+    expect(colors.filter(([color]) => color === "accent")).toEqual([["accent", name === "bash" ? "$" : name]]);
+    if (name === "bash") expect(colors).toContainEqual(["text", "echo hello"]);
   }
 });
 
 
-test("read preview keeps streamed path and byte arguments in foreground", () => {
-  const h = harness(); files(h.pi);
+test("read preview keeps streamed path and line arguments in foreground", () => {
+  const h = harness(); minimax(h.pi);
   const tool = h.tools.get("read");
-  for (const args of [{}, { path: "/tmp/file.ts" }, { path: "/tmp/file.ts", offset: 0, limit: 2000 }]) {
+  for (const args of [{}, { path: "/tmp/file.ts" }, { path: "/tmp/file.ts", offset: 1, limit: 2000 }]) {
     const colors: [string, string][] = [];
     const theme = { bold: (text: string) => text, fg(color: string, text: string) { colors.push([color, text]); return text; } };
     tool.renderCall(args, theme, {}).render(100);
     expect(colors[0]).toEqual(["accent", "read"]);
-    expect(colors[1]).toEqual(["text", "limit" in args ? " /tmp/file.ts (offset: 0, limit: 2000)" : "path" in args ? " /tmp/file.ts" : " ..."]);
+    expect(colors[1]).toEqual(["text", "limit" in args ? " /tmp/file.ts (offset: 1, limit: 2000)" : "path" in args ? " /tmp/file.ts" : " ..."]);
   }
 });
 
