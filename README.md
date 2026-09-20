@@ -17,7 +17,7 @@ installed with their existing activation rules.
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
 | [minimax](extensions/minimax) | Always-on file/Bash tools, paged search, archives, structured checkpoints and todos |
-| [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input; hidden while empty |
+| [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |

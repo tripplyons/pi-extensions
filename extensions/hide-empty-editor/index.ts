@@ -1,7 +1,10 @@
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { compactEditorLayout } from "./layout.ts";
 
 export default function hideEmptyEditor(pi: ExtensionAPI) {
+  let restoreLayout: (() => void) | undefined;
+  pi.on("session_shutdown", () => { restoreLayout?.(); restoreLayout = undefined; });
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
 
@@ -37,6 +40,8 @@ export default function hideEmptyEditor(pi: ExtensionAPI) {
         background.invalidate();
         return [...background.render(width), ...output.slice(bottom + 1)];
       };
+      restoreLayout?.();
+      restoreLayout = compactEditorLayout(tui, editor);
       return editor;
     });
   });

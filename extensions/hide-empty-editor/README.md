@@ -10,3 +10,8 @@ interactive TUI mode.
 Horizontal borders and their rows are removed. Input uses `userMessageBg`,
 which the dotfiles Pi theme maps to `weak_background`. Completion menus keep
 their own styling. Mouse coordinates are translated to the compact layout.
+
+In fullscreen mode, the input uses only the rows it renders, without blank rows
+before the footer. This overrides Pi's three-row editor minimum while the compact
+editor is mounted and restores it on shutdown. Completion menus, below-editor
+widgets, and selectors keep their space.
