@@ -55,11 +55,11 @@ test("context footer uses input over the active compaction threshold", async () 
   install(h.pi);
   registerThreshold(h.pi);
   await h.emit("session_start");
-  expect(footer.render(200)[0]).toContain("0%/60k");
+  expect(footer.render(200)[0]).toContain("0%/200k");
   h.entries.push({ type: "message", message: { role: "assistant", usage: {
     input: 10_000, cacheRead: 35_000, cacheWrite: 5_000, output: 20_000, cost: { total: 0.02 },
   } } });
-  expect(footer.render(200)[0]).toContain("83%/60k");
+  expect(footer.render(200)[0]).toContain("25%/200k");
   expect(footer.render(200)[0]).not.toContain(" out");
   await h.command("threshold", "200k");
   expect(footer.render(200)[0]).toContain("25%/200k");
@@ -67,5 +67,5 @@ test("context footer uses input over the active compaction threshold", async () 
   expect(footer.render(200)[0]).toContain("200%/25k");
   h.entries.splice(1);
   await h.emit("session_tree");
-  expect(footer.render(200)[0]).toContain("83%/60k");
+  expect(footer.render(200)[0]).toContain("25%/200k");
 });

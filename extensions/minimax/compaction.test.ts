@@ -8,10 +8,12 @@ import minimax from "./index.ts";
 import { Tasks } from "./tasks.ts";
 import { harness } from "../../lib/harness.ts";
 import { installThresholdCompaction } from "./compaction.ts";
+import { compactionKey } from "./settings.ts";
 
 function setup() {
   const h = harness();
   h.ctx.getContextUsage = () => ({ tokens: 100_000 });
+  h.entries.push({ type: "custom", customType: compactionKey, data: { threshold: 60_000 } });
   h.ctx.isIdle = () => true;
   h.ctx.abort = () => {};
   h.pi.sendMessage = (message: any) => h.sent.push(message.content);
@@ -50,7 +52,14 @@ test.each([false, true])("Pi SDK uses a checkpoint only when archiving cannot su
     await runtime.setRuntimeApiKey(model.provider, "test-key-never-sent");
     const settings = SettingsManager.inMemory({ compaction: { enabled: true, keepRecentTokens: 100 }, retry: { enabled: false } });
     const manager = SessionManager.inMemory(root);
-    manager.appendCustomEntry("rework:codex-compaction", { threshold: archiveOnly ? 100000 : 1000 });
+    manager.appendCustomEntry(compactionKey, { threshold: archiveOnly ? 100000 : 2500 });
+    manager.appendMessage({ role: "user", content: "Earlier request", timestamp: 0 });
+    manager.appendMessage({
+      role: "assistant", content: [{ type: "text", text: "Earlier answer" }],
+      api: model.api, provider: model.provider, model: model.id, stopReason: "stop", timestamp: 1,
+      usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    });
     const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, agentsFilesOverride: () => ({ agentsFiles: [] }), extensionFactories: [pi => {
       // Simulate a verbose integration result before MiniMax's admission hook.
       if (archiveOnly) pi.on("tool_result", event => event.toolName === "bash" ? { content: [{ type: "text", text: "verbose output\n".repeat(60000) }] } : undefined);

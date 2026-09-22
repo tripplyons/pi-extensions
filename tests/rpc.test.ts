@@ -59,7 +59,7 @@ test("real Pi RPC loads without local dependencies and activates MiniMax and swa
     for (const name of ["minimax", "pruner", "prune", "jev", "codex-compact"])
       expect(commands.some((command: any) => command.name === name)).toBe(false);
     await request("prompt", { message: "/threshold" });
-    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "Compaction threshold 60000 tokens")).toBe(true);
+    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "Compaction threshold 200000 tokens")).toBe(true);
     await request("prompt", { message: "/swarm:start Verify isolated RPC activation" });
     const runs = await readdir(join(home, "state", "swarm"));
     expect(runs).toHaveLength(1);

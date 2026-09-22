@@ -170,6 +170,7 @@ test("failed, truncated, empty and aborted checkpoints never replace the session
 test("/threshold controls MiniMax automatic compaction and does not block manual or overflow recovery", async () => {
   const h = setup();
   await h.emit("session_start");
+  await h.command("threshold", "60k");
   let tokens: number | null = 59999, calls = 0;
   h.ctx.getContextUsage = () => ({ tokens });
   h.ctx.compact = (options: any) => { calls++; options.onComplete({}); };

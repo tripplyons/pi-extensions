@@ -40,8 +40,8 @@ Structured data stays unchanged for the model and session history.
 
 Implementation and runtime audits are ongoing.
 
-Run `npm test` (requires Bun). Install with `pi install /absolute/path/to/pi-extensions`.
-Reload Pi after installation or updates. The manifest discovers entry points
-only, never adjacent tests.
+Run `npm install` and `npm test` (requires Bun). Install with
+`pi install /absolute/path/to/pi-extensions`. Reload Pi after installation or
+updates. The manifest discovers entry points only, not adjacent tests.
 
 Historical third-party license notices are retained under `licenses/`.
