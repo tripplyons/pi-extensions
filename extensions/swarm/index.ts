@@ -46,7 +46,14 @@ export default function install(pi: ExtensionAPI) {
       const { run, node } = await active(ctx);
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
-        pi.sendMessage({ customType: "swarm-message", content: JSON.stringify(message), display: true }, { triggerTurn: true, deliverAs: "followUp" });
+        const sender = run.nodes[message.from];
+        const senderName = sender?.name ?? "unknown worker";
+        pi.sendMessage({
+          customType: "swarm-message",
+          content: `Swarm ${message.kind} from ${senderName} (${message.from}):\n${message.text}`,
+          display: true,
+          details: { runId: run.id, messageId: message.id, from: message.from, kind: message.kind },
+        }, { triggerTurn: true, deliverAs: "followUp" });
         await store.acknowledge(run.id, node.id, message.id);
         pi.events.emit("rework:swarm-activity", message);
       }
@@ -90,7 +97,7 @@ export default function install(pi: ExtensionAPI) {
   });
   tool("swarm_complete", "Submit results for parent review after all descendants are terminal.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
-    await store.send(run.id, node.id, node.parent!, "message", `Result ready for review: ${args.result}`); return updated;
+    await store.send(run.id, node.id, node.parent!, "message", "Submitted a result for review. Use swarm_tree to inspect it."); return updated;
   });
   tool("swarm_review", "Review a direct child's result; accept/reject stops it without merging.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(Type.Literal)), feedback: Type.String() }), async (args, ctx) => {
     const { run, node } = await active(ctx); return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback);

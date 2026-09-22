@@ -23,8 +23,10 @@ worktrees with a fake process runtime. Public extension registration is pending.
 
 `/swarm:start <objective>` activates the twelve swarm tools. Activation is persisted
 on the root session branch. Workers load the same package entry points, inherit
-the model/effort at spawn, and poll durable direct-relative messages. Root clear
-preflights all worktrees before stopping anything. No operation merges or pushes.
+the model/effort at spawn, and poll durable direct-relative messages. Incoming
+messages identify the sender and show its text; result notices point to
+`swarm_tree` for review. Root clear preflights all worktrees before stopping
+anything. No operation merges or pushes.
 
 Public hooks are now registered and activation/session ownership is tested.
 End-to-end interactive worker orchestration and recovery audits remain pending.
