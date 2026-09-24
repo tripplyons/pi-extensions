@@ -149,8 +149,12 @@ usage cost.
   Aborting a foreground call cancels it; promoted and explicit background tasks
   survive the launching turn.
 
-Completion sends one notification and resumes the owning branch when Pi is idle.
-Switching branches defers that notification until the owning branch is active.
+Unobserved completions are batched into one notification and resume the owning
+branch when Pi is idle. A terminal status returned by `task_output`, `task_query`
+(including lists), or `task_stop` acknowledges those returned tasks and suppresses
+their pending notifications. Unread output remains available. Running statuses,
+failed reads, and aborted reads do not acknowledge a completion.
+Switching branches defers notifications until the owning branch is active.
 Runtime shutdown stops managed tasks. Task metadata and full output are stored outside the repo under `minimax/tasks` in the same state root as
 archives. Output survives reload; unfinished records from a previous runtime
 become `lost`, not reattached. Output cursors and pending notifications are

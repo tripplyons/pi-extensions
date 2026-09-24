@@ -16,7 +16,7 @@ installed with their existing activation rules.
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records |
-| [minimax](extensions/minimax) | Always-on file/Bash tools, paged search, archives, structured checkpoints and todos |
+| [minimax](extensions/minimax) | Always-on file/Bash tools, batched task notifications, paged search, archives, checkpoints and todos |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |

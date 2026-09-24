@@ -2,19 +2,30 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { Tasks, backgroundTimeout, registerTaskTools, taskKey } from "./tasks.ts";
 import { harness } from "../../lib/harness.ts";
 
 const roots: string[] = [];
 const managers: Tasks[] = [];
+const registrations: ReturnType<typeof harness>[] = [];
 afterEach(async () => {
+  await Promise.all(registrations.splice(0).map(h => h.emit("session_shutdown")));
   await Promise.all(managers.splice(0).map(tasks => tasks.shutdown()));
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
-async function setup(yieldMs = 10) {
+async function setup(yieldMs = 10, operations?: BashOperations) {
   const root = await mkdtemp(join(tmpdir(), "minimax-jobs-test-")); roots.push(root);
-  const tasks = new Tasks(root, undefined, yieldMs); managers.push(tasks);
+  const tasks = new Tasks(root, operations, yieldMs); managers.push(tasks);
   return { root, tasks };
+}
+async function taskHarness(operations?: BashOperations) {
+  const { root, tasks } = await setup(10, operations);
+  const h = harness(); registrations.push(h);
+  h.ctx.cwd = root; h.ctx.isIdle = () => false;
+  registerTaskTools(h.pi, tasks);
+  await h.emit("session_start");
+  return { h, tasks };
 }
 async function settled(tasks: Tasks, id: string) {
   for (let i = 0; i < 100; i++) {
@@ -142,4 +153,150 @@ test("completion waits for idle and automatic output cursors are session-scoped"
   h.ctx.sessionManager.getSessionId = () => "forked-session";
   expect(await output()).toBe("completed");
   await h.emit("session_shutdown");
+});
+
+for (const tool of ["task_output", "task_query"]) {
+  for (const [command, status] of [["printf completed", "succeeded"], ["exit 7", "failed"]]) {
+    test(`${tool} observing ${status} prevents a stale completion wake-up`, async () => {
+      const { h, tasks } = await taskHarness();
+      const { task_id: id } = (await h.call("bash", { command, run_in_background: true })).details;
+      await settled(tasks, id);
+      expect(h.sentMessages).toHaveLength(0);
+      expect((await h.call(tool, { task_id: id })).details.status).toBe(status);
+      h.ctx.isIdle = () => true;
+      for (const event of ["before_agent_start", "session_tree", "session_switch"]) await h.emit(event);
+      expect(h.sentMessages).toHaveLength(0);
+      expect((await tasks.output(id, 0)).status).toBe(status);
+    });
+  }
+}
+
+test("reading a completed auto-promoted foreground task suppresses its notification", async () => {
+  const { h, tasks } = await taskHarness();
+  const started = (await h.call("bash", { command: "sleep 0.05; printf completed" })).details;
+  expect(started.status).toBe("auto_promoted");
+  await settled(tasks, started.task_id);
+  expect((await h.call("task_output", { task_id: started.task_id })).details.status).toBe("succeeded");
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(0);
+});
+
+test("a rejected output read leaves the completion pending", async () => {
+  const { h, tasks } = await taskHarness();
+  const { task_id: id } = (await h.call("bash", { command: "true", run_in_background: true })).details;
+  await settled(tasks, id);
+  await expect(h.call("task_output", { task_id: id, offset: -1 })).rejects.toThrow("offset must be");
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.sentMessages[0].message.content).toContain(id);
+});
+
+test("stopping a task acknowledges the cancellation without another turn", async () => {
+  const { h, tasks } = await taskHarness();
+  const { task_id: id } = (await h.call("bash", { command: "sleep 30", run_in_background: true })).details;
+  expect((await h.call("task_stop", { task_id: id })).details.status).toBe("canceled");
+  expect(tasks.query(id).status).toBe("canceled");
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(0);
+});
+
+test("terminal output acknowledges completion without consuming the remaining output", async () => {
+  const { h, tasks } = await taskHarness();
+  const { task_id: id } = (await h.call("bash", { command: "head -c 60000 /dev/zero", run_in_background: true })).details;
+  await settled(tasks, id);
+  expect((await h.call("task_output", { task_id: id })).details).toMatchObject({ status: "succeeded", next_offset: 51200 });
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(0);
+  const remaining = (await h.call("task_output", { task_id: id })).details;
+  expect(remaining.output).toHaveLength(8800);
+  expect(remaining.next_offset).toBe(60000);
+});
+
+test("filtered query acknowledges only returned terminal tasks", async () => {
+  const { h, tasks } = await taskHarness();
+  const success = (await h.call("bash", { command: "true", run_in_background: true })).details.task_id;
+  const failure = (await h.call("bash", { command: "exit 7", run_in_background: true })).details.task_id;
+  await Promise.all([settled(tasks, success), settled(tasks, failure)]);
+  expect((await h.call("task_query", { status: "succeeded" })).details.map((task: any) => task.task_id)).toEqual([success]);
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.sentMessages[0].message.content).toContain(failure);
+  expect(h.sentMessages[0].message.content).not.toContain(success);
+});
+
+test("unfiltered query acknowledges every returned terminal task", async () => {
+  const { h, tasks } = await taskHarness();
+  const ids = [];
+  for (const command of ["true", "exit 7"]) ids.push((await h.call("bash", { command, run_in_background: true })).details.task_id);
+  await Promise.all(ids.map(id => settled(tasks, id)));
+  expect((await h.call("task_query", {})).details).toHaveLength(2);
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(0);
+});
+
+test("unobserved completions are batched into one wake-up instead of queued follow-up turns", async () => {
+  const { h, tasks } = await taskHarness();
+  const ids = [];
+  for (const command of ["true", "exit 7", "printf done"]) ids.push((await h.call("bash", { command, run_in_background: true })).details.task_id);
+  await Promise.all(ids.map(id => settled(tasks, id)));
+  expect(h.sentMessages).toHaveLength(0);
+  const send = h.pi.sendMessage;
+  h.pi.sendMessage = (message: any, options: any) => {
+    send(message, options);
+    h.ctx.isIdle = () => false;
+  };
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(1);
+  for (const id of ids) expect(h.sentMessages[0].message.content).toContain(id);
+  expect(h.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+  h.ctx.isIdle = () => true;
+  await h.emit("before_agent_start");
+  expect(h.sentMessages).toHaveLength(1);
+});
+
+test("a completion racing a running output snapshot still notifies", async () => {
+  let finish!: () => void;
+  const exit = new Promise<{ exitCode: number }>(resolve => { finish = () => resolve({ exitCode: 0 }); });
+  const { h, tasks } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
+    signal?.addEventListener("abort", finish, { once: true });
+    return exit;
+  } });
+  const { task_id: id } = (await h.call("bash", { command: "controlled", run_in_background: true })).details;
+  const output = tasks.output.bind(tasks);
+  tasks.output = async (...args) => {
+    const snapshot = await output(...args);
+    finish();
+    await settled(tasks, id);
+    return snapshot;
+  };
+  expect((await h.call("task_output", { task_id: id })).details.status).toBe("running");
+  expect(tasks.query(id).status).toBe("succeeded");
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.sentMessages[0].message.content).toContain(id);
+});
+
+test("an aborted terminal read does not acknowledge the completion", async () => {
+  const { h, tasks } = await taskHarness();
+  const { task_id: id } = (await h.call("bash", { command: "true", run_in_background: true })).details;
+  await settled(tasks, id);
+  const controller = new AbortController();
+  const output = tasks.output.bind(tasks);
+  tasks.output = async (...args) => {
+    const value = await output(...args);
+    controller.abort();
+    return value;
+  };
+  await expect(h.call("task_output", { task_id: id }, controller.signal)).rejects.toThrow();
+  h.ctx.isIdle = () => true;
+  await h.emit("session_tree");
+  expect(h.sentMessages).toHaveLength(1);
 });

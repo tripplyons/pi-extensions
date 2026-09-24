@@ -109,7 +109,7 @@ export class Tasks {
       signal?.throwIfAborted();
       task.background = true;
     }
-    return result({ task_id: id, status: args.run_in_background ? "started" : "auto_promoted", message: "The command is running in the background. Do not rerun it. Use task_output to read output; completion will notify the owning conversation." });
+    return result({ task_id: id, status: args.run_in_background ? "started" : "auto_promoted", message: "The command is running in the background. Do not rerun it. Use task_output to read output; unobserved completion will notify the owning conversation." });
   }
   async output(id: string, offset: number | undefined, waitMs = 0, signal?: AbortSignal, sessionId = "") {
     signal?.throwIfAborted();
@@ -164,6 +164,9 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
   function flush() {
     if (!current || shuttingDown) return;
     if (!notifications.size) return;
+    const owned = new Set(ids(current));
+    const pending = [...notifications].filter(id => owned.has(id));
+    if (!pending.length) return;
     // sendMessage(triggerTurn) can start a run during compaction. Wait for the
     // runtime to become idle instead of racing its history replacement.
     if (!current.isIdle()) {
@@ -171,12 +174,11 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
       notificationTimer.unref();
       return;
     }
-    const owned = new Set(ids(current));
-    for (const id of notifications) {
-      if (!owned.has(id)) continue;
-      notifications.delete(id);
-      pi.sendMessage({ customType: "minimax-task-completed", content: `Background Bash task ${id} is ${tasks.query(id).status}. Use task_output to inspect the result before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
-    }
+    const content = pending.map(id => `Background Bash task ${id} is ${tasks.query(id).status}.`).join("\n");
+    for (const id of pending) notifications.delete(id);
+    // One wake-up for the batch. Sending once per task queues follow-up turns
+    // that cannot be withdrawn when the first turn inspects the other tasks.
+    pi.sendMessage({ customType: "minimax-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
   }
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree", "before_agent_start"] as const) pi.on(event, (_event, ctx) => { current = ctx; flush(); });
   pi.on("session_shutdown", async () => { shuttingDown = true; clearTimeout(notificationTimer); await tasks.shutdown(); });
@@ -195,7 +197,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
   const definitions = [
     { name: "task_query", description: "Query background tasks on this session branch. Omit task_id to list tasks; pass task_id to get one. status filters the list.", parameters: Type.Object({ task_id: Type.Optional(Type.String()), status: Type.Optional(Type.Union(taskStatuses.map(status => Type.Literal(status)))) }),
       run: async (args: { task_id?: string; status?: Status }, _signal: AbortSignal | undefined, ctx: ExtensionContext) => args.task_id ? tasks.query(args.task_id) : ids(ctx).map(id => tasks.query(id)).filter(task => !args.status || task.status === args.status) },
-    { name: "task_output", description: "Read output from a background task. Completion automatically notifies and resumes the owning conversation; do not poll frequently. Omit offset consistently for an automatic cursor; explicit offsets do not advance it. wait_ms waits for new output or completion, not a minimum polling interval. Waiting does not stop the task.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })), wait_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Defaults to 0. Values above 30000 are accepted and capped at 30000 ms." })) }),
+    { name: "task_output", description: "Read output from a background task. Unobserved completion automatically notifies and resumes the owning conversation; do not poll frequently. Returning terminal status acknowledges completion without discarding unread output. Omit offset consistently for an automatic cursor; explicit offsets do not advance it. wait_ms waits for new output or completion, not a minimum polling interval. Waiting does not stop the task.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })), wait_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Defaults to 0. Values above 30000 are accepted and capped at 30000 ms." })) }),
       run: (args: { task_id: string; offset?: number; wait_ms?: number }, signal: AbortSignal | undefined, ctx: ExtensionContext) => tasks.output(args.task_id, args.offset, args.wait_ms, signal, ctx.sessionManager.getSessionId()) },
     { name: "task_stop", description: "Stop a background task by task_id, killing its process tree. Finished tasks are unchanged.", parameters: Type.Object({ task_id: Type.String(), reason: Type.Optional(Type.String()) }),
       run: (args: { task_id: string; reason?: string }) => tasks.stop(args.task_id, args.reason) },
@@ -205,7 +207,15 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
     renderCall: toolCall(definition.name), renderResult,
     async execute(_id, args, signal, _update, ctx) {
       check(ctx, args.task_id); signal?.throwIfAborted();
-      return result(await definition.run(args as never, signal, ctx));
+      const value = await definition.run(args as never, signal, ctx);
+      signal?.throwIfAborted();
+      // A returned terminal status already tells the agent the task finished.
+      // Use the returned snapshot, not a fresh query: a running read must not
+      // swallow a completion that races the tool response.
+      for (const task of Array.isArray(value) ? value : [value]) {
+        if (terminal(task.status)) notifications.delete(task.task_id);
+      }
+      return result(value);
     },
   });
 }
