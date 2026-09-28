@@ -39,6 +39,17 @@ export function toolCall(name: string): NonNullable<ToolDefinition["renderCall"]
       const question = typeof args?.question === "string" ? args.question : "...";
       return new Text(title + theme.fg("text", ` ${question}`), 0, 0);
     }
+    if (name === "web_search" || name === "web_extract") {
+      const value = name === "web_search" ? args?.query : args?.url;
+      const options = [
+        args?.provider ?? "openai-codex",
+        `${args?.timeout ?? 30}s timeout`,
+        typeof args?.max_results === "number" ? `results: ${args.max_results}` : undefined,
+        typeof args?.timelimit === "string" ? `recent: ${args.timelimit}` : undefined,
+        typeof args?.max_chars === "number" ? `chars: ${args.max_chars}` : undefined,
+      ].filter(Boolean);
+      return new Text(title + theme.fg("text", ` ${typeof value === "string" ? value : "..."} (${options.join(", ")})`), 0, 0);
+    }
     if (name === "grep" || name === "glob") {
       const pattern = typeof args?.pattern === "string" ? args.pattern : "...";
       const path = typeof args?.path === "string" ? ` in ${args.path}` : "";

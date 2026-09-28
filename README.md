@@ -8,10 +8,11 @@ extensions; there is no `/minimax` toggle. `/threshold` still controls automatic
 compaction. Other extensions, including `btw`, `goal`, and `presentation`, remain
 installed with their existing activation rules.
 
-## Extensions (20)
+## Extensions (21)
 
 | Extension | Behavior |
 | --- | --- |
+| [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
 | [swarm](extensions/swarm) | User-activated workers, messaging, review and worktrees |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
