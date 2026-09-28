@@ -43,7 +43,7 @@ test("child snapshot preserves parent HEAD and index; cleanup refuses worker cha
 test("commit-parent requires unprotected branch and cleanup validates branch identity", () => fixture(async root => {
   await writeFile(join(root, "file"), "changed");
   await expect(prepareWorktree(root, join(root, "child"), "pi-swarm/test/three", "commit-parent")).rejects.toThrow("Protected");
-  await git(root, ["switch", "-c", "rework"]);
+  await git(root, ["switch", "-c", "feature"]);
   const old = await git(root, ["rev-parse", "HEAD"]);
   const child = await prepareWorktree(root, join(root, "child"), "pi-swarm/test/three", "commit-parent");
   expect(await git(root, ["rev-parse", "HEAD"])).not.toBe(old);

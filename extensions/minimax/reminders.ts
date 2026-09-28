@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-export const todoKey = "rework:minimax-todos";
-export const todoReminderKey = "rework:minimax-todo-reminder";
-export const loopReminderKey = "rework:minimax-loop-reminder";
+export const todoKey = "pi:minimax-todos";
+export const todoReminderKey = "pi:minimax-todo-reminder";
+export const loopReminderKey = "pi:minimax-loop-reminder";
 export const todoReminder = "MiniMax task reminder: unfinished todos have not been updated for 15 assistant iterations. Review the stored list and use todo_write if its status has changed. Do not invent completion, create a goal, or continue solely because of this reminder.";
 
 export function staleTodos(ctx: ExtensionContext) {

@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export function result<T>(details: T) {
@@ -11,12 +9,6 @@ export function text(value: string, name: string, max = Infinity) {
     throw new Error(`${name} must contain text, at most ${max} characters, without control characters`);
   }
   return value;
-}
-
-export function stateRoot(env = process.env) {
-  const root = env.PI_REWORK_STATE_DIR || join(env.XDG_STATE_HOME || join(homedir(), ".local/state"), "pi-rework");
-  if (!isAbsolute(root)) throw new Error("PI_REWORK_STATE_DIR and XDG_STATE_HOME must be absolute");
-  return root;
 }
 
 // Read the active branch, not all entries: forks must not inherit abandoned state.

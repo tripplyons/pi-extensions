@@ -14,7 +14,7 @@ import { checkpointPrompt, checkpointControl, harnessPrompt } from "./prompts.ts
 import { Tasks } from "./tasks.ts";
 import { installThresholdCompaction } from "./compaction.ts";
 
-const archiveKey = "rework:minimax-archive";
+const archiveKey = "pi:minimax-archive";
 
 const todosSchema = Type.Object({ todos: Type.Array(Type.Object({
   id: Type.String({ minLength: 1, maxLength: 100 }),

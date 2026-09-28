@@ -3,7 +3,7 @@
 Source of truth: `../dotfiles/home/dot_config/stack-agent/{plugins,builtin}`,
 installed `~/.config/stack-agent`, and the runtime in `../stack-based-harness`.
 User requested all areas below, rebuilt from scratch. No legacy compatibility
-layer. Work takes place only on `rework`; no push or changes to `main`.
+layer.
 
 A checked item requires behavior tests and package/runtime evidence, not merely
 registration or documentation. This list tracks deliverables, not completion.

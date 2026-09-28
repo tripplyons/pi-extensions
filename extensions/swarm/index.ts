@@ -1,19 +1,19 @@
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { result, restore, stateRoot } from "../../lib/common.ts";
+import { result, restore } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
 import { SwarmStore, descendants } from "./state.ts";
 import { Swarm } from "./controller.ts";
 import { Workers } from "./worker.ts";
 import { preflightWorktree } from "./git.ts";
-const key = "rework:swarm";
+const key = "pi:swarm";
 type Identity = { run: string; node: string };
 export default function install(pi: ExtensionAPI) {
-  const root = stateRoot();
+  const root = getAgentDir();
   const store = new SwarmStore(join(root, "swarm"));
   const workers = new Workers();
   const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -55,7 +55,7 @@ export default function install(pi: ExtensionAPI) {
           details: { runId: run.id, messageId: message.id, from: message.from, kind: message.kind },
         }, { triggerTurn: true, deliverAs: "followUp" });
         await store.acknowledge(run.id, node.id, message.id);
-        pi.events.emit("rework:swarm-activity", message);
+        pi.events.emit("pi:swarm-activity", message);
       }
     } catch (error) { ctx.ui.setStatus("swarm-error", String(error)); }
     finally { polling = false; }
@@ -73,7 +73,7 @@ export default function install(pi: ExtensionAPI) {
     if (identity) throw new Error("A swarm is already associated with this session");
     const run = await store.create(ctx.sessionManager.getSessionId(), ctx.cwd, objective);
     identity = { run: run.id, node: run.root }; pi.appendEntry(key, identity);
-    pi.events.emit("rework:swarm-attached", ctx);
+    pi.events.emit("pi:swarm-attached", ctx);
     await load({}, ctx); ctx.ui.notify("Swarm activated. Workers start only when spawned.", "info");
   } });
   const empty = Type.Object({});

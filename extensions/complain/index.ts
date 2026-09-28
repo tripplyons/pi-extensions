@@ -2,9 +2,9 @@ import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { result, stateRoot, text } from "../../lib/common.ts";
+import { result, text } from "../../lib/common.ts";
 
 export default function complain(pi: ExtensionAPI) {
   pi.registerTool({ renderCall: toolCall("complain"), renderResult,
@@ -14,7 +14,7 @@ export default function complain(pi: ExtensionAPI) {
     async execute(id, { message }, signal, _update, ctx) {
       text(message, "message");
       signal?.throwIfAborted();
-      const directory = join(stateRoot(), "complaints");
+      const directory = join(getAgentDir(), "complaints");
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const path = join(directory, `${Date.now()}-${randomUUID()}.json`);
       const record = {

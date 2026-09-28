@@ -41,7 +41,7 @@ test("todo cadence follows canonical branch history across compaction and resets
   h.pi.appendEntry(todoReminderKey, true); expect(staleTodos(h.ctx)).toBe(false);
   h.entries.splice(0, h.entries.length, ...branch); expect(staleTodos(h.ctx)).toBe(true);
   h.pi.appendEntry(todoKey, []); expect(staleTodos(h.ctx)).toBe(false);
-  h.pi.appendEntry("rework:minimax", { enabled: false }); for (let i = 0; i < 20; i++) iteration();
+  h.pi.appendEntry("pi:minimax", { enabled: false }); for (let i = 0; i < 20; i++) iteration();
   expect(staleTodos(h.ctx)).toBe(true);
 });
 

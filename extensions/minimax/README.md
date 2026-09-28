@@ -88,7 +88,7 @@ default selection policy:
 
 Cumulative archiving changes only the model-input projection; calls and existing
 session results remain intact. Content-addressed artifacts live under
-`~/.local/state/pi-rework/minimax/artifacts` (or `PI_REWORK_STATE_DIR`). References
+`~/.pi/agent/minimax/artifacts` (`PI_CODING_AGENT_DIR` overrides the agent directory). References
 are scoped to the active session branch. Missing artifacts leave existing
 session results visible; recovering immediately capped text requires its artifact. There is no automatic artifact deletion.
 

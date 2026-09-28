@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import manifest from "../package.json";
 
 test("real Pi RPC loads without local dependencies and activates MiniMax and swarm without model requests", async () => {
-  const home = await mkdtemp(join(tmpdir(), "pi-rpc-rework-"));
+  const home = await mkdtemp(join(tmpdir(), "pi-rpc-"));
   const project = resolve(import.meta.dir, "..");
   // Test the shipped package, not imports accidentally supplied by test-only
   // node_modules links. Pi must supply its documented extension imports.
@@ -19,7 +19,7 @@ test("real Pi RPC loads without local dependencies and activates MiniMax and swa
   // Allowlist environment: never inherit provider credentials or the live agent directory.
   const child = spawn("node", args, { cwd: home, env: {
     PATH: process.env.PATH, HOME: home, TERM: "dumb", PI_CODING_AGENT_DIR: join(home, "agent"),
-    PI_REWORK_STATE_DIR: join(home, "state"), XDG_CONFIG_HOME: join(home, "config"),
+    XDG_CONFIG_HOME: join(home, "config"),
     XDG_STATE_HOME: join(home, "state"),
   }, stdio: ["pipe", "pipe", "pipe"] });
   const events: any[] = [];
@@ -61,9 +61,9 @@ test("real Pi RPC loads without local dependencies and activates MiniMax and swa
     await request("prompt", { message: "/threshold" });
     expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "Compaction threshold 200000 tokens")).toBe(true);
     await request("prompt", { message: "/swarm:start Verify isolated RPC activation" });
-    const runs = await readdir(join(home, "state", "swarm"));
+    const runs = await readdir(join(home, "agent", "swarm"));
     expect(runs).toHaveLength(1);
-    const run = JSON.parse(await readFile(join(home, "state", "swarm", runs[0], "run.json"), "utf8"));
+    const run = JSON.parse(await readFile(join(home, "agent", "swarm", runs[0], "run.json"), "utf8"));
     expect(run.objective).toBe("Verify isolated RPC activation");
     expect((await request("get_state")).isStreaming).toBe(false);
     expect(events.some(event => event.type === "agent_start")).toBe(false);

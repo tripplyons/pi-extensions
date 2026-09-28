@@ -7,7 +7,7 @@ import { SwarmStore } from "./state.ts";
 import { harness } from "../../lib/harness.ts";
 test("inbox messages reach the session as readable notifications", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
-  const previous = process.env.PI_REWORK_STATE_DIR; process.env.PI_REWORK_STATE_DIR = root;
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness(); install(h.pi);
   try {
     await h.command("swarm:start", "Build the feature");
@@ -35,13 +35,13 @@ test("inbox messages reach the session as readable notifications", async () => {
     expect(await store.inbox(identity.run, identity.node)).toEqual([]);
   } finally {
     await h.emit("session_shutdown");
-    if (previous === undefined) delete process.env.PI_REWORK_STATE_DIR; else process.env.PI_REWORK_STATE_DIR = previous;
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
 });
 test("swarm activation is user-only, session-bound, and exposes all tools", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
-  const previous = process.env.PI_REWORK_STATE_DIR; process.env.PI_REWORK_STATE_DIR = root;
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
     install(h.pi); expect(h.tools.size).toBe(12);
@@ -56,7 +56,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
   } finally {
     await h.emit("session_shutdown");
-    if (previous === undefined) delete process.env.PI_REWORK_STATE_DIR; else process.env.PI_REWORK_STATE_DIR = previous;
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
 });

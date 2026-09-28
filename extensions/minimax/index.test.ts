@@ -33,7 +33,7 @@ function messages(rounds = 8, size = 40_000): any[] {
 
 test("MiniMax is always active, ignores old toggles and preserves companion activation", async () => {
   const h = setup();
-  h.pi.appendEntry("rework:minimax", { enabled: false });
+  h.pi.appendEntry("pi:minimax", { enabled: false });
   await h.emit("session_start");
   expect(h.commands.has("minimax")).toBe(false);
   expect(h.active().sort()).toEqual(["read", "edit", "write", "grep", "glob", "bash", "task_query", "task_output", "task_stop", "todo_write", "archive_read", "ask_user", "complain", "get_goal", "swarm_task"].sort());
@@ -323,7 +323,7 @@ test("result cap is always active and its durable receipt remains retrievable af
 
   const [capped] = await h.emit("tool_result", output);
   expect(capped.content[0].text).toContain("[minimax archive ");
-  const artifact = h.entries.find(entry => entry.customType === "rework:minimax-archive").data[0];
+  const artifact = h.entries.find(entry => entry.customType === "pi:minimax-archive").data[0];
   await h.emit("session_start");
   const retrieved = await h.call("archive_read", { id: artifact.id, offset: 0, limit: 32000 });
   expect(retrieved.details.content).toContain(output.content[0].text.slice(0, 100));
@@ -332,7 +332,7 @@ test("result cap is always active and its durable receipt remains retrievable af
 
 test("automatic checkpoint admission measures retained history; manual and overflow still summarize", async () => {
   const h = setup();
-  h.pi.appendEntry("rework:codex-compaction", { threshold: 100_000 }); await h.emit("session_start");
+  h.pi.appendEntry("pi:codex-compaction", { threshold: 100_000 }); await h.emit("session_start");
   h.ctx.model = { contextWindow: 200000, maxTokens: 8192 };
   h.ctx.getSystemPrompt = () => "test";
   h.pi.getAllTools = () => [...h.tools.values()];
@@ -350,7 +350,7 @@ test("automatic checkpoint admission measures retained history; manual and overf
   const event = { ...compactionEvent(), customInstructions: undefined, reason: "threshold" };
   expect(await h.emit("session_before_compact", event)).toEqual([{ cancel: true }]);
   expect(summaries).toBe(0);
-  expect(h.entries.some(entry => entry.customType === "rework:minimax-archive")).toBe(true);
+  expect(h.entries.some(entry => entry.customType === "pi:minimax-archive")).toBe(true);
   for (const reason of ["manual", "overflow"]) {
     expect((await h.emit("session_before_compact", { ...event, reason }))[0].compaction).toBeDefined();
   }

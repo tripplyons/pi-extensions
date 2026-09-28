@@ -24,7 +24,7 @@ export async function prepareWorkspace(parent: string, destination: string, bran
   }
   repo = await realpath(repo);
   const common = await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  const lock = join(common, "pi-rework-swarm.lock");
+  const lock = join(common, "pi-swarm.lock");
   try { await mkdir(lock); }
   catch (error: any) {
     if (error.code === "EEXIST") throw new Error("Swarm Git preparation is locked; retry after the current operation finishes");

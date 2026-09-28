@@ -32,6 +32,6 @@ export default function overseer(pi: ExtensionAPI) {
   pi.on("session_switch", start);
   pi.on("agent_start", () => { glow.busy = true; glow.attention = false; glow.show(); });
   pi.on("agent_end", () => { glow.busy = false; glow.attention = true; glow.show(); });
-  pi.events.on("rework:prompt", value => { glow.prompt = value === true; glow.show(); });
+  pi.events.on("pi:prompt", value => { glow.prompt = value === true; glow.show(); });
   pi.on("session_shutdown", () => { detach?.(); glow.reset(); glow.active = false; });
 }

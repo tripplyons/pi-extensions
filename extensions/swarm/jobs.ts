@@ -13,7 +13,7 @@ export class Jobs {
     if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid job ID");
     return join(this.root, id);
   }
-  async tmux(...args: string[]) { return (await exec("tmux", ["-L", "pi-rework", ...args], { maxBuffer: 1024 * 1024 })).stdout; }
+  async tmux(...args: string[]) { return (await exec("tmux", ["-L", "pi-swarm", ...args], { maxBuffer: 1024 * 1024 })).stdout; }
   async start(session: string, cwd: string, command: string) {
     if (!isAbsolute(cwd)) throw new Error("Job cwd must be absolute");
     const id = randomUUID(); const dir = this.dir(id);

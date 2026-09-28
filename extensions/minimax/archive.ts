@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { stateRoot } from "../../lib/common.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 type Output = Extract<AgentMessage, { role: "toolResult" }>;
 export type Artifact = { id: string; toolCallId: string; bytes: number };
@@ -62,7 +62,7 @@ export async function capToolOutput(output: Output, archive: Archive) {
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 
 export class Archive {
-  constructor(readonly root = join(stateRoot(), "minimax", "artifacts")) {}
+  constructor(readonly root = join(getAgentDir(), "minimax", "artifacts")) {}
 
   async save(output: Output): Promise<Artifact> {
     const text = JSON.stringify(output);

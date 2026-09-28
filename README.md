@@ -15,7 +15,7 @@ installed with their existing activation rules.
 | [swarm](extensions/swarm) | User-activated workers, messaging, review and worktrees |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
-| [complain](extensions/complain) | Private harness issue records |
+| [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
 | [minimax](extensions/minimax) | Always-on file/Bash tools, batched task notifications, paged search, archives, checkpoints and todos |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
@@ -37,6 +37,10 @@ Tool names use the footer folder's accent color; Bash calls color only the `$`
 prefix. Preview arguments use the normal foreground color. Tool result previews
 use readable text, including nested records and multiline output.
 Structured data stays unchanged for the model and session history.
+
+Complaint, MiniMax, and swarm files live under `~/.pi/agent`
+(`PI_CODING_AGENT_DIR` overrides this). Harness session entries and events use
+the `pi:` namespace. Previous storage locations and session keys are not migrated.
 
 Implementation and runtime audits are ongoing.
 

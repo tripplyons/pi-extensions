@@ -4,12 +4,12 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { Type } from "typebox";
-import { createBashTool, createLocalBashOperations, type BashOperations, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { result, stateRoot } from "../../lib/common.ts";
+import { getAgentDir, createBashTool, createLocalBashOperations, type BashOperations, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { result } from "../../lib/common.ts";
 import { renderCall as renderCommandCall } from "./command-preview.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 
-export const taskKey = "rework:minimax-task";
+export const taskKey = "pi:minimax-task";
 export const taskStatuses = ["queued", "running", "stopping", "succeeded", "failed", "canceled", "lost"] as const;
 type Status = typeof taskStatuses[number];
 type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string };
@@ -25,7 +25,7 @@ const terminal = (status: Status) => !["queued", "running", "stopping"].includes
 export class Tasks {
   private running = new Map<string, Running>();
   private cursors = new Map<string, number>();
-  constructor(readonly root = join(stateRoot(), "minimax", "tasks"), private operations: BashOperations = createLocalBashOperations(), private yieldMs = 15_000) {}
+  constructor(readonly root = join(getAgentDir(), "minimax", "tasks"), private operations: BashOperations = createLocalBashOperations(), private yieldMs = 15_000) {}
   private path(id: string, suffix: string) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid task ID");
     return join(this.root, `${id}.${suffix}`);

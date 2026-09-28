@@ -11,7 +11,7 @@ type Goal = {
   tokens: number;
   continuations: number;
 };
-const key = "rework:goal";
+const key = "pi:goal";
 
 export default function goals(pi: ExtensionAPI) {
   let goal: Goal | undefined;
@@ -26,12 +26,12 @@ export default function goals(pi: ExtensionAPI) {
     ctx.ui.setStatus("goal", goal?.status === "active" ? "goal" : undefined);
   }
   function attached(ctx: ExtensionContext) {
-    return Boolean(process.env.PI_SWARM_NODE || restore(ctx, "rework:swarm"));
+    return Boolean(process.env.PI_SWARM_NODE || restore(ctx, "pi:swarm"));
   }
   function requireStandalone(ctx: ExtensionContext) {
     if (attached(ctx)) throw new Error("Finish or clear the attached swarm first");
   }
-  pi.events.on("rework:swarm-attached", (ctx: ExtensionContext) => {
+  pi.events.on("pi:swarm-attached", (ctx: ExtensionContext) => {
     if (goal?.status !== "active") return;
     account(); goal.status = "paused"; save(ctx);
   });

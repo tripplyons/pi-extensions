@@ -1,8 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { restore } from "../../lib/common.ts";
 
-// Keep the persisted key so existing session thresholds survive the migration.
-export const compactionKey = "rework:codex-compaction";
+export const compactionKey = "pi:codex-compaction";
 export const defaultThreshold = 200_000;
 
 export function compactionThreshold(ctx: ExtensionContext): number {

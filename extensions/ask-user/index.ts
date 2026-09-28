@@ -21,7 +21,7 @@ export default function askUser(pi: ExtensionAPI) {
       args.choices.forEach(choice => text(choice, "choice", 200));
       signal?.throwIfAborted();
       pending = true;
-      pi.events.emit("rework:prompt", true);
+      pi.events.emit("pi:prompt", true);
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal?.addEventListener("abort", abort, { once: true });
@@ -35,7 +35,7 @@ export default function askUser(pi: ExtensionAPI) {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
         pending = false;
-        pi.events.emit("rework:prompt", false);
+        pi.events.emit("pi:prompt", false);
       }
     },
   });

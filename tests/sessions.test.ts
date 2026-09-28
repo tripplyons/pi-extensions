@@ -22,14 +22,14 @@ test("real session files preserve names/model/reasoning and isolate forked exten
     session.appendMessage({ role: "user", content: "fixture question", timestamp: 0 });
     session.appendMessage(assistant);
     session.appendSessionInfo("Original");
-    const ancestor = session.appendCustomEntry("rework:fixture", { enabled: false });
-    session.appendCustomEntry("rework:fixture", { enabled: true });
+    const ancestor = session.appendCustomEntry("pi:fixture", { enabled: false });
+    session.appendCustomEntry("pi:fixture", { enabled: true });
     const originalFile = session.getSessionFile()!;
     const reopened = SessionManager.open(originalFile, root);
     expect(reopened.getSessionName()).toBe("Original");
     expect(reopened.buildSessionContext().model).toEqual({ provider: "openai", modelId: "fixture" });
     expect(reopened.buildSessionContext().thinkingLevel).toBe("high");
-    const state = (manager: SessionManager) => restore<{ enabled: boolean }>({ sessionManager: manager } as ExtensionContext, "rework:fixture");
+    const state = (manager: SessionManager) => restore<{ enabled: boolean }>({ sessionManager: manager } as ExtensionContext, "pi:fixture");
     expect(state(reopened)).toEqual({ enabled: true });
     reopened.branch(ancestor);
     expect(state(reopened)).toEqual({ enabled: false });
@@ -37,7 +37,7 @@ test("real session files preserve names/model/reasoning and isolate forked exten
     const fork = SessionManager.open(branchFile, root);
     expect(fork.getSessionId()).not.toBe(session.getSessionId());
     expect(state(fork)).toEqual({ enabled: false });
-    fork.appendCustomEntry("rework:fixture", { enabled: true });
+    fork.appendCustomEntry("pi:fixture", { enabled: true });
     expect(state(reopened)).toEqual({ enabled: false });
     expect(state(SessionManager.open(originalFile, root))).toEqual({ enabled: true });
     fork.newSession();

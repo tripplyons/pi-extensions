@@ -9,7 +9,7 @@ export function priorityPayload(payload: unknown, provider: string | undefined, 
 }
 export default function fastMode(pi: ExtensionAPI) {
   let enabled = false;
-  const key = "rework:fast";
+  const key = "pi:fast";
   const display = (ctx: ExtensionContext) => ctx.ui.setStatus("fast", enabled ? "fast" : undefined);
   const load = (_event: unknown, ctx: ExtensionContext) => { enabled = restore<boolean>(ctx, key) ?? false; display(ctx); };
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
