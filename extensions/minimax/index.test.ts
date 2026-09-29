@@ -51,6 +51,25 @@ test("MiniMax is always active, ignores old toggles and preserves companion acti
   }
 });
 
+test.each([false, true])("MiniMax preserves codemode activation across session events and requests (enabled: %s)", async (enabled) => {
+  const h = setup();
+  if (enabled) h.pi.setActiveTools([...h.active(), "codemode"]);
+  for (const event of ["session_start", "session_switch", "session_fork", "session_tree"]) {
+    await h.emit(event);
+    expect(h.active().includes("codemode")).toBe(enabled);
+    await h.emit("before_agent_start", { systemPrompt: "base" });
+    expect(h.active().includes("codemode")).toBe(enabled);
+  }
+  if (enabled) {
+    expect(await h.emit("tool_call", { toolName: "codemode" })).toEqual([undefined]);
+    expect(await h.emit("tool_call", { toolName: "read", toolCallId: "script/1" })).toEqual([undefined]);
+    expect((await h.emit("tool_call", { toolName: "shell", toolCallId: "script/2" }))[0].block).toBe(true);
+    h.pi.setActiveTools(h.active().filter(name => name !== "codemode"));
+    await h.emit("session_tree");
+    expect(h.active()).not.toContain("codemode");
+  }
+});
+
 test("todos follow the active session branch, including reload", async () => {
   const h = setup(); await h.emit("session_start");
   const todos = [{ id: "a", content: "Verify the change", status: "in_progress" }];

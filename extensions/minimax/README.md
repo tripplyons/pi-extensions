@@ -28,6 +28,15 @@ including `/btw`, goal, and presentation, remain installed.
 The existing `ask_user` stays available if it was already active; this extension
 does not register or activate another question tool.
 
+On Pi 0.99.1+, built-in `codemode` also stays available when enabled through
+`defaultTools: ["+codemode"]`. MiniMax preserves its activation across reloads,
+session changes, and requests without enabling it for sessions that leave it off.
+Set `codemode.mode: "only"` to expose only codemode to the model while keeping
+other active tools callable from scripts. Do not replace `defaultTools` with
+`["codemode"]`, which would deactivate the native tools rather than hide them.
+Scripts call the same harness tools and pass through the same tool-call checks;
+legacy tools remain blocked.
+
 ## Search pages
 
 Search requires `rg` on `PATH`.

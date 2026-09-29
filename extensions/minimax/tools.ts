@@ -20,7 +20,7 @@ const factories = {
 };
 export const harnessTools = ["read", ...Object.keys(factories), "grep", "glob", "bash", "task_query", "task_output", "task_stop", "todo_write"];
 export const companionTool = (name: string) => name.startsWith("swarm_") ||
-  ["web_search", "web_extract", "ask_user", "complain", "create_goal", "get_goal", "update_goal", "init_experiment", "run_experiment", "log_experiment"].includes(name);
+  ["codemode", "web_search", "web_extract", "ask_user", "complain", "create_goal", "get_goal", "update_goal", "init_experiment", "run_experiment", "log_experiment"].includes(name);
 export const allowedTool = (name: string) => harnessTools.includes(name) || name === "archive_read" || companionTool(name);
 
 export function registerTools(pi: ExtensionAPI, tasks?: Tasks) {

@@ -61,7 +61,7 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
   });
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, apply);
   pi.on("tool_call", (event) => {
-    if (!allowedTool(event.toolName)) return { block: true, reason: `${event.toolName} is unavailable in this harness. Use read, edit, write, bash, grep, glob, task_query, task_output, task_stop, todo_write, archive_read, or the existing ask_user.` };
+    if (!allowedTool(event.toolName)) return { block: true, reason: `${event.toolName} is unavailable in this harness. Use read, edit, write, bash, grep, glob, task_query, task_output, task_stop, todo_write, archive_read, codemode when active, or the existing ask_user.` };
   });
   pi.on("before_agent_start", (event, ctx) => {
     pi.setActiveTools(pi.getActiveTools().filter(allowedTool));
