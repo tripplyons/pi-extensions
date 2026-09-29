@@ -11,8 +11,11 @@ const version = spawnSync("pi", ["--version"], { encoding: "utf8", env: { ...pro
 const parts = version.stdout?.trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
 const supportsCodemode = version.status === 0 && parts && (Number(parts[1]) > 0 || Number(parts[2]) >= 99);
 
-(supportsCodemode ? test : test.skip)("installed Pi exposes only codemode and executes nested MiniMax tools without model requests", async () => {
+(supportsCodemode ? test : test.skip).each(["nested tools", "malformed image"])("installed Pi codemode safely handles %s without model requests", async (scenario) => {
   const home = await mkdtemp(join(tmpdir(), "pi-codemode-"));
+  const code = scenario === "nested tools"
+    ? 'await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"})]); for (const value of values) text(value);'
+    : 'text("keep neighboring text"); image("data:image/jpeg;base64,montage: unable to read font\\n/9j/2Q==");';
   try {
     const agentDir = join(home, "agent");
     await mkdir(agentDir);
@@ -36,11 +39,19 @@ export default function (pi) {
       if (requests > 2) throw new Error("Unexpected continuation");
       if (requests === 2) {
         const results = context.messages.filter(message => message.role === "toolResult");
-        if (!JSON.stringify(results).includes("Script completed") || !JSON.stringify(results).includes("verified nested tools"))
+        const scenario = ${JSON.stringify(scenario)};
+        if (scenario === "nested tools" && (!JSON.stringify(results).includes("Script completed") || !JSON.stringify(results).includes("verified nested tools")))
           throw new Error("Codemode did not execute the nested tools: " + JSON.stringify(results));
+        if (scenario === "malformed image") {
+          const result = results.find(message => message.toolCallId === "script");
+          if (!result?.isError || result.content.some(block => block.type === "image") ||
+            !JSON.stringify(result).includes("Image omitted: invalid base64") ||
+            !JSON.stringify(result).includes("keep neighboring text"))
+            throw new Error("Malformed image reached the provider: " + JSON.stringify(result));
+        }
       }
       const content = requests === 1 ? [{ type: "toolCall", id: "script", name: "codemode", arguments: {
-        code: 'await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"})]); for (const value of values) text(value);'
+        code: ${JSON.stringify(code)}
       } }] : [{ type: "text", text: "codemode-only verified" }];
       const message = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id,
         stopReason: requests === 1 ? "toolUse" : "stop", timestamp: Date.now(),
@@ -66,7 +77,7 @@ export default function (pi) {
       const [status, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
       expect(stdout).toContain("codemode-only verified");
-      expect(await readFile(join(home, "nested.txt"), "utf8")).toBe("verified nested tools");
+      if (scenario === "nested tools") expect(await readFile(join(home, "nested.txt"), "utf8")).toBe("verified nested tools");
     } finally {
       clearTimeout(timeout);
       child.kill();

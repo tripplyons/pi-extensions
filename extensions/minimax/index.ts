@@ -13,6 +13,7 @@ import { harnessTools, companionTool, allowedTool, registerTools } from "./tools
 import { checkpointPrompt, checkpointControl, harnessPrompt } from "./prompts.ts";
 import { Tasks } from "./tasks.ts";
 import { installThresholdCompaction } from "./compaction.ts";
+import { sanitizeToolImages } from "./images.ts";
 
 const archiveKey = "pi:minimax-archive";
 
@@ -33,7 +34,12 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
   }
   registerTools(pi, tasks);
   async function project(messages: AgentMessage[], ctx: ExtensionContext) {
-    const projected = await archiveMessages(messages, artifacts(ctx), archive, admitsArchive);
+    const safe = messages.map(message => {
+      if (message.role !== "toolResult") return message;
+      const content = sanitizeToolImages(message.content);
+      return content ? { ...message, content, isError: true } : message;
+    });
+    const projected = await archiveMessages(safe, artifacts(ctx), archive, admitsArchive);
     if (projected.added.length) pi.appendEntry(archiveKey, projected.added);
     return projected.messages;
   }
@@ -49,15 +55,18 @@ export default function minimax(pi: ExtensionAPI, tasks = new Tasks()) {
   registerThreshold(pi);
   installThresholdCompaction(pi, archiveFits);
   pi.on("tool_result", async (event, ctx) => {
+    const safe = sanitizeToolImages(event.content);
+    const replacement = safe ? { content: safe, isError: true } : undefined;
     try {
       const capped = await capToolOutput({ role: "toolResult", toolCallId: event.toolCallId, toolName: event.toolName,
-        content: event.content, details: event.details, isError: event.isError, timestamp: Date.now() }, archive);
-      if (!capped) return;
+        content: safe ?? event.content, details: event.details, isError: safe ? true : event.isError, timestamp: Date.now() }, archive);
+      if (!capped) return replacement;
       pi.appendEntry(archiveKey, [capped.artifact]);
-      return { content: capped.output.content };
+      return { ...replacement, content: capped.output.content };
     } catch (error) {
-      ctx.ui.notify(`MiniMax output archive failed; keeping original output: ${error instanceof Error ? error.message : String(error)}`, "warning");
+      ctx.ui.notify(`MiniMax output archive failed; keeping uncapped output: ${error instanceof Error ? error.message : String(error)}`, "warning");
     }
+    return replacement;
   });
   for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, apply);
   pi.on("tool_call", (event) => {

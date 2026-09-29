@@ -37,6 +37,13 @@ other active tools callable from scripts. Do not replace `defaultTools` with
 Scripts call the same harness tools and pass through the same tool-call checks;
 legacy tools remain blocked.
 
+Tool image blocks must have an image MIME type and nonempty, canonical base64.
+Malformed images become text diagnostics and mark the result as an error before
+it is saved or sent to the model. The same guard runs on old tool-result history
+without changing stored entries. Valid images and neighboring text stay intact.
+Save generated images to files and use `read`; Bash combines stdout and stderr,
+so its output is not a safe source for `image("data:...;base64," + output)`.
+
 ## Search pages
 
 Search requires `rg` on `PATH`.

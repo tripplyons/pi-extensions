@@ -378,3 +378,56 @@ test("automatic checkpoint admission measures retained history; manual and overf
   expect((await h.emit("session_before_compact", event))[0].compaction).toBeDefined();
   expect(summaries).toBe(3);
 });
+
+test("malformed codemode images are rejected before persistence and on historical context", async () => {
+  const h = setup(); await h.emit("session_start");
+  const output = messages(1, 1)[1];
+  output.toolName = "codemode";
+  const image = { type: "image", mimeType: "image/jpeg", data: "/9j/2Q==" };
+  output.content.push({ ...image, data: "montage: unable to read font\n" + image.data }, image);
+  const snapshot = structuredClone(output);
+
+  const [safe] = await h.emit("tool_result", output);
+  expect(safe.isError).toBe(true);
+  expect(safe.content[0]).toEqual(output.content[0]);
+  expect(safe.content[1].text).toContain("invalid base64");
+  expect(safe.content[2]).toEqual(image);
+  const projected = (await h.emit("context", { messages: [output] })).at(-1).messages[0];
+  expect(projected.isError).toBe(true);
+  expect(projected.content).toEqual(safe.content);
+  expect(output).toEqual(snapshot);
+  expect(await h.emit("tool_result", { ...output, content: [image] })).toEqual([undefined]);
+});
+
+test("image validation survives result capping and archive failure", async () => {
+  const h = setup(); await h.emit("session_start");
+  const output = messages(1)[1];
+  output.content.push({ type: "image", mimeType: "image/png", data: "error: not base64" });
+  const [capped] = await h.emit("tool_result", output);
+  expect(capped.isError).toBe(true);
+  expect(capped.content[0].text).toStartWith("Tool failed. [minimax archive");
+  expect(capped.content).toHaveLength(1);
+  const artifact = h.entries.find(entry => entry.customType === "pi:minimax-archive").data[0];
+  const archived = JSON.parse(await new Archive().read(artifact.id));
+  expect(archived.isError).toBe(true);
+  expect(archived.content[1].text).toContain("Image omitted:");
+  expect(archived.content.some((block: any) => block.type === "image")).toBe(false);
+
+  const root = await temp();
+  await writeFile(join(root, "not-a-directory"), "file");
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "not-a-directory");
+  try {
+    const broken = setup();
+    const warnings: string[] = [];
+    broken.ctx.ui.notify = (message: string) => warnings.push(message);
+    const [safe] = await broken.emit("tool_result", output);
+    expect(safe.isError).toBe(true);
+    expect(safe.content[0]).toEqual(output.content[0]);
+    expect(safe.content[1].text).toContain("Image omitted:");
+    expect(warnings).toHaveLength(1);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  }
+});
