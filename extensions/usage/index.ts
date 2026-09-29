@@ -20,17 +20,19 @@ export function parseUsage(payload: unknown, now = Date.now() / 1000): Usage {
     if (item.limit_window_seconds === 18000) usage.fiveHour ??= window(item, now);
     if (item.limit_window_seconds === 604800) usage.weekly ??= window(item, now);
   }
-  usage.weekly ??= window(main.primary_window, now) ?? window(main.secondary_window, now);
+  for (const name of ["primary_window", "secondary_window"]) {
+    const item = object(main[name]);
+    if (item.limit_window_seconds === undefined) usage.weekly ??= window(item, now);
+  }
   if (!usage.fiveHour && !usage.weekly) throw new Error("Codex usage response contains no supported windows");
   return usage;
 }
 export function formatUsage(usage: Usage, now = Date.now() / 1000) {
-  return "Codex usage\n" + ([['5h', usage.fiveHour], ['1w', usage.weekly]] as const).map(([label, item]) => {
-    if (!item) return `${label}  unavailable`;
-    const minutes = item.reset === undefined ? undefined : Math.max(0, Math.ceil((item.reset - now) / 60));
-    const duration = minutes === undefined ? "reset time unavailable" : minutes === 0 ? "resets now" : `resets in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ${minutes % 60}m`;
-    return `${label}  ${Math.round(item.remaining)}% remaining · ${duration}`;
-  }).join("\n");
+  const item = usage.weekly;
+  if (!item) return "Codex usage\n1w  unavailable";
+  const minutes = item.reset === undefined ? undefined : Math.max(0, Math.ceil((item.reset - now) / 60));
+  const duration = minutes === undefined ? "reset time unavailable" : minutes === 0 ? "resets now" : `resets in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ${minutes % 60}m`;
+  return `Codex usage\n1w  ${Math.round(item.remaining)}% remaining · ${duration}`;
 }
 export async function fetchUsage(token: string, signal: AbortSignal, request: typeof fetch = fetch) {
   let account: unknown;
@@ -76,7 +78,7 @@ export default function usage(pi: ExtensionAPI) {
   const cancel = () => { pending?.abort(); pending = undefined; };
   for (const event of ["session_switch", "session_shutdown", "model_select", "session_fork", "session_tree"] as const) pi.on(event, cancel);
   pi.registerCommand("codex-usage", {
-    description: "Show Codex five-hour and weekly remaining quota",
+    description: "Show Codex weekly remaining quota and reset time",
     async handler(args, ctx) {
       if (args.trim()) throw new Error("Usage: /codex-usage");
       if (ctx.model?.provider !== "openai-codex") throw new Error("Select an OpenAI Codex model first");

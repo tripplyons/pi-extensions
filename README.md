@@ -22,7 +22,7 @@ installed with their existing activation rules.
 | [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
-| [usage](extensions/usage) | Codex quota and reset times |
+| [usage](extensions/usage) | Codex weekly quota and reset time |
 | [models](extensions/models) | Model listing and selection |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle |

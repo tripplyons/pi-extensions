@@ -1,7 +1,7 @@
 # Codex usage
 
-`/codex-usage` displays five-hour and weekly quota and reset times for the current
-Codex account. Uses Pi's credential resolver (including its refresh handling),
+`/codex-usage` displays weekly quota and reset time for the current
+Codex account. Five-hour quota is not displayed. Uses Pi's credential resolver (including its refresh handling),
 then requests the same HTTPS endpoint as Stack. No token is written to disk,
 passed to a shell, included in notifications, or sent through redirects.
 

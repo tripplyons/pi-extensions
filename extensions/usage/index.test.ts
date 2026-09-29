@@ -4,8 +4,15 @@ const payload = { rate_limit: { primary_window: { limit_window_seconds: 18000, u
 test('usage windows, clamping, relative resets and Prime fallback', () => {
   expect(parseUsage(payload, 100)).toEqual({ fiveHour: { remaining: 75, reset: 220 }, weekly: { remaining: 0, reset: 200 } });
   expect(parseUsage({ rate_limit: { primary_window: { used_percent: -1 } } }).weekly?.remaining).toBe(100);
-  expect(formatUsage(parseUsage(payload, 100), 100)).toContain('75% remaining');
+  expect(formatUsage(parseUsage(payload, 100), 100)).toBe('Codex usage\n1w  0% remaining · resets in 0d 0h 2m');
   expect(() => parseUsage({})).toThrow('no supported');
+});
+test('five-hour quota is not displayed or used as a weekly fallback', () => {
+  const usage = parseUsage({ rate_limit: payload.rate_limit }, 100);
+  expect(usage.fiveHour?.remaining).toBe(75);
+  expect(usage.weekly).toBeUndefined();
+  expect(formatUsage(usage, 100)).toBe('Codex usage\n1w  unavailable');
+  expect(formatUsage({ weekly: { remaining: 60 } }, 100)).toBe('Codex usage\n1w  60% remaining · reset time unavailable');
 });
 test('request uses fixed HTTPS endpoint, private headers and blocks redirects', async () => {
   const token = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-account' } })).toString('base64url')}.signature`;
