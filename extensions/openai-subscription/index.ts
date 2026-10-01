@@ -38,7 +38,13 @@ export function guardProvider(provider: Provider): Provider {
     ...(provider.id === "openai" || provider.id === "openai-codex" ? {
       auth: {
         apiKey: { name: "OpenAI API billing blocked", check: async () => undefined,
-          resolve: async () => { throw new Error(message); } },
+          resolve: async input => {
+            // Pi passes already-resolved OAuth tokens as apiKey when compacting.
+            // Accept only tokens verified by this guard's OAuth resolver.
+            const key = input.credential?.key;
+            if (!key || !tokens.has(key)) throw new Error(message);
+            return { auth: { apiKey: key }, source: "OAuth" };
+          } },
         ...(oauth ? { oauth: { ...oauth, toAuth: async credential => {
           if (provider.id === "openai" && (!Array.isArray(credential.scopes) ||
             !credential.scopes.includes("chatgpt.tokens.use.direct"))) throw new Error(message);

@@ -78,6 +78,18 @@ for (const [name, stored, options] of [
   });
 }
 
+test("verified OAuth can be passed through apiKey again, but unverified opaque tokens cannot", async () => {
+  const f = fixture();
+  const resolved = await f.runtime.getAuth(model);
+  expect(resolved?.source).toBe("OAuth");
+  const replay = await f.runtime.completeSimple(model, context, { apiKey: resolved!.auth.apiKey });
+  expect(replay.stopReason).toBe("stop");
+  expect(f.calls()).toBe(1);
+  const unknown = await f.runtime.completeSimple(model, context, { apiKey: "unverified-opaque-token" });
+  expect(unknown.stopReason).toBe("error");
+  expect(f.calls()).toBe(1);
+});
+
 test("model and request headers cannot select an API key or billing project", async () => {
   for (const headers of [
     { Authorization: "Bearer sk-synthetic" }, { "api-key": "sk-synthetic" },

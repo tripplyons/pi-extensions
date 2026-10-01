@@ -5,8 +5,10 @@ For the native OpenAI provider, the stored OAuth grant must include
 `chatgpt.tokens.use.direct`. Opaque access tokens are supported. Existing
 OpenAI Codex OAuth remains allowed.
 
-The provider guard rejects environment keys, stored API keys, explicit
+The provider guard rejects environment keys, stored API keys, unverified
 `--api-key` overrides, billing headers, and API keys disguised as OAuth.
+Compaction can reuse a token that this guard already resolved through OAuth,
+even when Pi passes it through a parameter named `apiKey`.
 The API-key login option is removed. The guard runs before provider dispatch,
 not in a lifecycle hook whose errors Pi catches and ignores.
 
