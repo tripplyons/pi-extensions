@@ -43,9 +43,7 @@ export default function goals(pi: ExtensionAPI) {
     ctx.ui.setStatus("goal", undefined);
   }
   pi.on("session_start", load);
-  pi.on("session_switch", load);
   pi.on("session_tree", load);
-  pi.on("session_fork", load);
   pi.registerTool({ renderCall: toolCall("create_goal"), renderResult,
     name: "create_goal", label: "Create goal",
     description: "Create a goal only when the user explicitly requests one; never infer one from an ordinary task. Fails if an unfinished goal exists.",
@@ -103,7 +101,9 @@ export default function goals(pi: ExtensionAPI) {
       handler: (args, ctx) => command(`${action} ${args}`, ctx),
     });
   }
-  pi.on("before_agent_start", event => ({ systemPrompt: event.systemPrompt + "\nCreate goals only on explicit user request. Verify the full objective before completion. Only users can pause/resume goals." }));
+  pi.on("before_agent_start", event => {
+    event.systemPromptOptions.sections.goal_policy = "Create goals only on explicit user request. Verify the full objective before completion. Only users can pause/resume goals.";
+  });
   pi.on("message_end", (event, ctx) => {
     if (!goal || goal.status !== "active" || event.message.role !== "assistant") return;
     goal.tokens += event.message.usage.totalTokens;

@@ -15,9 +15,9 @@ test("goal continuations, completion and user-only pause/resume", async () => {
 test("resume loads a paused goal and active-branch state", async () => {
   const h = harness(); install(h.pi);
   await h.call("create_goal", { objective: "Original" });
-  await h.emit("session_switch");
+  await h.emit("session_start", { reason: "resume" });
   expect((await h.call("get_goal", {})).details.status).toBe("paused");
-  h.entries.length = 0; await h.emit("session_fork");
+  h.entries.length = 0; await h.emit("session_start", { reason: "fork" });
   expect((await h.call("get_goal", {})).details).toBeNull();
 });
 

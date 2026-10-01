@@ -1,4 +1,4 @@
-import { compactionThreshold } from "../minimax/settings.ts";
+import { registerNativeToolRenderers } from "./native-tools.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -22,6 +22,7 @@ export function usage(ctx: ExtensionContext) {
   return { cost, last };
 }
 export default function presentation(pi: ExtensionAPI) {
+  registerNativeToolRenderers(pi);
   let restoreToolSpacing: (() => void) | undefined;
   let restoreUserMessages: (() => void) | undefined;
   const install = (_event: unknown, ctx: ExtensionContext) => {
@@ -37,10 +38,11 @@ export default function presentation(pi: ExtensionAPI) {
     ctx.ui.setFooter((_tui, theme, data) => ({
       invalidate() {},
       render(width: number) {
-        const { cost, last } = usage(ctx);
+        const { cost } = usage(ctx);
         const parts = [theme.fg("accent", basename(ctx.cwd)), ctx.model?.id ?? "?", pi.getThinkingLevel()];
-        const threshold = compactionThreshold(ctx);
-        parts.push(`${Math.round((last?.input ?? 0) / threshold * 100)}%/${tokens(threshold)}`);
+        const context = ctx.getContextUsage();
+        const window = context?.contextWindow ?? ctx.model?.contextWindow;
+        parts.push(`${context?.percent === null || context?.percent === undefined ? "?" : Math.round(context.percent)}%/${window ? tokens(window) : "?"}`);
         parts.push(`$${cost.toFixed(2)}`);
         parts.push(...data.getExtensionStatuses().values());
         return [truncateToWidth(parts.join(theme.fg("dim", " | ")), width)];
@@ -48,6 +50,5 @@ export default function presentation(pi: ExtensionAPI) {
     }));
   };
   pi.on("session_start", install);
-  pi.on("session_switch", install);
   pi.on("session_shutdown", (_event, ctx) => { restoreUserMessages?.(); restoreUserMessages = undefined; restoreToolSpacing?.(); restoreToolSpacing = undefined; ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); });
 }

@@ -2,8 +2,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import type { AgentMessage, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
+
+type AgentMessage = Extract<SessionEntry, { type: "message" }>["message"];
 
 type TextPart = { type: "text"; text: string };
 type ThinkingPart = { type: "thinking"; thinking: string };

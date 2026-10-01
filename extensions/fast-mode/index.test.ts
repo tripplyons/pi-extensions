@@ -11,7 +11,7 @@ test("priority is provider gated, opt-in, and does not mutate source payload", (
 });
 test("fast preference restores from active branch, off is always available", async () => {
   const h = harness(); install(h.pi); h.ctx.model = { provider: "openai-codex" };
-  await h.command("fast", "on"); await h.emit("session_switch");
+  await h.command("fast", "on"); await h.emit("session_start", { reason: "resume" });
   expect((await h.emit("before_provider_request", { payload: {} }))[0]).toEqual({ service_tier: "priority" });
   h.ctx.model.provider = "anthropic";
   await expect(h.command("fast", "on")).rejects.toThrow("requires");

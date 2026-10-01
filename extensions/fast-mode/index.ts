@@ -12,7 +12,8 @@ export default function fastMode(pi: ExtensionAPI) {
   const key = "pi:fast";
   const display = (ctx: ExtensionContext) => ctx.ui.setStatus("fast", enabled ? "fast" : undefined);
   const load = (_event: unknown, ctx: ExtensionContext) => { enabled = restore<boolean>(ctx, key) ?? false; display(ctx); };
-  for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
+  pi.on("session_start", load);
+  pi.on("session_tree", load);
   function setEnabled(value: boolean, ctx: ExtensionContext) {
     if (value && !["openai", "openai-codex"].includes(ctx.model?.provider ?? "")) {
       ctx.ui.notify("Fast mode requires an OpenAI model", "warning"); return;

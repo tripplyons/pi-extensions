@@ -1550,9 +1550,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       extra += `\n\n💡 Ideas backlog exists at ${ideasPath} — check it for promising experiment paths. Prune stale entries.`;
     }
 
-    return {
-      systemPrompt: event.systemPrompt + extra,
-    };
+    event.systemPromptOptions.sections.autoresearch = extra;
   });
 
   // -----------------------------------------------------------------------

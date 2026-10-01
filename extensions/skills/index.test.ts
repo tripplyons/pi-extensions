@@ -4,8 +4,10 @@ import install from "./index.ts";
 
 test("skill policy preserves the base prompt and requires reading skill instructions", async () => {
   const h = harness(); install(h.pi);
-  const [policy] = await h.emit("before_agent_start", { systemPrompt: "Base" });
-  expect(policy.systemPrompt).toStartWith("Base\n");
+  const event = { systemPrompt: "Base", systemPromptOptions: { sections: {} as Record<string, string> } };
+  await h.emit("before_agent_start", event);
+  const policy = { systemPrompt: event.systemPromptOptions.sections.skill_policy };
+  expect(event.systemPrompt).toBe("Base");
   expect(policy.systemPrompt).toContain("use read to load its SKILL.md");
   expect(policy.systemPrompt).toContain("Resolve relative paths against the skill file's directory");
   expect(policy.systemPrompt).toContain("do not activate a skill merely because it is available");

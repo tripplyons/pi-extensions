@@ -26,10 +26,9 @@ export default function overseer(pi: ExtensionAPI) {
     detach?.();
     glow.active = ctx.hasUI && !!process.stdout.isTTY && !!process.stdin.isTTY;
     glow.reset();
-    if (glow.active) detach = ctx.ui.onTerminalInput(() => { glow.attention = false; glow.show(); });
+    if (glow.active) detach = ctx.ui.onTerminalInput(() => { glow.attention = false; glow.show(); return {}; });
   };
   pi.on("session_start", start);
-  pi.on("session_switch", start);
   pi.on("agent_start", () => { glow.busy = true; glow.attention = false; glow.show(); });
   pi.on("agent_end", () => { glow.busy = false; glow.attention = true; glow.show(); });
   pi.events.on("pi:prompt", value => { glow.prompt = value === true; glow.show(); });

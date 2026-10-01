@@ -32,8 +32,9 @@ export const renderResult: NonNullable<ToolDefinition["renderResult"]> = (result
   };
 };
 
-export function toolCall(name: string): NonNullable<ToolDefinition["renderCall"]> {
-  return (args, theme) => {
+export function toolCall(name: string): NonNullable<ToolDefinition<any>["renderCall"]> {
+  return (input, theme) => {
+    const args = (input ?? {}) as Record<string, unknown>;
     const title = theme.fg("accent", theme.bold(name));
     if (name === "ask_user") {
       const question = typeof args?.question === "string" ? args.question : "...";
@@ -50,7 +51,7 @@ export function toolCall(name: string): NonNullable<ToolDefinition["renderCall"]
       ].filter(Boolean);
       return new Text(title + theme.fg("text", ` ${typeof value === "string" ? value : "..."} (${options.join(", ")})`), 0, 0);
     }
-    if (name === "grep" || name === "glob") {
+    if (name === "grep" || name === "find") {
       const pattern = typeof args?.pattern === "string" ? args.pattern : "...";
       const path = typeof args?.path === "string" ? ` in ${args.path}` : "";
       return new Text(title + theme.fg("text", ` ${pattern}${path}`), 0, 0);

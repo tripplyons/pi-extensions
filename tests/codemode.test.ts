@@ -14,7 +14,7 @@ const supportsCodemode = version.status === 0 && parts && (Number(parts[1]) > 0 
 (supportsCodemode ? test : test.skip).each(["nested tools", "malformed image"])("installed Pi codemode safely handles %s without model requests", async (scenario) => {
   const home = await mkdtemp(join(tmpdir(), "pi-codemode-"));
   const code = scenario === "nested tools"
-    ? 'await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"})]); for (const value of values) text(value);'
+    ? 'await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"}), tools.find({path: ".", pattern: "nested.txt"}), tools.ls({path: "."}), tools.future_tool({})]); for (const value of values) text(value);'
     : 'text("keep neighboring text"); image("data:image/jpeg;base64,montage: unable to read font\\n/9j/2Q==");';
   try {
     const agentDir = join(home, "agent");
@@ -25,9 +25,11 @@ const supportsCodemode = version.status === 0 && parts && (Number(parts[1]) > 0 
     }));
     const probe = join(home, "probe.ts");
     await writeFile(probe, `
-import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
+import { Type, createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
 export default function (pi) {
   let requests = 0;
+  pi.registerTool({ name: "future_tool", label: "Future tool", description: "A plugin tool not in the old allowlist",
+    parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "future tool survived" }] }; } });
   pi.registerProvider("codemode-test", {
     api: "openai-completions", apiKey: "test-key-never-sent", baseUrl: "http://127.0.0.1:1",
     models: [{ id: "probe", name: "Probe", reasoning: false, input: ["text"],
@@ -40,12 +42,12 @@ export default function (pi) {
       if (requests === 2) {
         const results = context.messages.filter(message => message.role === "toolResult");
         const scenario = ${JSON.stringify(scenario)};
-        if (scenario === "nested tools" && (!JSON.stringify(results).includes("Script completed") || !JSON.stringify(results).includes("verified nested tools")))
+        if (scenario === "nested tools" && (!JSON.stringify(results).includes("Script completed") || !JSON.stringify(results).includes("verified nested tools") || !JSON.stringify(results).includes("future tool survived")))
           throw new Error("Codemode did not execute the nested tools: " + JSON.stringify(results));
         if (scenario === "malformed image") {
           const result = results.find(message => message.toolCallId === "script");
           if (!result?.isError || result.content.some(block => block.type === "image") ||
-            !JSON.stringify(result).includes("Image omitted: invalid base64") ||
+            !JSON.stringify(result).includes("invalid image output") ||
             !JSON.stringify(result).includes("keep neighboring text"))
             throw new Error("Malformed image reached the provider: " + JSON.stringify(result));
         }

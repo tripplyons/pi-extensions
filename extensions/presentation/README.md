@@ -1,21 +1,21 @@
 # Presentation
 
-Hides the working indicator. Compact tool display and a one-line footer: folder, model,
-reasoning, input usage as a percentage of the `/threshold` compaction limit, branch-local API cost, and extension statuses
-(goal/pruner/fast). Counts include cached input. Uses the selected Pi theme and
-clips safely to terminal width. The tool expansion shortcut still works.
+Hides the working indicator and keeps compact tool rows. The one-line footer
+shows folder, model, reasoning, native context-window use, branch-local estimated
+cost, and extension statuses. The selected Pi theme controls colors.
 
-Tool calls keep one blank separator line, with no vertical shell padding.
-Custom self-rendered shells and spacing within tool output are unchanged. This
-overrides Pi’s tool component renderer and restores it on shutdown.
+Read, edit, write, grep, find, and ls use Pi's public tool factories. Only their
+call titles change; schemas, execution, images, truncation, and results remain
+native. The tool expansion shortcut still works.
 
-The built-in Working row is hidden entirely, including its label and animation.
+Tool calls keep one blank separator with no vertical shell padding. Custom
+self-rendered shells and spacing within output stay unchanged. Pi has no public
+tool-shell or user-message spacing hook, so these small component adapters
+restore the original renderers on shutdown. User messages retain prompt-zone
+markers and have no background-only rows above or below their content.
 
-User messages have no background-only rows above or below their content. Pi has
-no native user-message renderer hook, so this overrides the exported component
-renderer and restores it on shutdown. Terminal prompt-zone markers are retained.
-
-Context appears as `50%/100k` for 50,000 input tokens and a 100,000-token
-compaction threshold. Cached input counts; output tokens do not. New sessions
-show `0%/100k` until usage is reported. The display follows the active branch
-and changes to `/threshold`; percentages can exceed 100%.
+The footer uses `ctx.getContextUsage()`. For example, `25%/272k` means the
+current context uses 25% of a 272,000-token model window, not the old
+`/threshold` budget. Pi may not know usage just after compaction; that shows
+`?%/272k` until usage becomes available. Cost is a catalog estimate, not an
+invoice; ChatGPT subscription use does not imply API billing.

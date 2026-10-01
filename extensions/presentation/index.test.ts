@@ -32,7 +32,7 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   expect(footer.render(120)).toEqual(idle);
   expect(footer.render(120).join("\n")).not.toContain("[*]");
   await h.emit("agent_end");
-  await h.emit("session_switch");
+  await h.emit("session_start", { reason: "resume" });
   expect(indicators).toEqual([{ frames: [] }, { frames: [] }]);
   await h.emit("session_shutdown");
   expect(indicators.at(-1)).toBeUndefined();
@@ -40,9 +40,11 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   expect(visibility).toEqual([false, false, true]);
 });
 
-test("context footer uses input over the active compaction threshold", async () => {
-  const { registerThreshold } = await import("../minimax/settings.ts");
+test("context footer uses Pi's native context window and handles unknown post-compaction usage", async () => {
   const h = harness();
+  h.ctx.model = { contextWindow: 1_050_000 };
+  let context: any = { percent: 25, tokens: 262_500, contextWindow: 1_050_000 };
+  h.ctx.getContextUsage = () => context;
   let footer: any;
   Object.assign(h.ctx.ui, {
     setToolsExpanded() {}, setTitle() {}, setWorkingVisible() {}, setWorkingIndicator() {},
@@ -53,19 +55,11 @@ test("context footer uses input over the active compaction threshold", async () 
     },
   });
   install(h.pi);
-  registerThreshold(h.pi);
   await h.emit("session_start");
-  expect(footer.render(200)[0]).toContain("0%/200k");
-  h.entries.push({ type: "message", message: { role: "assistant", usage: {
-    input: 10_000, cacheRead: 35_000, cacheWrite: 5_000, output: 20_000, cost: { total: 0.02 },
-  } } });
-  expect(footer.render(200)[0]).toContain("25%/200k");
-  expect(footer.render(200)[0]).not.toContain(" out");
-  await h.command("threshold", "200k");
-  expect(footer.render(200)[0]).toContain("25%/200k");
-  await h.command("threshold", "25k");
-  expect(footer.render(200)[0]).toContain("200%/25k");
-  h.entries.splice(1);
-  await h.emit("session_tree");
-  expect(footer.render(200)[0]).toContain("25%/200k");
+  expect(footer.render(200)[0]).toContain("25%/1.1M");
+  context = { percent: null, tokens: null, contextWindow: 1_050_000 };
+  expect(footer.render(200)[0]).toContain("?%/1.1M");
+  context = undefined;
+  h.ctx.model = { contextWindow: 200_000 };
+  expect(footer.render(200)[0]).toContain("?%/200k");
 });

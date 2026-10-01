@@ -122,7 +122,7 @@ test("tool authorization and notifications follow the owning branch", async () =
   await h.call("bash", { command: "sleep 0.05; echo complete", run_in_background: true });
   const branch = [...h.entries];
   const id = branch.find(entry => entry.customType === taskKey).data;
-  h.entries.length = 0; await h.emit("session_switch");
+  h.entries.length = 0; await h.emit("session_start", { reason: "resume" });
   await settled(tasks, id); expect(h.sent).toEqual([]);
   await expect(h.call("task_query", { task_id: id })).rejects.toThrow("not on this session branch");
   await expect(h.call("task_output", { task_id: id })).rejects.toThrow("not on this session branch");
@@ -164,7 +164,7 @@ for (const tool of ["task_output", "task_query"]) {
       expect(h.sentMessages).toHaveLength(0);
       expect((await h.call(tool, { task_id: id })).details.status).toBe(status);
       h.ctx.isIdle = () => true;
-      for (const event of ["before_agent_start", "session_tree", "session_switch"]) await h.emit(event);
+      for (const event of ["before_agent_start", "session_tree", "session_start"]) await h.emit(event);
       expect(h.sentMessages).toHaveLength(0);
       expect((await tasks.output(id, 0)).status).toBe(status);
     });
@@ -299,4 +299,26 @@ test("an aborted terminal read does not acknowledge the completion", async () =>
   h.ctx.isIdle = () => true;
   await h.emit("session_tree");
   expect(h.sentMessages).toHaveLength(1);
+});
+
+test("Pi 1.0 session replacement preserves tasks and rebinds notifications without stale contexts", async () => {
+  const { h, tasks } = await taskHarness();
+  const id = (await h.call("bash", { command: "sleep 0.08; printf survived", run_in_background: true })).details.task_id;
+  const branch = [...h.entries];
+  await h.emit("session_shutdown", { reason: "resume" });
+  expect(tasks.query(id).status).toBe("running");
+  const other = harness(); registrations.push(other);
+  other.ctx.cwd = h.ctx.cwd; other.ctx.isIdle = () => false;
+  registerTaskTools(other.pi, tasks);
+  await other.emit("session_start", { reason: "resume" });
+  await settled(tasks, id);
+  expect(h.sentMessages).toHaveLength(0);
+  expect(other.sentMessages).toHaveLength(0);
+  other.entries.push(...branch);
+  other.ctx.isIdle = () => true;
+  await other.emit("session_start", { reason: "resume" });
+  expect(other.sentMessages).toHaveLength(1);
+  expect((await other.call("task_output", { task_id: id })).details.output).toBe("survived");
+  await other.emit("session_start", { reason: "resume" });
+  expect(other.sentMessages).toHaveLength(1);
 });

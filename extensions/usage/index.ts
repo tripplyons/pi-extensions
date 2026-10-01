@@ -76,7 +76,10 @@ export default function usage(pi: ExtensionAPI) {
   });
   let pending: AbortController | undefined;
   const cancel = () => { pending?.abort(); pending = undefined; };
-  for (const event of ["session_switch", "session_shutdown", "model_select", "session_fork", "session_tree"] as const) pi.on(event, cancel);
+  pi.on("session_start", cancel);
+  pi.on("session_shutdown", cancel);
+  pi.on("model_select", cancel);
+  pi.on("session_tree", cancel);
   pi.registerCommand("codex-usage", {
     description: "Show Codex weekly remaining quota and reset time",
     async handler(args, ctx) {

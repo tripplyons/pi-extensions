@@ -13,14 +13,14 @@ registration or documentation. This list tracks deliverables, not completion.
 | Ask user | Suggestions, free text, timeout/cancel, worker restriction | Implemented; unit tested |
 | Autocomplete | Commands, skills, files, editor integration | Restored fuzzy provider; unit tested; interactive keyboard audit pending |
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
-| Context | Always-on MiniMax output caps, archive retrieval, reminders and structured checkpoints; legacy pruner removed | Unit and SDK tests |
+| Context | Native Pi 1.0 output limits and context management; MiniMax projection retired | Native codemode integration tests |
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
 | Overseer | Terminal OSC glow, lifecycle and input waits | Implemented; state test; TTY audit pending |
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Implemented; formatting tests; TTY audit pending |
 | Shell/background | Managed Bash, deadlines, branch-owned tasks and completion notifications; legacy shell/sleep tools removed | Unit and process tests; swarm retains its internal tmux runner |
-| Files/images | MiniMax line reads, exact edits, writes, paged ripgrep and glob, native images | Unit tested |
+| Files/images | Native Pi read/edit/write/grep/find/ls and image admission | Native codemode integration tests |
 | Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Git isolation, durable state, messaging permissions and review tested; orchestration pending |
-| Compaction | MiniMax structured checkpoints with /threshold, archive-first admission and manual/overflow recovery | Unit and SDK tests; provider integration audit pending |
+| Compaction | Native Pi 1.0 compaction and model context windows; /threshold retired | Native behavior; live provider audit pending |
 | Fast mode | Priority tier request setting and persisted toggle | Implemented; payload tests; runtime audit pending |
 | Models/reasoning | List/select models, supported reasoning, persistence | Implemented via Pi registry/session APIs; command tests; persistence runtime audit pending |
 | Usage/cost | Codex limits/reset information and API cost reporting | Pending |

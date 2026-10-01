@@ -2,13 +2,13 @@
 
 Pi extensions for coding tools, context management, background tasks, and session UI.
 
-[MiniMax](extensions/minimax) is the always-on tool and context harness, not a
-model selection. It replaces the old file, shell, pruner, and Codex-compaction
-extensions; there is no `/minimax` toggle. `/threshold` still controls automatic
-compaction. Other extensions, including `btw`, `goal`, and `presentation`, remain
-installed with their existing activation rules.
+Pi 1.0.0 owns file/search tools, images, codemode, tool discovery, and compaction.
+Background tasks and todos remain focused extensions. The compact UI keeps its
+look through public Pi APIs and tested spacing adapters. OpenAI requests require
+ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
+See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (21)
+## Extensions (23)
 
 | Extension | Behavior |
 | --- | --- |
@@ -17,9 +17,11 @@ installed with their existing activation rules.
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [minimax](extensions/minimax) | Always-on file/Bash tools, optional built-in codemode, batched task notifications, paged search, image validation, archives, checkpoints and todos |
+| [tasks](extensions/tasks) | Native Bash with background tasks, deadlines and branch-owned notifications |
+| [todos](extensions/todos) | Persistent branch-local task lists |
+| [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth; blocks API keys and paid OpenAI gateways |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
-| [presentation](extensions/presentation) | Single-line tool spacing and input/compaction threshold footer; no working indicator |
+| [presentation](extensions/presentation) | Single-line tool spacing and native context-window footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | Codex weekly quota and reset time |
@@ -39,9 +41,10 @@ prefix. Preview arguments use the normal foreground color. Tool result previews
 use readable text, including nested records and multiline output.
 Structured data stays unchanged for the model and session history.
 
-Complaint, MiniMax, and swarm files live under `~/.pi/agent`
+Complaint, task, and swarm files live under `~/.pi/agent`
 (`PI_CODING_AGENT_DIR` overrides this). Harness session entries and events use
-the `pi:` namespace. Previous storage locations and session keys are not migrated.
+the `pi:` namespace. Task and todo storage keys remain readable by the new
+extensions. Existing sessions and archive files are not deleted.
 
 Implementation and runtime audits are ongoing.
 

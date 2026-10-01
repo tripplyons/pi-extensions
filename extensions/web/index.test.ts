@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
-import { allowedTool, companionTool } from "../minimax/tools.ts";
 import install from "./index.ts";
 
 function setup(result = { stdout: "Provider: openai-codex\nPage [citation]", stderr: "", code: 0, killed: false }) {
@@ -21,7 +20,7 @@ async function withScript(fn: () => Promise<void>) {
   }
 }
 
-test("search defaults to Codex, passes literal query and cancellation, and remains allowed by MiniMax", () => withScript(async () => {
+test("search defaults to Codex, passes literal query and cancellation", () => withScript(async () => {
   const h = setup();
   const signal = new AbortController().signal;
   const output = await h.call("web_search", { query: "--help; $(echo unsafe)" }, signal);
@@ -30,8 +29,7 @@ test("search defaults to Codex, passes literal query and cancellation, and remai
   expect(h.calls[0][2]).toMatchObject({ signal, timeout: 30000 });
   expect(output.content[0].text).toContain("[citation]");
   for (const name of ["web_search", "web_extract"]) {
-    expect(allowedTool(name)).toBe(true);
-    expect(companionTool(name)).toBe(true);
+    expect(h.tools.has(name)).toBe(true);
   }
 }));
 

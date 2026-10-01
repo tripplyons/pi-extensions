@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import manifest from "../package.json";
 
-test("real Pi RPC loads without local dependencies and activates MiniMax and swarm without model requests", async () => {
+test("real Pi RPC loads without local dependencies and activates native tools, tasks, and swarm without model requests", async () => {
   const home = await mkdtemp(join(tmpdir(), "pi-rpc-"));
   const project = resolve(import.meta.dir, "..");
   // Test the shipped package, not imports accidentally supplied by test-only
@@ -54,12 +54,10 @@ test("real Pi RPC loads without local dependencies and activates MiniMax and swa
   }
   try {
     const { commands } = await request("get_commands");
-    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "btw", "btw:tools", "nvim", "autoresearch", "threshold"])
+    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "btw", "btw:tools", "nvim", "autoresearch"])
       expect(commands.some((command: any) => command.name === name)).toBe(true);
-    for (const name of ["minimax", "pruner", "prune", "jev", "codex-compact"])
+    for (const name of ["minimax", "pruner", "prune", "jev", "codex-compact", "threshold"])
       expect(commands.some((command: any) => command.name === name)).toBe(false);
-    await request("prompt", { message: "/threshold" });
-    expect(events.some(event => event.type === "extension_ui_request" && event.method === "notify" && event.message === "Compaction threshold 200000 tokens")).toBe(true);
     await request("prompt", { message: "/swarm:start Verify isolated RPC activation" });
     const runs = await readdir(join(home, "agent", "swarm"));
     expect(runs).toHaveLength(1);

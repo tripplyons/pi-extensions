@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { normalizeContext, getCurrentSystemPrompt, createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type Provider, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import autoRename from "./index.ts";
 function emptyUsage() {
  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -93,6 +93,16 @@ function renameHarness(options: {
 			return options.auth ?? { ok: true, apiKey: "secret", headers: { "x-fixture": "yes" }, env: { REGION: "test" }, baseUrl: "https://resolved.invalid" };
 		},
 	};
+	Object.assign(registry, {
+		streamSimple: (requestModel: Model<any>, context: Context, requestOptions: SimpleStreamOptions) => ({
+			async *[Symbol.asyncIterator]() {
+				const auth = await registry.getApiKeyAndHeaders(requestModel);
+				if (!auth.ok) throw new Error((auth as { error: string }).error);
+				yield* provider.streamSimple(auth.baseUrl ? { ...requestModel, baseUrl: auth.baseUrl } : requestModel,
+					normalizeContext(context), { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, ...requestOptions });
+			},
+		}),
+	});
 	const pi = {
 		on(event: string, handler: Function) {
 			const list = handlers.get(event) ?? [];
@@ -157,8 +167,8 @@ test("uses the registered provider with resolved auth and preserves the naming r
 		env: { REGION: "test" },
 		maxTokens: 64,
 	});
-	expect(calls[0].context.systemPrompt).toContain("Name coding-agent sessions.");
-	const prompt = calls[0].context.messages[0].content;
+	expect(getCurrentSystemPrompt(calls[0].context.messages)).toContain("Name coding-agent sessions.");
+	const prompt = calls[0].context.messages.find(message => message.role === "user")!.content;
 	expect(prompt).toEqual([{ type: "text", text: expect.stringContaining("User: Fix the parser\n\nAssistant: The parser is fixed") }]);
 	expect(String(prompt[0].text)).not.toContain("Do not include this");
 	expect(String(prompt[0].text)).not.toContain("read parser.ts");

@@ -16,7 +16,8 @@ class CommandText extends Text {
   }
 }
 
-export const renderCall: NonNullable<ToolDefinition["renderCall"]> = (args, theme, context) => {
+export const renderCall: NonNullable<ToolDefinition<any>["renderCall"]> = (input, theme, context) => {
+  const args = (input ?? {}) as { command?: string };
   const text = context.lastComponent instanceof CommandText ? context.lastComponent : new CommandText("", 0, 0);
   text.expanded = context.expanded;
   const lines = typeof args?.command === "string" ? args.command.split(/\r?\n/) : ["..."];

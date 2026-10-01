@@ -1,4 +1,6 @@
-import minimax from "../extensions/minimax/index.ts";
+import tasks from "../extensions/tasks/index.ts";
+import todos from "../extensions/todos/index.ts";
+import { registerNativeToolRenderers } from "../extensions/presentation/native-tools.ts";
 import askUser from "../extensions/ask-user/index.ts";
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -17,7 +19,7 @@ function render(value: any, expanded = true, width = 100, isError = false) {
 
 test("all JSON-result tools register the text preview renderer", () => {
   const h = harness();
-  for (const install of [goals, minimax, complain, swarm]) install(h.pi);
+  for (const install of [goals, tasks, todos, complain, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
     if (["read", "edit", "write", "grep", "glob"].includes(name)) { expect(tool.renderResult).toBeFunction(); continue; }
     expect(tool.renderResult).toBe(renderResult);
@@ -65,7 +67,7 @@ test("collapsed previews bound wrapped output; expanded previews show all lines"
 
 test("tool names use accent, without coloring Bash commands", () => {
   const h = harness();
-  for (const install of [goals, minimax, complain, swarm]) install(h.pi);
+  for (const install of [goals, tasks, todos, complain, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
     const colors: [string, string][] = [];
     const theme = {
@@ -80,7 +82,7 @@ test("tool names use accent, without coloring Bash commands", () => {
 
 
 test("read preview keeps streamed path and line arguments in foreground", () => {
-  const h = harness(); minimax(h.pi);
+  const h = harness(); registerNativeToolRenderers(h.pi);
   const tool = h.tools.get("read");
   for (const args of [{}, { path: "/tmp/file.ts" }, { path: "/tmp/file.ts", offset: 1, limit: 2000 }]) {
     const colors: [string, string][] = [];

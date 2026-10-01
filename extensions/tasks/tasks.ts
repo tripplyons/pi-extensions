@@ -25,6 +25,14 @@ const terminal = (status: Status) => !["queued", "running", "stopping"].includes
 export class Tasks {
   private running = new Map<string, Running>();
   private cursors = new Map<string, number>();
+  private completion = new Map<string, "pending" | "observed" | "notified">();
+  private completions = new EventEmitter();
+  onComplete(listener: (id: string) => void) {
+    this.completions.on("complete", listener);
+    return () => { this.completions.off("complete", listener); };
+  }
+  pending(ids: string[]) { return ids.filter(id => this.completion.get(id) === "pending"); }
+  acknowledge(id: string, state: "observed" | "notified") { this.completion.set(id, state); }
   constructor(readonly root = join(getAgentDir(), "minimax", "tasks"), private operations: BashOperations = createLocalBashOperations(), private yieldMs = 15_000) {}
   private path(id: string, suffix: string) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid task ID");
@@ -78,6 +86,7 @@ export class Tasks {
     task.done = (async () => {
       try {
         task.output = await tool.execute(id, { command: args.command, timeout }, task.controller.signal);
+        if (record.exit_code !== 0) throw new Error(`Command exited with code ${record.exit_code}`);
         record.status = "succeeded";
       } catch (error) {
         task.error = storageError ?? (error instanceof Error ? error : new Error(String(error)));
@@ -93,7 +102,11 @@ export class Tasks {
           record.error = task.error.message;
         }
         task.events.emit("change");
-        if (task.background) completed(id);
+        if (task.background) {
+          this.completion.set(id, "pending");
+          completed(id);
+          this.completions.emit("complete", id);
+        }
       }
     })();
     if (!task.background) {
@@ -155,11 +168,23 @@ export class Tasks {
   }
 }
 
-export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
+// Session replacement invalidates extension contexts, not managed processes.
+const poolKey = Symbol.for("tripp.pi.background-tasks");
+const pools = globalThis as unknown as { [key: symbol]: Map<string, Tasks> };
+function taskRunner() {
+  const pool = pools[poolKey] ??= new Map();
+  const dir = getAgentDir();
+  let tasks = pool.get(dir);
+  if (!tasks) { tasks = new Tasks(); pool.set(dir, tasks); }
+  return tasks;
+}
+
+export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   let current: ExtensionContext | undefined;
   let shuttingDown = false;
   let notificationTimer: ReturnType<typeof setTimeout> | undefined;
   const notifications = new Set<string>();
+  const detach = tasks.onComplete(id => { notifications.add(id); flush(); });
   const ids = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === taskKey ? [entry.data as string] : []);
   function flush() {
     if (!current || shuttingDown) return;
@@ -175,13 +200,29 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
       return;
     }
     const content = pending.map(id => `Background Bash task ${id} is ${tasks.query(id).status}.`).join("\n");
-    for (const id of pending) notifications.delete(id);
+    for (const id of pending) { notifications.delete(id); tasks.acknowledge(id, "notified"); }
     // One wake-up for the batch. Sending once per task queues follow-up turns
     // that cannot be withdrawn when the first turn inspects the other tasks.
-    pi.sendMessage({ customType: "minimax-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+    pi.sendMessage({ customType: "pi-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
   }
-  for (const event of ["session_start", "session_switch", "session_fork", "session_tree", "before_agent_start"] as const) pi.on(event, (_event, ctx) => { current = ctx; flush(); });
-  pi.on("session_shutdown", async () => { shuttingDown = true; clearTimeout(notificationTimer); await tasks.shutdown(); });
+  const load = (_event: unknown, ctx: ExtensionContext) => {
+    current = ctx;
+    for (const id of tasks.pending(ids(ctx))) notifications.add(id);
+    flush();
+  };
+  pi.on("session_start", load);
+  pi.on("session_tree", load);
+  pi.on("before_agent_start", load);
+  pi.on("session_shutdown", async event => {
+    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); detach();
+    if (event.reason && event.reason !== "quit") return;
+    await tasks.shutdown();
+    const pool = pools[poolKey];
+    if (pool) {
+      await Promise.all([...pool.values()].filter(runner => runner !== tasks).map(runner => runner.shutdown()));
+      pool.clear();
+    }
+  });
   const check = (ctx: ExtensionContext, id?: string) => {
     if (id && !ids(ctx).includes(id)) throw new Error("Task ID is not on this session branch");
   };
@@ -191,7 +232,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
     parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Timeout in seconds; foreground defaults to 120, non-positive values use 120, maximum 300. Explicit background defaults to 1800 seconds; positive timeouts are capped at 2147483.647. Expiry kills the process tree." })), run_in_background: Type.Optional(Type.Boolean()) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
-      return tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), id => { notifications.add(id); flush(); });
+      return tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), () => {});
     },
   });
   const definitions = [
@@ -213,7 +254,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = new Tasks()) {
       // Use the returned snapshot, not a fresh query: a running read must not
       // swallow a completion that races the tool response.
       for (const task of Array.isArray(value) ? value : [value]) {
-        if (terminal(task.status)) notifications.delete(task.task_id);
+        if (terminal(task.status)) { notifications.delete(task.task_id); tasks.acknowledge(task.task_id, "observed"); }
       }
       return result(value);
     },

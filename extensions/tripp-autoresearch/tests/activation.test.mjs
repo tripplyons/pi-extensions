@@ -302,13 +302,10 @@ test("setup turns receive the jump-climb strategy in the system prompt", async (
     assert.equal(inactive, undefined);
 
     await harness.commands.get("autoresearch").handler("start optimize runtime", harness.ctx);
-    const active = await harness.handlers.get("before_agent_start")(
-      { systemPrompt: "base prompt" },
-      harness.ctx,
-    );
-
-    assert.ok(active.systemPrompt.startsWith("base prompt"));
-    assertJumpClimbPrompt(active.systemPrompt);
+    const active = { systemPrompt: "base prompt", systemPromptOptions: { sections: {} } };
+    await harness.handlers.get("before_agent_start")(active, harness.ctx);
+    assert.equal(active.systemPrompt, "base prompt");
+    assertJumpClimbPrompt(active.systemPromptOptions.sections.autoresearch);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -322,13 +319,10 @@ test("resumed sessions keep the jump-climb strategy in the system prompt", async
     const harness = createHarness({ cwd });
     await harness.handlers.get("session_start")({}, harness.ctx);
 
-    const active = await harness.handlers.get("before_agent_start")(
-      { systemPrompt: "compacted prompt" },
-      harness.ctx,
-    );
-
-    assert.ok(active.systemPrompt.startsWith("compacted prompt"));
-    assertJumpClimbPrompt(active.systemPrompt);
+    const active = { systemPrompt: "compacted prompt", systemPromptOptions: { sections: {} } };
+    await harness.handlers.get("before_agent_start")(active, harness.ctx);
+    assert.equal(active.systemPrompt, "compacted prompt");
+    assertJumpClimbPrompt(active.systemPromptOptions.sections.autoresearch);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

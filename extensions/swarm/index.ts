@@ -66,7 +66,8 @@ export default function install(pi: ExtensionAPI) {
       ? { run: process.env.PI_SWARM_RUN, node: process.env.PI_SWARM_NODE } : restore<Identity>(ctx, key);
     if (identity) { timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
   };
-  for (const event of ["session_start", "session_switch", "session_fork", "session_tree"] as const) pi.on(event, load);
+  pi.on("session_start", load);
+  pi.on("session_tree", load);
   pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
     if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot activate swarms");
@@ -88,7 +89,7 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_tree", "Inspect the swarm tree and retained branches.", empty, async (_, ctx) => {
     const { run } = await active(ctx); return Object.values(run.nodes);
   });
-  tool("swarm_spawn", "Spawn a child in an isolated worktree. Dirty trees require explicit dirtyMode. Maximum depth three.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(Type.Literal))) }), async (args, ctx) => {
+  tool("swarm_spawn", "Spawn a child in an isolated worktree. Dirty trees require explicit dirtyMode. Maximum depth three.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking: pi.getThinkingLevel() });
   });
@@ -99,7 +100,7 @@ export default function install(pi: ExtensionAPI) {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
     await store.send(run.id, node.id, node.parent!, "message", "Submitted a result for review. Use swarm_tree to inspect it."); return updated;
   });
-  tool("swarm_review", "Review a direct child's result; accept/reject stops it without merging.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(Type.Literal)), feedback: Type.String() }), async (args, ctx) => {
+  tool("swarm_review", "Review a direct child's result; accept/reject stops it without merging.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String() }), async (args, ctx) => {
     const { run, node } = await active(ctx); return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback);
   });
   tool("swarm_observe", "Capture bounded terminal output from a direct child.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {

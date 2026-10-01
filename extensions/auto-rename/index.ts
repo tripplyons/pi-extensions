@@ -30,28 +30,17 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 	const provider = ctx.modelRegistry.getProvider(model.provider);
 	if (!provider) throw new Error(`No provider registered for "${model.provider}"`);
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) throw new Error(auth.error);
-
-	const stream = provider.streamSimple(
-		auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
+	const stream = ctx.modelRegistry.streamSimple(
+		model,
 		{
 			systemPrompt: SYSTEM_PROMPT,
 			messages: [{
 				role: "user",
-				content: [{
-					type: "text",
-					text: `Name this session from the conversation below. Do not answer the task.\n\n${conversationText(ctx)}`,
-				}],
+				content: [{ type: "text", text: `Name this session from the conversation below. Do not answer the task.\n\n${conversationText(ctx)}` }],
 				timestamp: Date.now(),
 			}],
 		},
-		{
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			env: auth.env,
-			maxTokens: 64,
-		},
+		{ maxTokens: 64 },
 	);
 
 	let response: AssistantMessage | undefined;
