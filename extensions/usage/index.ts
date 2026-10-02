@@ -81,11 +81,17 @@ export default function usage(pi: ExtensionAPI) {
   pi.on("model_select", cancel);
   pi.on("session_tree", cancel);
   pi.registerCommand("codex-usage", {
-    description: "Show Codex weekly remaining quota and reset time",
+    description: "Show ChatGPT usage settings or legacy Codex weekly quota",
     async handler(args, ctx) {
       if (args.trim()) throw new Error("Usage: /codex-usage");
-      if (ctx.model?.provider !== "openai-codex") throw new Error("Select an OpenAI Codex model first");
-      cancel(); const controller = new AbortController(); pending = controller;
+      if (ctx.model?.provider !== "openai" && ctx.model?.provider !== "openai-codex") throw new Error("Select an OpenAI or OpenAI Codex model first");
+      cancel();
+      if (ctx.model.provider === "openai") {
+        // Direct OAuth tokens cannot use the legacy Codex quota endpoint.
+        ctx.ui.notify("ChatGPT usage\nIn-terminal quota is unavailable for Sign in with ChatGPT.\nManage usage: https://chatgpt.com/settings/usage", "info");
+        return;
+      }
+      const controller = new AbortController(); pending = controller;
       const timeout = setTimeout(() => controller.abort(), 15000);
       try {
         const auth = await ctx.modelRegistry.getProviderAuth("openai-codex");
@@ -93,7 +99,7 @@ export default function usage(pi: ExtensionAPI) {
         const data = await fetchUsage(auth?.auth.apiKey ?? "", controller.signal);
         if (!controller.signal.aborted) ctx.ui.notify(formatUsage(data), "info");
       } catch {
-        if (pending === controller) ctx.ui.notify("Unable to load Codex usage. Check /login and connectivity.", "warning");
+        if (pending === controller) ctx.ui.notify("Unable to load Codex usage. Check /login openai-codex and connectivity.", "warning");
       } finally { clearTimeout(timeout); if (pending === controller) pending = undefined; }
     },
   });

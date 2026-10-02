@@ -24,7 +24,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [presentation](extensions/presentation) | Single-line tool spacing and native context-window footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
-| [usage](extensions/usage) | Codex weekly quota and reset time |
+| [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
 | [models](extensions/models) | Model listing and selection |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle |
