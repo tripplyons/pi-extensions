@@ -7,7 +7,7 @@ export const terminal = (status: Status) => ["accepted", "rejected", "stopped", 
 export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
   launch?: { model?: string; thinking?: string };
-  worktree?: Worktree; branch?: string; session?: string; pane?: string; result?: string; feedback?: string;
+  worktree?: Worktree; branch?: string; session?: string; pane?: string; started?: string; result?: string; feedback?: string;
 };
 export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean };
 export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[] };

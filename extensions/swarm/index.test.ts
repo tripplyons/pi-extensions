@@ -60,3 +60,38 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+test("/swarm:kill stops workers and /swarm:status toggles the panel", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  const h = harness(); install(h.pi);
+  const widgets: any[] = []; const notices: string[] = [];
+  h.ctx.ui.setWidget = (key: string, content: any, options: any) => widgets.push({ key, content, options });
+  h.ctx.ui.notify = (message: string) => notices.push(message);
+  try {
+    await expect(h.command("swarm:status")).rejects.toThrow("inactive");
+    await expect(h.command("swarm:kill")).rejects.toThrow("inactive");
+    await h.command("swarm:start", "Build the feature");
+    const identity = h.entries.at(-1).data;
+    const store = new SwarmStore(join(root, "swarm"));
+    const child = await store.reserve(identity.run, identity.node, "Worker", "Build a part");
+
+    await h.command("swarm:status");
+    expect(widgets.at(-1)).toMatchObject({ key: "swarm", options: { placement: "belowEditor" } });
+    const renders: number[] = [];
+    const component = widgets.at(-1).content({ requestRender: () => renders.push(1) }, { fg: (_: string, text: string) => text });
+    await h.command("swarm:kill");
+    expect((await store.read(identity.run)).nodes[child.id].status).toBe("stopped");
+    expect(notices.at(-1)).toBe("Stopped 1 swarm worker. Worktrees, sessions and branches are kept.");
+    expect(renders.length).toBeGreaterThan(0);
+    expect(component.render(120)).toEqual(["swarm · 0 active · 1 finished · Build the feature", "  No active workers"]);
+    await h.command("swarm:kill");
+    expect(notices.at(-1)).toBe("No swarm workers are active.");
+
+    await h.command("swarm:status");
+    expect(widgets.at(-1)).toEqual({ key: "swarm", content: undefined, options: undefined });
+  } finally {
+    await h.emit("session_shutdown");
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

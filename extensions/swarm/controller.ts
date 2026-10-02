@@ -17,7 +17,7 @@ export class Swarm {
       directory: join(this.store.path(run.id), "workers", node.id), ...launch });
     try {
       await this.store.update(run.id, state => {
-        Object.assign(state.nodes[node.id], launched, { status: "running" });
+        Object.assign(state.nodes[node.id], launched, { status: "running", started: new Date().toISOString() });
       });
     } catch (error) { await this.workers.stop(node.id); throw error; }
   }
@@ -39,12 +39,17 @@ export class Swarm {
     }
   }
   async stopNodes(runId: string, nodes: Node[]) {
-    // Leaves records/branches intact. Children stop before parents.
+    // Leaves records/branches intact. Children stop before parents. Returns the IDs of nodes that were active.
+    const stopped: string[] = [];
     for (const node of [...nodes].sort((a, b) => b.depth - a.depth)) {
       await this.workers.stop(node.id);
       await this.stopJobs(node);
-      await this.store.update(runId, run => { if (!terminal(run.nodes[node.id].status)) run.nodes[node.id].status = "stopped"; });
+      await this.store.update(runId, run => {
+        if (terminal(run.nodes[node.id].status)) return;
+        run.nodes[node.id].status = "stopped"; stopped.push(node.id);
+      });
     }
+    return stopped;
   }
   async stop(runId: string, actor: string, child: string) {
     const run = await this.store.read(runId);
@@ -54,7 +59,7 @@ export class Swarm {
   async kill(runId: string, actor: string) {
     const run = await this.store.read(runId);
     if (actor !== run.root) throw new Error("Only root can stop the entire swarm");
-    await this.stopNodes(runId, descendants(run, run.root));
+    return this.stopNodes(runId, descendants(run, run.root));
   }
   async review(runId: string, actor: string, child: string, decision: "accept" | "reject" | "request-changes", feedback: string) {
     const node = await this.owned(runId, actor, child);

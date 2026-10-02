@@ -34,3 +34,11 @@ End-to-end interactive worker orchestration and recovery audits remain pending.
 
 Tool results display as plain-text previews instead of JSON. Expand a result to
 see all fields and output; structured result data is unchanged.
+
+The root session owner can run `/swarm:kill` to stop all workers and their jobs.
+Records, worktrees, sessions and branches are kept, so parents can restart
+stopped workers. `/swarm:status` shows or hides a panel below the editor. The
+panel lists active workers under the current node as a tree. Each row shows
+status, time since the last start, model and thinking level, unread messages and
+the task. Rows show "no pane" when the worker's tmux session is gone. The panel
+refreshes every two seconds.

@@ -1,16 +1,20 @@
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { result, restore } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
-import { SwarmStore, descendants } from "./state.ts";
+import { SwarmStore, descendants, terminal, type Run } from "./state.ts";
 import { Swarm } from "./controller.ts";
 import { Workers } from "./worker.ts";
 import { preflightWorktree } from "./git.ts";
+import { panel } from "./panel.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
+// The status panel renders the latest snapshot synchronously; a timer refreshes it.
+type View = { run?: Run; scope?: string; live: Set<string>; error?: string; tui?: { requestRender(): void }; timer?: ReturnType<typeof setInterval>; refreshing?: boolean };
 export default function install(pi: ExtensionAPI) {
   const root = getAgentDir();
   const store = new SwarmStore(join(root, "swarm"));
@@ -18,6 +22,7 @@ export default function install(pi: ExtensionAPI) {
   let identity: Identity | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
+  let view: View | undefined;
   const jobs = new Jobs(join(root, "jobs"));
   const controller = async () => {
     return new Swarm(store, workers, async node => {
@@ -57,15 +62,46 @@ export default function install(pi: ExtensionAPI) {
     } catch (error) { ctx.ui.setStatus("swarm-error", String(error)); }
     finally { polling = false; }
   }
+  async function refresh(ctx: ExtensionContext) {
+    const current = view;
+    if (!current || current.refreshing) return;
+    current.refreshing = true;
+    try {
+      const { run, node } = await active(ctx);
+      const nodes = descendants(run, node.id).filter(entry => !terminal(entry.status));
+      const alive = await Promise.all(nodes.map(entry => workers.alive(entry.id)));
+      Object.assign(current, { run, scope: node.id, live: new Set(nodes.filter((_, index) => alive[index]).map(entry => entry.id)), error: undefined });
+    } catch (error) { current.error = String(error); }
+    finally { current.refreshing = false; }
+    current.tui?.requestRender();
+  }
+  function hide(ctx: ExtensionContext) {
+    if (view?.timer) clearInterval(view.timer);
+    view = undefined; ctx.ui.setWidget("swarm", undefined);
+  }
+  async function show(ctx: ExtensionContext) {
+    if (view?.timer) clearInterval(view.timer);
+    const current = view ??= { live: new Set() };
+    ctx.ui.setWidget("swarm", (tui, theme) => {
+      current.tui = tui;
+      return { invalidate() {}, render(width: number) {
+        if (current.error) return [truncateToWidth(theme.fg("error", `swarm: ${current.error}`), width)];
+        return current.run ? panel(current.run, current.scope!, current.live, width, (color, text) => theme.fg(color, text)) : [];
+      } };
+    }, { placement: "belowEditor" });
+    current.timer = setInterval(() => void refresh(ctx), 2000); current.timer.unref();
+    await refresh(ctx);
+  }
   const load = async (_event: unknown, ctx: ExtensionContext) => {
     if (timer) clearInterval(timer);
     identity = process.env.PI_SWARM_NODE && process.env.PI_SWARM_RUN
       ? { run: process.env.PI_SWARM_RUN, node: process.env.PI_SWARM_NODE } : restore<Identity>(ctx, key);
     if (identity) { timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
+    if (view) { if (identity) await show(ctx); else hide(ctx); }
   };
   pi.on("session_start", load);
   pi.on("session_tree", load);
-  pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); });
+  pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
     if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot activate swarms");
     if (identity) throw new Error("A swarm is already associated with this session");
@@ -73,6 +109,17 @@ export default function install(pi: ExtensionAPI) {
     identity = { run: run.id, node: run.root }; pi.appendEntry(key, identity);
     pi.events.emit("pi:swarm-attached", ctx);
     await load({}, ctx); ctx.ui.notify("Swarm activated. Workers start only when spawned.", "info");
+  } });
+  pi.registerCommand("swarm:kill", { description: "Stop all swarm workers and their jobs. Keep worktrees, sessions and branches.", async handler(_args, ctx) {
+    if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot kill the swarm");
+    const { run, node } = await active(ctx);
+    const stopped = await (await controller()).kill(run.id, node.id);
+    await refresh(ctx);
+    ctx.ui.notify(stopped.length ? `Stopped ${stopped.length} swarm worker${stopped.length === 1 ? "" : "s"}. Worktrees, sessions and branches are kept.` : "No swarm workers are active.", "info");
+  } });
+  pi.registerCommand("swarm:status", { description: "Toggle the swarm status panel below the editor", async handler(_args, ctx) {
+    if (view) return hide(ctx);
+    await active(ctx); await show(ctx);
   } });
   const empty = Type.Object({});
   const child = Type.Object({ nodeId: Type.String() });
@@ -107,7 +154,8 @@ export default function install(pi: ExtensionAPI) {
     const { run, node } = await active(ctx); await (await controller())[action](run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action };
   });
   for (const action of ["kill", "cleanup"] as const) tool(`swarm_${action}`, `Root only: ${action === "kill" ? "stop all workers and their jobs" : "remove clean terminal worktrees"}. Preserve branches.`, empty, async (_, ctx) => {
-    const { run, node } = await active(ctx); return { action, removed: await (await controller())[action](run.id, node.id) };
+    const { run, node } = await active(ctx); const ids = await (await controller())[action](run.id, node.id);
+    return action === "kill" ? { action, stopped: ids } : { action, removed: ids };
   });
   tool("swarm_clear", "Root only: preflight worktrees, stop all workers, remove worktrees and run state. Preserve branches.", empty, async (_, ctx) => {
     const { run, node } = await active(ctx);
@@ -115,6 +163,6 @@ export default function install(pi: ExtensionAPI) {
     for (const descendant of descendants(run, run.root)) if (descendant.worktree) await preflightWorktree(descendant.worktree);
     const swarm = await controller(); await swarm.kill(run.id, node.id); await swarm.cleanup(run.id, node.id);
     await rm(store.path(run.id), { recursive: true }); identity = undefined; pi.appendEntry(key, null);
-    if (timer) clearInterval(timer); return { cleared: run.id };
+    if (timer) clearInterval(timer); if (view) hide(ctx); return { cleared: run.id };
   });
 }
