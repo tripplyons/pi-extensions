@@ -2,8 +2,7 @@ import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readFile, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { result, restore } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
 import { SwarmStore, descendants } from "./state.ts";
@@ -16,14 +15,12 @@ export default function install(pi: ExtensionAPI) {
   const root = getAgentDir();
   const store = new SwarmStore(join(root, "swarm"));
   const workers = new Workers();
-  const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
   let identity: Identity | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   const jobs = new Jobs(join(root, "jobs"));
   const controller = async () => {
-    const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-    return new Swarm(store, workers, manifest.pi.extensions.map((path: string) => join(packageRoot, path)), async node => {
+    return new Swarm(store, workers, async node => {
       if (!node.session) return;
       let header;
       try { header = JSON.parse((await readFile(node.session, "utf8")).split("\n")[0]); }

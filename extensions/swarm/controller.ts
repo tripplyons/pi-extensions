@@ -4,7 +4,7 @@ import { prepareWorktree, preflightWorktree, removeWorktree, type DirtyMode } fr
 import { Workers, type Launch } from "./worker.ts";
 export type WorkerRuntime = Pick<Workers, "start" | "stop" | "observe" | "alive">;
 export class Swarm {
-  constructor(readonly store: SwarmStore, readonly workers: WorkerRuntime, readonly extensions: string[], readonly stopJobs: (node: Node) => Promise<void>) {}
+  constructor(readonly store: SwarmStore, readonly workers: WorkerRuntime, readonly stopJobs: (node: Node) => Promise<void>) {}
   async owned(runId: string, actor: string, child: string) {
     return ownedChild(await this.store.read(runId), actor, child);
   }
@@ -14,7 +14,7 @@ export class Swarm {
     // Save before process creation so a failed launch can be retried faithfully.
     await this.store.update(run.id, state => { state.nodes[node.id].launch = launch; });
     const launched = await this.workers.start({ run: run.id, node: node.id, cwd: node.worktree.cwd,
-      directory: join(this.store.path(run.id), "workers", node.id), extensions: this.extensions, ...launch });
+      directory: join(this.store.path(run.id), "workers", node.id), ...launch });
     try {
       await this.store.update(run.id, state => {
         Object.assign(state.nodes[node.id], launched, { status: "running" });

@@ -12,7 +12,7 @@ test("worker PTY launch, environment, literal arguments, capture and restart", a
   const executable = join(root, "fake worker");
   try {
     await writeFile(executable, '#!/bin/zsh\nprintf "%s\\n" "$PI_SWARM_NODE" "$PI_SWARM_RUN" "$@" > args\nprintf "WORKER READY\\n"\nwhile true; do sleep 1; done\n', { mode: 0o700 });
-    const options = { run, node, cwd: root, directory: join(root, "state"), extensions: [join(root, "extension with spaces.ts")], executable, model: "provider/model", thinking: "high" };
+    const options = { run, node, cwd: root, directory: join(root, "state"), executable, model: "provider/model", thinking: "high" };
     const launched = await workers.start(options);
     let output = "";
     for (let i = 0; i < 50; i++) {
@@ -23,7 +23,8 @@ test("worker PTY launch, environment, literal arguments, capture and restart", a
     expect(output).toContain("WORKER READY");
     const args = (await readFile(join(root, "args"), "utf8")).split("\n");
     expect(args.slice(0, 2)).toEqual([node, run]);
-    expect(args).toContain(options.extensions[0]);
+    expect(args).not.toContain("--no-extensions");
+    expect(args).not.toContain("--extension");
     expect(args).toContain(launched.session);
     expect(await workers.alive(node)).toBe(true);
     await expect(workers.start(options)).rejects.toThrow();

@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import { shellQuote } from "../../lib/common.ts";
 const exec = promisify(execFile);
-export type Launch = { run: string; node: string; cwd: string; directory: string; extensions: string[]; executable?: string; model?: string; thinking?: string };
+export type Launch = { run: string; node: string; cwd: string; directory: string; executable?: string; model?: string; thinking?: string };
 export class Workers {
   constructor(readonly socket?: string) {}
   async tmux(...args: string[]) {
@@ -16,11 +16,11 @@ export class Workers {
   }
   async start(options: Launch) {
     const name = this.name(options.node);
-    if (![options.cwd, options.directory, ...options.extensions].every(isAbsolute)) throw new Error("Worker paths must be absolute");
+    if (![options.cwd, options.directory, ].every(isAbsolute)) throw new Error("Worker paths must be absolute");
     await mkdir(options.directory, { recursive: true, mode: 0o700 });
     const session = join(options.directory, "session.jsonl");
-    const args = [options.executable ?? "pi", "--session", session, "--no-extensions"];
-    for (const path of options.extensions) args.push("--extension", path);
+    // Load the user's configured extensions, the same set an interactive session gets.
+    const args = [options.executable ?? "pi", "--session", session];
     if (options.model) args.push("--model", options.model);
     if (options.thinking) args.push("--thinking", options.thinking);
     args.push("Read your durable assignment with swarm_task, then carry it out. You are a swarm worker. Ask your parent instead of prompting the user. Submit results with swarm_complete; never merge or push branches.");

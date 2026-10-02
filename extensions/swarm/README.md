@@ -13,8 +13,9 @@ messages, inbox acknowledgment, and parent-only result review are implemented an
 tested. Failed updates leave the previous state intact. Worker orchestration,
 user activation, and the public swarm tools are not wired yet. This directory has no package entry point yet.
 
-The worker launcher now starts attachable tmux sessions with explicit extension
-paths and dedicated Pi session files. Stop, capture, and restart are tested using
+The worker launcher now starts attachable tmux sessions with dedicated Pi session
+files. Workers load all extensions from the user's Pi configuration, with no
+allowlist or blocklist. Stop, capture, and restart are tested using
 a fake executable in an isolated tmux server; no model requests are made.
 
 The controller connects spawning, parent-only subtree stop/restart, result review,
@@ -22,7 +23,7 @@ job shutdown, and preflighted cleanup. Integration tests exercise real Git
 worktrees with a fake process runtime. Public extension registration is pending.
 
 `/swarm:start <objective>` activates the twelve swarm tools. Activation is persisted
-on the root session branch. Workers load the same package entry points, inherit
+on the root session branch. Workers load the user's configured extensions, inherit
 the model/effort at spawn, and poll durable direct-relative messages. Incoming
 messages identify the sender and show its text; result notices point to
 `swarm_tree` for review. Root clear preflights all worktrees before stopping

@@ -19,7 +19,7 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     await writeFile(join(repo, "file"), "original"); await git(repo, ["add", "."]); await git(repo, ["commit", "-m", "Initial"]);
     const store = new SwarmStore(join(root, "state"));
     const run = await store.create("session", repo, "Objective");
-    const swarm = new Swarm(store, workers, [], async node => { stoppedJobs.push(node.id); });
+    const swarm = new Swarm(store, workers, async node => { stoppedJobs.push(node.id); });
     const a = await swarm.spawn(run.id, run.root, "A", "Task");
     const b = await swarm.spawn(run.id, run.root, "B", "Task", undefined, { model: "openai-codex/test-model", thinking: "high" });
     expect(a.status).toBe("running");
