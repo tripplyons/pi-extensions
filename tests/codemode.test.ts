@@ -14,7 +14,7 @@ const supportsCodemode = version.status === 0 && parts && (Number(parts[1]) > 0 
 (supportsCodemode ? test : test.skip).each(["nested tools", "malformed image"])("installed Pi codemode safely handles %s without model requests", async (scenario) => {
   const home = await mkdtemp(join(tmpdir(), "pi-codemode-"));
   const code = scenario === "nested tools"
-    ? 'await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"}), tools.find({path: ".", pattern: "nested.txt"}), tools.ls({path: "."}), tools.future_tool({})]); for (const value of values) text(value);'
+    ? 'if (ALL_TOOLS.some(tool => tool.name === "swarm_complete")) throw new Error("Completion must remain a direct model tool"); await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"}), tools.find({path: ".", pattern: "nested.txt"}), tools.ls({path: "."}), tools.future_tool({})]); for (const value of values) text(value);'
     : 'text("keep neighboring text"); image("data:image/jpeg;base64,montage: unable to read font\\n/9j/2Q==");';
   try {
     const agentDir = join(home, "agent");
@@ -36,7 +36,7 @@ export default function (pi) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 }],
     streamSimple(model, context) {
       const names = getCurrentTools(context.messages).map(tool => tool.name);
-      if (JSON.stringify(names) !== '["codemode"]') throw new Error("Unexpected model tools: " + JSON.stringify(names));
+      if (JSON.stringify(names) !== '["codemode","swarm_complete"]') throw new Error("Unexpected model tools: " + JSON.stringify(names));
       requests++;
       if (requests > 2) throw new Error("Unexpected continuation");
       if (requests === 2) {

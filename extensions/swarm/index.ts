@@ -46,6 +46,7 @@ export default function install(pi: ExtensionAPI) {
     polling = true;
     try {
       const { run, node } = await active(ctx);
+      if (node.parent && (node.status === "review" || terminal(node.status))) return;
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
         const sender = run.nodes[message.from];
@@ -55,7 +56,7 @@ export default function install(pi: ExtensionAPI) {
           content: `Swarm ${message.kind} from ${senderName} (${message.from}):\n${message.text}`,
           display: true,
           details: { runId: run.id, messageId: message.id, from: message.from, kind: message.kind },
-        }, { triggerTurn: true, deliverAs: "followUp" });
+        }, { triggerTurn: true, deliverAs: "steer" });
         await store.acknowledge(run.id, node.id, message.id);
         pi.events.emit("pi:swarm-activity", message);
       }
@@ -101,6 +102,13 @@ export default function install(pi: ExtensionAPI) {
   };
   pi.on("session_start", load);
   pi.on("session_tree", load);
+  pi.on("tool_call", async (_event, ctx) => {
+    if (!identity) return;
+    const { node } = await active(ctx);
+    if (node.parent && (node.status === "review" || terminal(node.status))) {
+      return { block: true, terminate: true, reason: `Swarm worker is ${node.status}; tools are paused until the parent resumes it.` };
+    }
+  });
   pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
     if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot activate swarms");
@@ -124,8 +132,14 @@ export default function install(pi: ExtensionAPI) {
   const empty = Type.Object({});
   const child = Type.Object({ nodeId: Type.String() });
   function tool(name: string, description: string, parameters: any, execute: (args: any, ctx: ExtensionContext) => Promise<unknown>) {
+    const completing = name === "swarm_complete";
     pi.registerTool({ renderCall: toolCall(name), renderResult, name, label: name, description: `${description} Requires user activation through /swarm:start.`, parameters,
-      async execute(_id, args, signal, _update, ctx) { signal?.throwIfAborted(); return result(await execute(args, ctx)); } });
+      exposure: completing ? "model-only" : undefined,
+      async execute(_id, args, signal, _update, ctx) {
+        signal?.throwIfAborted();
+        const output = result(await execute(args, ctx));
+        return completing ? { ...output, terminate: true } : output;
+      } });
   }
   tool("swarm_task", "Read your durable assignment and root objective.", empty, async (_, ctx) => {
     const { run, node } = await active(ctx); return { objective: run.objective, node };
@@ -140,7 +154,7 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_send", "Message a direct relative. Only parents may send instructions.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text);
   });
-  tool("swarm_complete", "Submit results for parent review after all descendants are terminal.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
+  tool("swarm_complete", "Submit results for parent review after all descendants are terminal, then wait. Do not call other tools in the same batch.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
     await store.send(run.id, node.id, node.parent!, "message", "Submitted a result for review. Use swarm_tree to inspect it."); return updated;
   });

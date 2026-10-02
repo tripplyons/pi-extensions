@@ -10,7 +10,8 @@ a foreground command returns a task ID without restarting its process or deadlin
 task, including Pi 1.0's non-throwing Bash results.
 
 Tasks belong to their launching session branch. Completion notifications wait
-for idle and arrive in one batch. Observing terminal status acknowledges the
+for idle and arrive in one steering message per batch. They never queue a
+separate follow-up turn. Observing terminal status acknowledges the
 notification without consuming unread output. Explicit byte offsets do not
 advance the automatic output cursor. Session replacement and /reload keep the process pool and rebind notifications.
 Quit stops the pool. Abandoned records from a prior process become lost.

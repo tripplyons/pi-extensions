@@ -39,6 +39,8 @@ Timeouts trigger failure diagnosis rather than automatic retries with longer lim
 | `/autoresearch dashboard` | Open the live results dashboard in a browser. |
 
 Press Escape to interrupt a running turn. Use `/autoresearch pause` to leave loop mode.
+Start/resume messages use steering when Pi is busy. Automatic continuation waits
+for Pi to settle. Neither path queues a separate follow-up turn.
 
 ## Skills and tools
 

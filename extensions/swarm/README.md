@@ -25,9 +25,15 @@ worktrees with a fake process runtime. Public extension registration is pending.
 `/swarm:start <objective>` activates the twelve swarm tools. Activation is persisted
 on the root session branch. Workers load the user's configured extensions, inherit
 the model/effort at spawn, and poll durable direct-relative messages. Incoming
-messages identify the sender and show its text; result notices point to
-`swarm_tree` for review. Root clear preflights all worktrees before stopping
-anything. No operation merges or pushes.
+messages identify the sender and show its text. All messages use steering, so
+parent instructions reach a busy worker at the next tool boundary instead of
+waiting for the full turn to end. Steering does not cancel a tool already running;
+use `swarm_stop` or `/swarm:kill` for a hard stop. Result notices point to
+`swarm_tree` for review. `swarm_complete` is a direct model tool that ends the
+turn when called alone. Workers awaiting review cannot call tools or consume inbox
+messages until a parent requests changes. Accept/reject stops their process.
+Root clear preflights all worktrees before stopping anything. No operation merges
+or pushes.
 
 Public hooks are now registered and activation/session ownership is tested.
 End-to-end interactive worker orchestration and recovery audits remain pending.

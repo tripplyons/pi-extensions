@@ -1207,7 +1207,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       pi.sendUserMessage(message);
       return;
     }
-    pi.sendUserMessage(message, { deliverAs: "followUp" });
+    pi.sendUserMessage(message, { deliverAs: "steer" });
   };
 
   const hasAutoresearchRules = (ctx: ExtensionContext): boolean =>

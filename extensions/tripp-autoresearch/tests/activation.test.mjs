@@ -464,6 +464,20 @@ test("starting autoresearch binds redirected workingDir activation to the pi ses
   }
 });
 
+test("starting autoresearch while busy steers instead of queuing another turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-steer-"));
+  const harness = createHarness({ cwd });
+  try {
+    harness.ctx.isIdle = () => false;
+    await harness.commands.get("autoresearch").handler("start optimize runtime", harness.ctx);
+    assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.sentMessages[0].options, { deliverAs: "steer" });
+  } finally {
+    await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("session startup keeps same-cwd sessions inactive when a manual off is recorded", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
 

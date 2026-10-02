@@ -255,7 +255,7 @@ test("unobserved completions are batched into one wake-up instead of queued foll
   await h.emit("session_tree");
   expect(h.sentMessages).toHaveLength(1);
   for (const id of ids) expect(h.sentMessages[0].message.content).toContain(id);
-  expect(h.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+  expect(h.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
   h.ctx.isIdle = () => true;
   await h.emit("before_agent_start");
   expect(h.sentMessages).toHaveLength(1);

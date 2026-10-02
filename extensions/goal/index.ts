@@ -89,7 +89,7 @@ export default function goals(pi: ExtensionAPI) {
       } else if (action !== "status") throw new Error("Use /goal new <objective>, edit <objective>, status, pause, resume, or clear");
       save(ctx);
       ctx.ui.notify(goal ? JSON.stringify(goal) : "No goal", "info");
-      if ((action === "new" || action === "resume") && goal) pi.sendUserMessage(`Continue the explicitly requested goal: ${goal.objective}`, { deliverAs: "followUp" });
+      if ((action === "new" || action === "resume") && goal) pi.sendUserMessage(`Continue the explicitly requested goal: ${goal.objective}`, { deliverAs: "steer" });
   }
   pi.registerCommand("goal", {
     description: "Goal: new <objective> | edit <objective> | status | pause | resume | clear",
@@ -116,7 +116,7 @@ export default function goals(pi: ExtensionAPI) {
     if (ctx.hasPendingMessages()) return;
     goal.continuations++;
     save(ctx);
-    pi.sendUserMessage(`Continue the goal: ${goal.objective}\nCheck get_goal. Do not finish until the full objective is verified. If stuck, try a different approach; blocked requires the same impasse on at least three consecutive goal turns.`, { deliverAs: "followUp" });
+    pi.sendUserMessage(`Continue the goal: ${goal.objective}\nCheck get_goal. Do not finish until the full objective is verified. If stuck, try a different approach; blocked requires the same impasse on at least three consecutive goal turns.`, { deliverAs: "steer" });
   });
   pi.on("session_shutdown", (_event, ctx) => { if (goal?.status === "active") { account(); goal.status = "paused"; save(ctx); } });
 }

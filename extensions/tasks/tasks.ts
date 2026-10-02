@@ -201,9 +201,8 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     }
     const content = pending.map(id => `Background Bash task ${id} is ${tasks.query(id).status}.`).join("\n");
     for (const id of pending) { notifications.delete(id); tasks.acknowledge(id, "notified"); }
-    // One wake-up for the batch. Sending once per task queues follow-up turns
-    // that cannot be withdrawn when the first turn inspects the other tasks.
-    pi.sendMessage({ customType: "pi-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+    // One steering message wakes the conversation for the whole batch.
+    pi.sendMessage({ customType: "pi-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "steer" });
   }
   const load = (_event: unknown, ctx: ExtensionContext) => {
     current = ctx;

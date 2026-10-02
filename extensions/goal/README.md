@@ -2,7 +2,8 @@
 
 Tools: `create_goal`, `get_goal`, `update_goal`. Creation requires explicit user
 intent. `/goal new <objective>`, `status`, `pause`, `resume`, and `clear` give the
-user control. Active goals queue continuation turns until complete or blocked.
+user control. Active goals send steering messages to continue until complete or
+blocked. New and resumed goals also use steering, not queued follow-up turns.
 A blocked report requires at least three continuation turns; the model must also
 verify the same impasse repeated without progress. Only the user can pause/resume.
 

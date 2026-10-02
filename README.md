@@ -13,11 +13,11 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | User-activated workers, messaging, review, worktrees and a status panel |
+| [swarm](extensions/swarm) | User-activated workers, steering messages, review pauses, worktrees and a status panel |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with background tasks, deadlines and branch-owned notifications |
+| [tasks](extensions/tasks) | Native Bash with background tasks, deadlines and branch-owned steering notifications |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth; blocks API keys and paid OpenAI gateways |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
@@ -29,12 +29,12 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
-| [goal](extensions/goal) | Persistent objectives and continuation; text result previews |
+| [goal](extensions/goal) | Persistent objectives and steering continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Automatic session names |
 | [btw](extensions/btw) | Side questions with optional tools |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
-| [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with keep/revert decisions |
+| [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |
 
 Tool names use the footer folder's accent color; Bash calls color only the `$`
 prefix. Preview arguments use the normal foreground color. Tool result previews
