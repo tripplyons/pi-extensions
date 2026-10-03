@@ -109,7 +109,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
-    install(h.pi); expect(h.tools.size).toBe(13);
+    install(h.pi); expect(h.tools.size).toBe(15);
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
     expect(await h.emit("before_agent_start")).toEqual([undefined]);
     await h.command("swarm:start", "Build the feature");
@@ -151,6 +151,50 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+test("compact tree exposes current models, exact filtering and independent delivery evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-swarm-models-"));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  const h = harness(); install(h.pi);
+  const store = new SwarmStore(join(root, "swarm"));
+  try {
+    await h.command("swarm:start", "Rotate workers");
+    const identity = h.entries.at(-1).data;
+    const worker = await store.reserve(identity.run, identity.node, "Worker", "Task");
+    await store.update(identity.run, run => { Object.assign(run.nodes[worker.id], {
+      status: "running", launch: { model: "anthropic/claude", thinking: "high" },
+    }); });
+    let snapshot = (await h.call("swarm_tree", { model: "anthropic/claude" })).details;
+    expect(snapshot.nodes).toHaveLength(1);
+    expect(snapshot.nodes[0]).toMatchObject({ launch: { model: "anthropic/claude" }, effectiveModel: "anthropic/claude", modelSource: "launch", handoff: "none" });
+    await h.call("swarm_replace", { nodeId: worker.id, action: "request" });
+    expect((await store.inbox(identity.run, worker.id))[0].text).toContain("Do not auto-commit unverified WIP");
+    await expect(h.call("swarm_replace", { nodeId: worker.id, action: "start", name: "Next", task: "Continue" })).rejects.toThrow("requires model");
+    h.pi.appendEntry("pi:swarm", { run: identity.run, node: worker.id });
+    h.ctx.model = { provider: "openai", id: "gpt-6.1-sol" };
+    await h.emit("session_start");
+    await h.emit("thinking_level_select", { level: "medium" });
+    snapshot = (await h.call("swarm_tree", { model: "openai/gpt-6.1-sol" })).details;
+    expect(snapshot.nodes[0]).toMatchObject({ current: { model: "openai/gpt-6.1-sol", thinking: "medium" }, effectiveModel: "openai/gpt-6.1-sol", modelSource: "session" });
+    expect((await h.call("swarm_tree", { model: "anthropic/claude" })).details.nodes).toHaveLength(0);
+    await h.emit("model_select", { model: { provider: "openai", id: "other" } });
+    expect((await store.read(identity.run)).nodes[worker.id].current?.model).toBe("openai/other");
+    await h.call("swarm_complete", { result: "Commit plus unverified WIP" });
+    h.pi.appendEntry("pi:swarm", identity); await h.emit("session_start");
+    snapshot = (await h.call("swarm_tree", {})).details;
+    expect(snapshot.nodes.find((node: any) => node.id === worker.id)).toMatchObject({ handoff: "awaiting-parent", code: { records: [] } });
+    await store.review(identity.run, identity.node, worker.id, "accept", "Received only");
+    const revision = "a".repeat(40);
+    await h.call("swarm_record", { nodeId: worker.id, revision, stage: "reviewed", evidence: "Source inspected" });
+    snapshot = (await h.call("swarm_tree", { includeTerminal: true })).details;
+    expect(snapshot.nodes.find((node: any) => node.id === worker.id)).toMatchObject({ handoff: "accepted", code: { source: "parent-reported", records: [{ revision, reviewed: true, tested: false, integrated: false }] } });
+    await expect(h.call("swarm_tree", { nodeId: worker.id, model: "openai/other" })).rejects.toThrow("omit nodeId");
+  } finally {
+    await h.emit("session_shutdown");
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("/swarm:kill stops workers and /swarm:status toggles the panel", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
@@ -174,7 +218,7 @@ test("/swarm:kill stops workers and /swarm:status toggles the panel", async () =
     expect((await store.read(identity.run)).nodes[child.id].status).toBe("stopped");
     expect(notices.at(-1)).toBe("Stopped 1 swarm worker. Worktrees, sessions and branches are kept.");
     expect(renders.length).toBeGreaterThan(0);
-    expect(component.render(120)).toEqual(["swarm · 0 active · 1 finished · Build the feature", "  No active workers"]);
+    expect(component.render(120)).toEqual(["swarm · 0 active · 1 terminal · Build the feature", "  No active workers"]);
     await h.command("swarm:kill");
     expect(notices.at(-1)).toBe("No swarm workers are active.");
 

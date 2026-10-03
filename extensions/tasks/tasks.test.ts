@@ -52,6 +52,35 @@ test("foreground promotion keeps one process, deadline, output and completion no
   expect((await tasks.output(id, undefined)).next_offset).toBe(11);
 });
 
+test("failed foreground Bash returns native diagnostics and error metadata", async () => {
+  const { root, tasks } = await setup(1000);
+  const h = harness(); h.ctx.cwd = root;
+  registerTaskTools(h.pi, tasks);
+  try {
+    const reply = await h.call("bash", { command: "printf 'before failure\\n'; printf 'error diagnostic\\n' >&2; exit 7" });
+    expect(reply.isError).toBe(true);
+    expect(reply.content[0].text).toContain("before failure");
+    expect(reply.content[0].text).toContain("error diagnostic");
+    expect(reply.content[0].text).toContain("Command exited with code 7");
+    expect(reply.structuredContent).toMatchObject({ exit_code: 7, truncated: false });
+    const id = h.entries.find(entry => entry.customType === taskKey).data;
+    expect(tasks.query(id)).toMatchObject({ status: "failed", exit_code: 7, error: "Command exited with code 7" });
+    expect((await tasks.output(id, 0)).output).toContain("error diagnostic");
+  } finally { await h.emit("session_shutdown"); }
+});
+
+test("large failed foreground output keeps native truncation and its full output path", async () => {
+  const { root, tasks } = await setup(1000); let id = "";
+  const reply = await tasks.run(root, { command: "head -c 60000 /dev/zero; printf 'last diagnostic'; exit 1" }, undefined, value => { id = value; }, ignore);
+  expect(reply.isError).toBe(true);
+  expect(reply.content[0].text).toContain("last diagnostic");
+  expect(reply.content[0].text).toContain("Full output:");
+  expect(reply.details?.truncation?.truncated).toBe(true);
+  expect((await readFile(reply.details!.fullOutputPath!, "utf8")).length).toBe(60015);
+  expect(tasks.query(id).status).toBe("failed");
+  await rm(reply.details!.fullOutputPath!, { force: true });
+});
+
 test("promoted foreground deadlines still terminate commands", async () => {
   const { root, tasks } = await setup(); let id = "";
   await tasks.run(root, { command: "sleep 5", timeout: 0.08 }, undefined, value => { id = value; }, ignore);

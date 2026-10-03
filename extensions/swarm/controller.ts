@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { SwarmStore, descendants, ownedChild, terminal, type Node, type Run } from "./state.ts";
-import { prepareWorktree, preflightWorktree, removeWorktree, type DirtyMode } from "./git.ts";
+import { git, prepareWorktree, preflightWorktree, removeWorktree, type DirtyMode } from "./git.ts";
+import { inheritWorktree } from "./replacement.ts";
 import { Workers, type Launch } from "./worker.ts";
 export type WorkerRuntime = Pick<Workers, "start" | "stop" | "observe" | "alive">;
 export class Swarm {
@@ -12,7 +13,7 @@ export class Swarm {
     if (!node.worktree) throw new Error("Worker has no worktree");
     const launch = { ...node.launch, ...options };
     // Save before process creation so a failed launch can be retried faithfully.
-    await this.store.update(run.id, state => { state.nodes[node.id].launch = launch; });
+    await this.store.update(run.id, state => { state.nodes[node.id].launch = launch; delete state.nodes[node.id].current; });
     const launched = await this.workers.start({ run: run.id, node: node.id, cwd: node.worktree.cwd,
       directory: join(this.store.path(run.id), "workers", node.id), ...launch });
     try {
@@ -35,6 +36,37 @@ export class Swarm {
     } catch (error) {
       await this.store.update(runId, state => { state.nodes[node.id].status = "failed"; state.nodes[node.id].feedback = String(error); });
       // Retain any created worktree and branch for diagnosis/recovery.
+      throw error;
+    }
+  }
+  async replace(runId: string, actor: string, child: string, name: string, task: string, testedBase: string, options: Pick<Launch, "model" | "thinking">) {
+    if (!options.model?.trim()) throw new Error("Replacement requires an explicit target model");
+    if (!testedBase.trim()) throw new Error("Replacement requires an explicit testedBase");
+    const run = await this.store.read(runId);
+    const previous = ownedChild(run, actor, child);
+    if (await this.workers.alive(child)) throw new Error("Predecessor still has a live pane; accept its handoff first");
+    if (!previous.worktree || previous.worktree.shared) throw new Error("Replacement requires a retained isolated Git worktree");
+    const assignment = `${task}\n\nPredecessor ${previous.name} (${previous.id})\nOriginal ownership and assignment:\n${previous.task}\n\nAccepted handoff (not proof of code integration):\n${previous.result}\n\nRead swarm_task provenance. The successor starts from the predecessor HEAD with staged, unstaged and untracked WIP copied without a commit. The tested base describes only the reported tests; WIP remains unverified. Ignored files are not copied. Preserve ownership unless this assignment explicitly changes it. Do not repeat or omit pending commits. Commit only when authorized.`;
+    const node = await this.store.reserve(runId, actor, name, assignment, child);
+    const destination = join(this.store.path(runId), "worktrees", node.id);
+    const branch = `pi-swarm/${runId}/${node.id}`;
+    const snapshot = join(this.store.path(runId), "replacements", node.id);
+    try {
+      const inherited = await inheritWorktree(previous, destination, branch, testedBase, snapshot);
+      node.worktree = inherited.worktree;
+      await this.store.update(runId, state => {
+        Object.assign(state.nodes[node.id], { worktree: inherited.worktree, branch, provenance: { predecessor: child, ...inherited.provenance } });
+      });
+      await this.launch(run, node, options);
+      return (await this.store.read(runId)).nodes[node.id];
+    } catch (error) {
+      // A patch or launch failure keeps its branch, worktree and snapshot for inspection.
+      let retained = false;
+      try { retained = await git(destination, ["branch", "--show-current"]) === branch; } catch {}
+      await this.store.update(runId, state => {
+        Object.assign(state.nodes[node.id], { status: "failed", feedback: `${error}\nReplacement snapshot: ${snapshot}` });
+        if (retained) Object.assign(state.nodes[node.id], { branch, worktree: { cwd: destination, repository: previous.worktree!.repository, branch, shared: false } });
+      });
       throw error;
     }
   }
@@ -77,7 +109,9 @@ export class Swarm {
     const run = await this.store.read(runId);
     const node = ownedChild(run, actor, child);
     if (await this.workers.alive(child)) throw new Error("Worker is already running");
+    if (node.replacement) throw new Error("Predecessor is reserved for replacement; do not restart it");
     if (!node.worktree) throw new Error("Worker has no saved worktree");
+    if (node.predecessor && !node.provenance) throw new Error("Incomplete replacement snapshot; inspect and recover manually before launch");
     if (descendants(run, child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before restarting");
     await this.launch(run, node, options);
   }
@@ -86,6 +120,7 @@ export class Swarm {
     if (actor !== run.root) throw new Error("Only root can clean up swarm worktrees");
     const nodes = descendants(run, run.root).filter(node => terminal(node.status) && node.worktree && !node.worktree.shared);
     for (const node of nodes) {
+      if (node.replacement) throw new Error("Replacement predecessor worktrees are retained; remove them only after manual provenance review");
       if (await this.workers.alive(node.id)) throw new Error("Terminal worker still has a live pane");
       await preflightWorktree(node.worktree!);
     }

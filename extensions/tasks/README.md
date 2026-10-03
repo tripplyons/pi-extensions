@@ -7,7 +7,10 @@ a foreground command returns a task ID without restarting its process or deadlin
 `run_in_background: true` starts a managed task immediately with a default
 30-minute deadline. Query, read, or stop it with `task_query`, `task_output`, and
 `task_stop`. Expiry and stop terminate the process group. Nonzero exits fail the
-task, including Pi 1.0's non-throwing Bash results.
+task, including Pi 1.0's non-throwing Bash results. Failed foreground commands
+return the native stdout/stderr, exit status, truncation metadata, and full-output
+path when present. Task failure tracking does not replace those diagnostics with
+an exit-code-only error.
 
 Tasks belong to their launching session branch. Completion notifications wait
 for idle and arrive in one steering message per batch. They never queue a

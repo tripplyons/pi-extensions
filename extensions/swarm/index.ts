@@ -94,17 +94,27 @@ export default function install(pi: ExtensionAPI) {
     current.timer = setInterval(() => void refresh(ctx), 2000); current.timer.unref();
     await refresh(ctx);
   }
+  async function saveCurrent(ctx: ExtensionContext, model = ctx.model, thinking = pi.getThinkingLevel()) {
+    if (!identity || !model) return;
+    const current = { model: `${model.provider}/${model.id}`, thinking };
+    const { run, node } = await active(ctx);
+    if (node.current?.model === current.model && node.current.thinking === current.thinking) return;
+    await store.update(run.id, state => { state.nodes[node.id].current = current; });
+  }
+  pi.on("model_select", (event, ctx) => saveCurrent(ctx, event.model));
+  pi.on("thinking_level_select", (event, ctx) => saveCurrent(ctx, ctx.model, event.level));
   const load = async (_event: unknown, ctx: ExtensionContext) => {
     if (timer) clearInterval(timer);
     identity = process.env.PI_SWARM_NODE && process.env.PI_SWARM_RUN
       ? { run: process.env.PI_SWARM_RUN, node: process.env.PI_SWARM_NODE } : restore<Identity>(ctx, key);
-    if (identity) { timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
+    if (identity) { await saveCurrent(ctx); timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
     if (view) { if (identity) await show(ctx); else hide(ctx); }
   };
   pi.on("session_start", load);
   pi.on("session_tree", load);
   pi.on("before_agent_start", async (event, ctx) => {
     if (!identity) return;
+    await saveCurrent(ctx);
     const { node } = await active(ctx);
     return { systemPromptOptions: { ...event.systemPromptOptions,
       promptGuidelines: [...event.systemPromptOptions.promptGuidelines, ...coordinationGuidelines(node)],
@@ -156,9 +166,10 @@ export default function install(pi: ExtensionAPI) {
       siblings: Object.values(run.nodes).filter(entry => node.parent && entry.parent === node.parent && entry.id !== node.id && !terminal(entry.status)).map(entry => ({ id: entry.id, name: entry.name, status: entry.status })),
     };
   });
-  tool("swarm_tree", "List compact active-worker summaries. Set nodeId for a full assignment/result, or includeTerminal for retained workers.", Type.Object({ nodeId: Type.Optional(Type.String()), includeTerminal: Type.Optional(Type.Boolean()) }), async (args, ctx) => {
+  tool("swarm_tree", "List compact worker summaries with launch/current models, handoff state and per-revision code evidence. Set nodeId for a full record, includeTerminal for retained workers, or model for an exact effective provider/model filter. Counts remain run-wide.", Type.Object({ nodeId: Type.Optional(Type.String()), includeTerminal: Type.Optional(Type.Boolean()), model: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
     const { run } = await active(ctx);
-    if (!args.nodeId) return treeSnapshot(run, args.includeTerminal);
+    if (args.nodeId && args.model) throw new Error("model filters compact summaries; omit nodeId");
+    if (!args.nodeId) return treeSnapshot(run, args.includeTerminal, args.model);
     const node = run.nodes[args.nodeId];
     if (!node) throw new Error("Unknown swarm node");
     return node;
@@ -179,8 +190,19 @@ export default function install(pi: ExtensionAPI) {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
     await store.send(run.id, node.id, node.parent!, "message", `Submitted a result for review. Read the handoff with swarm_tree nodeId=${node.id}.`); return updated;
   });
-  tool("swarm_review", "Review a direct child's result; accept/reject stops it without merging.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String() }), async (args, ctx) => {
+  tool("swarm_review", "Accept/reject a direct child's handoff and stop it without merging. This does not mark code reviewed, tested or integrated; use swarm_record for per-revision evidence.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String() }), async (args, ctx) => {
     const { run, node } = await active(ctx); return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback);
+  });
+  tool("swarm_record", "Record parent-reported evidence for a direct child's revision: reviewed, tested or integrated. These are independent states, never inferred from handoff acceptance. Use a full commit hash, or result for a no-commit handoff. Include exact checks or integration commit in evidence.", Type.Object({ nodeId: Type.String(), revision: Type.String(), stage: Type.Union(["reviewed", "tested", "integrated"].map(value => Type.Literal(value))), evidence: Type.String({ minLength: 1 }) }), async (args, ctx) => {
+    const { run, node } = await active(ctx);
+    return store.recordDelivery(run.id, node.id, args.nodeId, args.revision, args.stage, args.evidence);
+  });
+  tool("swarm_replace", "Graceful direct-child replacement. action=request sends one wrap-up instruction without stopping tools. After swarm_complete and parent acceptance, action=start requires name, task, explicit model and testedBase. Copies predecessor commits and dirty WIP to an isolated successor without committing, merging or deleting the predecessor. Failed successors require inspection, not another start.", Type.Object({ nodeId: Type.String(), action: Type.Union([Type.Literal("request"), Type.Literal("start")]), name: Type.Optional(Type.String({ minLength: 1 })), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(Type.String()), testedBase: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
+    const { run, node } = await active(ctx);
+    if (args.action === "request") return store.requestReplacement(run.id, node.id, args.nodeId);
+    if (args.action !== "start") throw new Error("Invalid replacement action");
+    for (const field of ["name", "task", "model", "testedBase"] as const) if (!args[field]?.trim()) throw new Error(`Replacement start requires ${field}`);
+    return (await controller()).replace(run.id, node.id, args.nodeId, args.name, args.task, args.testedBase, { model: args.model, thinking: args.thinking ?? pi.getThinkingLevel() });
   });
   tool("swarm_observe", "Capture bounded terminal output from a direct child.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).owned(run.id, node.id, args.nodeId); return workers.observe(args.nodeId, args.lines);

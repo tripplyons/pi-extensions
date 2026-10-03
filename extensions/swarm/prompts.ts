@@ -9,7 +9,7 @@ export function coordinationGuidelines(node: Node): string[] {
     "Swarm tools do not merge branches. Only the parent integrates submitted work into its branch. A worker may sync an explicitly approved base into its own branch. Pin the tested base; do not repeat full checks just because an unrelated base update arrives after testing. The parent verifies the integrated result.",
   ];
   if (!node.parent) return [...common,
-    "Use swarm_tree for compact active-worker summaries and swarm_tree with nodeId for a full assignment or handoff. Use swarm_broadcast for shared instructions to your nonterminal direct children. Review the diff and reported checks before accepting; acceptance stops the worker but does not integrate its branch. Request changes for a bounded fix, not a follow-on assignment.",
+    "Use swarm_tree for compact active-worker summaries and swarm_tree with nodeId for a full assignment or handoff. Use swarm_broadcast for shared instructions to your nonterminal direct children. Review the diff and reported checks before accepting; acceptance stops the worker but does not integrate its branch. Record per-revision source review, tests and integration evidence with swarm_record. Use swarm_replace action=request to ask for a wrap-up, then accept the handoff before action=start with an explicit testedBase and target model. Request changes for a bounded fix, not a follow-on assignment.",
     "Limit concurrent expensive jobs to the project's resource budget. Inspect stalled workers with swarm_observe, then steer or stop them. When winding down, broadcast that workers must finish only their assigned step and submit; do not spawn replacements.",
   ];
   return [...common,
@@ -19,15 +19,29 @@ export function coordinationGuidelines(node: Node): string[] {
   ];
 }
 
-export function treeSnapshot(run: Run, includeTerminal = false) {
+export function handoffStatus(node: Node) {
+  if (!node.result) return "none";
+  if (node.status === "review") return "awaiting-parent";
+  if (node.status === "accepted") return "accepted";
+  if (node.status === "rejected") return "rejected";
+  return "needs-review";
+}
+
+export function treeSnapshot(run: Run, includeTerminal = false, model?: string) {
   const nodes = Object.values(run.nodes);
   return {
     objective: run.objective,
     active: nodes.filter(node => node.id !== run.root && !terminal(node.status)).length,
     finished: nodes.filter(node => terminal(node.status)).length,
-    nodes: nodes.filter(node => includeTerminal || !terminal(node.status)).map(node => ({
+    nodes: nodes.filter(node => (includeTerminal || !terminal(node.status)) && (!model || (node.current?.model ?? node.launch?.model) === model)).map(node => ({
       id: node.id, parent: node.parent, name: node.name, depth: node.depth, status: node.status,
       branch: node.branch, cwd: node.worktree?.cwd, started: node.started,
+      launch: node.launch, current: node.current, effectiveModel: node.current?.model ?? node.launch?.model,
+      modelSource: node.current ? "session" : node.launch?.model ? "launch" : "unknown",
+      handoff: handoffStatus(node),
+      code: { source: "parent-reported", records: node.delivery?.map(record => ({ revision: record.revision, reviewed: !!record.reviewed, tested: !!record.tested, integrated: !!record.integrated })) ?? [],
+        coverage: "Only listed revisions have evidence; other work is unrecorded. Handoff acceptance does not review, test or integrate code." },
+      replacement: node.replacement, predecessor: node.predecessor,
       task: node.task.length > 240 ? `${node.task.slice(0, 240)}…` : node.task,
       hasResult: node.result !== undefined,
     })),

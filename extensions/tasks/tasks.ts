@@ -86,8 +86,8 @@ export class Tasks {
     task.done = (async () => {
       try {
         task.output = await tool.execute(id, { command: args.command, timeout }, task.controller.signal);
-        if (record.exit_code !== 0) throw new Error(`Command exited with code ${record.exit_code}`);
-        record.status = "succeeded";
+        record.status = record.exit_code === 0 ? "succeeded" : "failed";
+        if (record.status === "failed") record.error = `Command exited with code ${record.exit_code}`;
       } catch (error) {
         task.error = storageError ?? (error instanceof Error ? error : new Error(String(error)));
         record.status = storageError ? "failed" : task.controller.signal.aborted ? "canceled" : "failed";

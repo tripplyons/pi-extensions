@@ -6,8 +6,11 @@ import { tmpdir } from "node:os";
 const exec = promisify(execFile);
 export type DirtyMode = "exclude" | "commit-parent" | "commit-child" | "shared";
 export type Worktree = { cwd: string; repository: string; branch?: string; shared: boolean };
+export async function gitRaw(cwd: string, args: string[], env?: NodeJS.ProcessEnv) {
+  return (await exec("git", ["-C", cwd, ...args], { env: env ?? process.env, maxBuffer: 4 * 1024 * 1024 })).stdout;
+}
 export async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv) {
-  return (await exec("git", ["-C", cwd, ...args], { env: env ?? process.env, maxBuffer: 4 * 1024 * 1024 })).stdout.trimEnd();
+  return (await gitRaw(cwd, args, env)).trimEnd();
 }
 
 export async function prepareWorktree(parent: string, destination: string, branch: string, mode?: DirtyMode): Promise<Worktree> {

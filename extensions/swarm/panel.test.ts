@@ -14,17 +14,28 @@ const run: Run = { version: 1, id: "run", root: "root", objective: "Ship it", me
   done: node("done", "root", 1, "accepted"),
 } };
 const paint = (color: string, text: string) => `<${color}>${text}`;
-test("panel lists active workers as a tree and counts finished ones", () => {
+test("panel lists active workers as a tree and counts terminal ones", () => {
   const now = Date.parse("2026-01-01T01:05:00Z");
   expect(panel(run, "root", new Set(["lead"]), 200, paint, now)).toEqual([
-    "<accent>swarm<dim> · 2 active<dim> · 1 finished<dim> · <dim>Ship it",
+    "<accent>swarm<dim> · 2 active<dim> · 1 terminal<dim> · <dim>Ship it",
     "  lead      <success>running   1h5m    <muted>anthropic/opus:high  <warning>1 unread  <dim>Task for lead",
     "    helper  <accent>review            <error>no pane  <dim>Line one line two",
   ]);
   expect(panel(run, "lead", new Set(), 200, paint, now).slice(1)).toEqual(["  helper  <accent>review            <error>no pane  <dim>Line one line two"]);
-  expect(panel(run, "helper", new Set(), 200, paint, now)).toEqual(["<accent>swarm<dim> · 0 active<dim> · 0 finished<dim> · <dim>Ship it", "<dim>  No active workers"]);
+  expect(panel(run, "helper", new Set(), 200, paint, now)).toEqual(["<accent>swarm<dim> · 0 active<dim> · 0 terminal<dim> · <dim>Ship it", "<dim>  No active workers"]);
   for (const line of panel(run, "root", new Set(), 30, (_, text) => text, now)) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
 });
+test("panel shows current model and keeps handoff and code evidence separate", () => {
+  const worker = node("worker", "root", 1, "review", { result: "Handoff", launch: { model: "anthropic/claude", thinking: "high" }, current: { model: "openai/sol", thinking: "medium" } });
+  const run: Run = { version: 1, id: "run", root: "root", objective: "Objective", messages: [], nodes: { root: node("root", undefined, 0, "running"), worker } };
+  let row = panel(run, "root", new Set(["worker"]), 300, (_, text) => text)[1];
+  expect(row).toContain("openai/sol:medium"); expect(row).not.toContain("anthropic/claude");
+  expect(row).toContain("handoff awaiting-parent; code unrecorded");
+  worker.delivery = [{ revision: "a".repeat(40), reviewed: { actor: "root", text: "Reviewed", recorded: "" } }];
+  row = panel(run, "root", new Set(["worker"]), 300, (_, text) => text)[1];
+  expect(row).toContain("1 reviewed, 0 tested, 0 integrated (1 recorded)");
+});
+
 test("elapsed time is compact", () => {
   expect(elapsed(undefined, 0)).toBe("");
   expect(elapsed("1970-01-01T00:00:00Z", 59_000)).toBe("59s");

@@ -5,9 +5,20 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Worktree } from "./git.ts";
 export type Status = "starting" | "running" | "review" | "accepted" | "rejected" | "stopped" | "failed";
 export const terminal = (status: Status) => ["accepted", "rejected", "stopped", "failed"].includes(status);
+export type Evidence = { actor: string; text: string; recorded: string };
+export type Delivery = { revision: string; reviewed?: Evidence; tested?: Evidence; integrated?: Evidence };
+export type Provenance = {
+  predecessor: string; branch: string; head: string; testedBase: string; commits: string[];
+  snapshot: string; stagedPatch: string; unstagedPatch: string; untracked: { path: string; sha256: string }[];
+};
 export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
   launch?: { model?: string; thinking?: string };
+  current?: { model: string; thinking: string };
+  delivery?: Delivery[];
+  replacement?: { requested: string; successor?: string };
+  predecessor?: string;
+  provenance?: Provenance;
   worktree?: Worktree; branch?: string; session?: string; pane?: string; started?: string; result?: string; feedback?: string;
 };
 export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean };
@@ -67,13 +78,22 @@ export class SwarmStore {
       return result;
     } finally { await rm(lock, { recursive: true }); }
   }
-  async reserve(id: string, actor: string, name: string, task: string) {
+  async reserve(id: string, actor: string, name: string, task: string, predecessor?: string) {
     nonempty(name, "Name"); nonempty(task, "Task");
     return this.update(id, run => {
       const parent = run.nodes[actor];
       if (!parent || parent.status !== "running") throw new Error("Only running nodes may spawn");
       if (parent.depth >= 3) throw new Error("Maximum swarm depth is three");
       const child: Node = { id: randomUUID(), parent: actor, name, task, depth: parent.depth + 1, status: "starting" };
+      if (predecessor) {
+        const previous = ownedChild(run, actor, predecessor);
+        if (!previous.replacement) throw new Error("Request a replacement handoff first");
+        if (previous.status !== "accepted") throw new Error("Accept the predecessor handoff before replacement");
+        if (descendants(run, predecessor).some(node => !terminal(node.status))) throw new Error("All descendants must be terminal before replacement");
+        if (previous.replacement.successor) throw new Error("A successor is already reserved; inspect or restart it instead");
+        previous.replacement.successor = child.id;
+        child.predecessor = predecessor;
+      }
       run.nodes[child.id] = child;
       return child;
     });
@@ -122,7 +142,36 @@ export class SwarmStore {
       const node = run.nodes[actor];
       if (!node?.parent || node.status !== "running") throw new Error("Only running workers submit results");
       if (descendants(run, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before completion");
-      node.status = "review"; node.result = result; return node;
+      node.status = "review"; node.result = result;
+      node.delivery = node.delivery?.filter(record => record.revision !== "result");
+      return node;
+    });
+  }
+  async requestReplacement(id: string, actor: string, child: string) {
+    return this.update(id, run => {
+      const node = ownedChild(run, actor, child);
+      if (!["running", "review", "accepted"].includes(node.status)) throw new Error("Replacement requires a running worker or a submitted handoff");
+      if (node.replacement) return node;
+      node.replacement = { requested: new Date().toISOString() };
+      if (node.status === "running") run.messages.push({ id: randomUUID(), from: actor, to: child, kind: "instruction", read: false,
+        created: node.replacement.requested,
+        text: "Prepare a replacement handoff. Finish only the current bounded step, stop your jobs, and submit with swarm_complete alone. State the tested base, all delivered and pending commits, dirty WIP, owned files, checks, blockers, and next steps. Do not auto-commit unverified WIP. Do not start follow-on work.",
+      });
+      return node;
+    });
+  }
+  async recordDelivery(id: string, actor: string, child: string, revision: string, stage: "reviewed" | "tested" | "integrated", evidence: string) {
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64}|result)$/.test(revision)) throw new Error("revision must be a full commit hash or result for a no-commit handoff");
+    if (!["reviewed", "tested", "integrated"].includes(stage)) throw new Error("Invalid delivery stage");
+    nonempty(evidence, "Evidence");
+    return this.update(id, run => {
+      const node = ownedChild(run, actor, child);
+      if (!node.result) throw new Error("Worker has no submitted handoff");
+      const records = node.delivery ??= [];
+      let record = records.find(entry => entry.revision === revision);
+      if (!record) { record = { revision }; records.push(record); }
+      record[stage] = { actor, text: evidence, recorded: new Date().toISOString() };
+      return node;
     });
   }
   async review(id: string, actor: string, child: string, decision: "accept" | "reject" | "request-changes", feedback: string) {

@@ -49,6 +49,44 @@ test("depth limit, descendant completion and review permissions", () => fixture(
   await store.complete(run.id, a.id, "Done");
   expect((await store.read(run.id)).nodes[a.id].status).toBe("review");
 }));
+test("handoff acceptance never implies code review, tests or integration", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const a = await store.reserve(run.id, run.root, "A", "Task");
+  const b = await store.reserve(run.id, run.root, "B", "Task");
+  const first = "a".repeat(40), second = "b".repeat(40);
+  await expect(store.recordDelivery(run.id, run.root, a.id, first, "tested", "bun test")).rejects.toThrow("handoff");
+  await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
+  await store.complete(run.id, a.id, "Two commits delivered");
+  await expect(store.recordDelivery(run.id, b.id, a.id, first, "reviewed", "Diff inspected")).rejects.toThrow("direct parent");
+  await expect(store.recordDelivery(run.id, run.root, a.id, "abc", "reviewed", "Diff inspected")).rejects.toThrow("full commit hash");
+  await store.review(run.id, run.root, a.id, "accept", "Received, integration pending");
+  expect((await store.read(run.id)).nodes[a.id].delivery).toBeUndefined();
+  await store.recordDelivery(run.id, run.root, a.id, first, "integrated", "Cherry-picked as ccccccc; tests pending");
+  await store.recordDelivery(run.id, run.root, a.id, second, "reviewed", "Independent source review");
+  let records = (await new SwarmStore(store.root).read(run.id)).nodes[a.id].delivery!;
+  expect(records[0].reviewed).toBeUndefined(); expect(records[0].tested).toBeUndefined();
+  expect(records[0].integrated).toMatchObject({ actor: run.root, text: "Cherry-picked as ccccccc; tests pending" });
+  expect(records[1].integrated).toBeUndefined();
+  await store.recordDelivery(run.id, run.root, a.id, second, "tested", "bun test: 10 pass at exact revision");
+  await store.recordDelivery(run.id, run.root, a.id, "result", "reviewed", "No-commit handoff review");
+  await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
+  await store.complete(run.id, a.id, "Updated handoff");
+  records = (await store.read(run.id)).nodes[a.id].delivery!;
+  expect(records).toHaveLength(2); expect(records[1].tested?.text).toContain("10 pass");
+}));
+
+test("concurrent replacement starts reserve only one successor", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const a = await store.reserve(run.id, run.root, "A", "Task");
+  await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
+  await store.requestReplacement(run.id, run.root, a.id);
+  await store.complete(run.id, a.id, "Handoff"); await store.review(run.id, run.root, a.id, "accept", "Received");
+  const attempts = await Promise.allSettled(Array.from({ length: 4 }, (_, i) =>
+    new SwarmStore(store.root).reserve(run.id, run.root, `Successor ${i}`, "Task", a.id)));
+  expect(attempts.filter(result => result.status === "fulfilled")).toHaveLength(1);
+  expect(Object.keys((await store.read(run.id)).nodes)).toHaveLength(3);
+}));
+
 test("failed updates leave durable state unchanged and release the lock", () => fixture(async store => {
   const run = await store.create("session", "/tmp", "Original");
   await expect(store.update(run.id, state => { state.objective = "Partial"; throw new Error("Failed"); })).rejects.toThrow("Failed");
