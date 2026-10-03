@@ -28,6 +28,16 @@ requests.
 Restart Pi, run `/login openai`, and choose "Sign in with ChatGPT".
 Use `/model openai/gpt-6.1-sol` after login.
 
+## Interrupted responses
+
+Pi 1.0.1 does not classify `upstream stream ended before a completion event;
+this turn may be incomplete` as a retryable error. The wrapper labels that exact
+failure as a connection error so Pi's existing retry budget and backoff apply.
+It does not mark the failed turn successful, execute partial tool calls, or
+replay completed tools. Other errors and user cancellation pass through unchanged.
+Retries must be enabled in Pi settings. Dotfiles configures three retries with
+an initial two-second delay. Persistent failures still stop after that budget.
+
 ## Boundary
 
 This is an accidental-billing guard for Pi's registered providers, not an OS

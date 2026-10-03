@@ -1,4 +1,4 @@
-import { lazyStream, type AnyModel, type Provider, type ProviderRequestOptions } from "@earendil-works/pi-ai";
+import { lazyStream, type AnyModel, type AssistantMessageEvent, type Provider, type ProviderRequestOptions } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const message = "OpenAI API billing is disabled. Use /login openai and Sign in with ChatGPT. API keys and paid OpenAI gateways are blocked.";
@@ -30,6 +30,17 @@ export function assertSubscription(model: AnyModel, options: ProviderRequestOpti
 
 // Provider wrappers run before dispatch. Extension lifecycle hooks catch errors
 // and continue, so throwing in before_provider_request is not a billing guard.
+export async function* retryableStream(events: AsyncIterable<AssistantMessageEvent>): AsyncIterable<AssistantMessageEvent> {
+  for await (const event of events) {
+    if (event.type === "error" && event.reason === "error" &&
+      event.error.errorMessage === "upstream stream ended before a completion event; this turn may be incomplete") {
+      // Pi 1.0.1 recognizes connection errors, but not this Responses EOF text.
+      // Keep the failed turn failed. Pi owns the retry budget and backoff.
+      yield { ...event, error: { ...event.error, errorMessage: `Connection error: ${event.error.errorMessage}` } };
+    } else yield event;
+  }
+}
+
 export function guardProvider(provider: Provider): Provider {
   const tokens = new Set<string>();
   const oauth = provider.auth.oauth;
@@ -59,15 +70,15 @@ export function guardProvider(provider: Provider): Provider {
     } : {}),
     stream: (model, context, options) => lazyStream(model, async () => {
       assertSubscription(model, options, tokens);
-      return provider.stream(model, context, options);
+      return retryableStream(provider.stream(model, context, options));
     }),
     streamSimple: (model, context, options) => lazyStream(model, async () => {
       assertSubscription(model, options, tokens);
-      return provider.streamSimple(model, context, options);
+      return retryableStream(provider.streamSimple(model, context, options));
     }),
     ...(provider.fetchDeferred ? { fetchDeferred: (model, handle, options) => lazyStream(model, async () => {
       assertSubscription(model, options, tokens);
-      return provider.fetchDeferred!(model, handle, options);
+      return retryableStream(provider.fetchDeferred!(model, handle, options));
     }) } : {}),
     ...(provider.cancelDeferred ? { cancelDeferred: async (model, handle, options) => {
       assertSubscription(model, options, tokens);

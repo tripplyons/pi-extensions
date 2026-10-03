@@ -19,7 +19,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
 | [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe tasks, bounded UTF-8 output and opt-in progress reports |
 | [todos](extensions/todos) | Persistent branch-local task lists |
-| [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth; blocks API keys and paid OpenAI gateways |
+| [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | One-row previews for all tools, expanded output, and native context-window footer; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
