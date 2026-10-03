@@ -21,8 +21,8 @@ export type Node = {
   launch?: { model?: string; thinking?: string; fast?: boolean };
   current?: { model: string; thinking: string };
   delivery?: Delivery[];
-  directive?: { text: string; source: "parent" | "restart"; created: string };
-  activity?: { status: Activity; detail: string; updated: string };
+  directive?: { text: string; source: "parent" | "restart"; created: string; messageId?: string };
+  activity?: { status: Activity | "checking-in" | "instruction-queued" | "instruction-delivered" | "tool-active"; detail: string; updated: string; source?: "worker" | "message" | "instruction" | "tool-boundary" };
   handoff?: Handoff;
   replacement?: { requested: string; successor?: string };
   predecessor?: string;
@@ -67,7 +67,18 @@ export class SwarmStore {
   async read(id: string): Promise<Run> {
     const run: Run = JSON.parse(await readFile(join(this.path(id), "run.json"), "utf8"));
     if (run.version !== 1 || run.id !== id || !run.nodes?.[run.root] || !Array.isArray(run.messages)) throw new Error("Invalid swarm state");
-    for (const node of Object.values(run.nodes)) node.handoff ??= handoffRecord(node);
+    for (const node of Object.values(run.nodes)) {
+      node.handoff ??= handoffRecord(node);
+      const directive = node.directive;
+      if (directive && node.activity?.status.startsWith("waiting") && Date.parse(directive.created) > Date.parse(node.activity.updated)) {
+        const instruction = run.messages.find(message => message.to === node.id && message.kind === "instruction" &&
+          (message.id === directive.messageId || (message.created === directive.created && message.text === directive.text)));
+        if (instruction) {
+          directive.messageId = instruction.id;
+          node.activity = { status: instruction.read ? "instruction-delivered" : "instruction-queued", detail: instruction.text, updated: instruction.created, source: "instruction" };
+        }
+      }
+    }
     return run;
   }
   private async save(run: Run) {
@@ -129,9 +140,13 @@ export class SwarmStore {
       const message: Message = { id: randomUUID(), from, to, kind, text, created: new Date().toISOString(), read: false };
       if (activity) {
         if (sender.status !== "running" || sender.parent !== to || kind !== "message") throw new Error("Only running workers report activity to their parent");
-        sender.activity = { status: activity, detail: text, updated: message.created };
+        sender.activity = { status: activity, detail: text, updated: message.created, source: "worker" };
       }
-      if (kind === "instruction") recipient.directive = { text, source: "parent", created: message.created };
+      if (!activity && sender.status === "running" && sender.parent === to && kind === "message") sender.activity = { status: "checking-in", detail: text, updated: message.created, source: "message" };
+      if (kind === "instruction") {
+        recipient.directive = { text, source: "parent", created: message.created, messageId: message.id };
+        recipient.activity = { status: "instruction-queued", detail: text, updated: message.created, source: "instruction" };
+      }
       run.messages.push(message); return message;
     });
   }
@@ -143,7 +158,11 @@ export class SwarmStore {
       const children = Object.values(run.nodes).filter(node => node.parent === actor && !terminal(node.status));
       const created = new Date().toISOString();
       const messages: Message[] = children.map(node => ({ id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false }));
-      if (kind === "instruction") for (const node of children) node.directive = { text, source: "parent", created };
+      if (kind === "instruction") for (const message of messages) {
+        const node = run.nodes[message.to];
+        node.directive = { text, source: "parent", created, messageId: message.id };
+        node.activity = { status: "instruction-queued", detail: text, updated: created, source: "instruction" };
+      }
       run.messages.push(...messages);
       return messages;
     });
@@ -153,9 +172,11 @@ export class SwarmStore {
     if (!run.nodes[actor]) throw new Error("Unknown swarm node");
     return run.messages.filter(message => message.to === actor && !message.read);
   }
-  async observeResume(id: string, actor: string) {
+  async observeTool(id: string, actor: string, toolName: string) {
     return this.update(id, run => {
       const node = run.nodes[actor];
+      if (!node?.parent || node.status !== "running") return;
+      if (!toolName.startsWith("swarm_")) node.activity = { status: "tool-active", detail: `Tool boundary: ${toolName}`, updated: new Date().toISOString(), source: "tool-boundary" };
       if (node?.status === "running" && node.resume && node.resume.status === "delivered") {
         node.resume.status = "observed";
         run.messages.push({ id: randomUUID(), from: actor, to: node.parent!, kind: "message", read: false, created: new Date().toISOString(),
@@ -168,7 +189,11 @@ export class SwarmStore {
       const message = run.messages.find(message => message.id === messageId);
       if (!message || message.to !== actor) throw new Error("Message does not belong to this node");
       message.read = true;
-      const resume = run.nodes[actor].resume;
+      const node = run.nodes[actor];
+      if (message.kind === "instruction" && node.directive?.messageId === messageId && node.activity?.status === "instruction-queued") {
+        node.activity = { status: "instruction-delivered", detail: message.text, updated: new Date().toISOString(), source: "instruction" };
+      }
+      const resume = node.resume;
       if (resume?.messageId === messageId && resume.status === "queued") resume.status = "delivered";
     });
   }
@@ -192,8 +217,12 @@ export class SwarmStore {
       if (!["running", "review", "accepted"].includes(node.status)) throw new Error("Replacement requires a running worker or a submitted handoff");
       if (node.replacement) return node;
       node.replacement = { requested: new Date().toISOString() };
-      if (node.status === "running") node.directive = { text: "Finish only the current bounded step and prepare the requested replacement handoff. Do not start follow-on work.", source: "parent", created: node.replacement.requested };
-      if (node.status === "running") run.messages.push({ id: randomUUID(), from: actor, to: child, kind: "instruction", read: false,
+      const messageId = randomUUID();
+      if (node.status === "running") {
+        node.directive = { text: "Finish only the current bounded step and prepare the requested replacement handoff. Do not start follow-on work.", source: "parent", created: node.replacement.requested, messageId };
+        node.activity = { status: "instruction-queued", detail: node.directive.text, updated: node.directive.created, source: "instruction" };
+      }
+      if (node.status === "running") run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false,
         created: node.replacement.requested,
         text: "Prepare a replacement handoff. Finish only the current bounded step, stop your jobs, and submit with swarm_complete alone. State the tested base, all delivered and pending commits, dirty WIP, owned files, checks, blockers, and next steps. Do not auto-commit unverified WIP. Do not start follow-on work.",
       });
@@ -227,7 +256,8 @@ export class SwarmStore {
         const messageId = randomUUID();
         node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
         delete node.activity;
-        node.directive = { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString() };
+        node.directive = { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString(), messageId };
+        node.activity = { status: "instruction-queued", detail: node.directive.text, updated: node.directive.created, source: "instruction" };
         run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false, created: new Date().toISOString(),
           text: feedback || "Revise the submitted result and resubmit for review." });
       }

@@ -130,13 +130,13 @@ export default function install(pi: ExtensionAPI) {
       promptGuidelines: [...event.systemPromptOptions.promptGuidelines, ...coordinationGuidelines(node, run)],
     } };
   });
-  pi.on("tool_call", async (_event, ctx) => {
+  pi.on("tool_call", async (event, ctx) => {
     if (!identity) return;
     const { run, node } = await active(ctx);
     if (node.parent && (node.status === "review" || terminal(node.status))) {
       return { block: true, terminate: true, reason: `Swarm pause snapshot: worker was ${node.status} at this tool check (handoff revision ${node.handoff?.revision ?? 0}). A later parent resume can supersede this snapshot. Check swarm_tree for current state.` };
     }
-    if (node.parent && node.resume?.status === "delivered") await store.observeResume(run.id, node.id);
+    if (node.parent && (node.resume?.status === "delivered" || !event.toolName.startsWith("swarm_"))) await store.observeTool(run.id, node.id, event.toolName);
   });
   pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {

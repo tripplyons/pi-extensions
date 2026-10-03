@@ -168,9 +168,19 @@ not resume a review worker.
 Workers report activity through `swarm_send` to their parent:
 `activity: "working"`, `"waiting-instructions"`, or `"waiting-dependency"`.
 The message text gives the reason. The tree exposes the report and timestamp.
-The panel shows the report and its age instead of calling every running process
-working. Unreported activity is `unknown`. Reports are cleared on restart,
-completion, and a request for changes. These are self-reports, not proof of progress.
+The panel shows the latest activity signal and its age instead of calling every
+running process working. An ordinary worker-to-parent message records `checking-in`
+when it has no explicit activity report. Non-swarm tool checks record `tool-active`.
+Parent instructions replace old waiting labels with `instruction-queued`, then
+`instruction-delivered` when Pi accepts the instruction. Acknowledging an older
+instruction cannot replace the state of a newer one. Recovery also corrects legacy
+waiting reports when a newer matching parent instruction is present.
+The tree identifies each signal's source. The panel distinguishes observed events
+from explicit worker reports. Tool checks and check-ins do not prove useful progress,
+completed tool execution, or instruction understanding. Reading swarm state alone
+does not mark a worker tool-active. Workers should still explicitly report waits.
+Activity with no report or observed event is `unknown`. Restart and completion clear
+activity; a request for changes records a new queued instruction.
 The parent prompt lists pending direct-child reviews on each new turn; the parent
 still must read the handoff and make the decision.
 

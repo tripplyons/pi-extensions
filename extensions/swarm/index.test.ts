@@ -109,6 +109,7 @@ test("workers pause after completion and resume only after parent review", async
     expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("delivered");
     expect(await h.emit("tool_call", { toolName: "write" })).toEqual([undefined]);
     expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("observed");
+    expect((await store.read(run.id)).nodes[child.id].activity).toMatchObject({ status: "tool-active", source: "tool-boundary", detail: "Tool boundary: write" });
     await h.emit("tool_call", { toolName: "write" });
     expect((await store.inbox(run.id, run.root)).filter(message => message.text.includes("observed at a worker tool boundary"))).toHaveLength(1);
 
