@@ -334,6 +334,15 @@ missing worker panes or quiet workers without a known permission wait. Use
 Inspect with `swarm_health` or `swarm_observe`. Diagnostics never stop or restart
 workers automatically.
 
+While non-review direct children remain active, each parent receives a worker
+check-in every five minutes. This steering message asks the parent to inspect
+`swarm_health`, `swarm_tree`, and unclear worker output, then report progress
+and the next check time. It starts a turn for an idle parent and reaches a busy
+parent at a tool boundary. Only one check-in can remain queued. The next interval
+starts when Pi reports message delivery, not when the parent acts. Permission
+waits remain in force. Check-ins do not cancel a running tool or prove that the
+parent inspected workers. Reload starts a new five-minute interval.
+
 Tool results display plain-text previews. Expand a result to see all fields;
 structured result data is unchanged.
 

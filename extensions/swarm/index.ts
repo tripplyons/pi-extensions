@@ -17,6 +17,7 @@ import { ReloadBarrier, health, reviews, type Health } from "./coordination.ts";
 import { coordinationGuidelines, treeSnapshot } from "./prompts.ts";
 import { allowedDuringHold } from "./permissions.ts";
 import { ReviewReminders } from "./review-reminders.ts";
+import { WorkerCheckins } from "./worker-checkins.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
 const thinkingLevel = Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)));
@@ -46,6 +47,7 @@ export default function install(pi: ExtensionAPI) {
   let polling = false;
   const alerted = new Set<string>();
   const reviewReminders = new ReviewReminders();
+  const workerCheckins = new WorkerCheckins();
   let view: View | undefined;
   const jobs = new Jobs(join(root, "jobs"));
   const controller = async () => {
@@ -106,6 +108,10 @@ export default function install(pi: ExtensionAPI) {
         alerted.add(alert);
       }
       if (node.parent && (node.status === "review" || terminal(node.status))) return;
+      const checkin = workerCheckins.next(run, node.id);
+      if (checkin) pi.sendMessage({ customType: "swarm-worker-checkin", content: checkin.content, display: true,
+        details: { runId: run.id, owner: node.id, queuedAt: checkin.queuedAt },
+      }, { triggerTurn: true, deliverAs: "steer" });
       const reminder = reviewReminders.next(run, node.id);
       if (reminder) {
         ctx.ui.notify("Swarm review backlog needs a parent decision. Use swarm_reviews; no automatic decisions.", "warning");
@@ -176,6 +182,7 @@ export default function install(pi: ExtensionAPI) {
   const load = async (_event: unknown, ctx: ExtensionContext) => {
     if (timer) clearInterval(timer);
     reviewReminders.reset();
+    workerCheckins.reset();
     ctx.ui.setStatus("swarm-review", undefined);
     ctx.ui.setStatus("swarm-review-reminder", undefined);
     identity = process.env.PI_SWARM_NODE && process.env.PI_SWARM_RUN
@@ -186,10 +193,11 @@ export default function install(pi: ExtensionAPI) {
     if (view) { if (identity) await show(ctx); else hide(ctx); }
   };
   pi.on("message_end", (event) => {
-    if (event.message.role !== "custom" || event.message.customType !== "swarm-review-reminder") return;
+    if (event.message.role !== "custom" || !["swarm-review-reminder", "swarm-worker-checkin"].includes(event.message.customType)) return;
     const details = event.message.details as { runId?: string; owner?: string; queuedAt?: string } | undefined;
     if (typeof details?.runId !== "string" || typeof details.owner !== "string" || typeof details.queuedAt !== "string") return;
-    reviewReminders.delivered(details.runId, details.owner, details.queuedAt);
+    const reminders = event.message.customType === "swarm-worker-checkin" ? workerCheckins : reviewReminders;
+    reminders.delivered(details.runId, details.owner, details.queuedAt);
   });
   pi.on("session_start", load);
   pi.on("session_tree", load);
