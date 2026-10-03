@@ -15,6 +15,7 @@
       "./extensions/ask-user/index.ts",
       "./extensions/autocomplete/index.ts",
       "./extensions/complain/index.ts",
+      "./extensions/codemode-timeout/index.ts",
       "./extensions/goal/index.ts",
       "./extensions/overseer/index.ts",
       "./extensions/presentation/index.ts",
