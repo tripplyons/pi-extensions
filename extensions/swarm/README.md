@@ -6,7 +6,8 @@ Pi session files. They load the user's configured extensions and inherit the
 model, thinking level, and fast-mode preference at spawn. A replacement inherits
 the spawning parent's current fast-mode preference. This requests priority service
 only for OpenAI models and can affect billing. Parent toggles do not change live
-workers. Restarts keep the worker's own saved fast-mode preference. Tasks and messages live under
+workers. Restarts copy the restarting parent's current model, thinking level, and fast-mode
+preference. Tasks and messages live under
 `~/.pi/agent/swarm` (`PI_CODING_AGENT_DIR` overrides this).
 
 ## Assignments and handoffs
@@ -134,9 +135,17 @@ Root clear preflights all worktrees before stopping anything.
 
 The root session owner can run `/swarm:kill` to stop all workers and their jobs.
 Records, worktrees, sessions, and branches are kept so parents can restart stopped
-workers. `/swarm:status` shows or hides a panel below the editor. It lists active
+workers. `swarm_restart` keeps the worker's session and worktree. It copies the
+parent's current model, thinking level, and fast-mode preference by default. Supply
+`thinking: "low"` (or `off`, `minimal`, `medium`, `high`, `xhigh`) to override it.
+Restart refuses a live worker; stop it first. It does not restart old jobs.
+
+`/swarm:status` shows or hides a panel below the editor. It lists active
 workers under the current node, including status, elapsed time, model, thinking
 level, handoff state, recorded code-stage counts, unread messages, and task.
+Running or starting workers label retained results as "previous handoff". A new
+submission in review shows the current handoff. Both labels retain separate code
+evidence; restarting a worker does not clear its handoff decision.
 The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
 session is gone. The panel refreshes every two seconds.
 

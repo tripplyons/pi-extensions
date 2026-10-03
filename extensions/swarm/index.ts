@@ -207,8 +207,14 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_observe", "Capture bounded terminal output from a direct child.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).owned(run.id, node.id, args.nodeId); return workers.observe(args.nodeId, args.lines);
   });
-  for (const action of ["stop", "restart"] as const) tool(`swarm_${action}`, `${action} an owned child. Retain worktree and session.`, child, async (args, ctx) => {
-    const { run, node } = await active(ctx); await (await controller())[action](run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action };
+  tool("swarm_stop", "Stop an owned child. Retain worktree and session.", child, async (args, ctx) => {
+    const { run, node } = await active(ctx); await (await controller()).stop(run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action: "stop" };
+  });
+  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply thinking to override. Does not change live workers.", Type.Object({ nodeId: Type.String(), thinking: Type.Optional(Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)))) }), async (args, ctx) => {
+    const { run, node } = await active(ctx);
+    const thinking = args.thinking ?? pi.getThinkingLevel();
+    await (await controller()).restart(run.id, node.id, args.nodeId, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking, fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    return { nodeId: args.nodeId, action: "restart", thinking };
   });
   for (const action of ["kill", "cleanup"] as const) tool(`swarm_${action}`, `Root only: ${action === "kill" ? "stop all workers and their jobs" : "remove clean terminal worktrees"}. Preserve branches.`, empty, async (_, ctx) => {
     const { run, node } = await active(ctx); const ids = await (await controller())[action](run.id, node.id);

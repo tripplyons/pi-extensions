@@ -30,7 +30,7 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
       pad(elapsed(node.started, now), 6),
       live.has(node.id) ? "" : paint("error", "no pane"),
       model?.model ? paint("muted", model.model + (model.thinking ? `:${model.thinking}` : "")) : "",
-      node.result ? paint("muted", `handoff ${handoffStatus(node)}; code ${code}`) : "",
+      node.result ? paint("muted", `${node.status === "review" ? "handoff" : "previous handoff"} ${handoffStatus(node)}; code ${code}`) : "",
       unread ? paint("warning", `${unread} unread`) : "",
       paint("dim", node.task.replace(/\s+/g, " ")),
     ];

@@ -36,6 +36,24 @@ test("panel shows current model and keeps handoff and code evidence separate", (
   expect(row).toContain("1 reviewed, 0 tested, 0 integrated (1 recorded)");
 });
 
+test("running workers label retained handoffs as previous and keep code evidence", () => {
+  for (const status of ["accepted", "unknown", "awaiting-parent"] as const) {
+    const worker = node("worker", "root", 1, "running", {
+      result: "Previous slice", handoff: { revision: 1, status },
+      delivery: [{ revision: "a".repeat(40), tested: { actor: "root", text: "Passed", recorded: "" } }],
+    });
+    const state: Run = { version: 1, id: "run", root: "root", objective: "Next slice", messages: [], nodes: { root: node("root", undefined, 0, "running"), worker } };
+    const row = panel(state, "root", new Set(["worker"]), 300, (_, text) => text)[1];
+    expect(row).toContain(`previous handoff ${status}; code 0 reviewed, 1 tested, 0 integrated (1 recorded)`);
+    expect(worker.handoff?.status).toBe(status);
+    worker.status = "review";
+    worker.handoff = { revision: 2, status: "awaiting-parent" };
+    const submitted = panel(state, "root", new Set(["worker"]), 300, (_, text) => text)[1];
+    expect(submitted).toContain("handoff awaiting-parent");
+    expect(submitted).not.toContain("previous handoff");
+  }
+});
+
 test("elapsed time is compact", () => {
   expect(elapsed(undefined, 0)).toBe("");
   expect(elapsed("1970-01-01T00:00:00Z", 59_000)).toBe("59s");
