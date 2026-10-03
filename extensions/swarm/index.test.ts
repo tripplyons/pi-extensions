@@ -36,6 +36,19 @@ test("inbox messages reach the session as readable notifications", async () => {
       options: { triggerTurn: true, deliverAs: "steer" },
     });
     expect(await store.inbox(identity.run, identity.node)).toEqual([]);
+    const alerts: string[] = [];
+    const statuses: Array<string | undefined> = [];
+    h.ctx.ui.notify = (text: string) => alerts.push(text);
+    h.ctx.ui.setStatus = (key: string, text?: string) => { if (key === "swarm-review") statuses.push(text); };
+    await store.update(identity.run, state => { state.nodes[child.id].status = "running"; });
+    await store.complete(identity.run, child.id, "Result");
+    const alertDeadline = Date.now() + 3000;
+    while ((!alerts.length || h.sentMessages.length < 2) && Date.now() < alertDeadline) await new Promise(resolve => setTimeout(resolve, 25));
+    expect(alerts).toEqual(["Swarm Worker awaits parent review (handoff revision 1)."]);
+    expect(statuses).toContain("swarm: 1 awaiting parent review");
+    expect(h.sentMessages[1].message.content).toContain("Awaiting parent review: handoff revision 1");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    expect(alerts).toHaveLength(1);
   } finally {
     await h.emit("session_shutdown");
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
@@ -78,7 +91,7 @@ test("workers pause after completion and resume only after parent review", async
     expect((await store.inbox(run.id, run.root))[0].text).toContain(`swarm_tree nodeId=${child.id}`);
     for (const toolName of ["bash", "write", "swarm_send"]) {
       expect(await h.emit("tool_call", { toolName })).toEqual([{
-        block: true, terminate: true, reason: "Swarm worker is review; tools are paused until the parent resumes it.",
+        block: true, terminate: true, reason: "Swarm pause snapshot: worker was review at this tool check (handoff revision 1). A later parent resume can supersede this snapshot. Check swarm_tree for current state.",
       }]);
     }
 
@@ -88,12 +101,16 @@ test("workers pause after completion and resume only after parent review", async
     expect(await store.inbox(run.id, child.id)).toHaveLength(1);
 
     await store.review(run.id, run.root, child.id, "request-changes", "Fix one check");
-    await store.send(run.id, run.root, child.id, "instruction", "Fix one check");
+    expect((await store.read(run.id)).nodes[child.id].resume).toMatchObject({ revision: 1, status: "queued" });
     const resumed = Date.now() + 3000;
     while ((await store.inbox(run.id, child.id)).length && Date.now() < resumed) await new Promise(resolve => setTimeout(resolve, 25));
     expect(h.sentMessages).toHaveLength(3);
     expect(h.sentMessages.slice(1).every(message => message.options.deliverAs === "steer")).toBe(true);
+    expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("delivered");
     expect(await h.emit("tool_call", { toolName: "write" })).toEqual([undefined]);
+    expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("observed");
+    await h.emit("tool_call", { toolName: "write" });
+    expect((await store.inbox(run.id, run.root)).filter(message => message.text.includes("observed at a worker tool boundary"))).toHaveLength(1);
 
     for (const status of ["accepted", "rejected", "stopped", "failed"] as const) {
       await store.update(run.id, state => { state.nodes[child.id].status = status; });
@@ -271,7 +288,7 @@ test("/swarm:kill stops workers and /swarm:status toggles the panel", async () =
     expect((await store.read(identity.run)).nodes[child.id].status).toBe("stopped");
     expect(notices.at(-1)).toBe("Stopped 1 swarm worker. Worktrees, sessions and branches are kept.");
     expect(renders.length).toBeGreaterThan(0);
-    expect(component.render(120)).toEqual(["swarm · 0 active · 1 terminal · Build the feature", "  No active workers"]);
+    expect(component.render(120)).toEqual(["swarm · 0 active (0 awaiting-parent) · 1 terminal · Build the feature", "  No active workers"]);
     await h.command("swarm:kill");
     expect(notices.at(-1)).toBe("No swarm workers are active.");
 

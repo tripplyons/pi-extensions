@@ -17,12 +17,12 @@ const paint = (color: string, text: string) => `<${color}>${text}`;
 test("panel lists active workers as a tree and counts terminal ones", () => {
   const now = Date.parse("2026-01-01T01:05:00Z");
   expect(panel(run, "root", new Set(["lead"]), 200, paint, now)).toEqual([
-    "<accent>swarm<dim> · 2 active<dim> · 1 terminal<dim> · <dim>Ship it",
+    "<accent>swarm<dim> · 2 active (1 awaiting-parent)<dim> · 1 terminal<dim> · <dim>Ship it",
     "  lead      <success>running   1h5m    <muted>anthropic/opus:high  <warning>1 unread  <dim>Task for lead",
-    "    helper  <accent>review            <error>no pane  <dim>Line one line two",
+    "    helper  <warning>await-parent          <error>no pane  <dim>Line one line two",
   ]);
-  expect(panel(run, "lead", new Set(), 200, paint, now).slice(1)).toEqual(["  helper  <accent>review            <error>no pane  <dim>Line one line two"]);
-  expect(panel(run, "helper", new Set(), 200, paint, now)).toEqual(["<accent>swarm<dim> · 0 active<dim> · 0 terminal<dim> · <dim>Ship it", "<dim>  No active workers"]);
+  expect(panel(run, "lead", new Set(), 200, paint, now).slice(1)).toEqual(["  helper  <warning>await-parent          <error>no pane  <dim>Line one line two"]);
+  expect(panel(run, "helper", new Set(), 200, paint, now)).toEqual(["<accent>swarm<dim> · 0 active (0 awaiting-parent)<dim> · 0 terminal<dim> · <dim>Ship it", "<dim>  No active workers"]);
   for (const line of panel(run, "root", new Set(), 30, (_, text) => text, now)) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
 });
 test("panel shows current model and keeps handoff and code evidence separate", () => {

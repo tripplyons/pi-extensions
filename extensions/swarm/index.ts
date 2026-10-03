@@ -23,6 +23,7 @@ export default function install(pi: ExtensionAPI) {
   let identity: Identity | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
+  const alerted = new Set<string>();
   let view: View | undefined;
   const jobs = new Jobs(join(root, "jobs"));
   const controller = async () => {
@@ -47,6 +48,14 @@ export default function install(pi: ExtensionAPI) {
     polling = true;
     try {
       const { run, node } = await active(ctx);
+      const awaiting = descendants(run, node.id).filter(child => child.status === "review");
+      ctx.ui.setStatus("swarm-review", awaiting.length ? `swarm: ${awaiting.length} awaiting parent review` : undefined);
+      for (const child of awaiting) {
+        const alert = `${run.id}:${child.id}:${child.handoff?.revision ?? 1}`;
+        if (alerted.has(alert)) continue;
+        ctx.ui.notify(`Swarm ${child.name} awaits parent review (handoff revision ${child.handoff?.revision ?? 1}).`, "warning");
+        alerted.add(alert);
+      }
       if (node.parent && (node.status === "review" || terminal(node.status))) return;
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
@@ -105,6 +114,7 @@ export default function install(pi: ExtensionAPI) {
   pi.on("thinking_level_select", (event, ctx) => saveCurrent(ctx, ctx.model, event.level));
   const load = async (_event: unknown, ctx: ExtensionContext) => {
     if (timer) clearInterval(timer);
+    ctx.ui.setStatus("swarm-review", undefined);
     identity = process.env.PI_SWARM_NODE && process.env.PI_SWARM_RUN
       ? { run: process.env.PI_SWARM_RUN, node: process.env.PI_SWARM_NODE } : restore<Identity>(ctx, key);
     if (identity) { await saveCurrent(ctx); timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
@@ -122,10 +132,11 @@ export default function install(pi: ExtensionAPI) {
   });
   pi.on("tool_call", async (_event, ctx) => {
     if (!identity) return;
-    const { node } = await active(ctx);
+    const { run, node } = await active(ctx);
     if (node.parent && (node.status === "review" || terminal(node.status))) {
-      return { block: true, terminate: true, reason: `Swarm worker is ${node.status}; tools are paused until the parent resumes it.` };
+      return { block: true, terminate: true, reason: `Swarm pause snapshot: worker was ${node.status} at this tool check (handoff revision ${node.handoff?.revision ?? 0}). A later parent resume can supersede this snapshot. Check swarm_tree for current state.` };
     }
+    if (node.parent && node.resume?.status === "delivered") await store.observeResume(run.id, node.id);
   });
   pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
@@ -188,7 +199,7 @@ export default function install(pi: ExtensionAPI) {
   });
   tool("swarm_complete", "Submit a self-contained handoff: outcome, branch/tested base/commits, files, exact checks/results, evidence, limitations/blockers and next steps. All descendants must be terminal. Then wait; call alone, with no other tools in the batch.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
-    await store.send(run.id, node.id, node.parent!, "message", `Submitted a result for review. Read the handoff with swarm_tree nodeId=${node.id}.`); return updated;
+    return updated;
   });
   tool("swarm_review", "Accept/reject a direct child's handoff and stop it without merging. This does not mark code reviewed, tested or integrated; use swarm_record for per-revision evidence.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String() }), async (args, ctx) => {
     const { run, node } = await active(ctx); return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback);

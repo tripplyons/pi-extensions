@@ -18,7 +18,7 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
   const base = run.nodes[scope].depth + 1;
   const names = active.map(node => "  ".repeat(node.depth - base) + node.name);
   const nameWidth = Math.min(24, Math.max(0, ...names.map(visibleWidth)));
-  const header = [paint("accent", "swarm"), `${active.length} active`, `${nodes.length - active.length} terminal`, paint("dim", run.objective)].join(paint("dim", " · "));
+  const header = [paint("accent", "swarm"), `${active.length} active (${active.filter(node => node.status === "review").length} awaiting-parent)`, `${nodes.length - active.length} terminal`, paint("dim", run.objective)].join(paint("dim", " · "));
   const rows = active.map((node, index) => {
     const unread = run.messages.filter(message => message.to === node.id && !message.read).length;
     const model = node.current ?? node.launch;
@@ -26,7 +26,7 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
     const code = records.length ? `${records.filter(record => record.reviewed).length} reviewed, ${records.filter(record => record.tested).length} tested, ${records.filter(record => record.integrated).length} integrated (${records.length} recorded)` : "unrecorded";
     const parts = [
       pad(truncateToWidth(names[index], nameWidth), nameWidth),
-      paint(colors[node.status], pad(node.status, 8)),
+      paint(node.status === "review" ? "warning" : colors[node.status], pad(node.status === "review" ? "await-parent" : node.status, 8)),
       pad(elapsed(node.started, now), 6),
       live.has(node.id) ? "" : paint("error", "no pane"),
       model?.model ? paint("muted", model.model + (model.thinking ? `:${model.thinking}` : "")) : "",

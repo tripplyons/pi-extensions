@@ -111,6 +111,16 @@ the message only if resumed. It excludes terminal children and grandchildren.
 Use it for shared base-update notices, resource limits, or instructions to finish
 only the assigned step and submit.
 
+Handoff submission and its parent notification are saved atomically.
+`swarm_review` with `request-changes` saves the running state and resume instruction
+atomically. Its returned node includes `resume.status: "queued"`; this is not an
+acknowledgment from the worker. Inspect `swarm_tree` to see `delivered` after Pi
+accepts the steering instruction, then `observed` after the worker reaches a tool
+boundary in the resumed state. The parent receives a separate observed notice.
+Neither state proves the model understood the instruction or completed the work.
+A pause error names the handoff revision and describes a snapshot at the tool
+check. A delayed snapshot can be superseded by a later parent resume.
+
 All messages use steering, so a busy worker reads them at the next tool boundary.
 Steering does not cancel a running tool. Use `swarm_stop` or `/swarm:kill` for a
 hard stop. Durable state updates retry lock contention for up to five seconds;
@@ -146,7 +156,10 @@ level, handoff state, recorded code-stage counts, unread messages, and task.
 Running or starting workers label retained results as "previous handoff". A new
 submission in review shows the current handoff. Both labels retain separate code
 evidence; restarting a worker does not clear its handoff decision.
-The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
+The active count includes workers paused for review. The header gives a separate
+`awaiting-parent` count, and review rows show `await-parent` in warning color.
+Parents also receive a warning for each new handoff revision and a pending-review
+status indicator. The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
 session is gone. The panel refreshes every two seconds.
 
 Tool results display plain-text previews. Expand a result to see all fields;

@@ -21,6 +21,7 @@ export type Node = {
   replacement?: { requested: string; successor?: string };
   predecessor?: string;
   provenance?: Provenance;
+  resume?: { messageId: string; revision: number; status: "queued" | "delivered" | "observed" };
   worktree?: Worktree; branch?: string; session?: string; pane?: string; started?: string; result?: string; feedback?: string;
 };
 // Old running/stopped records cannot tell us whether their retained result was accepted.
@@ -139,11 +140,23 @@ export class SwarmStore {
     if (!run.nodes[actor]) throw new Error("Unknown swarm node");
     return run.messages.filter(message => message.to === actor && !message.read);
   }
+  async observeResume(id: string, actor: string) {
+    return this.update(id, run => {
+      const node = run.nodes[actor];
+      if (node?.status === "running" && node.resume && node.resume.status === "delivered") {
+        node.resume.status = "observed";
+        run.messages.push({ id: randomUUID(), from: actor, to: node.parent!, kind: "message", read: false, created: new Date().toISOString(),
+          text: `Resume for handoff revision ${node.resume.revision} observed at a worker tool boundary. This does not prove the revision is complete.` });
+      }
+    });
+  }
   async acknowledge(id: string, actor: string, messageId: string) {
     return this.update(id, run => {
       const message = run.messages.find(message => message.id === messageId);
       if (!message || message.to !== actor) throw new Error("Message does not belong to this node");
       message.read = true;
+      const resume = run.nodes[actor].resume;
+      if (resume?.messageId === messageId && resume.status === "queued") resume.status = "delivered";
     });
   }
   async complete(id: string, actor: string, result: string) {
@@ -153,8 +166,10 @@ export class SwarmStore {
       if (!node?.parent || node.status !== "running") throw new Error("Only running workers submit results");
       if (descendants(run, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before completion");
       node.handoff = { revision: (node.handoff?.revision ?? 0) + 1, status: "awaiting-parent" };
-      node.status = "review"; node.result = result;
+      node.status = "review"; node.result = result; delete node.resume;
       node.delivery = node.delivery?.filter(record => record.revision !== "result");
+      run.messages.push({ id: randomUUID(), from: actor, to: node.parent, kind: "message", read: false, created: new Date().toISOString(),
+        text: `Awaiting parent review: handoff revision ${node.handoff.revision}. Read the handoff with swarm_tree nodeId=${actor}. Active counts include review workers.` });
       return node;
     });
   }
@@ -193,7 +208,14 @@ export class SwarmStore {
       node.status = decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "running";
       node.handoff = { revision: node.handoff?.revision ?? 1,
         status: decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "changes-requested", feedback };
-      node.feedback = feedback; return node;
+      node.feedback = feedback;
+      if (decision === "request-changes") {
+        const messageId = randomUUID();
+        node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
+        run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false, created: new Date().toISOString(),
+          text: feedback || "Revise the submitted result and resubmit for review." });
+      }
+      return node;
     });
   }
 }

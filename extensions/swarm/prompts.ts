@@ -34,7 +34,7 @@ export function treeSnapshot(run: Run, includeTerminal = false, model?: string) 
       branch: node.branch, cwd: node.worktree?.cwd, started: node.started,
       launch: node.launch, current: node.current, effectiveModel: node.current?.model ?? node.launch?.model,
       modelSource: node.current ? "session" : node.launch?.model ? "launch" : "unknown",
-      handoff: handoffStatus(node), handoffRevision: handoffRecord(node)?.revision,
+      handoff: handoffStatus(node), handoffRevision: handoffRecord(node)?.revision, resume: node.resume,
       code: { source: "parent-reported", records: node.delivery?.map(record => ({ revision: record.revision, reviewed: !!record.reviewed, tested: !!record.tested, integrated: !!record.integrated })) ?? [],
         coverage: "Only listed revisions have evidence; other work is unrecorded. Handoff acceptance does not review, test or integrate code." },
       replacement: node.replacement, predecessor: node.predecessor,

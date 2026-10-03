@@ -102,7 +102,6 @@ export class Swarm {
       await this.stopJobs(node);
     }
     const reviewed = await this.store.review(runId, actor, child, decision, feedback);
-    if (decision === "request-changes") await this.store.send(runId, actor, child, "instruction", feedback || "Revise the submitted result and resubmit for review.");
     return reviewed;
   }
   async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
