@@ -1,4 +1,5 @@
 import { reviews } from "./coordination.ts";
+import { reviewPrompt } from "./review-reminders.ts";
 import { currentAssignment, handoffRecord, terminal, type Run, type Node } from "./state.ts";
 
 export const workerStart = "Read your durable assignment with swarm_task, then carry out only that bounded step. You are a swarm worker. Ask your parent instead of prompting the user. Submit a self-contained handoff with swarm_complete, called alone. Never integrate worker branches into the parent's branch or push. Sync a base branch into your own branch only when instructed.";
@@ -9,7 +10,7 @@ export function coordinationGuidelines(node: Node, run?: Run): string[] {
     "Coordinate shared files and APIs before editing. Siblings may exchange informational swarm_send messages, but only a parent may give instructions. Do not edit a sibling's or parent's worktree. Report a dependency blocker to the parent with the exact API or commit needed; do not poll or invent a substitute.",
     "Swarm tools do not merge branches. Only the parent integrates submitted work into its branch. A worker may sync an explicitly approved base into its own branch. Pin the tested base; do not repeat full checks just because an unrelated base update arrives after testing. The parent verifies the integrated result.",
   ];
-  const pending = run ? [`Pending parent reviews, oldest first: ${reviews(run, node.id).map(child => `${child.name} (${child.nodeId}, revision ${child.revision}, waiting ${child.waitingSeconds ?? "unknown"} seconds)`).join(", ") || "none"}. Use swarm_reviews to inspect and decide on direct-child handoffs.`] : [];
+  const pending = run ? [reviewPrompt(reviews(run, node.id))] : [];
   if (!node.parent) return [...common, ...pending,
     "Read each pending handoff and record a decision before assigning follow-on work. Do not treat the active count as proof that workers are working.",
     "Use swarm_tree for compact active-worker summaries and swarm_tree with nodeId for a full assignment or handoff. Use swarm_broadcast for shared instructions to your nonterminal direct children. Set permission=released when authorizing work after a wait; ordinary messages do not authorize work. Use swarm_reload to request checkpoints, restart after every checkpoint, wait for matching-version readiness, then explicitly release with bounded assignments. Review the diff and reported checks before accepting; acceptance stops the worker but does not integrate its branch. Record per-revision source review, tests and integration evidence with swarm_record. Use swarm_replace action=request to ask for a wrap-up, then accept the handoff before action=start with an explicit testedBase and target model. Request changes for a bounded fix, not a follow-on assignment.",

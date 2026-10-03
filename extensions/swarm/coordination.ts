@@ -7,11 +7,14 @@ export type Barrier = { id: string; owner: string; created: string; phase: "chec
 export type OwnedJob = { id: string; status: string; source: "bash" | "tmux" };
 export type Health = { nodeId: string; process: "present" | "missing"; state: "recent" | "quiet-with-job" | "quiet-no-job" | "unknown" | "awaiting-review"; quietSeconds: number | null; jobs: OwnedJob[]; error?: string };
 export const activeJob = (job: OwnedJob) => ["queued", "running", "stopping"].includes(job.status);
+export const reviewAfterSeconds = 300;
 export function reviews(run: Run, owner: string, now = Date.now()) {
   return Object.values(run.nodes).filter(node => node.parent === owner && node.status === "review").map(node => {
     const submitted = node.handoff?.submitted ?? run.messages.findLast(message => message.from === node.id && message.to === owner && message.text.startsWith("Awaiting parent review:"))?.created;
+    const waitingSeconds = submitted && Number.isFinite(Date.parse(submitted)) ? Math.max(0, Math.floor((now - Date.parse(submitted)) / 1000)) : null;
     return { nodeId: node.id, name: node.name, parent: owner, revision: node.handoff?.revision ?? 1, submitted: submitted ?? null,
-      waitingSeconds: submitted ? Math.max(0, Math.floor((now - Date.parse(submitted)) / 1000)) : null };
+      waitingSeconds, overdue: waitingSeconds !== null && waitingSeconds >= reviewAfterSeconds,
+      integratedRevisions: node.delivery?.filter(record => record.integrated).map(record => record.revision) ?? [] };
   }).sort((a, b) => (a.submitted ?? "9999").localeCompare(b.submitted ?? "9999") || a.nodeId.localeCompare(b.nodeId));
 }
 export function health(node: Node, live: boolean, jobs: OwnedJob[], quietAfter: number, now = Date.now(), error?: string): Health {

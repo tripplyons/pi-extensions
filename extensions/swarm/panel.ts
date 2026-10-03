@@ -32,6 +32,8 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
     const parts = [
       pad(truncateToWidth(names[index], nameWidth), nameWidth),
       paint(node.status === "review" || activity?.startsWith("waiting") || activity?.startsWith("instruction-") ? "warning" : activity === "unknown" || activity === "checking-in" ? "muted" : colors[node.status], pad(activity ?? (node.status === "review" ? "await-parent" : node.status), 8)),
+      review?.overdue ? paint("warning", "review overdue") : "",
+      review?.integratedRevisions.length ? paint("warning", "code integration recorded; handoff undecided") : "",
       paint(node.permission?.status === "released" ? "dim" : "warning", node.permission?.status ?? "permission unknown"),
       pad(elapsed(node.started, now), 6),
       activity && node.activity ? paint("dim", `${node.activity.source && node.activity.source !== "worker" ? "observed" : "reported"} ${elapsed(node.activity.updated, now)} ago`) : "",

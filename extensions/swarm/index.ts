@@ -16,6 +16,7 @@ import { ownedJobs } from "./job-snapshot.ts";
 import { ReloadBarrier, health, reviews, type Health } from "./coordination.ts";
 import { coordinationGuidelines, treeSnapshot } from "./prompts.ts";
 import { allowedDuringHold } from "./permissions.ts";
+import { ReviewReminders } from "./review-reminders.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
 // The status panel renders the latest snapshot synchronously; a timer refreshes it.
@@ -31,6 +32,7 @@ export default function install(pi: ExtensionAPI) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   const alerted = new Set<string>();
+  const reviewReminders = new ReviewReminders();
   let view: View | undefined;
   const jobs = new Jobs(join(root, "jobs"));
   const controller = async () => {
@@ -79,7 +81,11 @@ export default function install(pi: ExtensionAPI) {
         }
       }
       const awaiting = descendants(run, node.id).filter(child => child.status === "review");
-      ctx.ui.setStatus("swarm-review", awaiting.length ? `swarm: ${awaiting.length} awaiting parent review` : undefined);
+      const queue = reviews(run, node.id);
+      const overdue = queue.filter(item => item.overdue).length;
+      const integrated = queue.filter(item => item.integratedRevisions.length).length;
+      const flags = [overdue ? `${overdue} overdue` : "", integrated ? `${integrated} with recorded integration, undecided` : ""].filter(Boolean);
+      ctx.ui.setStatus("swarm-review", awaiting.length ? `swarm: ${awaiting.length} awaiting parent review${flags.length ? ` (${flags.join("; ")})` : ""}` : undefined);
       for (const child of awaiting) {
         const alert = `${run.id}:${child.id}:${child.handoff?.revision ?? 1}`;
         if (alerted.has(alert)) continue;
@@ -87,6 +93,13 @@ export default function install(pi: ExtensionAPI) {
         alerted.add(alert);
       }
       if (node.parent && (node.status === "review" || terminal(node.status))) return;
+      const reminder = ctx.hasPendingMessages() ? undefined : reviewReminders.next(run, node.id);
+      if (reminder) {
+        ctx.ui.notify("Swarm review backlog needs a parent decision. Use swarm_reviews; no automatic decisions.", "warning");
+        pi.sendMessage({ customType: "swarm-review-reminder", content: reminder, display: true,
+          details: { runId: run.id, owner: node.id, pending: queue.length, overdue, integrated },
+        }, { triggerTurn: true, deliverAs: "steer" });
+      }
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
         if (message.kind === "instruction" && !(await store.inbox(run.id, node.id)).some(entry => entry.id === message.id)) continue;
@@ -146,6 +159,7 @@ export default function install(pi: ExtensionAPI) {
   pi.on("thinking_level_select", (event, ctx) => saveCurrent(ctx, ctx.model, event.level));
   const load = async (_event: unknown, ctx: ExtensionContext) => {
     if (timer) clearInterval(timer);
+    reviewReminders.reset();
     ctx.ui.setStatus("swarm-review", undefined);
     identity = process.env.PI_SWARM_NODE && process.env.PI_SWARM_RUN
       ? { run: process.env.PI_SWARM_RUN, node: process.env.PI_SWARM_NODE } : restore<Identity>(ctx, key);
@@ -205,7 +219,7 @@ export default function install(pi: ExtensionAPI) {
   pi.registerCommand("swarm:reviews", { description: "Inspect the oldest pending direct-child handoffs and record a decision", async handler(_args, ctx) {
     const { run, node } = await active(ctx), queue = reviews(run, node.id);
     if (!queue.length) { ctx.ui.notify("No direct-child handoffs await review.", "info"); return; }
-    const options = queue.map(item => `${item.name} | ${item.waitingSeconds ?? "unknown"}s | ${item.nodeId}`);
+    const options = queue.map(item => `${item.name} | ${item.waitingSeconds ?? "unknown"}s${item.overdue ? " overdue" : ""}${item.integratedRevisions.length ? " | code integration recorded, handoff undecided" : ""} | ${item.nodeId}`);
     const selection = await ctx.ui.select("Pending reviews, oldest first", options);
     if (selection === undefined) return;
     const item = queue[options.indexOf(selection)];
@@ -253,7 +267,7 @@ export default function install(pi: ExtensionAPI) {
     if (!node) throw new Error("Unknown swarm node");
     return node;
   });
-  tool("swarm_reviews", "List your pending direct-child handoffs oldest first, with age and review owner. Set nodeId to inspect the full handoff. Decisions use swarm_review and do not imply code integration.", Type.Object({ nodeId: Type.Optional(Type.String()) }), async (args, ctx) => {
+  tool("swarm_reviews", "List your pending direct-child handoffs oldest first, with age, overdue state, review owner and parent-reported integrated revisions. Set nodeId to inspect the full handoff. Decisions use swarm_review and do not imply code integration.", Type.Object({ nodeId: Type.Optional(Type.String()) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     if (!args.nodeId) return reviews(run, node.id);
     const worker = await (await controller()).owned(run.id, node.id, args.nodeId);

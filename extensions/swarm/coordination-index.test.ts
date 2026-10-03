@@ -21,6 +21,45 @@ async function fixture(check: (h: ReturnType<typeof harness>, store: SwarmStore,
   }
 }
 
+test("overdue direct-child backlog steers the parent once and preserves independent integration evidence", () => fixture(async (h, store, root) => {
+  h.ctx.cwd = root; h.ctx.hasPendingMessages = () => true;
+  await h.command("swarm:start", "Objective");
+  const identity = h.entries.find(entry => entry.customType === "pi:swarm").data;
+  const workers = [];
+  for (let i = 0; i < 4; i++) {
+    const worker = await store.reserve(identity.run, identity.node, `Worker ${i}`, "Task");
+    await store.update(identity.run, state => { state.nodes[worker.id].status = "running"; });
+    await store.complete(identity.run, worker.id, "Verified handoff");
+    workers.push(worker);
+  }
+  await store.recordDelivery(identity.run, identity.node, workers[0].id, "a".repeat(40), "integrated", "Cherry-picked exact revision");
+  await store.update(identity.run, state => {
+    for (let i = 0; i < workers.length; i++) state.nodes[workers[i].id].handoff!.submitted = new Date(Date.now() - (900 - i) * 1000).toISOString();
+  });
+  const statuses: string[] = [];
+  h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "swarm-review") statuses.push(text); };
+  const reminders = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-review-reminder");
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(reminders()).toHaveLength(0);
+  h.ctx.hasPendingMessages = () => false;
+  const deadline = Date.now() + 4000;
+  while (!reminders().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+  expect(reminders()).toHaveLength(1);
+  expect(reminders()[0]).toMatchObject({ options: { triggerTurn: true, deliverAs: "steer" }, message: { details: { owner: identity.node, pending: 4, overdue: 4, integrated: 1 } } });
+  expect(reminders()[0].message.content).toContain("1 more");
+  expect(reminders()[0].message.content).toContain("code integration recorded, handoff undecided");
+  expect(statuses).toContain("swarm: 4 awaiting parent review (4 overdue; 1 with recorded integration, undecided)");
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(reminders()).toHaveLength(1);
+  const node = (await store.read(identity.run)).nodes[workers[0].id];
+  expect(node.handoff?.status).toBe("awaiting-parent"); expect(node.status).toBe("review");
+  expect(node.delivery?.[0].reviewed).toBeUndefined(); expect(node.delivery?.[0].tested).toBeUndefined();
+  for (const worker of workers) await store.review(identity.run, identity.node, worker.id, "accept", "Explicit decision");
+  const clearDeadline = Date.now() + 3000;
+  while (statuses.at(-1) !== undefined && Date.now() < clearDeadline) await new Promise(resolve => setTimeout(resolve, 25));
+  expect(statuses.at(-1)).toBeUndefined(); expect(reminders()).toHaveLength(1);
+}));
+
 test("checkpoint tool ends the worker turn and gates jobs until an explicit barrier release", () => fixture(async (h, store, root) => {
   const run = await store.create("parent-session", root, "Objective"), worker = await store.reserve(run.id, run.root, "Worker", "Task");
   const session = join(root, "worker.jsonl"); await writeFile(session, JSON.stringify({ type: "session", id: "worker-session" }));

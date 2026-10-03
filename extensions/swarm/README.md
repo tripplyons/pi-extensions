@@ -241,17 +241,36 @@ completed tool execution, or instruction understanding. Reading swarm state alon
 does not mark a worker tool-active. Workers should still explicitly report waits.
 Activity with no report or observed event is `unknown`. Restart and completion clear
 activity; a request for changes records a new queued instruction.
-The parent prompt lists pending direct-child reviews oldest first on each new
-turn. `swarm_reviews` lists submission times, wait ages, and review owners; pass
-`nodeId` to inspect a full handoff. `/swarm:reviews` offers inspect, accept,
-request-changes, and reject with feedback. Inspection does not record a decision.
-The parent must still read the diff and evidence. Legacy handoffs with no known
-submission time show an unknown age.
+The parent prompt lists the three oldest pending direct-child reviews on each
+new turn, plus the remaining count. `swarm_reviews` lists the full queue with
+submission times, wait ages, review owners, overdue state, and parent-reported
+integrated revisions. Pass `nodeId` to inspect a full handoff. `/swarm:reviews`
+offers inspect, accept, request-changes, and reject with feedback. Inspection
+does not record a decision. The parent must still read the diff and evidence.
+
+Handoffs become overdue after 300 seconds. While a direct-child backlog remains
+overdue, the extension sends the parent one aggregate steering reminder every
+five minutes. It lists up to three handoffs, oldest first, and asks for explicit
+`swarm_review` decisions before follow-on assignments. A busy parent receives it
+at a tool boundary; an idle parent gets a new turn. Reminders wait while the
+session already has pending messages so they do not pile up. Reminders do not cancel tools,
+accept handoffs, change permissions, stop workers, or integrate branches. Each
+parent handles its own direct children; ancestor sessions do not send reminders
+for a descendant's queue. Resolved, resumed, and stopped workers leave the queue.
+Reloading the extension starts a new reminder cycle.
+
+Legacy handoffs with no known submission time show an unknown age, not overdue.
+They receive reminders after five minutes of local observation without an
+invented submission time. The observation timer resets on reload. Recorded
+integration with an undecided handoff is flagged in the review queue, status,
+panel, and parent prompts. This is parent-reported evidence for listed revisions,
+possibly from an earlier handoff, not proof that the whole current result is
+integrated. It never implies acceptance, source review, or successful tests.
 
 The active count includes workers paused for review. The header gives a separate
 `awaiting-parent` count, and review rows show `await-parent` in warning color.
 Parents also receive a warning for each new handoff revision and a pending-review
-status indicator. The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
+status indicator with direct-child overdue and recorded-integration counts. The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
 session is gone. The panel refreshes every two seconds. It also shows permission state, source
 version, review age and owner, and quiet-activity diagnostics.
 
@@ -272,5 +291,6 @@ Tests cover temporary Git repositories, isolated tmux servers with fake workers,
 real Pi worker shutdown, concurrent state writes, routing and authority, review
 pauses, prompt injection, model reporting/filtering, independent delivery
 records, replacement of committed and dirty work, reload barrier recovery,
-explicit permissions, age-ordered reviews, and read-only job diagnostics. Launch tests make no model
+explicit permissions, age-ordered reviews, bounded recurring review reminders,
+integrated-but-undecided indicators, and read-only job diagnostics. Launch tests make no model
 requests. End-to-end interactive orchestration and recovery audits remain pending.
