@@ -12,11 +12,17 @@ export type Provenance = {
   predecessor: string; branch: string; head: string; testedBase: string; commits: string[];
   snapshot: string; stagedPatch: string; unstagedPatch: string; untracked: { path: string; sha256: string }[];
 };
+export type Activity = "working" | "waiting-instructions" | "waiting-dependency";
+export function currentAssignment(node: Node) {
+  return node.directive ?? (!node.result ? { text: node.task, source: "original" as const } : undefined);
+}
 export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
   launch?: { model?: string; thinking?: string; fast?: boolean };
   current?: { model: string; thinking: string };
   delivery?: Delivery[];
+  directive?: { text: string; source: "parent" | "restart"; created: string };
+  activity?: { status: Activity; detail: string; updated: string };
   handoff?: Handoff;
   replacement?: { requested: string; successor?: string };
   predecessor?: string;
@@ -109,8 +115,9 @@ export class SwarmStore {
       return child;
     });
   }
-  async send(id: string, from: string, to: string, kind: Message["kind"], text: string) {
+  async send(id: string, from: string, to: string, kind: Message["kind"], text: string, activity?: Activity) {
     nonempty(text, "Message");
+    if (activity && !["working", "waiting-instructions", "waiting-dependency"].includes(activity)) throw new Error("Invalid activity");
     return this.update(id, run => {
       const sender = run.nodes[from], recipient = run.nodes[to];
       const siblings = sender?.parent !== undefined && sender.parent === recipient?.parent;
@@ -120,6 +127,11 @@ export class SwarmStore {
       if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
       if (kind === "instruction" && recipient.parent !== from) throw new Error("Only parents may send instructions");
       const message: Message = { id: randomUUID(), from, to, kind, text, created: new Date().toISOString(), read: false };
+      if (activity) {
+        if (sender.status !== "running" || sender.parent !== to || kind !== "message") throw new Error("Only running workers report activity to their parent");
+        sender.activity = { status: activity, detail: text, updated: message.created };
+      }
+      if (kind === "instruction") recipient.directive = { text, source: "parent", created: message.created };
       run.messages.push(message); return message;
     });
   }
@@ -131,6 +143,7 @@ export class SwarmStore {
       const children = Object.values(run.nodes).filter(node => node.parent === actor && !terminal(node.status));
       const created = new Date().toISOString();
       const messages: Message[] = children.map(node => ({ id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false }));
+      if (kind === "instruction") for (const node of children) node.directive = { text, source: "parent", created };
       run.messages.push(...messages);
       return messages;
     });
@@ -166,7 +179,7 @@ export class SwarmStore {
       if (!node?.parent || node.status !== "running") throw new Error("Only running workers submit results");
       if (descendants(run, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before completion");
       node.handoff = { revision: (node.handoff?.revision ?? 0) + 1, status: "awaiting-parent" };
-      node.status = "review"; node.result = result; delete node.resume;
+      node.status = "review"; node.result = result; delete node.resume; delete node.directive; delete node.activity;
       node.delivery = node.delivery?.filter(record => record.revision !== "result");
       run.messages.push({ id: randomUUID(), from: actor, to: node.parent, kind: "message", read: false, created: new Date().toISOString(),
         text: `Awaiting parent review: handoff revision ${node.handoff.revision}. Read the handoff with swarm_tree nodeId=${actor}. Active counts include review workers.` });
@@ -179,6 +192,7 @@ export class SwarmStore {
       if (!["running", "review", "accepted"].includes(node.status)) throw new Error("Replacement requires a running worker or a submitted handoff");
       if (node.replacement) return node;
       node.replacement = { requested: new Date().toISOString() };
+      if (node.status === "running") node.directive = { text: "Finish only the current bounded step and prepare the requested replacement handoff. Do not start follow-on work.", source: "parent", created: node.replacement.requested };
       if (node.status === "running") run.messages.push({ id: randomUUID(), from: actor, to: child, kind: "instruction", read: false,
         created: node.replacement.requested,
         text: "Prepare a replacement handoff. Finish only the current bounded step, stop your jobs, and submit with swarm_complete alone. State the tested base, all delivered and pending commits, dirty WIP, owned files, checks, blockers, and next steps. Do not auto-commit unverified WIP. Do not start follow-on work.",
@@ -212,6 +226,8 @@ export class SwarmStore {
       if (decision === "request-changes") {
         const messageId = randomUUID();
         node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
+        delete node.activity;
+        node.directive = { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString() };
         run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false, created: new Date().toISOString(),
           text: feedback || "Revise the submitted result and resubmit for review." });
       }

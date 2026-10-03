@@ -1,19 +1,20 @@
-import { handoffRecord, terminal, type Run, type Node } from "./state.ts";
+import { currentAssignment, handoffRecord, terminal, type Run, type Node } from "./state.ts";
 
 export const workerStart = "Read your durable assignment with swarm_task, then carry out only that bounded step. You are a swarm worker. Ask your parent instead of prompting the user. Submit a self-contained handoff with swarm_complete, called alone. Never integrate worker branches into the parent's branch or push. Sync a base branch into your own branch only when instructed.";
 
-export function coordinationGuidelines(node: Node): string[] {
+export function coordinationGuidelines(node: Node, run?: Run): string[] {
   const common = [
     "Swarm assignments are durable, but workers do not inherit the parent's conversation. State scope, owned files, dependencies, acceptance checks, resource limits, and commit permission in each assignment. Prefer one bounded step per worker; list follow-on work in the handoff rather than starting it.",
     "Coordinate shared files and APIs before editing. Siblings may exchange informational swarm_send messages, but only a parent may give instructions. Do not edit a sibling's or parent's worktree. Report a dependency blocker to the parent with the exact API or commit needed; do not poll or invent a substitute.",
     "Swarm tools do not merge branches. Only the parent integrates submitted work into its branch. A worker may sync an explicitly approved base into its own branch. Pin the tested base; do not repeat full checks just because an unrelated base update arrives after testing. The parent verifies the integrated result.",
   ];
   if (!node.parent) return [...common,
+    ...(run ? [`Pending parent reviews: ${Object.values(run.nodes).filter(child => child.parent === node.id && child.status === "review").map(child => `${child.name} (${child.id}, revision ${child.handoff?.revision ?? 1})`).join(", ") || "none"}. Read each handoff and record a decision before assigning follow-on work. Do not treat the active count as proof that workers are working.`] : []),
     "Use swarm_tree for compact active-worker summaries and swarm_tree with nodeId for a full assignment or handoff. Use swarm_broadcast for shared instructions to your nonterminal direct children. Review the diff and reported checks before accepting; acceptance stops the worker but does not integrate its branch. Record per-revision source review, tests and integration evidence with swarm_record. Use swarm_replace action=request to ask for a wrap-up, then accept the handoff before action=start with an explicit testedBase and target model. Request changes for a bounded fix, not a follow-on assignment.",
     "Limit concurrent expensive jobs to the project's resource budget. Inspect stalled workers with swarm_observe, then steer or stop them. When winding down, broadcast that workers must finish only their assigned step and submit; do not spawn replacements.",
   ];
   return [...common,
-    "Read swarm_task on start or recovery for your assignment, parent ID, workspace, and sibling IDs. Follow current parent instructions. Ask the parent with swarm_send when scope, ownership, or required evidence is unclear; never prompt the user directly.",
+    "Read swarm_task on start or recovery. currentAssignment contains the current parent directive or original unfinished task. historicalHandoff and node.feedback are historical, not a new assignment. If currentAssignment is null, report waiting-instructions to your parent and wait without edits or jobs. Report activity with swarm_send(activity=working|waiting-instructions|waiting-dependency) when starting work or entering a wait. Follow current parent instructions. Ask the parent with swarm_send when scope, ownership, or required evidence is unclear; never prompt the user directly.",
     "Finish only your assigned step, run the required checks, and submit with swarm_complete alone. Do not start a next step or continue tools while awaiting review. Commit only when authorized. A no-change finding is a valid result when supported by measurements or evidence.",
     "Your swarm_complete handoff must stand alone: outcome and scope; branch, tested base and authorized commits (or no commit); changed files; exact check commands and results; evidence for important claims; known limitations, unverified behavior and blockers; and ordered next steps with exact file paths and APIs. Distinguish completed support from gated or incomplete work. Keep essential details in the result, not only in temporary files.",
   ];
@@ -23,6 +24,11 @@ export function handoffStatus(node: Node) {
   return handoffRecord(node)?.status ?? "none";
 }
 
+const summary = (text: string) => text.length > 240 ? `${text.slice(0, 240)}…` : text;
+function assignmentSummary(node: Node) {
+  const assignment = currentAssignment(node);
+  return assignment ? { ...assignment, text: summary(assignment.text) } : null;
+}
 export function treeSnapshot(run: Run, includeTerminal = false, model?: string) {
   const nodes = Object.values(run.nodes);
   return {
@@ -35,10 +41,11 @@ export function treeSnapshot(run: Run, includeTerminal = false, model?: string) 
       launch: node.launch, current: node.current, effectiveModel: node.current?.model ?? node.launch?.model,
       modelSource: node.current ? "session" : node.launch?.model ? "launch" : "unknown",
       handoff: handoffStatus(node), handoffRevision: handoffRecord(node)?.revision, resume: node.resume,
+      currentAssignment: assignmentSummary(node), activity: node.activity ? { ...node.activity, detail: summary(node.activity.detail) } : null,
       code: { source: "parent-reported", records: node.delivery?.map(record => ({ revision: record.revision, reviewed: !!record.reviewed, tested: !!record.tested, integrated: !!record.integrated })) ?? [],
         coverage: "Only listed revisions have evidence; other work is unrecorded. Handoff acceptance does not review, test or integrate code." },
       replacement: node.replacement, predecessor: node.predecessor,
-      task: node.task.length > 240 ? `${node.task.slice(0, 240)}…` : node.task,
+      task: summary(node.task),
       hasResult: node.result !== undefined,
     })),
   };

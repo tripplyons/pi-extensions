@@ -28,9 +28,10 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     await expect(swarm.stop(run.id, a.id, b.id)).rejects.toThrow("direct parent");
     await store.complete(run.id, a.id, "Done"); await swarm.review(run.id, run.root, a.id, "accept", "Verified");
     expect(live.has(a.id)).toBe(false); expect(stoppedJobs).toContain(a.id);
-    await swarm.restart(run.id, run.root, a.id);
+    await swarm.restart(run.id, run.root, a.id, { task: "Audit the next bounded slice; no builds." });
     let snapshot = await new SwarmStore(store.root).read(run.id);
-    expect(snapshot.nodes[a.id]).toMatchObject({ status: "running", result: "Done", handoff: { revision: 1, status: "accepted", feedback: "Verified" } });
+    expect(snapshot.nodes[a.id]).toMatchObject({ status: "running", result: "Done", directive: { text: "Audit the next bounded slice; no builds.", source: "restart" }, handoff: { revision: 1, status: "accepted", feedback: "Verified" } });
+    expect(snapshot.nodes[a.id].launch).not.toHaveProperty("task");
     expect(treeSnapshot(snapshot).nodes.find(node => node.id === a.id)).toMatchObject({ handoff: "accepted", handoffRevision: 1 });
     expect(panel(snapshot, run.root, live, 300, (_, text) => text).join("\n")).toContain("handoff accepted");
     await store.complete(run.id, a.id, "Updated");

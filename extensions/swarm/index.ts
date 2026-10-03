@@ -6,7 +6,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { result, restore } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
-import { SwarmStore, descendants, terminal, type Run } from "./state.ts";
+import { SwarmStore, currentAssignment, descendants, terminal, type Run } from "./state.ts";
 import { Swarm } from "./controller.ts";
 import { Workers } from "./worker.ts";
 import { preflightWorktree } from "./git.ts";
@@ -125,9 +125,9 @@ export default function install(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     if (!identity) return;
     await saveCurrent(ctx);
-    const { node } = await active(ctx);
+    const { run, node } = await active(ctx);
     return { systemPromptOptions: { ...event.systemPromptOptions,
-      promptGuidelines: [...event.systemPromptOptions.promptGuidelines, ...coordinationGuidelines(node)],
+      promptGuidelines: [...event.systemPromptOptions.promptGuidelines, ...coordinationGuidelines(node, run)],
     } };
   });
   pi.on("tool_call", async (_event, ctx) => {
@@ -172,7 +172,8 @@ export default function install(pi: ExtensionAPI) {
   }
   tool("swarm_task", "Read your durable assignment and root objective.", empty, async (_, ctx) => {
     const { run, node } = await active(ctx);
-    return { objective: run.objective, node,
+    return { objective: run.objective, node, currentAssignment: currentAssignment(node) ?? null,
+      historicalHandoff: node.result ? { result: node.result, handoff: node.handoff, feedback: node.feedback } : undefined,
       parent: node.parent ? { id: node.parent, name: run.nodes[node.parent].name, branch: run.nodes[node.parent].branch, cwd: run.nodes[node.parent].worktree?.cwd } : undefined,
       siblings: Object.values(run.nodes).filter(entry => node.parent && entry.parent === node.parent && entry.id !== node.id && !terminal(entry.status)).map(entry => ({ id: entry.id, name: entry.name, status: entry.status })),
     };
@@ -189,8 +190,8 @@ export default function install(pi: ExtensionAPI) {
     const { run, node } = await active(ctx);
     return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking: pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
   });
-  tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions; sibling messages are informational.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
-    const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text);
+  tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions; sibling messages are informational. Workers may report activity to their parent as working, waiting-instructions or waiting-dependency. Activity is a dated self-report, not proof of progress.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), activity: Type.Optional(Type.Union(["working", "waiting-instructions", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
+    const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text, args.activity);
   });
   tool("swarm_broadcast", "Send one message or instruction to all nonterminal direct children in one atomic update. Workers awaiting review read it only if resumed. Does not stop running tools.", Type.Object({ kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
@@ -221,10 +222,10 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_stop", "Stop an owned child. Retain worktree and session.", child, async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).stop(run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action: "stop" };
   });
-  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply thinking to override. Does not change live workers.", Type.Object({ nodeId: Type.String(), thinking: Type.Optional(Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)))) }), async (args, ctx) => {
+  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply thinking to override. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait. Does not change live workers.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     const thinking = args.thinking ?? pi.getThinkingLevel();
-    await (await controller()).restart(run.id, node.id, args.nodeId, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking, fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking, fast: restore<boolean>(ctx, "pi:fast") ?? false });
     return { nodeId: args.nodeId, action: "restart", thinking };
   });
   for (const action of ["kill", "cleanup"] as const) tool(`swarm_${action}`, `Root only: ${action === "kill" ? "stop all workers and their jobs" : "remove clean terminal worktrees"}. Preserve branches.`, empty, async (_, ctx) => {

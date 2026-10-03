@@ -156,6 +156,24 @@ level, handoff state, recorded code-stage counts, unread messages, and task.
 Running or starting workers label retained results as "previous handoff". A new
 submission in review shows the current handoff. Both labels retain separate code
 evidence; restarting a worker does not clear its handoff decision.
+`swarm_restart` accepts an optional `task` for the next bounded assignment.
+It saves that assignment before launch. `swarm_task.currentAssignment` exposes the
+latest parent instruction or restart assignment, separate from `historicalHandoff`.
+The original `node.task` remains available as context. Completed handoffs and their
+feedback do not authorize a new task. If no current assignment exists, the worker
+must ask the parent and wait. Instructions sent with `swarm_send` or
+`swarm_broadcast` remain available after delivery and recovery; sending them does
+not resume a review worker.
+
+Workers report activity through `swarm_send` to their parent:
+`activity: "working"`, `"waiting-instructions"`, or `"waiting-dependency"`.
+The message text gives the reason. The tree exposes the report and timestamp.
+The panel shows the report and its age instead of calling every running process
+working. Unreported activity is `unknown`. Reports are cleared on restart,
+completion, and a request for changes. These are self-reports, not proof of progress.
+The parent prompt lists pending direct-child reviews on each new turn; the parent
+still must read the handoff and make the decision.
+
 The active count includes workers paused for review. The header gives a separate
 `awaiting-parent` count, and review rows show `await-parent` in warning color.
 Parents also receive a warning for each new handoff revision and a pending-review

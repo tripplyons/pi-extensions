@@ -104,7 +104,7 @@ export class Swarm {
     const reviewed = await this.store.review(runId, actor, child, decision, feedback);
     return reviewed;
   }
-  async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
+  async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> & { task?: string } = {}) {
     const run = await this.store.read(runId);
     const node = ownedChild(run, actor, child);
     if (await this.workers.alive(child)) throw new Error("Worker is already running");
@@ -112,7 +112,15 @@ export class Swarm {
     if (!node.worktree) throw new Error("Worker has no saved worktree");
     if (node.predecessor && !node.provenance) throw new Error("Incomplete replacement snapshot; inspect and recover manually before launch");
     if (descendants(run, child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before restarting");
-    await this.launch(run, node, options);
+    if (options.task !== undefined && !options.task.trim()) throw new Error("Restart task must contain text");
+    const prepared = await this.store.update(runId, state => {
+      const worker = ownedChild(state, actor, child);
+      delete worker.activity;
+      if (options.task !== undefined) worker.directive = { text: options.task, source: "restart", created: new Date().toISOString() };
+      return worker;
+    });
+    const { task: _task, ...settings } = options;
+    await this.launch(run, prepared, settings);
   }
   async cleanup(runId: string, actor: string) {
     const run = await this.store.read(runId);

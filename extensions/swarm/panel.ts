@@ -24,10 +24,12 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
     const model = node.current ?? node.launch;
     const records = node.delivery ?? [];
     const code = records.length ? `${records.filter(record => record.reviewed).length} reviewed, ${records.filter(record => record.tested).length} tested, ${records.filter(record => record.integrated).length} integrated (${records.length} recorded)` : "unrecorded";
+    const activity = node.status === "running" ? node.activity?.status ?? "unknown" : undefined;
     const parts = [
       pad(truncateToWidth(names[index], nameWidth), nameWidth),
-      paint(node.status === "review" ? "warning" : colors[node.status], pad(node.status === "review" ? "await-parent" : node.status, 8)),
+      paint(node.status === "review" || activity?.startsWith("waiting") ? "warning" : activity === "unknown" ? "muted" : colors[node.status], pad(activity ?? (node.status === "review" ? "await-parent" : node.status), 8)),
       pad(elapsed(node.started, now), 6),
+      activity && node.activity ? paint("dim", `reported ${elapsed(node.activity.updated, now)} ago`) : "",
       live.has(node.id) ? "" : paint("error", "no pane"),
       model?.model ? paint("muted", model.model + (model.thinking ? `:${model.thinking}` : "")) : "",
       node.result ? paint("muted", `${node.status === "review" ? "handoff" : "previous handoff"} ${handoffStatus(node)}; code ${code}`) : "",

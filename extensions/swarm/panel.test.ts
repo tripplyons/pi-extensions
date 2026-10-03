@@ -18,7 +18,7 @@ test("panel lists active workers as a tree and counts terminal ones", () => {
   const now = Date.parse("2026-01-01T01:05:00Z");
   expect(panel(run, "root", new Set(["lead"]), 200, paint, now)).toEqual([
     "<accent>swarm<dim> · 2 active (1 awaiting-parent)<dim> · 1 terminal<dim> · <dim>Ship it",
-    "  lead      <success>running   1h5m    <muted>anthropic/opus:high  <warning>1 unread  <dim>Task for lead",
+    "  lead      <muted>unknown   1h5m    <muted>anthropic/opus:high  <warning>1 unread  <dim>Task for lead",
     "    helper  <warning>await-parent          <error>no pane  <dim>Line one line two",
   ]);
   expect(panel(run, "lead", new Set(), 200, paint, now).slice(1)).toEqual(["  helper  <warning>await-parent          <error>no pane  <dim>Line one line two"]);
