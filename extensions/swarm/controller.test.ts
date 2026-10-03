@@ -35,7 +35,7 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     expect(treeSnapshot(snapshot).nodes.find(node => node.id === a.id)).toMatchObject({ handoff: "accepted", handoffRevision: 1 });
     expect(panel(snapshot, run.root, live, 300, (_, text) => text).join("\n")).toContain("handoff accepted");
     await store.complete(run.id, a.id, "Updated");
-    expect((await store.read(run.id)).nodes[a.id].handoff).toEqual({ revision: 2, status: "awaiting-parent" });
+    expect((await store.read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "awaiting-parent", submitted: expect.any(String) });
     await swarm.review(run.id, run.root, a.id, "request-changes", "Fix check");
     expect((await store.read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "changes-requested" });
     await store.complete(run.id, a.id, "Fixed");

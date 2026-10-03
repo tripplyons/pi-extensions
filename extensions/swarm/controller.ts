@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { SwarmStore, descendants, ownedChild, terminal, type Node, type Run } from "./state.ts";
 import { git, prepareWorktree, preflightWorktree, removeWorktree, type DirtyMode } from "./git.ts";
 import { inheritWorktree } from "./replacement.ts";
@@ -12,10 +13,11 @@ export class Swarm {
   async launch(run: Run, node: Node, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
     if (!node.worktree) throw new Error("Worker has no worktree");
     const launch = { ...node.launch, ...options };
+    const generation = randomUUID();
     // Save before process creation so a failed launch can be retried faithfully.
-    await this.store.update(run.id, state => { state.nodes[node.id].launch = launch; delete state.nodes[node.id].current; });
+    await this.store.update(run.id, state => { state.nodes[node.id].launch = launch; state.nodes[node.id].generation = generation; delete state.nodes[node.id].runtime; delete state.nodes[node.id].current; });
     const launched = await this.workers.start({ run: run.id, node: node.id, cwd: node.worktree.cwd,
-      directory: join(this.store.path(run.id), "workers", node.id), ...launch });
+      directory: join(this.store.path(run.id), "workers", node.id), generation, ...launch });
     try {
       await this.store.update(run.id, state => {
         Object.assign(state.nodes[node.id], launched, { status: "running", started: new Date().toISOString() });
@@ -112,11 +114,15 @@ export class Swarm {
     if (!node.worktree) throw new Error("Worker has no saved worktree");
     if (node.predecessor && !node.provenance) throw new Error("Incomplete replacement snapshot; inspect and recover manually before launch");
     if (descendants(run, child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before restarting");
+    if (node.reload && node.reload.stage !== "released" && node.reload.stage !== "restarted") throw new Error("Use the reload barrier to restart checkpoint members");
     if (options.task !== undefined && !options.task.trim()) throw new Error("Restart task must contain text");
     const prepared = await this.store.update(runId, state => {
       const worker = ownedChild(state, actor, child);
       delete worker.activity;
-      if (options.task !== undefined) worker.directive = { text: options.task, source: "restart", created: new Date().toISOString() };
+      if (options.task !== undefined) {
+        worker.directive = { text: options.task, source: "restart", created: new Date().toISOString() };
+        if (worker.permission?.status !== "checkpoint-hold") worker.permission = { status: "released", reason: options.task, source: "parent", updated: worker.directive.created };
+      } else if (!worker.directive && worker.result && worker.permission?.status !== "checkpoint-hold") worker.permission = { status: "waiting-approval", reason: "Restart requires a new bounded assignment", source: "parent", updated: new Date().toISOString() };
       return worker;
     });
     const { task: _task, ...settings } = options;

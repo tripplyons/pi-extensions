@@ -21,6 +21,28 @@ or 50 KB and keeps UTF-8 characters intact. `next_offset` counts bytes actually
 returned, so the next read preserves unread output. Use `next_offset` for explicit
 reads instead of guessing a byte offset within a character.
 
+## Opt-in progress reports
+
+Use `task_watch` for a long task on the current branch:
+
+```text
+task_watch task_id=<id> interval_seconds=300 expected_seconds=900 silence_seconds=120
+```
+
+Reports show elapsed time, output bytes, bounded recent output, output silence,
+and remaining deadline. They do not move the output cursor or extend the deadline.
+`expected_seconds` is a user-supplied duration, not a measured ETA. Reports wait
+until Pi is idle. A new expected-duration or output-silence warning wakes the
+conversation to investigate and give an evidence-based update. Further reports
+in the same warning episode do not each start a new turn. Warning thresholds are
+optional; the default report interval is 300 seconds and the maximum is 300.
+
+Watching is off unless requested. Disable it with `enabled: false`. Watch settings
+are branch-local session entries. Reload restores enabled watches for live tasks
+on that branch. Watching stops when the task finishes or the session shuts down.
+It never stops a process. The remaining deadline is unknown for legacy task
+records that did not save one.
+
 Session replacement and /reload keep the process pool and rebind notifications.
 Reload also updates the runner methods without restarting managed tasks or
 resetting output cursors. Quit stops the pool. Abandoned records from a prior process become lost.

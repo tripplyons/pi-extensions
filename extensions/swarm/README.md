@@ -1,6 +1,6 @@
 # Swarm
 
-`/swarm:start <objective>` activates fifteen swarm tools. Activation belongs to
+`/swarm:start <objective>` activates eighteen swarm tools. Activation belongs to
 the root session branch. Workers run in attachable tmux sessions with dedicated
 Pi session files. They load the user's configured extensions and inherit the
 model, thinking level, and fast-mode preference at spawn. A replacement inherits
@@ -14,7 +14,14 @@ preference. Tasks and messages live under
 
 Workers do not inherit the parent's conversation. Each assignment should describe
 one bounded step, owned files, dependencies, acceptance checks, resource limits,
-and permission to commit. Coordination guidelines are added to the system prompt
+and permission to commit. Permission to proceed is separate from recent activity:
+`released`, `waiting-approval`, `waiting-dependency`, or `checkpoint-hold`.
+A check-in, instruction delivery, or tool event does not release a wait. Use
+`swarm_send` or `swarm_broadcast` with `kind: "instruction"` and
+`permission: "released"` to authorize a bounded step after a wait. Waiting workers
+can coordinate and inspect or stop tasks, but cannot edit or launch jobs. Old
+records without permission state show `unknown`; activity does not reconstruct it.
+Coordination guidelines are added to the system prompt
 on every turn, including after recovery. Workers ask their parent, not the user.
 They coordinate shared APIs before editing and report blockers rather than
 inventing substitute behavior or starting follow-on work.
@@ -30,6 +37,13 @@ exact `provider/model` string to filter compact summaries by current model, or
 launch model if no session report exists. Counts remain run-wide. Current model
 reports update on session load, model/thinking changes, and each agent turn.
 Existing workers must reload this extension to report model changes.
+
+Each session reports a package-source fingerprint captured when the extension
+loads. The tree exposes `runtime.revision`, `runtime.loaded`, and whether the
+revision matches the root's reported source. The panel shows a short fingerprint,
+a mismatch, or `version unknown`. This is a source fingerprint, not a Git commit
+or a claim that tests passed. Old workers remain unknown until they load the new
+extension. Editing files does not update a loaded session's fingerprint.
 
 `swarm_complete` submits a self-contained handoff: outcome, branch and tested
 base, authorized commits (or no commit), changed files, exact checks and results,
@@ -127,6 +141,35 @@ hard stop. Durable state updates retry lock contention for up to five seconds;
 other filesystem errors propagate. A stale lock is not deleted automatically.
 An interrupted process may require manual inspection and lock removal.
 
+## Reload barrier
+
+Use a reload barrier to update running direct children without letting restart
+instructions authorize new work:
+
+1. Call `swarm_reload action=request`, optionally with `nodeIds`. Members must
+   be running direct children with terminal descendants and no pending replacement.
+2. Each worker finishes only its existing bounded step, finishes or stops owned
+   jobs, then calls `swarm_reload action=checkpoint` alone with `barrierId` and a
+   self-contained `checkpoint`. Include dirty files, pinned bases, checks, and
+   recovery details. This ends the worker turn and holds editing and new jobs.
+3. After every member checkpoints, call `swarm_reload action=restart` with the
+   barrier ID. It stops and restarts members without assigning new work. It
+   checks both managed Bash tasks and tmux jobs. Unknown job ownership blocks
+   checkpoint or restart instead of assuming no jobs.
+4. Reload the parent too if its source is old. Read `action=status` until every
+   member reports readiness from its new launch generation. Ready workers remain
+   on checkpoint hold. Matching source fingerprints are required for release.
+5. Call `action=release` with one `{nodeId, task}` bounded assignment for every
+   member. Release saves the new assignments, permissions, and steering messages
+   atomically. Ordinary instructions cannot lift checkpoint holds.
+
+Barrier state, checkpoints, and readiness survive recovery. Failed restarts retain
+checkpoints and an error. Inspect the failure before retrying `action=restart`;
+workers with live restarted sessions are not launched twice. The barrier does not
+commit, merge, or discard work. Workers running old code cannot call the checkpoint
+tool. Manually checkpoint and reload those sessions first; the barrier is not a
+way to add tools to an already loaded old runtime.
+
 ## Git isolation
 
 Dirty parents require an explicit `exclude`, `commit-parent`, `commit-child`, or
@@ -181,14 +224,29 @@ completed tool execution, or instruction understanding. Reading swarm state alon
 does not mark a worker tool-active. Workers should still explicitly report waits.
 Activity with no report or observed event is `unknown`. Restart and completion clear
 activity; a request for changes records a new queued instruction.
-The parent prompt lists pending direct-child reviews on each new turn; the parent
-still must read the handoff and make the decision.
+The parent prompt lists pending direct-child reviews oldest first on each new
+turn. `swarm_reviews` lists submission times, wait ages, and review owners; pass
+`nodeId` to inspect a full handoff. `/swarm:reviews` offers inspect, accept,
+request-changes, and reject with feedback. Inspection does not record a decision.
+The parent must still read the diff and evidence. Legacy handoffs with no known
+submission time show an unknown age.
 
 The active count includes workers paused for review. The header gives a separate
 `awaiting-parent` count, and review rows show `await-parent` in warning color.
 Parents also receive a warning for each new handoff revision and a pending-review
 status indicator. The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
-session is gone. The panel refreshes every two seconds.
+session is gone. The panel refreshes every two seconds. It also shows permission state, source
+version, review age and owner, and quiet-activity diagnostics.
+
+`swarm_health` reports process presence, recent activity age, and owned managed
+Bash tasks and tmux jobs. It distinguishes `quiet-with-job`, `quiet-no-job`,
+`recent`, `awaiting-review`, and `unknown`. Unknown job ownership includes the
+read error. Quiet does not mean stalled, and a live job does not prove progress.
+The extension checks every ten seconds and warns once per warning episode for
+missing worker panes or quiet workers without a known permission wait. Use
+`/swarm:quiet <seconds>` to change the branch's quiet threshold, default 300.
+Inspect with `swarm_health` or `swarm_observe`. Diagnostics never stop or restart
+workers automatically.
 
 Tool results display plain-text previews. Expand a result to see all fields;
 structured result data is unchanged.
@@ -196,5 +254,6 @@ structured result data is unchanged.
 Tests cover temporary Git repositories, isolated tmux servers with fake workers,
 real Pi worker shutdown, concurrent state writes, routing and authority, review
 pauses, prompt injection, model reporting/filtering, independent delivery
-records, and replacement of committed and dirty work. Launch tests make no model
+records, replacement of committed and dirty work, reload barrier recovery,
+explicit permissions, age-ordered reviews, and read-only job diagnostics. Launch tests make no model
 requests. End-to-end interactive orchestration and recovery audits remain pending.

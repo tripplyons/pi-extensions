@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Worktree } from "./git.ts";
+import type { Barrier, Permission } from "./coordination.ts";
 export type Status = "starting" | "running" | "review" | "accepted" | "rejected" | "stopped" | "failed";
 export const terminal = (status: Status) => ["accepted", "rejected", "stopped", "failed"].includes(status);
-export type Handoff = { revision: number; status: "awaiting-parent" | "accepted" | "rejected" | "changes-requested" | "unknown"; feedback?: string };
+export type Handoff = { revision: number; status: "awaiting-parent" | "accepted" | "rejected" | "changes-requested" | "unknown"; feedback?: string; submitted?: string };
 export type Evidence = { actor: string; text: string; recorded: string };
 export type Delivery = { revision: string; reviewed?: Evidence; tested?: Evidence; integrated?: Evidence };
 export type Provenance = {
@@ -20,6 +21,10 @@ export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
   launch?: { model?: string; thinking?: string; fast?: boolean };
   current?: { model: string; thinking: string };
+  generation?: string;
+  runtime?: { revision: string; loaded: string };
+  permission?: Permission;
+  reload?: { barrier: string; stage: "requested" | "checkpointed" | "restarted" | "ready" | "released"; checkpoint?: string };
   delivery?: Delivery[];
   directive?: { text: string; source: "parent" | "restart"; created: string; messageId?: string };
   activity?: { status: Activity | "checking-in" | "instruction-queued" | "instruction-delivered" | "tool-active"; detail: string; updated: string; source?: "worker" | "message" | "instruction" | "tool-boundary" };
@@ -38,7 +43,7 @@ export function handoffRecord(node: Node): Handoff | undefined {
   return { revision: 1, status, feedback: node.feedback };
 }
 export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean };
-export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[] };
+export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier> };
 const nonempty = (value: string, name: string) => { if (!value.trim()) throw new Error(`${name} must contain text`); };
 export function ownedChild(run: Run, actor: string, child: string) {
   const node = run.nodes[child];
@@ -60,6 +65,7 @@ export class SwarmStore {
     const run: Run = { version: 1, id, root, objective, messages: [], nodes: {
       [root]: { id: root, name: "root", task: objective, depth: 0, status: "running", session, worktree: { cwd, repository: cwd, shared: true } },
     } };
+    run.nodes[root].permission = { status: "released", reason: objective, source: "parent", updated: new Date().toISOString() };
     await mkdir(this.path(id), { recursive: true, mode: 0o700 });
     await this.save(run);
     return run;
@@ -106,13 +112,30 @@ export class SwarmStore {
       return result;
     } finally { await rm(lock, { recursive: true }); }
   }
+  async recordRuntime(id: string, actor: string, revision: string, generation?: string) {
+    return this.update(id, run => {
+      const node = run.nodes[actor];
+      if (!node) throw new Error("Unknown swarm node");
+      if (node.parent && node.generation && generation !== node.generation) throw new Error("Worker launch generation is stale");
+      node.runtime = { revision, loaded: new Date().toISOString() };
+      if (generation && node.reload?.stage === "restarted") {
+        node.reload.stage = "ready";
+        const barrier = run.barriers?.[node.reload.barrier];
+        if (barrier?.phase === "restarting" && barrier.members.every(id => run.nodes[id].reload?.stage === "ready")) barrier.phase = "ready";
+        if (barrier) run.messages.push({ id: randomUUID(), from: actor, to: barrier.owner, kind: "message", read: false, created: node.runtime.loaded,
+          text: `Reload ${barrier.id}: ${node.name} is ready at package revision ${revision.slice(0, 12)} and remains on checkpoint hold until explicit release.` });
+      }
+      return node.runtime;
+    });
+  }
   async reserve(id: string, actor: string, name: string, task: string, predecessor?: string) {
     nonempty(name, "Name"); nonempty(task, "Task");
     return this.update(id, run => {
       const parent = run.nodes[actor];
       if (!parent || parent.status !== "running") throw new Error("Only running nodes may spawn");
       if (parent.depth >= 3) throw new Error("Maximum swarm depth is three");
-      const child: Node = { id: randomUUID(), parent: actor, name, task, depth: parent.depth + 1, status: "starting" };
+      const child: Node = { id: randomUUID(), parent: actor, name, task, depth: parent.depth + 1, status: "starting",
+        permission: { status: "released", reason: task, source: "parent", updated: new Date().toISOString() } };
       if (predecessor) {
         const previous = ownedChild(run, actor, predecessor);
         if (!previous.replacement) throw new Error("Request a replacement handoff first");
@@ -126,7 +149,7 @@ export class SwarmStore {
       return child;
     });
   }
-  async send(id: string, from: string, to: string, kind: Message["kind"], text: string, activity?: Activity) {
+  async send(id: string, from: string, to: string, kind: Message["kind"], text: string, activity?: Activity, permission?: "released" | "waiting-approval" | "waiting-dependency") {
     nonempty(text, "Message");
     if (activity && !["working", "waiting-instructions", "waiting-dependency"].includes(activity)) throw new Error("Invalid activity");
     return this.update(id, run => {
@@ -141,16 +164,22 @@ export class SwarmStore {
       if (activity) {
         if (sender.status !== "running" || sender.parent !== to || kind !== "message") throw new Error("Only running workers report activity to their parent");
         sender.activity = { status: activity, detail: text, updated: message.created, source: "worker" };
+        if (activity.startsWith("waiting") && sender.permission?.status !== "checkpoint-hold") sender.permission = { status: activity === "waiting-dependency" ? "waiting-dependency" : "waiting-approval", reason: text, source: "worker", updated: message.created };
       }
       if (!activity && sender.status === "running" && sender.parent === to && kind === "message") sender.activity = { status: "checking-in", detail: text, updated: message.created, source: "message" };
       if (kind === "instruction") {
         recipient.directive = { text, source: "parent", created: message.created, messageId: message.id };
         recipient.activity = { status: "instruction-queued", detail: text, updated: message.created, source: "instruction" };
       }
+      if (permission) {
+        if (!["released", "waiting-approval", "waiting-dependency"].includes(permission) || kind !== "instruction") throw new Error("Permission requires a parent instruction");
+        if (recipient.permission?.status === "checkpoint-hold") throw new Error("Use reload release to lift a checkpoint hold");
+        recipient.permission = { status: permission, reason: text, updated: message.created, source: "parent" };
+      }
       run.messages.push(message); return message;
     });
   }
-  async broadcast(id: string, actor: string, kind: Message["kind"], text: string) {
+  async broadcast(id: string, actor: string, kind: Message["kind"], text: string, permission?: "released" | "waiting-approval" | "waiting-dependency") {
     nonempty(text, "Message");
     if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
     return this.update(id, run => {
@@ -162,7 +191,13 @@ export class SwarmStore {
         const node = run.nodes[message.to];
         node.directive = { text, source: "parent", created, messageId: message.id };
         node.activity = { status: "instruction-queued", detail: text, updated: created, source: "instruction" };
+        if (permission) {
+          if (!["released", "waiting-approval", "waiting-dependency"].includes(permission)) throw new Error("Invalid permission");
+          if (node.permission?.status === "checkpoint-hold") throw new Error("Use reload release to lift a checkpoint hold");
+          node.permission = { status: permission, reason: text, updated: created, source: "parent" };
+        }
       }
+      if (permission && kind !== "instruction") throw new Error("Permission requires a parent instruction");
       run.messages.push(...messages);
       return messages;
     });
@@ -203,7 +238,9 @@ export class SwarmStore {
       const node = run.nodes[actor];
       if (!node?.parent || node.status !== "running") throw new Error("Only running workers submit results");
       if (descendants(run, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before completion");
-      node.handoff = { revision: (node.handoff?.revision ?? 0) + 1, status: "awaiting-parent" };
+      if (node.permission?.status === "checkpoint-hold") throw new Error("Use swarm_reload checkpoint during a reload barrier");
+      node.handoff = { revision: (node.handoff?.revision ?? 0) + 1, status: "awaiting-parent", submitted: new Date().toISOString() };
+      node.permission = { status: "waiting-approval", reason: "Handoff awaits parent review", source: "worker", updated: node.handoff.submitted! };
       node.status = "review"; node.result = result; delete node.resume; delete node.directive; delete node.activity;
       node.delivery = node.delivery?.filter(record => record.revision !== "result");
       run.messages.push({ id: randomUUID(), from: actor, to: node.parent, kind: "message", read: false, created: new Date().toISOString(),
@@ -250,11 +287,12 @@ export class SwarmStore {
       if (!["accept", "reject", "request-changes"].includes(decision)) throw new Error("Invalid review decision");
       node.status = decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "running";
       node.handoff = { revision: node.handoff?.revision ?? 1,
-        status: decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "changes-requested", feedback };
+        status: decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "changes-requested", feedback, submitted: node.handoff?.submitted };
       node.feedback = feedback;
       if (decision === "request-changes") {
         const messageId = randomUUID();
         node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
+        node.permission = { status: "released", reason: feedback || "Revise the submitted result", source: "parent", updated: new Date().toISOString() };
         delete node.activity;
         node.directive = { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString(), messageId };
         node.activity = { status: "instruction-queued", detail: node.directive.text, updated: node.directive.created, source: "instruction" };

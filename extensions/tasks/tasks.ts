@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { Type } from "typebox";
@@ -10,9 +10,11 @@ import { renderCall as renderCommandCall } from "./command-preview.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 
 export const taskKey = "pi:minimax-task";
+export const watchKey = "pi:task-watch";
+export type Watch = { task_id: string; enabled: boolean; interval_seconds: number; expected_seconds?: number; silence_seconds?: number };
 export const taskStatuses = ["queued", "running", "stopping", "succeeded", "failed", "canceled", "lost"] as const;
 type Status = typeof taskStatuses[number];
-type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string };
+type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string; deadline_at?: string; last_output_at?: string };
 type Running = { record: Record; controller: AbortController; events: EventEmitter; done: Promise<void>; output?: Awaited<ReturnType<ReturnType<typeof createBashTool>["execute"]>>; background: boolean; error?: Error };
 export function foregroundTimeout(timeout?: number) {
   return timeout === undefined || !Number.isFinite(timeout) || timeout <= 0 ? 120 : Math.min(timeout, 300);
@@ -35,6 +37,13 @@ function outputLength(buffer: Buffer, unfinished: boolean) {
   const byte = buffer[lead];
   const width = byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 1;
   return end - lead < width ? lead : end;
+}
+
+export function watchWarnings(progress: { elapsed_seconds: number; output_silence_seconds: number }, watch: Watch) {
+  const warnings: string[] = [];
+  if (watch.expected_seconds !== undefined && progress.elapsed_seconds >= watch.expected_seconds) warnings.push("expected duration exceeded");
+  if (watch.silence_seconds !== undefined && progress.output_silence_seconds >= watch.silence_seconds) warnings.push("output silent");
+  return warnings;
 }
 
 export class Tasks {
@@ -74,7 +83,8 @@ export class Tasks {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const fd = openSync(this.path(id, "output"), "wx", 0o600);
-    const record: Record = { task_id: id, command: args.command, cwd, status: "running", created_at: new Date().toISOString() };
+    const timeout = args.run_in_background ? backgroundTimeout(args.timeout) : foregroundTimeout(args.timeout);
+    const record: Record = { task_id: id, command: args.command, cwd, status: "running", created_at: new Date().toISOString(), deadline_at: new Date(Date.now() + timeout * 1000).toISOString() };
     try { this.save(record); started(id); } catch (error) { closeSync(fd); throw error; }
     const task: Running = { record, controller: new AbortController(), events: new EventEmitter(), done: Promise.resolve(), background: args.run_in_background === true };
     this.running.set(id, task);
@@ -84,6 +94,7 @@ export class Tasks {
         try {
           let offset = 0;
           while (offset < data.length) offset += writeSync(fd, data, offset, data.length - offset);
+          if (data.length) record.last_output_at = new Date().toISOString();
           options.onData(data);
           task.events.emit("change");
         } catch (error) {
@@ -97,7 +108,6 @@ export class Tasks {
     const abort = () => { record.status = "stopping"; task.controller.abort(); };
     // Explicit background tasks belong to the runtime, not the launching turn.
     if (!task.background) signal?.addEventListener("abort", abort, { once: true });
-    const timeout = task.background ? backgroundTimeout(args.timeout) : foregroundTimeout(args.timeout);
     task.done = (async () => {
       try {
         task.output = await tool.execute(id, { command: args.command, timeout }, task.controller.signal);
@@ -170,6 +180,22 @@ export class Tasks {
       return { task_id: id, status, output: buffer.subarray(0, length).toString("utf8"), next_offset: next };
     } finally { await file.close(); }
   }
+  async progress(id: string, now = Date.now()) {
+    const record = this.query(id), metadata = await stat(this.path(id, "output"));
+    const lastOutput = record.last_output_at ?? (metadata.size ? new Date(metadata.mtimeMs).toISOString() : record.created_at);
+    const file = await open(this.path(id, "output"), "r");
+    let recent = "";
+    try {
+      const offset = Math.max(0, metadata.size - 2048), buffer = Buffer.alloc(Math.min(metadata.size, 2048));
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+      let start = 0;
+      if (offset) while (start < bytesRead && (buffer[start] & 0xc0) === 0x80) start++;
+      recent = buffer.subarray(start, bytesRead).toString("utf8").split("\n").slice(-5).join("\n");
+    } finally { await file.close(); }
+    return { ...record, elapsed_seconds: Math.max(0, Math.floor((now - Date.parse(record.created_at)) / 1000)),
+      output_bytes: metadata.size, output_silence_seconds: Math.max(0, Math.floor((now - Date.parse(lastOutput)) / 1000)),
+      deadline_remaining_seconds: record.deadline_at ? Math.max(0, Math.ceil((Date.parse(record.deadline_at) - now) / 1000)) : null, recent_output: recent };
+  }
   async stop(id: string, reason?: string) {
     const task = this.running.get(id);
     if (task && !terminal(task.record.status)) {
@@ -203,6 +229,44 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   let shuttingDown = false;
   let notificationTimer: ReturnType<typeof setTimeout> | undefined;
   const notifications = new Set<string>();
+  let watchTimer: ReturnType<typeof setInterval> | undefined;
+  let watching = false;
+  const watches = new Map<string, { config: Watch; due: number; warnings: string[] }>();
+  function restoreWatches(ctx: ExtensionContext) {
+    const configs = new Map<string, Watch>();
+    for (const entry of ctx.sessionManager.getBranch()) if (entry.type === "custom" && entry.customType === watchKey) {
+      const config = entry.data as Watch; configs.set(config.task_id, config);
+    }
+    const owned = new Set(ids(ctx));
+    for (const [id, config] of configs) {
+      if (!owned.has(id) || !config.enabled || terminal(tasks.query(id).status)) { watches.delete(id); continue; }
+      const previous = watches.get(id);
+      if (!previous || JSON.stringify(previous.config) !== JSON.stringify(config)) watches.set(id, { config, due: Date.now() + config.interval_seconds * 1000, warnings: [] });
+    }
+    for (const id of watches.keys()) if (!configs.has(id) || !owned.has(id)) watches.delete(id);
+    if (watches.size && !watchTimer) { watchTimer = setInterval(() => void watchProgress(), 1000); watchTimer.unref(); }
+    if (!watches.size) { clearInterval(watchTimer); watchTimer = undefined; }
+  }
+  async function watchProgress() {
+    const ctx = current;
+    if (!ctx || shuttingDown || watching || !ctx.isIdle()) return;
+    watching = true;
+    try {
+      for (const [id, watch] of watches) {
+        if (Date.now() < watch.due) continue;
+        if (!ids(ctx).includes(id) || terminal(tasks.query(id).status)) { watches.delete(id); continue; }
+        const progress = await tasks.progress(id);
+        if (current !== ctx || shuttingDown) return;
+        const warnings = watchWarnings(progress, watch.config);
+        const investigate = warnings.some(warning => !watch.warnings.includes(warning));
+        watch.warnings = warnings; watch.due = Date.now() + watch.config.interval_seconds * 1000;
+        const expectation = watch.config.expected_seconds === undefined ? "Expected duration: not set." : `Expected duration: ${watch.config.expected_seconds}s; expected time remaining: ${Math.max(0, watch.config.expected_seconds - progress.elapsed_seconds)}s (not a measured ETA).`;
+        pi.sendMessage({ customType: "pi-task-progress", content: `Background Bash task ${id}: ${progress.status}. Elapsed ${progress.elapsed_seconds}s; ${progress.output_bytes} output bytes; output silence ${progress.output_silence_seconds}s; deadline remaining ${progress.deadline_remaining_seconds ?? "unknown"}s. ${expectation}\nRecent output:\n${progress.recent_output || "(none)"}${warnings.length ? `\nWarnings: ${warnings.join(", ")}. Investigate the process and recent output instead of just waiting. Update the user with progress and an evidence-based ETA; do not invent one.` : ""}`, display: true, details: { ...progress, warnings } }, { triggerTurn: investigate, deliverAs: "steer" });
+      }
+      if (!watches.size) { clearInterval(watchTimer); watchTimer = undefined; }
+    } catch (error) { ctx.ui.setStatus("task-watch-error", String(error)); }
+    finally { watching = false; }
+  }
   const detach = tasks.onComplete(id => { notifications.add(id); flush(); });
   const ids = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === taskKey ? [entry.data as string] : []);
   function flush() {
@@ -225,6 +289,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   }
   const load = (_event: unknown, ctx: ExtensionContext) => {
     current = ctx;
+    restoreWatches(ctx);
     for (const id of tasks.pending(ids(ctx))) notifications.add(id);
     flush();
   };
@@ -232,7 +297,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   pi.on("session_tree", load);
   pi.on("before_agent_start", load);
   pi.on("session_shutdown", async event => {
-    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); detach();
+    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); clearInterval(watchTimer); detach();
     if (event.reason && event.reason !== "quit") return;
     await tasks.shutdown();
     const pool = pools[poolKey];
@@ -251,6 +316,18 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
       return tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), () => {});
+    },
+  });
+  pi.registerTool({ name: "task_watch", label: "task_watch", renderCall: toolCall("task_watch"), renderResult,
+    description: "Opt in to progress reports for a task on this branch. Reports include elapsed time, bounded recent output, output silence, and remaining deadline without moving output cursors. Expected-duration or silence warnings wake the conversation once per warning episode to investigate. Reports wait until Pi is idle. Disable with enabled=false. Watching never extends a deadline or stops a process.",
+    parameters: Type.Object({ task_id: Type.String(), enabled: Type.Optional(Type.Boolean()), interval_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), expected_seconds: Type.Optional(Type.Integer({ minimum: 1 })), silence_seconds: Type.Optional(Type.Integer({ minimum: 1 })) }),
+    async execute(_id, args, signal, _update, ctx) {
+      check(ctx, args.task_id); signal?.throwIfAborted(); current = ctx;
+      const enabled = args.enabled ?? true;
+      if (enabled && terminal(tasks.query(args.task_id).status)) throw new Error("Task is already finished; inspect its output instead");
+      const config: Watch = { ...args, enabled, interval_seconds: args.interval_seconds ?? 300 };
+      pi.appendEntry(watchKey, config); restoreWatches(ctx);
+      return result({ watch: config, progress: await tasks.progress(args.task_id) });
     },
   });
   const definitions = [

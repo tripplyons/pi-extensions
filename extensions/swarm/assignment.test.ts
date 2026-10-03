@@ -19,7 +19,7 @@ test("current parent directives survive recovery without reviving completed assi
     let state = await store.read(run.id);
     expect(currentAssignment(state.nodes[worker.id])).toBeUndefined();
     expect(state.nodes[worker.id].activity).toBeUndefined();
-    expect(coordinationGuidelines(state.nodes[run.root], state).join("\n")).toContain(`Worker (${worker.id}, revision 1)`);
+    expect(coordinationGuidelines(state.nodes[run.root], state).join("\n")).toContain(`Worker (${worker.id}, revision 1, waiting`);
     await store.review(run.id, run.root, worker.id, "accept", "Stop; no follow-on work");
     await store.send(run.id, run.root, worker.id, "instruction", "New bounded source-only audit");
     state = await new SwarmStore(root).read(run.id);

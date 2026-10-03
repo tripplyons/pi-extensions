@@ -13,11 +13,11 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | Isolated workers with current restart assignments, observed activity, review alerts and separate code evidence |
+| [swarm](extensions/swarm) | Isolated workers with reload barriers, source versions, permission state, age-ordered reviews and health checks |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe background tasks, bounded UTF-8 output and branch-owned notifications |
+| [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe tasks, bounded UTF-8 output and opt-in progress reports |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth; blocks API keys and paid OpenAI gateways |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |

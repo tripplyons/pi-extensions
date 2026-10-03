@@ -86,7 +86,7 @@ test("legacy retained results report unknown decisions, not a phantom review bac
   await store.complete(run.id, a.id, "New handoff");
   await store.review(run.id, run.root, a.id, "reject", "Rejected");
   await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
-  expect((await new SwarmStore(store.root).read(run.id)).nodes[a.id].handoff).toEqual({ revision: 2, status: "rejected", feedback: "Rejected" });
+  expect((await new SwarmStore(store.root).read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "rejected", feedback: "Rejected", submitted: expect.any(String) });
 }));
 
 test("concurrent replacement starts reserve only one successor", () => fixture(async store => {
