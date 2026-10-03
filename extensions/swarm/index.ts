@@ -11,6 +11,7 @@ import { Swarm } from "./controller.ts";
 import { Workers } from "./worker.ts";
 import { preflightWorktree } from "./git.ts";
 import { panel } from "./panel.ts";
+import { coordinationGuidelines, treeSnapshot } from "./prompts.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
 // The status panel renders the latest snapshot synchronously; a timer refreshes it.
@@ -102,6 +103,13 @@ export default function install(pi: ExtensionAPI) {
   };
   pi.on("session_start", load);
   pi.on("session_tree", load);
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!identity) return;
+    const { node } = await active(ctx);
+    return { systemPromptOptions: { ...event.systemPromptOptions,
+      promptGuidelines: [...event.systemPromptOptions.promptGuidelines, ...coordinationGuidelines(node)],
+    } };
+  });
   pi.on("tool_call", async (_event, ctx) => {
     if (!identity) return;
     const { node } = await active(ctx);
@@ -142,21 +150,34 @@ export default function install(pi: ExtensionAPI) {
       } });
   }
   tool("swarm_task", "Read your durable assignment and root objective.", empty, async (_, ctx) => {
-    const { run, node } = await active(ctx); return { objective: run.objective, node };
+    const { run, node } = await active(ctx);
+    return { objective: run.objective, node,
+      parent: node.parent ? { id: node.parent, name: run.nodes[node.parent].name, branch: run.nodes[node.parent].branch, cwd: run.nodes[node.parent].worktree?.cwd } : undefined,
+      siblings: Object.values(run.nodes).filter(entry => node.parent && entry.parent === node.parent && entry.id !== node.id && !terminal(entry.status)).map(entry => ({ id: entry.id, name: entry.name, status: entry.status })),
+    };
   });
-  tool("swarm_tree", "Inspect the swarm tree and retained branches.", empty, async (_, ctx) => {
-    const { run } = await active(ctx); return Object.values(run.nodes);
+  tool("swarm_tree", "List compact active-worker summaries. Set nodeId for a full assignment/result, or includeTerminal for retained workers.", Type.Object({ nodeId: Type.Optional(Type.String()), includeTerminal: Type.Optional(Type.Boolean()) }), async (args, ctx) => {
+    const { run } = await active(ctx);
+    if (!args.nodeId) return treeSnapshot(run, args.includeTerminal);
+    const node = run.nodes[args.nodeId];
+    if (!node) throw new Error("Unknown swarm node");
+    return node;
   });
-  tool("swarm_spawn", "Spawn a child in an isolated worktree. Dirty trees require explicit dirtyMode. Maximum depth three.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
+  tool("swarm_spawn", "Spawn one bounded step in an isolated worktree. Include scope, owned files, dependencies, checks, resource limits and commit permission. Workers do not inherit your conversation. Dirty trees require explicit dirtyMode. Maximum depth three.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking: pi.getThinkingLevel() });
   });
-  tool("swarm_send", "Message a direct relative. Only parents may send instructions.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
+  tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions; sibling messages are informational.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text);
   });
-  tool("swarm_complete", "Submit results for parent review after all descendants are terminal, then wait. Do not call other tools in the same batch.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
+  tool("swarm_broadcast", "Send one message or instruction to all nonterminal direct children in one atomic update. Workers awaiting review read it only if resumed. Does not stop running tools.", Type.Object({ kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
+    const { run, node } = await active(ctx);
+    const messages = await store.broadcast(run.id, node.id, args.kind, args.text);
+    return { recipients: messages.map(message => message.to), count: messages.length };
+  });
+  tool("swarm_complete", "Submit a self-contained handoff: outcome, branch/tested base/commits, files, exact checks/results, evidence, limitations/blockers and next steps. All descendants must be terminal. Then wait; call alone, with no other tools in the batch.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
-    await store.send(run.id, node.id, node.parent!, "message", "Submitted a result for review. Use swarm_tree to inspect it."); return updated;
+    await store.send(run.id, node.id, node.parent!, "message", `Submitted a result for review. Read the handoff with swarm_tree nodeId=${node.id}.`); return updated;
   });
   tool("swarm_review", "Review a direct child's result; accept/reject stops it without merging.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String() }), async (args, ctx) => {
     const { run, node } = await active(ctx); return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback);

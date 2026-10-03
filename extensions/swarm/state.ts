@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Worktree } from "./git.ts";
 export type Status = "starting" | "running" | "review" | "accepted" | "rejected" | "stopped" | "failed";
 export const terminal = (status: Status) => ["accepted", "rejected", "stopped", "failed"].includes(status);
@@ -21,7 +22,7 @@ export function descendants(run: Run, id: string): Node[] {
   return Object.values(run.nodes).filter(node => node.parent === id).flatMap(node => [node, ...descendants(run, node.id)]);
 }
 export class SwarmStore {
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, readonly lockTimeoutMs = 5000) {}
   path(id: string) {
     if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid swarm run ID");
     return join(this.root, id);
@@ -50,7 +51,15 @@ export class SwarmStore {
   }
   async update<T>(id: string, change: (run: Run) => T): Promise<T> {
     const lock = join(this.path(id), "lock");
-    try { await mkdir(lock); } catch { throw new Error("Swarm state is busy; retry after the current operation finishes"); }
+    const deadline = Date.now() + this.lockTimeoutMs;
+    while (true) {
+      try { await mkdir(lock); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (Date.now() >= deadline) throw new Error("Swarm state is busy; retry after the current operation finishes");
+        await delay(Math.min(25 + Math.floor(Math.random() * 25), deadline - Date.now()));
+      }
+    }
     try {
       const run = await this.read(id);
       const result = change(run);
@@ -73,11 +82,26 @@ export class SwarmStore {
     nonempty(text, "Message");
     return this.update(id, run => {
       const sender = run.nodes[from], recipient = run.nodes[to];
-      if (!sender || !recipient || (recipient.parent !== from && sender.parent !== to)) throw new Error("Messages require direct relatives");
+      const siblings = sender?.parent !== undefined && sender.parent === recipient?.parent;
+      if (!sender || !recipient || from === to || (recipient.parent !== from && sender.parent !== to && !siblings)) {
+        throw new Error("Messages require a parent, direct child, or sibling; ask your parent to relay other messages");
+      }
       if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
       if (kind === "instruction" && recipient.parent !== from) throw new Error("Only parents may send instructions");
       const message: Message = { id: randomUUID(), from, to, kind, text, created: new Date().toISOString(), read: false };
       run.messages.push(message); return message;
+    });
+  }
+  async broadcast(id: string, actor: string, kind: Message["kind"], text: string) {
+    nonempty(text, "Message");
+    if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
+    return this.update(id, run => {
+      if (!run.nodes[actor]) throw new Error("Unknown swarm node");
+      const children = Object.values(run.nodes).filter(node => node.parent === actor && !terminal(node.status));
+      const created = new Date().toISOString();
+      const messages: Message[] = children.map(node => ({ id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false }));
+      run.messages.push(...messages);
+      return messages;
     });
   }
   async inbox(id: string, actor: string) {

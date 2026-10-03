@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SwarmStore } from "./state.ts";
@@ -7,12 +7,18 @@ async function fixture(run: (store: SwarmStore) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-state-"));
   try { await run(new SwarmStore(root)); } finally { await rm(root, { recursive: true, force: true }); }
 }
-test("durable tasks, direct-relative messaging and parent-only authority", () => fixture(async store => {
+test("durable tasks, sibling messages and parent-only authority", () => fixture(async store => {
   const run = await store.create("session", "/tmp", "Objective");
   const a = await store.reserve(run.id, run.root, "A", "Task A");
   const b = await store.reserve(run.id, run.root, "B", "Task B");
   await store.send(run.id, run.root, a.id, "instruction", "Do the task");
-  await expect(store.send(run.id, a.id, b.id, "message", "Hi")).rejects.toThrow("relatives");
+  await store.send(run.id, a.id, b.id, "message", "Shared API ready");
+  expect((await store.inbox(run.id, b.id))[0].text).toBe("Shared API ready");
+  await expect(store.send(run.id, a.id, b.id, "instruction", "Do this")).rejects.toThrow("parents");
+  await expect(store.send(run.id, a.id, a.id, "message", "Hi")).rejects.toThrow("relay");
+  await store.update(run.id, state => { state.nodes[b.id].status = "running"; });
+  const nephew = await store.reserve(run.id, b.id, "Nephew", "Other task");
+  await expect(store.send(run.id, a.id, nephew.id, "message", "Hi")).rejects.toThrow("relay");
   await expect(store.send(run.id, a.id, run.root, "instruction", "Do this")).rejects.toThrow("parents");
   const other = new SwarmStore(store.root);
   expect((await other.inbox(run.id, a.id))[0].text).toBe("Do the task");
@@ -49,4 +55,47 @@ test("failed updates leave durable state unchanged and release the lock", () => 
   expect((await store.read(run.id)).objective).toBe("Original");
   await store.reserve(run.id, run.root, "Next", "Still works");
   await expect(store.read("../../foreign")).rejects.toThrow("Invalid");
+}));
+test("concurrent stores retry lock contention without losing messages or children", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const children = await Promise.all(Array.from({ length: 12 }, (_, i) =>
+    new SwarmStore(store.root).reserve(run.id, run.root, `Worker ${i}`, "Task")));
+  await Promise.all(children.flatMap(child => [
+    new SwarmStore(store.root).send(run.id, run.root, child.id, "instruction", "Finish this step"),
+    new SwarmStore(store.root).send(run.id, child.id, run.root, "message", "Working"),
+  ]));
+  const updated = await store.read(run.id);
+  expect(Object.keys(updated.nodes)).toHaveLength(13);
+  expect(updated.messages).toHaveLength(24);
+  expect(new Set(updated.messages.map(message => message.id)).size).toBe(24);
+}));
+test("stale locks time out without being removed and filesystem errors propagate", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const lock = join(store.path(run.id), "lock");
+  await mkdir(lock);
+  await expect(new SwarmStore(store.root, 50).reserve(run.id, run.root, "A", "Task")).rejects.toThrow("busy");
+  expect((await stat(lock)).isDirectory()).toBe(true);
+  expect(Object.keys((await store.read(run.id)).nodes)).toHaveLength(1);
+  await rm(store.path(run.id), { recursive: true });
+  await expect(store.update(run.id, () => {})).rejects.toThrow("ENOENT");
+}));
+test("broadcast targets nonterminal direct children, not siblings or grandchildren", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const a = await store.reserve(run.id, run.root, "A", "Task");
+  const b = await store.reserve(run.id, run.root, "B", "Task");
+  const c = await store.reserve(run.id, run.root, "C", "Task");
+  await store.update(run.id, state => {
+    state.nodes[a.id].status = "running";
+    state.nodes[b.id].status = "review";
+    state.nodes[c.id].status = "accepted";
+  });
+  const grandchild = await store.reserve(run.id, a.id, "Nested", "Task");
+  const messages = await store.broadcast(run.id, run.root, "instruction", "Finish only this step");
+  expect(messages.map(message => message.to)).toEqual([a.id, b.id]);
+  expect(new Set(messages.map(message => message.created)).size).toBe(1);
+  expect(await store.inbox(run.id, c.id)).toEqual([]);
+  expect(await store.inbox(run.id, grandchild.id)).toEqual([]);
+  expect((await store.broadcast(run.id, a.id, "message", "API ready")).map(message => message.to)).toEqual([grandchild.id]);
+  await expect(store.broadcast(run.id, "unknown", "instruction", "Hi")).rejects.toThrow("Unknown");
+  await expect(store.broadcast(run.id, run.root, "message", " ")).rejects.toThrow("text");
 }));

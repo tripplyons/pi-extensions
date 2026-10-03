@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import { shellQuote } from "../../lib/common.ts";
+import { workerStart } from "./prompts.ts";
 const exec = promisify(execFile);
 export type Launch = { run: string; node: string; cwd: string; directory: string; executable?: string; model?: string; thinking?: string };
 export class Workers {
@@ -23,7 +24,7 @@ export class Workers {
     const args = [options.executable ?? "pi", "--session", session];
     if (options.model) args.push("--model", options.model);
     if (options.thinking) args.push("--thinking", options.thinking);
-    args.push("Read your durable assignment with swarm_task, then carry it out. You are a swarm worker. Ask your parent instead of prompting the user. Submit results with swarm_complete; never merge or push branches.");
+    args.push(workerStart);
     const script = join(options.directory, "worker.zsh");
     await writeFile(script, `export PI_SWARM_RUN=${shellQuote(options.run)}\nexport PI_SWARM_NODE=${shellQuote(options.node)}\nexec ${args.map(shellQuote).join(" ")}\n`, { mode: 0o600 });
     // Each worker owns a separate attachable session. Never split or replace the user's pane.

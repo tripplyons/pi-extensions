@@ -53,6 +53,13 @@ test("workers pause after completion and resume only after parent review", async
     await h.emit("session_start");
     h.ctx.isIdle = () => false;
 
+    const sibling = await store.reserve(run.id, run.root, "Peer", "Related part");
+    const assignment = (await h.call("swarm_task", {})).details;
+    expect(assignment.parent).toMatchObject({ id: run.root, name: "root", cwd: root });
+    expect(assignment.siblings).toEqual([{ id: sibling.id, name: "Peer", status: "starting" }]);
+    const [prompt] = await h.emit("before_agent_start");
+    expect(prompt.systemPromptOptions.promptGuidelines.join("\n")).toContain("handoff must stand alone");
+    expect(prompt.systemPromptOptions.promptGuidelines.join("\n")).toContain("Commit only when authorized");
     await store.send(run.id, run.root, child.id, "instruction", "Hand off now.");
     const deadline = Date.now() + 3000;
     while (!h.sentMessages.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
@@ -66,7 +73,7 @@ test("workers pause after completion and resume only after parent review", async
     const completed = await h.call("swarm_complete", { result: "Verified result" });
     expect(completed.terminate).toBe(true);
     expect(completed.details.status).toBe("review");
-    expect((await store.inbox(run.id, run.root))[0].text).toContain("Submitted a result");
+    expect((await store.inbox(run.id, run.root))[0].text).toContain(`swarm_tree nodeId=${child.id}`);
     for (const toolName of ["bash", "write", "swarm_send"]) {
       expect(await h.emit("tool_call", { toolName })).toEqual([{
         block: true, terminate: true, reason: "Swarm worker is review; tools are paused until the parent resumes it.",
@@ -102,10 +109,36 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
-    install(h.pi); expect(h.tools.size).toBe(12);
+    install(h.pi); expect(h.tools.size).toBe(13);
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
+    expect(await h.emit("before_agent_start")).toEqual([undefined]);
     await h.command("swarm:start", "Build the feature");
+    const [prompt] = await h.emit("before_agent_start", { systemPromptOptions: { sections: { test: "keep" }, promptGuidelines: ["Existing rule"] } });
+    expect(prompt.systemPromptOptions.sections).toEqual({ test: "keep" });
+    expect(prompt.systemPromptOptions.promptGuidelines[0]).toBe("Existing rule");
+    expect(prompt.systemPromptOptions.promptGuidelines.join("\n")).toContain("swarm_broadcast");
     expect((await h.call("swarm_task", {})).details.objective).toBe("Build the feature");
+    const identity = h.entries.at(-1).data;
+    const store = new SwarmStore(join(root, "swarm"));
+    const worker = await store.reserve(identity.run, identity.node, "Worker", "Long assignment ".repeat(100));
+    const done = await store.reserve(identity.run, identity.node, "Done", "Finished task");
+    await store.update(identity.run, run => {
+      run.nodes[worker.id].status = "review";
+      run.nodes[worker.id].result = "Detailed handoff ".repeat(100);
+      run.nodes[done.id].status = "accepted";
+    });
+    const snapshot = (await h.call("swarm_tree", {})).details;
+    expect(snapshot).toMatchObject({ active: 1, finished: 1 });
+    expect(snapshot.nodes.map((node: any) => node.id)).toEqual([identity.node, worker.id]);
+    expect(snapshot.nodes[1].task.length).toBeLessThanOrEqual(241);
+    expect(snapshot.nodes[1].hasResult).toBe(true);
+    expect(snapshot.nodes[1].result).toBeUndefined();
+    expect((await h.call("swarm_tree", { includeTerminal: true })).details.nodes).toHaveLength(3);
+    expect((await h.call("swarm_tree", { nodeId: worker.id })).details.result).toBe("Detailed handoff ".repeat(100));
+    expect((await h.call("swarm_tree", { nodeId: done.id })).details.status).toBe("accepted");
+    await expect(h.call("swarm_tree", { nodeId: "unknown" })).rejects.toThrow("Unknown");
+    expect((await h.call("swarm_broadcast", { kind: "instruction", text: "Finish this step" })).details).toEqual({ recipients: [worker.id], count: 1 });
+    expect((await store.inbox(identity.run, worker.id))[0].text).toBe("Finish this step");
     await expect(h.command("swarm:start", "Again")).rejects.toThrow("already");
     h.ctx.sessionManager.getSessionId = () => "other";
     await expect(h.call("swarm_tree", {})).rejects.toThrow("another root session");
