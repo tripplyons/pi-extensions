@@ -22,6 +22,21 @@ export function backgroundTimeout(timeout?: number) {
 }
 const terminal = (status: Status) => !["queued", "running", "stopping"].includes(status);
 
+function outputLength(buffer: Buffer, unfinished: boolean) {
+  let end = buffer.length;
+  for (let i = 0, lines = 0; i < end; i++) {
+    if (buffer[i] === 10 && ++lines === 2000) { end = i + 1; break; }
+  }
+  if (!unfinished || end < buffer.length) return end;
+  // Keep an incomplete UTF-8 character for the next byte-offset read.
+  let lead = end - 1;
+  while (lead >= 0 && (buffer[lead] & 0xc0) === 0x80) lead--;
+  if (lead < 0) return end;
+  const byte = buffer[lead];
+  const width = byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 1;
+  return end - lead < width ? lead : end;
+}
+
 export class Tasks {
   private running = new Map<string, Running>();
   private cursors = new Map<string, number>();
@@ -148,9 +163,11 @@ export class Tasks {
       signal?.throwIfAborted();
       const buffer = Buffer.alloc(50 * 1024);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
-      const next = start + bytesRead;
+      const status = this.query(id).status;
+      const length = outputLength(buffer.subarray(0, bytesRead), bytesRead === buffer.length || !terminal(status));
+      const next = start + length;
       if (offset === undefined) this.cursors.set(cursor, next);
-      return { task_id: id, status: this.query(id).status, output: buffer.subarray(0, bytesRead).toString("utf8"), next_offset: next };
+      return { task_id: id, status, output: buffer.subarray(0, length).toString("utf8"), next_offset: next };
     } finally { await file.close(); }
   }
   async stop(id: string, reason?: string) {
@@ -176,6 +193,8 @@ function taskRunner() {
   const dir = getAgentDir();
   let tasks = pool.get(dir);
   if (!tasks) { tasks = new Tasks(); pool.set(dir, tasks); }
+  // Reload the methods, but keep the process handles, cursors and notifications.
+  else Object.setPrototypeOf(tasks, Tasks.prototype);
   return tasks;
 }
 

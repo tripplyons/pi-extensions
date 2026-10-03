@@ -16,8 +16,14 @@ Tasks belong to their launching session branch. Completion notifications wait
 for idle and arrive in one steering message per batch. They never queue a
 separate follow-up turn. Observing terminal status acknowledges the
 notification without consuming unread output. Explicit byte offsets do not
-advance the automatic output cursor. Session replacement and /reload keep the process pool and rebind notifications.
-Quit stops the pool. Abandoned records from a prior process become lost.
+advance the automatic output cursor. Each output read returns at most 2,000 lines
+or 50 KB and keeps UTF-8 characters intact. `next_offset` counts bytes actually
+returned, so the next read preserves unread output. Use `next_offset` for explicit
+reads instead of guessing a byte offset within a character.
+
+Session replacement and /reload keep the process pool and rebind notifications.
+Reload also updates the runner methods without restarting managed tasks or
+resetting output cursors. Quit stops the pool. Abandoned records from a prior process become lost.
 
 Task metadata and output stay under the agent directory, outside this repo.
 The existing `minimax/tasks` storage path remains so old task records are readable.

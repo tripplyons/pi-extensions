@@ -17,7 +17,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with failure diagnostics, background tasks, deadlines and branch-owned steering notifications |
+| [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe background tasks, bounded UTF-8 output and branch-owned notifications |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth; blocks API keys and paid OpenAI gateways |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |

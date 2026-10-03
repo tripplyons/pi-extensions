@@ -126,6 +126,52 @@ test("output is byte-bounded, explicit offsets do not move the cursor, wait can 
   expect((await tasks.output(id, undefined)).next_offset).toBe(60000);
 });
 
+for (const character of ["é", "€", "😀"]) {
+  test(`output preserves ${character} across the byte limit`, async () => {
+    const { root, tasks } = await setup(1000); let id = "";
+    await tasks.run(root, { command: "true" }, undefined, value => { id = value; }, ignore);
+    const prefix = "x".repeat(51200 - Buffer.byteLength(character) + 1);
+    const text = `${prefix}${character}tail`;
+    await writeFile(join(root, `${id}.output`), text);
+    const first = await tasks.output(id, undefined);
+    expect(first.output).toBe(prefix);
+    expect(first.next_offset).toBe(prefix.length);
+    const second = await tasks.output(id, undefined);
+    expect(second.output).toBe(`${character}tail`);
+    expect(second.next_offset).toBe(Buffer.byteLength(text));
+    expect(first.output + second.output).toBe(text);
+  });
+}
+
+test("output applies the line limit without consuming the remaining bytes", async () => {
+  const { root, tasks } = await setup(1000); let id = "";
+  await tasks.run(root, { command: "true" }, undefined, value => { id = value; }, ignore);
+  const text = "é\n".repeat(2005);
+  await writeFile(join(root, `${id}.output`), text);
+  const first = await tasks.output(id, undefined);
+  expect(first.output).toBe("é\n".repeat(2000));
+  expect(first.next_offset).toBe(6000);
+  expect((await tasks.output(id, 0)).output).toBe(first.output);
+  const second = await tasks.output(id, undefined);
+  expect(second.output).toBe("é\n".repeat(5));
+  expect(second.next_offset).toBe(Buffer.byteLength(text));
+});
+
+test("live output retains a partial UTF-8 character until the remaining bytes arrive", async () => {
+  let finish!: () => void;
+  const bytes = Buffer.from("€");
+  const { root, tasks } = await setup(1000, { exec: async (_command, _cwd, { onData }) => {
+    onData(bytes.subarray(0, 2));
+    return new Promise(resolve => { finish = () => { onData(bytes.subarray(2)); resolve({ exitCode: 0 }); }; });
+  } });
+  let id = "";
+  await tasks.run(root, { command: "controlled", run_in_background: true }, undefined, value => { id = value; }, ignore);
+  try { expect(await tasks.output(id, undefined)).toMatchObject({ output: "", next_offset: 0 }); }
+  finally { finish(); }
+  await settled(tasks, id);
+  expect(await tasks.output(id, undefined)).toMatchObject({ output: "€", next_offset: 3 });
+});
+
 test("persisted output survives reload and unfinished tasks become lost", async () => {
   const { root, tasks } = await setup(); let id = "";
   await tasks.run(root, { command: "printf saved" }, undefined, value => { id = value; }, ignore);
@@ -328,6 +374,39 @@ test("an aborted terminal read does not acknowledge the completion", async () =>
   h.ctx.isIdle = () => true;
   await h.emit("session_tree");
   expect(h.sentMessages).toHaveLength(1);
+});
+
+test("reload replaces pooled runner methods without restarting managed tasks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-task-reload-")); roots.push(root);
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  const h = harness(); const reloaded = harness();
+  h.ctx.cwd = reloaded.ctx.cwd = root;
+  h.ctx.isIdle = reloaded.ctx.isIdle = () => false;
+  try {
+    registerTaskTools(h.pi);
+    const pools = globalThis as unknown as { [key: symbol]: Map<string, Tasks> };
+    const tasks = pools[Symbol.for("tripp.pi.background-tasks")].get(root)!;
+    const started = (await h.call("bash", { command: "printf before; sleep 0.2; printf after", run_in_background: true })).details;
+    expect((await tasks.output(started.task_id, undefined, 1000, undefined, h.ctx.sessionManager.getSessionId())).output).toBe("before");
+    const stale = Object.create(Tasks.prototype);
+    stale.run = () => { throw new Error("Old runner methods are still loaded"); };
+    Object.setPrototypeOf(tasks, stale);
+    await h.emit("session_shutdown", { reason: "reload" });
+    reloaded.entries.push(...h.entries);
+    registerTaskTools(reloaded.pi);
+    expect(Object.getPrototypeOf(tasks)).toBe(Tasks.prototype);
+    const reply = await reloaded.call("bash", { command: "printf 'reload diagnostic'; exit 7" });
+    expect(reply.isError).toBe(true);
+    expect(reply.content[0].text).toContain("reload diagnostic");
+    expect(reply.content[0].text).toContain("Command exited with code 7");
+    await settled(tasks, started.task_id);
+    expect((await reloaded.call("task_output", { task_id: started.task_id })).details.output).toBe("after");
+    expect(tasks.query(started.task_id).status).toBe("succeeded");
+  } finally {
+    await h.emit("session_shutdown", { reason: "reload" });
+    await reloaded.emit("session_shutdown");
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+  }
 });
 
 test("Pi 1.0 session replacement preserves tasks and rebinds notifications without stale contexts", async () => {
