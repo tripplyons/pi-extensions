@@ -1,13 +1,17 @@
 # Swarm
 
-`/swarm:start <objective>` activates eighteen swarm tools. Activation belongs to
+`/swarm:start <objective>` activates nineteen swarm tools. Activation belongs to
 the root session branch. Workers run in attachable tmux sessions with dedicated
 Pi session files. They load the user's configured extensions and inherit the
 model, thinking level, and fast-mode preference at spawn. A replacement inherits
 the spawning parent's current fast-mode preference. This requests priority service
 only for OpenAI models and can affect billing. Parent toggles do not change live
 workers. Restarts copy the restarting parent's current model, thinking level, and fast-mode
-preference. Tasks and messages live under
+preference. `swarm_spawn` and `swarm_restart` accept `model` (exact
+`provider/model`) and `thinking` to override the inherited values. `swarm_models`
+lists the accepted models: Pi's scoped models (`/scoped-models`, `enabledModels`,
+or `--models`), or all authenticated models when no scope is set. Fast mode stays
+inherited. Tasks and messages live under
 `~/.pi/agent/swarm` (`PI_CODING_AGENT_DIR` overrides this).
 
 ## Assignments and handoffs
@@ -207,7 +211,8 @@ The root session owner can run `/swarm:kill` to stop all workers and their jobs.
 Records, worktrees, sessions, and branches are kept so parents can restart stopped
 workers. `swarm_restart` keeps the worker's session and worktree. It copies the
 parent's current model, thinking level, and fast-mode preference by default. Supply
-`thinking: "low"` (or `off`, `minimal`, `medium`, `high`, `xhigh`) to override it.
+`model` from `swarm_models` or `thinking: "low"` (or `off`, `minimal`, `medium`,
+`high`, `xhigh`) to override them.
 Restart refuses a live worker; stop it first. It does not restart old jobs.
 
 `/swarm:status` shows or hides a panel below the editor. It lists active

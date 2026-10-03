@@ -138,7 +138,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
-    install(h.pi); expect(h.tools.size).toBe(18);
+    install(h.pi); expect(h.tools.size).toBe(19);
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
     expect(await h.emit("before_agent_start")).toEqual([undefined]);
     await h.command("swarm:start", "Build the feature");
@@ -260,6 +260,22 @@ test("spawn and replacement inherit the spawning parent's fast preference", asyn
     h.ctx.model = { provider: "openai", id: "another-parent-model" };
     expect((await h.call("swarm_restart", { nodeId: second.id, thinking: "high" })).details.thinking).toBe("high");
     expect(launches.at(-1)).toMatchObject({ model: "openai/another-parent-model", fast: false, thinking: "high" });
+    await h.call("swarm_stop", { nodeId: second.id });
+    h.ctx.modelRegistry = { getAvailable: () => [{ provider: "openai", id: "another-parent-model" }, { provider: "anthropic", id: "claude" }] };
+    h.ctx.scopedModels = [];
+    expect((await h.call("swarm_models", {})).details).toEqual({ scoped: false, models: [
+      { model: "openai/another-parent-model", thinking: undefined, current: true },
+      { model: "anthropic/claude", thinking: undefined, current: false },
+    ] });
+    expect((await h.call("swarm_restart", { nodeId: second.id, model: "anthropic/claude" })).details.model).toBe("anthropic/claude");
+    expect(launches.at(-1)).toMatchObject({ node: second.id, model: "anthropic/claude", thinking: "low" });
+    h.ctx.scopedModels = [{ model: { provider: "openai", id: "scoped" }, thinkingLevel: "high" }];
+    expect((await h.call("swarm_models", {})).details).toEqual({ scoped: true, models: [{ model: "openai/scoped", thinking: "high", current: false }] });
+    const count = launches.length;
+    await expect(h.call("swarm_spawn", { name: "Third", task: "Task", model: "anthropic/claude" })).rejects.toThrow("Unavailable model: anthropic/claude");
+    expect(launches).toHaveLength(count);
+    await h.call("swarm_spawn", { name: "Third", task: "Task", model: "openai/scoped", thinking: "minimal" });
+    expect(launches.at(-1)).toMatchObject({ model: "openai/scoped", thinking: "minimal" });
     const store = new SwarmStore(join(root, "swarm"));
     await h.call("swarm_replace", { nodeId: first.id, action: "request" });
     await store.complete(identity.run, first.id, "Accepted task");

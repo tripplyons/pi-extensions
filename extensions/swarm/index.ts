@@ -19,6 +19,18 @@ import { allowedDuringHold } from "./permissions.ts";
 import { ReviewReminders } from "./review-reminders.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
+const thinkingLevel = Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)));
+const modelId = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
+// Workers may use the session's scoped models, or every authenticated model when no scope is set.
+function modelChoices(ctx: ExtensionContext) {
+  if (ctx.scopedModels?.length) return ctx.scopedModels.map(entry => ({ model: modelId(entry.model), thinking: entry.thinkingLevel }));
+  return ctx.modelRegistry.getAvailable().map(model => ({ model: modelId(model), thinking: undefined }));
+}
+function chooseModel(ctx: ExtensionContext, requested?: string) {
+  if (!requested) return ctx.model ? modelId(ctx.model) : undefined;
+  if (!modelChoices(ctx).some(choice => choice.model === requested)) throw new Error(`Unavailable model: ${requested}. Use swarm_models to list choices.`);
+  return requested;
+}
 // The status panel renders the latest snapshot synchronously; a timer refreshes it.
 type View = { health?: Health[]; run?: Run; scope?: string; live: Set<string>; error?: string; tui?: { requestRender(): void }; timer?: ReturnType<typeof setInterval>; refreshing?: boolean };
 export default function install(pi: ExtensionAPI) {
@@ -269,6 +281,11 @@ export default function install(pi: ExtensionAPI) {
       siblings: Object.values(run.nodes).filter(entry => node.parent && entry.parent === node.parent && entry.id !== node.id && !terminal(entry.status)).map(entry => ({ id: entry.id, name: entry.name, status: entry.status })),
     };
   });
+  tool("swarm_models", "List models that swarm_spawn and swarm_restart accept: Pi's scoped models, or all authenticated models when no scope is set. Marks your current model.", Type.Object({}), async (_args, ctx) => {
+    await active(ctx);
+    const current = ctx.model ? modelId(ctx.model) : undefined;
+    return { scoped: Boolean(ctx.scopedModels?.length), models: modelChoices(ctx).map(choice => ({ ...choice, current: choice.model === current })) };
+  });
   tool("swarm_tree", "List compact worker summaries with launch/current models, handoff state and per-revision code evidence. Set nodeId for a full record, includeTerminal for retained workers, or model for an exact effective provider/model filter. Counts remain run-wide.", Type.Object({ nodeId: Type.Optional(Type.String()), includeTerminal: Type.Optional(Type.Boolean()), model: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
     const { run } = await active(ctx);
     if (args.nodeId && args.model) throw new Error("model filters compact summaries; omit nodeId");
@@ -301,9 +318,9 @@ export default function install(pi: ExtensionAPI) {
     if (args.action === "release") return manager.release(run.id, node.id, barrier.id, args.assignments ?? []);
     throw new Error("Invalid reload action");
   });
-  tool("swarm_spawn", "Spawn one bounded step in an isolated worktree. Include scope, owned files, dependencies, checks, resource limits and commit permission. Workers do not inherit your conversation. Dirty trees require explicit dirtyMode. Maximum depth three.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
+  tool("swarm_spawn", "Spawn one bounded step in an isolated worktree. Include scope, owned files, dependencies, checks, resource limits and commit permission. Workers do not inherit your conversation. Dirty trees require explicit dirtyMode. Maximum depth three. Uses your current model and thinking level unless model (exact available provider/model) or thinking is supplied.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking: pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: chooseModel(ctx, args.model), thinking: args.thinking ?? pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
   });
   tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions; sibling messages are informational. Workers may report activity to their parent as working, waiting-instructions or waiting-dependency. Activity is a dated self-report, not proof of progress.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), activity: Type.Optional(Type.Union(["working", "waiting-instructions", "waiting-dependency"].map(value => Type.Literal(value)))), permission: Type.Optional(Type.Union(["released", "waiting-approval", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text, args.activity, args.permission);
@@ -337,11 +354,12 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_stop", "Stop an owned child. Retain worktree and session.", child, async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).stop(run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action: "stop" };
   });
-  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply thinking to override. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait. Does not change live workers.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)))) }), async (args, ctx) => {
+  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply model (exact available provider/model) or thinking to override. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait. Does not change live workers.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
+    const model = chooseModel(ctx, args.model);
     const thinking = args.thinking ?? pi.getThinkingLevel();
-    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking, fast: restore<boolean>(ctx, "pi:fast") ?? false });
-    return { nodeId: args.nodeId, action: "restart", thinking };
+    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, model, thinking, fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    return { nodeId: args.nodeId, action: "restart", model, thinking };
   });
   for (const action of ["kill", "cleanup"] as const) tool(`swarm_${action}`, `Root only: ${action === "kill" ? "stop all workers and their jobs" : "remove clean terminal worktrees"}. Preserve branches.`, empty, async (_, ctx) => {
     const { run, node } = await active(ctx); const ids = await (await controller())[action](run.id, node.id);
