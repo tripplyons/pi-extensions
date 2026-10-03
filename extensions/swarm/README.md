@@ -134,11 +134,46 @@ predecessor are blocked. Remove it only after manual provenance review.
 Only parents may send instructions to their direct children. More distant nodes
 require a relay. Incoming messages identify the sender and show the text.
 
+Instructions now **append by default**. Both tools accept `assignmentMode` for
+`kind: "instruction"`:
+
+- `"append"` (default) preserves the current task and adds the instruction. Use
+  it for a rebase order, a new constraint, or a correction that keeps the task.
+  Later additions take precedence where they conflict. Other scope, ownership,
+  checks, and commit permission remain in the assignment.
+- `"replace"` discards the current assignment and saves the supplied text as the
+  whole new task. Include the full bounded scope, ownership, dependencies, checks,
+  resource limits, and commit permission. Use it to change tasks or consolidate
+  accumulated updates. The original `node.task` remains historical context.
+
+Use `kind: "message"` for informational notices that must not change the
+assignment, such as "Main advanced; no rebase needed." Messages cannot set
+`assignmentMode` or change permission. An instruction without `permission` also
+leaves permission unchanged. Appending does not restart completed work or
+permit follow-on work. Workers read `swarm_task` after an instruction because a
+steering message can be superseded before they act.
+
+Appends require a current assignment. They cannot revive a completed task.
+A broadcast append fails without saving any changes if any recipient has no
+current assignment, including a worker awaiting review. Use a message for a
+notice to all workers, or send an instruction to each active worker. Use
+`swarm_review` for a completed handoff, not an appended follow-on task.
+An explicit replacement still does not resume a review worker.
+
 `swarm_broadcast` sends one message or instruction to all nonterminal direct
 children in one atomic update. It includes workers awaiting review, but they read
 the message only if resumed. It excludes terminal children and grandchildren.
-Use it for shared base-update notices, resource limits, or instructions to finish
-only the assigned step and submit.
+Use `kind: "message"` for shared base-update notices. Use an appended instruction
+for shared resource limits or an order to finish only the assigned step and submit.
+Each recipient keeps its own task when appending.
+
+```json
+{"kind":"message","text":"Main advanced to b4238eb. No action required."}
+{"kind":"instruction","assignmentMode":"append","text":"Rebase onto b4238eb before your next code commit, then continue the remaining assigned work."}
+```
+
+Before this change, every instruction replaced the task. Existing callers that
+intend replacement must now send `assignmentMode: "replace"`.
 
 Handoff submission and its parent notification are saved atomically.
 `swarm_review` with `request-changes` saves the running state and resume instruction
@@ -151,8 +186,10 @@ A pause error names the handoff revision and describes a snapshot at the tool
 check. A delayed snapshot can be superseded by a later parent resume.
 
 A new parent directive, request-changes, restart task, or reload release
-supersedes older queued instructions. Superseded instructions stay in the saved
-message history but are not replayed to the worker. An explicit restart task
+supersedes older queued instructions. An appended instruction saves and delivers
+the full combined assignment, so superseding an unread message does not lose
+its update. Superseded instructions stay in the saved message history but are
+not replayed to the worker. An explicit restart task
 also clears the old resume signal. Historical handoffs remain separate from the
 current assignment and retain their review decisions.
 
@@ -223,7 +260,8 @@ submission in review shows the current handoff. Both labels retain separate code
 evidence; restarting a worker does not clear its handoff decision.
 `swarm_restart` accepts an optional `task` for the next bounded assignment.
 It saves that assignment before launch. `swarm_task.currentAssignment` exposes the
-latest parent instruction or restart assignment, separate from `historicalHandoff`.
+current task with appended instructions, explicit replacement, or restart assignment,
+separate from `historicalHandoff`.
 The original `node.task` remains available as context. Completed handoffs and their
 feedback do not authorize a new task. If no current assignment exists, the worker
 must ask the parent and wait. Instructions sent with `swarm_send` or
@@ -303,6 +341,8 @@ Tests cover temporary Git repositories, isolated tmux servers with fake workers,
 real Pi worker shutdown, concurrent state writes, routing and authority, review
 pauses, prompt injection, model reporting/filtering, independent delivery
 records, replacement of committed and dirty work, reload barrier recovery,
-explicit permissions, age-ordered reviews, bounded recurring review reminders,
+explicit permissions, repeated and concurrent appended instructions, explicit task
+replacement, atomic append rejection after completion, age-ordered reviews,
+bounded recurring review reminders,
 integrated-but-undecided indicators, and read-only job diagnostics. Launch tests make no model
 requests. End-to-end interactive orchestration and recovery audits remain pending.

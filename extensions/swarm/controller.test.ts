@@ -28,7 +28,7 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     await expect(swarm.stop(run.id, a.id, b.id)).rejects.toThrow("direct parent");
     await store.complete(run.id, a.id, "Done"); await swarm.review(run.id, run.root, a.id, "accept", "Verified");
     expect(live.has(a.id)).toBe(false); expect(stoppedJobs).toContain(a.id);
-    const checkpoint = await store.send(run.id, run.root, a.id, "instruction", "Old checkpoint; stop and wait");
+    const checkpoint = await store.send(run.id, run.root, a.id, "instruction", "Old checkpoint; stop and wait", undefined, undefined, "replace");
     await swarm.restart(run.id, run.root, a.id, { task: "Audit the next bounded slice; no builds." });
     expect(await store.inbox(run.id, a.id)).toEqual([]);
     expect((await store.read(run.id)).messages.find(message => message.id === checkpoint.id)?.superseded).toBe(true);

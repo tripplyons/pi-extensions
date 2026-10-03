@@ -20,6 +20,7 @@ import { ReviewReminders } from "./review-reminders.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
 const thinkingLevel = Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)));
+const assignmentMode = Type.Optional(Type.Union([Type.Literal("append"), Type.Literal("replace")], { description: "Instructions append to the current assignment by default. Use replace only for a complete new bounded task. Invalid for messages." }));
 const modelId = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
 // Workers may use the session's scoped models, or every authenticated model when no scope is set.
 function modelChoices(ctx: ExtensionContext) {
@@ -122,7 +123,7 @@ export default function install(pi: ExtensionAPI) {
         const senderName = sender?.name ?? "unknown worker";
         pi.sendMessage({
           customType: "swarm-message",
-          content: `Swarm ${message.kind} from ${senderName} (${message.from}):\n${message.text}`,
+          content: `Swarm ${message.kind} from ${senderName} (${message.from}):\n${message.text}${message.kind === "instruction" ? "\n\nRead swarm_task for the current assignment before acting. This message may have been superseded. An appended update does not restart completed work or authorize follow-on work." : ""}`,
           display: true,
           details: { runId: run.id, messageId: message.id, from: message.from, kind: message.kind },
         }, { triggerTurn: true, deliverAs: "steer" });
@@ -271,7 +272,7 @@ export default function install(pi: ExtensionAPI) {
         return completing || (name === "swarm_reload" && args.action === "checkpoint") ? { ...output, terminate: true } : output;
       } });
   }
-  tool("swarm_task", "Read your durable assignment and root objective.", empty, async (_, ctx) => {
+  tool("swarm_task", "Read your durable assignment and root objective. currentAssignment includes appended instructions; node.task is the original task, not authority to replay superseded work.", empty, async (_, ctx) => {
     const { run, node: loaded } = await active(ctx);
     const assignment = currentAssignment(loaded);
     const node = assignment ? await store.observeAssignment(run.id, loaded.id, assignment.generation, loaded.generation) : loaded;
@@ -322,12 +323,12 @@ export default function install(pi: ExtensionAPI) {
     const { run, node } = await active(ctx);
     return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: chooseModel(ctx, args.model), thinking: args.thinking ?? pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
   });
-  tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions; sibling messages are informational. Workers may report activity to their parent as working, waiting-instructions or waiting-dependency. Activity is a dated self-report, not proof of progress.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), activity: Type.Optional(Type.Union(["working", "waiting-instructions", "waiting-dependency"].map(value => Type.Literal(value)))), permission: Type.Optional(Type.Union(["released", "waiting-approval", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
-    const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text, args.activity, args.permission);
+  tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions. Instructions append to the durable assignment by default; assignmentMode=replace discards it and requires a complete new bounded task. Use kind=message for notices that must not change the assignment. Neither kind releases permission without an explicit permission update; instructions do not resume review workers. Sibling messages are informational. Workers may report activity to their parent as working, waiting-instructions or waiting-dependency. Activity is a dated self-report, not proof of progress.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), assignmentMode, activity: Type.Optional(Type.Union(["working", "waiting-instructions", "waiting-dependency"].map(value => Type.Literal(value)))), permission: Type.Optional(Type.Union(["released", "waiting-approval", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
+    const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text, args.activity, args.permission, args.assignmentMode);
   });
-  tool("swarm_broadcast", "Send one message or instruction to all nonterminal direct children in one atomic update. Workers awaiting review read it only if resumed. Does not stop running tools.", Type.Object({ kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), permission: Type.Optional(Type.Union(["released", "waiting-approval", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
+  tool("swarm_broadcast", "Send one message or instruction to all nonterminal direct children in one atomic update. Instructions append to each current assignment by default; assignmentMode=replace discards each assignment and requires a complete bounded task for every recipient. Append fails atomically if any recipient has no current assignment. Use kind=message for informational notices without assignment changes. Workers awaiting review read it only if resumed. Permission changes require instructions. Does not stop running tools.", Type.Object({ kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), assignmentMode, permission: Type.Optional(Type.Union(["released", "waiting-approval", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    const messages = await store.broadcast(run.id, node.id, args.kind, args.text, args.permission);
+    const messages = await store.broadcast(run.id, node.id, args.kind, args.text, args.permission, args.assignmentMode);
     return { recipients: messages.map(message => message.to), count: messages.length };
   });
   tool("swarm_complete", "Submit a self-contained handoff: outcome, branch/tested base/commits, files, exact checks/results, evidence, limitations/blockers and next steps. All descendants must be terminal. Then wait; call alone, with no other tools in the batch.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {

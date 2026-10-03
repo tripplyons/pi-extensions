@@ -13,7 +13,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | Isolated workers with reload barriers, permission waits, source versions, delivery-aware review reminders and health checks |
+| [swarm](extensions/swarm) | Isolated workers with task-preserving instructions, explicit task replacement, reload barriers, permission waits, review reminders and health checks |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |

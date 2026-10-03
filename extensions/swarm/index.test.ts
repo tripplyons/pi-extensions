@@ -95,7 +95,7 @@ test("workers pause after completion and resume only after parent review", async
       }]);
     }
 
-    await store.send(run.id, run.root, child.id, "instruction", "Historical checkpoint; do not resume audit");
+    await store.send(run.id, run.root, child.id, "instruction", "Historical checkpoint; do not resume audit", undefined, undefined, "replace");
     await store.send(run.id, run.root, child.id, "message", "Wait for review.");
     await new Promise(resolve => setTimeout(resolve, 1100));
     expect(h.sentMessages).toHaveLength(1);
@@ -166,7 +166,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
     expect((await h.call("swarm_tree", { nodeId: worker.id })).details.result).toBe("Detailed handoff ".repeat(100));
     expect((await h.call("swarm_tree", { nodeId: done.id })).details.status).toBe("accepted");
     await expect(h.call("swarm_tree", { nodeId: "unknown" })).rejects.toThrow("Unknown");
-    expect((await h.call("swarm_broadcast", { kind: "instruction", text: "Finish this step" })).details).toEqual({ recipients: [worker.id], count: 1 });
+    expect((await h.call("swarm_broadcast", { kind: "instruction", text: "Finish this step", assignmentMode: "replace" })).details).toEqual({ recipients: [worker.id], count: 1 });
     expect((await store.inbox(identity.run, worker.id))[0].text).toBe("Finish this step");
     await expect(h.command("swarm:start", "Again")).rejects.toThrow("already");
     h.ctx.sessionManager.getSessionId = () => "other";

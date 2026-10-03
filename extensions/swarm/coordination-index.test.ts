@@ -97,7 +97,8 @@ test("permission waits permit read-only inspection and housekeeping without rele
     await store.send(run.id, run.root, worker.id, "instruction", "Read revised guidance; keep implementation held", undefined, permission);
     const before = (await store.read(run.id)).nodes[worker.id].permission;
     const task = (await h.call("swarm_task", {})).details;
-    expect(task.currentAssignment.text).toBe("Read revised guidance; keep implementation held");
+    expect(task.currentAssignment.text).toContain("Task");
+    expect(task.currentAssignment.text).toContain("Read revised guidance; keep implementation held");
     expect(typeof task.currentAssignment.generation).toBe("number");
     expect(task.node.observedAssignment.generation).toBe(task.currentAssignment.generation);
     expect((await store.read(run.id)).nodes[worker.id].observedAssignment?.generation).toBe(task.currentAssignment.generation);

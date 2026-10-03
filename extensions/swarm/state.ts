@@ -14,6 +14,16 @@ export type Provenance = {
   snapshot: string; stagedPatch: string; unstagedPatch: string; untracked: { path: string; sha256: string }[];
 };
 export type Activity = "working" | "waiting-instructions" | "waiting-dependency";
+export type AssignmentMode = "append" | "replace";
+function validateAssignmentMode(kind: Message["kind"], mode?: AssignmentMode) {
+  if (mode !== undefined && (kind !== "instruction" || !["append", "replace"].includes(mode))) throw new Error("assignmentMode requires an instruction and must be append or replace");
+}
+function instructionText(node: Node, text: string, mode: AssignmentMode) {
+  if (mode === "replace") return text;
+  const assignment = currentAssignment(node);
+  if (!assignment) throw new Error("No current assignment to append to; use assignmentMode=replace with a new bounded task");
+  return `${assignment.text}\n\nAdditional parent instruction (preserve the task above; this update takes precedence where it conflicts):\n${text}`;
+}
 export function currentAssignment(node: Node) {
   const assignment = node.directive ?? (!node.result ? { text: node.task, source: "original" as const } : undefined);
   return assignment ? { ...assignment, generation: node.assignmentGeneration ?? 1 } : undefined;
@@ -55,7 +65,7 @@ export function handoffRecord(node: Node): Handoff | undefined {
   const status = node.status === "review" ? "awaiting-parent" : node.status === "accepted" ? "accepted" : node.status === "rejected" ? "rejected" : "unknown";
   return { revision: 1, status, feedback: node.feedback };
 }
-export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean; superseded?: boolean };
+export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean; superseded?: boolean; assignmentMode?: AssignmentMode };
 export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier> };
 const nonempty = (value: string, name: string) => { if (!value.trim()) throw new Error(`${name} must contain text`); };
 export function ownedChild(run: Run, actor: string, child: string) {
@@ -162,8 +172,9 @@ export class SwarmStore {
       return child;
     });
   }
-  async send(id: string, from: string, to: string, kind: Message["kind"], text: string, activity?: Activity, permission?: "released" | "waiting-approval" | "waiting-dependency") {
+  async send(id: string, from: string, to: string, kind: Message["kind"], text: string, activity?: Activity, permission?: "released" | "waiting-approval" | "waiting-dependency", assignmentMode?: AssignmentMode) {
     nonempty(text, "Message");
+    validateAssignmentMode(kind, assignmentMode);
     if (activity && !["working", "waiting-instructions", "waiting-dependency"].includes(activity)) throw new Error("Invalid activity");
     return this.update(id, run => {
       const sender = run.nodes[from], recipient = run.nodes[to];
@@ -181,7 +192,9 @@ export class SwarmStore {
       }
       if (!activity && sender.status === "running" && sender.parent === to && kind === "message") sender.activity = { status: "checking-in", detail: text, updated: message.created, source: "message" };
       if (kind === "instruction") {
-        setDirective(run, recipient, { text, source: "parent", created: message.created, messageId: message.id });
+        message.assignmentMode = assignmentMode ?? "append";
+        message.text = instructionText(recipient, text, message.assignmentMode);
+        setDirective(run, recipient, { text: message.text, source: "parent", created: message.created, messageId: message.id });
         recipient.activity = { status: "instruction-queued", detail: text, updated: message.created, source: "instruction" };
       }
       if (permission) {
@@ -192,8 +205,9 @@ export class SwarmStore {
       run.messages.push(message); return message;
     });
   }
-  async broadcast(id: string, actor: string, kind: Message["kind"], text: string, permission?: "released" | "waiting-approval" | "waiting-dependency") {
+  async broadcast(id: string, actor: string, kind: Message["kind"], text: string, permission?: "released" | "waiting-approval" | "waiting-dependency", assignmentMode?: AssignmentMode) {
     nonempty(text, "Message");
+    validateAssignmentMode(kind, assignmentMode);
     if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
     return this.update(id, run => {
       if (!run.nodes[actor]) throw new Error("Unknown swarm node");
@@ -202,7 +216,9 @@ export class SwarmStore {
       const messages: Message[] = children.map(node => ({ id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false }));
       if (kind === "instruction") for (const message of messages) {
         const node = run.nodes[message.to];
-        setDirective(run, node, { text, source: "parent", created, messageId: message.id });
+        message.assignmentMode = assignmentMode ?? "append";
+        message.text = instructionText(node, text, message.assignmentMode);
+        setDirective(run, node, { text: message.text, source: "parent", created, messageId: message.id });
         node.activity = { status: "instruction-queued", detail: text, updated: created, source: "instruction" };
         if (permission) {
           if (!["released", "waiting-approval", "waiting-dependency"].includes(permission)) throw new Error("Invalid permission");

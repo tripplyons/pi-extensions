@@ -21,7 +21,7 @@ test("current parent directives survive recovery without reviving completed assi
     expect(state.nodes[worker.id].activity).toBeUndefined();
     expect(coordinationGuidelines(state.nodes[run.root], state).join("\n")).toContain(`Worker (${worker.id}, revision 1, waiting`);
     await store.review(run.id, run.root, worker.id, "accept", "Stop; no follow-on work");
-    await store.send(run.id, run.root, worker.id, "instruction", "New bounded source-only audit");
+    await store.send(run.id, run.root, worker.id, "instruction", "New bounded source-only audit", undefined, undefined, "replace");
     state = await new SwarmStore(root).read(run.id);
     expect(currentAssignment(state.nodes[worker.id])?.text).toBe("New bounded source-only audit");
     expect(state.nodes[worker.id].handoff?.feedback).toBe("Stop; no follow-on work");
@@ -32,10 +32,10 @@ test("current parent directives survive recovery without reviving completed assi
     expect(panel(state, run.root, new Set([worker.id]), 300, (_color, text) => text).join("\n")).toContain("waiting-instructions");
     expect(state.nodes[worker.id].status).toBe("running");
     await expect(store.send(run.id, run.root, worker.id, "instruction", "Work", "working")).rejects.toThrow("Only running workers report activity");
-    await store.broadcast(run.id, run.root, "instruction", "Shared bounded correction");
+    await store.broadcast(run.id, run.root, "instruction", "Shared bounded correction", undefined, "replace");
     expect(currentAssignment((await store.read(run.id)).nodes[worker.id])?.text).toBe("Shared bounded correction");
     await store.send(run.id, worker.id, run.root, "message", "x".repeat(300), "working");
-    await store.send(run.id, run.root, worker.id, "instruction", "y".repeat(300));
+    await store.send(run.id, run.root, worker.id, "instruction", "y".repeat(300), undefined, undefined, "replace");
     state = await store.read(run.id);
     const compact = treeSnapshot(state).nodes.find(node => node.id === worker.id)!;
     expect(compact.activity?.detail).toHaveLength(241);
@@ -56,7 +56,7 @@ test("assignment generations expose observed scope and supersede queued historic
     await store.update(run.id, state => { state.nodes[worker.id].status = "running"; state.nodes[worker.id].generation = "launch-1"; });
     await store.observeAssignment(run.id, worker.id, 1, "launch-1");
     const old = await store.send(run.id, run.root, worker.id, "instruction", "Checkpoint and wait");
-    const latest = await store.send(run.id, run.root, worker.id, "instruction", "Released source-only audit", undefined, "released");
+    const latest = await store.send(run.id, run.root, worker.id, "instruction", "Released source-only audit", undefined, "released", "replace");
     expect((await store.inbox(run.id, worker.id)).map(message => message.id)).toEqual([latest.id]);
     let state = await store.read(run.id);
     expect(state.messages.find(message => message.id === old.id)).toMatchObject({ read: true, superseded: true });
@@ -89,7 +89,7 @@ test("automatic activity records events without guessing progress or replaying s
     await store.send(run.id, worker.id, run.root, "message", "Need approval", "waiting-instructions");
     const old = await store.send(run.id, run.root, worker.id, "instruction", "First scope");
     expect(await activity()).toMatchObject({ status: "instruction-queued", source: "instruction" });
-    const latest = await store.send(run.id, run.root, worker.id, "instruction", "Corrected scope");
+    const latest = await store.send(run.id, run.root, worker.id, "instruction", "Corrected scope", undefined, undefined, "replace");
     await store.update(run.id, state => {
       const node = state.nodes[worker.id];
       delete node.directive!.messageId;
@@ -107,7 +107,7 @@ test("automatic activity records events without guessing progress or replaying s
     await store.send(run.id, worker.id, run.root, "message", "Dependency unavailable", "waiting-dependency");
     await store.observeTool(run.id, worker.id, "swarm_tree");
     expect((await activity())?.status).toBe("waiting-dependency");
-    const [broadcast] = await store.broadcast(run.id, run.root, "instruction", "New approved scope");
+    const [broadcast] = await store.broadcast(run.id, run.root, "instruction", "New approved scope", undefined, "replace");
     expect((await activity())?.status).toBe("instruction-queued");
     await store.acknowledge(run.id, worker.id, broadcast.id);
     expect((await activity())?.status).toBe("instruction-delivered");

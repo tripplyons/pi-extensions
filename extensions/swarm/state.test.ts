@@ -22,7 +22,8 @@ test("durable tasks, sibling messages and parent-only authority", () => fixture(
   await expect(store.send(run.id, a.id, nephew.id, "message", "Hi")).rejects.toThrow("relay");
   await expect(store.send(run.id, a.id, run.root, "instruction", "Do this")).rejects.toThrow("parents");
   const other = new SwarmStore(store.root);
-  expect((await other.inbox(run.id, a.id))[0].text).toBe("Do the task");
+  expect((await other.inbox(run.id, a.id))[0].text).toContain("Task A");
+  expect((await other.inbox(run.id, a.id))[0].text).toContain("Do the task");
   const pending = await store.inbox(run.id, a.id);
   expect(pending).toHaveLength(1); // Failed delivery remains retryable.
   await expect(store.acknowledge(run.id, b.id, pending[0].id)).rejects.toThrow("belong");
