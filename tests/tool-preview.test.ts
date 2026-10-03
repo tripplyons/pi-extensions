@@ -1,6 +1,6 @@
 import tasks from "../extensions/tasks/index.ts";
 import todos from "../extensions/todos/index.ts";
-import { registerNativeToolRenderers } from "../extensions/presentation/native-tools.ts";
+import { registerCompactToolRenderers } from "../extensions/presentation/tool-renderers.ts";
 import askUser from "../extensions/ask-user/index.ts";
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -59,8 +59,7 @@ test("previews preserve raw JSON file contents and error text", () => {
 test("collapsed previews bound wrapped output; expanded previews show all lines", () => {
   const value = result({ output: "界".repeat(200) });
   const collapsed = render(value, false, 20);
-  expect(collapsed.length).toBeLessThanOrEqual(10);
-  expect(collapsed.join("\n")).toContain("Expand for more");
+  expect(collapsed.length).toBe(1);
   expect(render(value, true, 20).length).toBeGreaterThan(collapsed.length);
   for (const line of collapsed) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
 });
@@ -82,8 +81,9 @@ test("tool names use accent, without coloring Bash commands", () => {
 
 
 test("read preview keeps streamed path and line arguments in foreground", () => {
-  const h = harness(); registerNativeToolRenderers(h.pi);
-  const tool = h.tools.get("read");
+  const h = harness(); registerCompactToolRenderers(h.pi);
+  expect(h.tools.size).toBe(0);
+  const tool = h.toolRenderers[0]("read", () => undefined);
   for (const args of [{}, { path: "/tmp/file.ts" }, { path: "/tmp/file.ts", offset: 1, limit: 2000 }]) {
     const colors: [string, string][] = [];
     const theme = { bold: (text: string) => text, fg(color: string, text: string) { colors.push([color, text]); return text; } };

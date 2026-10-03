@@ -15,7 +15,23 @@ export function installCompactToolSpacing(): () => void {
       shell.paddingY = 0;
       shell.invalidate();
     }
-    return original.call(this, width);
+    // Pi appends images outside tool renderers, even when a renderer is collapsed.
+    const images = this as unknown as {
+      expanded: boolean;
+      imageComponents: typeof this.children;
+      imageSpacers: typeof this.children;
+    };
+    if (images.expanded) return original.call(this, width);
+    const children = this.children;
+    const imageComponents = images.imageComponents;
+    const hidden = new Set([...imageComponents, ...images.imageSpacers]);
+    this.children = children.filter(child => !hidden.has(child));
+    images.imageComponents = [];
+    try { return original.call(this, width); }
+    finally {
+      this.children = children;
+      images.imageComponents = imageComponents;
+    }
   };
   ToolExecutionComponent.prototype.render = render;
   return () => {

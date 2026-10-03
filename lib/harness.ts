@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 // Lightweight event harness. Runtime loading is checked separately through Pi RPC.
 export function harness() {
   const tools = new Map<string, any>();
+  const toolRenderers: any[] = [];
   const shortcuts = new Map<string, any>();
   const commands = new Map<string, any>();
   const hooks = new Map<string, Function[]>();
@@ -16,6 +17,7 @@ export function harness() {
   const pi: any = {
     registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut),
     registerTool: (tool: any) => tools.set(tool.name, tool),
+    registerToolRenderer: (resolver: any) => toolRenderers.push(resolver),
     registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (name: string, fn: Function) => hooks.set(name, [...(hooks.get(name) ?? []), fn]),
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data: structuredClone(data) }),
@@ -23,7 +25,7 @@ export function harness() {
     sendMessage: (message: any, options: any) => sentMessages.push({ message, options }),
     sendUserMessage: (message: string) => sent.push(message),
   };
-  return { pi, ctx, tools, commands, shortcuts, entries, sent, sentMessages,
+  return { pi, ctx, tools, toolRenderers, commands, shortcuts, entries, sent, sentMessages,
     async emit(name: string, event: any = {}) { if (name === "before_agent_start") event.systemPromptOptions ??= { sections: {}, promptGuidelines: [] }; const results = []; for (const fn of hooks.get(name) ?? []) results.push(await fn(event, ctx)); return results; },
     call(name: string, args: unknown, signal?: AbortSignal) { return tools.get(name).execute("test-call", args, signal, undefined, ctx); },
     command(name: string, args = "") { return commands.get(name).handler(args, ctx); },

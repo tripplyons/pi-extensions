@@ -1,4 +1,4 @@
-import { registerNativeToolRenderers } from "./native-tools.ts";
+import { registerCompactToolRenderers } from "./tool-renderers.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -22,7 +22,7 @@ export function usage(ctx: ExtensionContext) {
   return { cost, last };
 }
 export default function presentation(pi: ExtensionAPI) {
-  registerNativeToolRenderers(pi);
+  registerCompactToolRenderers(pi);
   let restoreToolSpacing: (() => void) | undefined;
   let restoreUserMessages: (() => void) | undefined;
   const install = (_event: unknown, ctx: ExtensionContext) => {

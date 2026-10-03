@@ -20,7 +20,7 @@ const supportsCodemode = version.status === 0 && parts && (Number(parts[1]) > 0 
     const agentDir = join(home, "agent");
     await mkdir(agentDir);
     await writeFile(join(agentDir, "settings.json"), JSON.stringify({
-      defaultTools: ["+codemode"], codemode: { mode: "only" },
+      defaultTools: ["+codemode", "+grep", "+find", "+ls"], codemode: { mode: "only" },
       retry: { enabled: false }, cacheWarming: "off",
     }));
     const probe = join(home, "probe.ts");

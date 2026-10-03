@@ -91,10 +91,10 @@ test("web previews show arguments and actual content, including legacy results",
     const value = { content: [{ type: "text", text: "Page title\nhttps://pi.dev\n[citation]\n" + "body\n".repeat(20) }], details: { provider: "openai-codex" } };
     const collapsed = tool.renderResult(value, { expanded: false }, theme, {}).render(100).join("\n");
     expect(collapsed).toContain("Page title");
-    expect(collapsed).toContain("[citation]");
-    expect(collapsed).toContain("Expand for more");
+    expect(collapsed.split("\n")).toHaveLength(1);
     const expanded = tool.renderResult(value, { expanded: true }, theme, {}).render(100).join("\n");
     expect(expanded.length).toBeGreaterThan(collapsed.length);
+    expect(expanded).toContain("[citation]");
     const error = tool.renderResult({ ...value, content: [{ type: "text", text: "Timed out" }] }, {}, theme, { isError: true }).render(100).join("\n");
     expect(error).toContain("Timed out");
   }

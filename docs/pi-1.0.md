@@ -1,6 +1,6 @@
 # Pi 1.0 migration
 
-The package targets Pi 1.0.0. Dotfiles owns settings, instructions, theme,
+The package requires Pi 1.0.1 or newer. Dotfiles owns settings, instructions, theme,
 keybindings, and custom model configuration. Credentials, caches, task output,
 and sessions stay outside both repositories.
 
@@ -8,7 +8,9 @@ and sessions stay outside both repositories.
 
 The startup logo, compact spacing, borderless input, footer, fuzzy completion,
 model shortcut, and thinking picker retain their look. Public Pi APIs handle
-headers, footers, editor customization, autocomplete, and native tool factories.
+headers, footers, editor customization, autocomplete, and tool-renderer resolution.
+Presentation does not re-register native tools. Collapsed calls use one row;
+expanded calls retain their registered result renderers.
 Small tested adapters remain where Pi has no public spacing hook.
 
 Background Bash, completion notifications, branch ownership, goals, swarm,
@@ -56,9 +58,8 @@ Review the targeted chezmoi diff before applying the Pi model configuration.
 Run the settings hook only after the new provider login succeeds. Restart for
 dependency and provider changes.
 
-## Upstream dependency warning
+## Dependencies
 
-`npm audit` reports one high-severity `brace-expansion` advisory in Pi 1.0.0's
-bundled dependency tree when the SDK test dependencies are installed.
-`npm audit fix` does not clear the bundled copy. The extension install uses
-`npm ci --omit=dev`; this does not patch the global Pi installation.
+The SDK test dependencies are pinned to Pi 1.0.1. `npm audit` reports no
+vulnerabilities for this lockfile. The extension install uses
+`npm ci --omit=dev`; update the global Pi installation separately.
