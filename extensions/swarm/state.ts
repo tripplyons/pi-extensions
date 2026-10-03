@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Worktree } from "./git.ts";
 export type Status = "starting" | "running" | "review" | "accepted" | "rejected" | "stopped" | "failed";
 export const terminal = (status: Status) => ["accepted", "rejected", "stopped", "failed"].includes(status);
+export type Handoff = { revision: number; status: "awaiting-parent" | "accepted" | "rejected" | "changes-requested" | "unknown"; feedback?: string };
 export type Evidence = { actor: string; text: string; recorded: string };
 export type Delivery = { revision: string; reviewed?: Evidence; tested?: Evidence; integrated?: Evidence };
 export type Provenance = {
@@ -13,14 +14,22 @@ export type Provenance = {
 };
 export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
-  launch?: { model?: string; thinking?: string };
+  launch?: { model?: string; thinking?: string; fast?: boolean };
   current?: { model: string; thinking: string };
   delivery?: Delivery[];
+  handoff?: Handoff;
   replacement?: { requested: string; successor?: string };
   predecessor?: string;
   provenance?: Provenance;
   worktree?: Worktree; branch?: string; session?: string; pane?: string; started?: string; result?: string; feedback?: string;
 };
+// Old running/stopped records cannot tell us whether their retained result was accepted.
+export function handoffRecord(node: Node): Handoff | undefined {
+  if (!node.result) return;
+  if (node.handoff) return node.handoff;
+  const status = node.status === "review" ? "awaiting-parent" : node.status === "accepted" ? "accepted" : node.status === "rejected" ? "rejected" : "unknown";
+  return { revision: 1, status, feedback: node.feedback };
+}
 export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean };
 export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[] };
 const nonempty = (value: string, name: string) => { if (!value.trim()) throw new Error(`${name} must contain text`); };
@@ -49,8 +58,9 @@ export class SwarmStore {
     return run;
   }
   async read(id: string): Promise<Run> {
-    const run = JSON.parse(await readFile(join(this.path(id), "run.json"), "utf8"));
+    const run: Run = JSON.parse(await readFile(join(this.path(id), "run.json"), "utf8"));
     if (run.version !== 1 || run.id !== id || !run.nodes?.[run.root] || !Array.isArray(run.messages)) throw new Error("Invalid swarm state");
+    for (const node of Object.values(run.nodes)) node.handoff ??= handoffRecord(node);
     return run;
   }
   private async save(run: Run) {
@@ -142,6 +152,7 @@ export class SwarmStore {
       const node = run.nodes[actor];
       if (!node?.parent || node.status !== "running") throw new Error("Only running workers submit results");
       if (descendants(run, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before completion");
+      node.handoff = { revision: (node.handoff?.revision ?? 0) + 1, status: "awaiting-parent" };
       node.status = "review"; node.result = result;
       node.delivery = node.delivery?.filter(record => record.revision !== "result");
       return node;
@@ -180,6 +191,8 @@ export class SwarmStore {
       if (node.status !== "review") throw new Error("Worker has no result awaiting review");
       if (!["accept", "reject", "request-changes"].includes(decision)) throw new Error("Invalid review decision");
       node.status = decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "running";
+      node.handoff = { revision: node.handoff?.revision ?? 1,
+        status: decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "changes-requested", feedback };
       node.feedback = feedback; return node;
     });
   }

@@ -5,7 +5,7 @@ import { join, isAbsolute } from "node:path";
 import { shellQuote } from "../../lib/common.ts";
 import { workerStart } from "./prompts.ts";
 const exec = promisify(execFile);
-export type Launch = { run: string; node: string; cwd: string; directory: string; executable?: string; model?: string; thinking?: string };
+export type Launch = { run: string; node: string; cwd: string; directory: string; executable?: string; model?: string; thinking?: string; fast?: boolean };
 export class Workers {
   constructor(readonly socket?: string) {}
   async tmux(...args: string[]) {
@@ -26,7 +26,7 @@ export class Workers {
     if (options.thinking) args.push("--thinking", options.thinking);
     args.push(workerStart);
     const script = join(options.directory, "worker.zsh");
-    await writeFile(script, `export PI_SWARM_RUN=${shellQuote(options.run)}\nexport PI_SWARM_NODE=${shellQuote(options.node)}\nexec ${args.map(shellQuote).join(" ")}\n`, { mode: 0o600 });
+    await writeFile(script, `export PI_SWARM_RUN=${shellQuote(options.run)}\nexport PI_SWARM_NODE=${shellQuote(options.node)}\nexport PI_SWARM_FAST_MODE=${shellQuote(options.fast ? "on" : "off")}\nexec ${args.map(shellQuote).join(" ")}\n`, { mode: 0o600 });
     // Each worker owns a separate attachable session. Never split or replace the user's pane.
     await this.tmux("new-session", "-d", "-s", name, "-c", options.cwd, `zsh ${shellQuote(script)}`);
     return { pane: name, session };

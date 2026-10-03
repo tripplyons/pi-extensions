@@ -9,7 +9,7 @@ export class Swarm {
   async owned(runId: string, actor: string, child: string) {
     return ownedChild(await this.store.read(runId), actor, child);
   }
-  async launch(run: Run, node: Node, options: Pick<Launch, "model" | "thinking"> = {}) {
+  async launch(run: Run, node: Node, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
     if (!node.worktree) throw new Error("Worker has no worktree");
     const launch = { ...node.launch, ...options };
     // Save before process creation so a failed launch can be retried faithfully.
@@ -22,7 +22,7 @@ export class Swarm {
       });
     } catch (error) { await this.workers.stop(node.id); throw error; }
   }
-  async spawn(runId: string, actor: string, name: string, task: string, mode?: DirtyMode, options: Pick<Launch, "model" | "thinking"> = {}) {
+  async spawn(runId: string, actor: string, name: string, task: string, mode?: DirtyMode, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
     const run = await this.store.read(runId);
     const parent = run.nodes[actor];
     if (!parent?.worktree) throw new Error("Unknown parent workspace");
@@ -39,7 +39,7 @@ export class Swarm {
       throw error;
     }
   }
-  async replace(runId: string, actor: string, child: string, name: string, task: string, testedBase: string, options: Pick<Launch, "model" | "thinking">) {
+  async replace(runId: string, actor: string, child: string, name: string, task: string, testedBase: string, options: Pick<Launch, "model" | "thinking" | "fast">) {
     if (!options.model?.trim()) throw new Error("Replacement requires an explicit target model");
     if (!testedBase.trim()) throw new Error("Replacement requires an explicit testedBase");
     const run = await this.store.read(runId);
@@ -105,7 +105,7 @@ export class Swarm {
     if (decision === "request-changes") await this.store.send(runId, actor, child, "instruction", feedback || "Revise the submitted result and resubmit for review.");
     return reviewed;
   }
-  async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking"> = {}) {
+  async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
     const run = await this.store.read(runId);
     const node = ownedChild(run, actor, child);
     if (await this.workers.alive(child)) throw new Error("Worker is already running");

@@ -13,7 +13,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | Isolated workers, model-aware summaries, graceful replacement, durable messages and separate handoff/code evidence |
+| [swarm](extensions/swarm) | Isolated workers with inherited fast mode, graceful replacement, durable handoff decisions and separate code evidence |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
@@ -27,7 +27,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
 | [models](extensions/models) | Model listing and selection |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
-| [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle |
+| [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
 | [goal](extensions/goal) | Persistent objectives and steering continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |

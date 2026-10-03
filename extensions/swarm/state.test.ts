@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SwarmStore } from "./state.ts";
+import { handoffStatus, treeSnapshot } from "./prompts.ts";
 async function fixture(run: (store: SwarmStore) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-state-"));
   try { await run(new SwarmStore(root)); } finally { await rm(root, { recursive: true, force: true }); }
@@ -73,6 +74,19 @@ test("handoff acceptance never implies code review, tests or integration", () =>
   await store.complete(run.id, a.id, "Updated handoff");
   records = (await store.read(run.id)).nodes[a.id].delivery!;
   expect(records).toHaveLength(2); expect(records[1].tested?.text).toContain("10 pass");
+}));
+
+test("legacy retained results report unknown decisions, not a phantom review backlog", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const a = await store.reserve(run.id, run.root, "A", "Task");
+  await store.update(run.id, state => { Object.assign(state.nodes[a.id], { status: "running", result: "Retained handoff", feedback: "Old feedback" }); });
+  const restored = await store.read(run.id);
+  expect(handoffStatus(restored.nodes[a.id])).toBe("unknown");
+  expect(treeSnapshot(restored).nodes.find(node => node.id === a.id)).toMatchObject({ handoff: "unknown", handoffRevision: 1 });
+  await store.complete(run.id, a.id, "New handoff");
+  await store.review(run.id, run.root, a.id, "reject", "Rejected");
+  await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
+  expect((await new SwarmStore(store.root).read(run.id)).nodes[a.id].handoff).toEqual({ revision: 2, status: "rejected", feedback: "Rejected" });
 }));
 
 test("concurrent replacement starts reserve only one successor", () => fixture(async store => {

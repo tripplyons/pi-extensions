@@ -1,4 +1,4 @@
-import { terminal, type Run, type Node } from "./state.ts";
+import { handoffRecord, terminal, type Run, type Node } from "./state.ts";
 
 export const workerStart = "Read your durable assignment with swarm_task, then carry out only that bounded step. You are a swarm worker. Ask your parent instead of prompting the user. Submit a self-contained handoff with swarm_complete, called alone. Never integrate worker branches into the parent's branch or push. Sync a base branch into your own branch only when instructed.";
 
@@ -20,11 +20,7 @@ export function coordinationGuidelines(node: Node): string[] {
 }
 
 export function handoffStatus(node: Node) {
-  if (!node.result) return "none";
-  if (node.status === "review") return "awaiting-parent";
-  if (node.status === "accepted") return "accepted";
-  if (node.status === "rejected") return "rejected";
-  return "needs-review";
+  return handoffRecord(node)?.status ?? "none";
 }
 
 export function treeSnapshot(run: Run, includeTerminal = false, model?: string) {
@@ -38,7 +34,7 @@ export function treeSnapshot(run: Run, includeTerminal = false, model?: string) 
       branch: node.branch, cwd: node.worktree?.cwd, started: node.started,
       launch: node.launch, current: node.current, effectiveModel: node.current?.model ?? node.launch?.model,
       modelSource: node.current ? "session" : node.launch?.model ? "launch" : "unknown",
-      handoff: handoffStatus(node),
+      handoff: handoffStatus(node), handoffRevision: handoffRecord(node)?.revision,
       code: { source: "parent-reported", records: node.delivery?.map(record => ({ revision: record.revision, reviewed: !!record.reviewed, tested: !!record.tested, integrated: !!record.integrated })) ?? [],
         coverage: "Only listed revisions have evidence; other work is unrecorded. Handoff acceptance does not review, test or integrate code." },
       replacement: node.replacement, predecessor: node.predecessor,

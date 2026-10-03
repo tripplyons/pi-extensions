@@ -11,7 +11,14 @@ export default function fastMode(pi: ExtensionAPI) {
   let enabled = false;
   const key = "pi:fast";
   const display = (ctx: ExtensionContext) => ctx.ui.setStatus("fast", enabled ? "fast" : undefined);
-  const load = (_event: unknown, ctx: ExtensionContext) => { enabled = restore<boolean>(ctx, key) ?? false; display(ctx); };
+  const load = (_event: unknown, ctx: ExtensionContext) => {
+    const saved = restore<boolean>(ctx, key);
+    const inherited = process.env.PI_SWARM_RUN && process.env.PI_SWARM_NODE && ["on", "off"].includes(process.env.PI_SWARM_FAST_MODE ?? "");
+    enabled = saved ?? !!(inherited && process.env.PI_SWARM_FAST_MODE === "on" && ["openai", "openai-codex"].includes(ctx.model?.provider ?? ""));
+    // Seed once. A worker's later toggle and branch-specific state take precedence.
+    if (saved === undefined && inherited) pi.appendEntry(key, enabled);
+    display(ctx);
+  };
   pi.on("session_start", load);
   pi.on("session_tree", load);
   function setEnabled(value: boolean, ctx: ExtensionContext) {

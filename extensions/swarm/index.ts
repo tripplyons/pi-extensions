@@ -176,7 +176,7 @@ export default function install(pi: ExtensionAPI) {
   });
   tool("swarm_spawn", "Spawn one bounded step in an isolated worktree. Include scope, owned files, dependencies, checks, resource limits and commit permission. Workers do not inherit your conversation. Dirty trees require explicit dirtyMode. Maximum depth three.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking: pi.getThinkingLevel() });
+    return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking: pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
   });
   tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions; sibling messages are informational.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text);
@@ -202,7 +202,7 @@ export default function install(pi: ExtensionAPI) {
     if (args.action === "request") return store.requestReplacement(run.id, node.id, args.nodeId);
     if (args.action !== "start") throw new Error("Invalid replacement action");
     for (const field of ["name", "task", "model", "testedBase"] as const) if (!args[field]?.trim()) throw new Error(`Replacement start requires ${field}`);
-    return (await controller()).replace(run.id, node.id, args.nodeId, args.name, args.task, args.testedBase, { model: args.model, thinking: args.thinking ?? pi.getThinkingLevel() });
+    return (await controller()).replace(run.id, node.id, args.nodeId, args.name, args.task, args.testedBase, { model: args.model, thinking: args.thinking ?? pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
   });
   tool("swarm_observe", "Capture bounded terminal output from a direct child.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).owned(run.id, node.id, args.nodeId); return workers.observe(args.nodeId, args.lines);

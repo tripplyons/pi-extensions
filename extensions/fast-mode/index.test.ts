@@ -19,6 +19,36 @@ test("fast preference restores from active branch, off is always available", asy
   expect((await h.emit("before_provider_request", { payload: {} }))[0]).toBeUndefined();
 });
 
+test("workers inherit priority once, with saved preferences and provider gating", async () => {
+  const keys = ["PI_SWARM_RUN", "PI_SWARM_NODE", "PI_SWARM_FAST_MODE"] as const;
+  const previous = keys.map(key => process.env[key]);
+  try {
+    process.env.PI_SWARM_RUN = "run"; process.env.PI_SWARM_NODE = "worker";
+    for (const { mode, saved, provider, expected, worker } of [
+      { mode: "on", provider: "openai", expected: true, worker: true },
+      { mode: "off", provider: "openai-codex", expected: false, worker: true },
+      { mode: "on", saved: false, provider: "openai", expected: false, worker: true },
+      { mode: "off", saved: true, provider: "openai-codex", expected: true, worker: true },
+      { mode: "on", provider: "anthropic", expected: false, worker: true },
+      { mode: "on", provider: "openai", expected: false, worker: false },
+    ]) {
+      process.env.PI_SWARM_FAST_MODE = mode;
+      if (worker) process.env.PI_SWARM_NODE = "worker"; else delete process.env.PI_SWARM_NODE;
+      const h = harness(); install(h.pi); h.ctx.model = { provider };
+      if (saved !== undefined) h.pi.appendEntry("pi:fast", saved);
+      await h.emit("session_start");
+      expect((await h.emit("before_provider_request", { payload: {} }))[0]).toEqual(expected ? { service_tier: "priority" } : undefined);
+      if (worker) expect(h.entries.at(-1).data).toBe(expected);
+      await h.command("fast", "off");
+      await h.emit("session_start");
+      await h.emit("session_tree");
+      expect((await h.emit("before_provider_request", { payload: {} }))[0]).toBeUndefined();
+    }
+  } finally {
+    keys.forEach((key, i) => { if (previous[i] === undefined) delete process.env[key]; else process.env[key] = previous[i]; });
+  }
+});
+
 test("Ctrl+F toggles the persisted request tier and can turn off on any provider", async () => {
   const h = harness(); install(h.pi);
   h.ctx.model = { provider: "openai-codex" };

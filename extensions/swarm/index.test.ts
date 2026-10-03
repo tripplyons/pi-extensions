@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import install from "./index.ts";
 import { SwarmStore } from "./state.ts";
+import { Workers, type Launch } from "./worker.ts";
+import { git } from "./git.ts";
 import { harness } from "../../lib/harness.ts";
 test("inbox messages reach the session as readable notifications", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
@@ -190,6 +192,45 @@ test("compact tree exposes current models, exact filtering and independent deliv
     await expect(h.call("swarm_tree", { nodeId: worker.id, model: "openai/other" })).rejects.toThrow("omit nodeId");
   } finally {
     await h.emit("session_shutdown");
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn and replacement inherit the spawning parent's fast preference", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-swarm-fast-"));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  const original = { start: Workers.prototype.start, stop: Workers.prototype.stop, alive: Workers.prototype.alive };
+  const launches: Launch[] = [];
+  Workers.prototype.start = async options => { launches.push(options); return { pane: options.node, session: join(options.directory, "session.jsonl") }; };
+  Workers.prototype.stop = async () => {};
+  Workers.prototype.alive = async () => false;
+  const h = harness(); install(h.pi);
+  try {
+    const repo = join(root, "repo"); await git(root, ["init", "-b", "main", repo]);
+    await git(repo, ["config", "user.name", "Test"]); await git(repo, ["config", "user.email", "test@example.invalid"]);
+    await writeFile(join(repo, "file"), "original"); await git(repo, ["add", "."]); await git(repo, ["commit", "-m", "Initial"]);
+    const base = await git(repo, ["rev-parse", "HEAD"]);
+    h.ctx.cwd = repo; h.ctx.model = { provider: "openai", id: "test-model" };
+    await h.command("swarm:start", "Build feature");
+    const identity = h.entries.at(-1).data;
+    h.pi.appendEntry("pi:fast", true);
+    const first = (await h.call("swarm_spawn", { name: "First", task: "Task" })).details;
+    expect(launches.at(-1).fast).toBe(true);
+    expect(first.launch.fast).toBe(true);
+    h.pi.appendEntry("pi:fast", false);
+    await h.call("swarm_spawn", { name: "Second", task: "Task" });
+    expect(launches.at(-1).fast).toBe(false);
+    const store = new SwarmStore(join(root, "swarm"));
+    await h.call("swarm_replace", { nodeId: first.id, action: "request" });
+    await store.complete(identity.run, first.id, "Accepted task");
+    await store.review(identity.run, identity.node, first.id, "accept", "Received");
+    const next = (await h.call("swarm_replace", { nodeId: first.id, action: "start", name: "Next", task: "Continue", model: "openai/next-model", testedBase: base })).details;
+    expect(next.launch.fast).toBe(false);
+    expect(launches.at(-1)).toMatchObject({ model: "openai/next-model", fast: false });
+  } finally {
+    await h.emit("session_shutdown");
+    Object.assign(Workers.prototype, original);
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }

@@ -3,7 +3,10 @@
 `/swarm:start <objective>` activates fifteen swarm tools. Activation belongs to
 the root session branch. Workers run in attachable tmux sessions with dedicated
 Pi session files. They load the user's configured extensions and inherit the
-model and thinking level at spawn. Tasks and messages live under
+model, thinking level, and fast-mode preference at spawn. A replacement inherits
+the spawning parent's current fast-mode preference. This requests priority service
+only for OpenAI models and can affect billing. Parent toggles do not change live
+workers. Restarts keep the worker's own saved fast-mode preference. Tasks and messages live under
 `~/.pi/agent/swarm` (`PI_CODING_AGENT_DIR` overrides this).
 
 ## Assignments and handoffs
@@ -18,7 +21,7 @@ inventing substitute behavior or starting follow-on work.
 `swarm_task` returns the objective, full node record, parent ID and workspace,
 and nonterminal sibling IDs. `swarm_tree` returns compact summaries by default:
 active and terminal counts, status, branch, workspace, task preview, launch model,
-reported current model and thinking level, handoff state, and code evidence.
+reported current model and thinking level, handoff state and revision, and code evidence.
 `finished` in the structured counts means terminal workers, not delivered code.
 Pass `nodeId` for the full assignment and result, including a terminal worker.
 Pass `includeTerminal: true` to list retained workers too. Pass `model` with an
@@ -40,8 +43,17 @@ the integrated result.
 ### Code evidence
 
 Handoff state and code evidence are separate. Compact summaries show `handoff`
-as `none`, `awaiting-parent`, `accepted`, `rejected`, or `needs-review`. Accepting
-a handoff does not mark any revision reviewed, tested, or integrated.
+as `none`, `awaiting-parent`, `accepted`, `rejected`, `changes-requested`, or
+`unknown`. The full node stores the latest handoff revision, decision, and review
+feedback independently of its process status. Restarting or stopping a worker
+preserves that decision. Each new submission increments the handoff revision and
+sets it to `awaiting-parent`. Accepting a handoff does not mark any code revision
+reviewed, tested, or integrated.
+
+Old records with an accepted, rejected, or awaiting-review lifecycle status are
+migrated on load. Old running or stopped records with a retained result but no
+saved decision show `unknown`, not a review backlog. The lost decision cannot be
+recovered from lifecycle status alone.
 
 Use `swarm_record` as the direct parent to record one independent stage:
 

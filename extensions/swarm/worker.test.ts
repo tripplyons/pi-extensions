@@ -11,8 +11,8 @@ test("worker PTY launch, environment, literal arguments, capture and restart", a
   const node = randomUUID(), run = randomUUID();
   const executable = join(root, "fake worker");
   try {
-    await writeFile(executable, '#!/bin/zsh\nprintf "%s\\n" "$PI_SWARM_NODE" "$PI_SWARM_RUN" "$@" > args\nprintf "WORKER READY\\n"\nwhile true; do sleep 1; done\n', { mode: 0o700 });
-    const options = { run, node, cwd: root, directory: join(root, "state"), executable, model: "provider/model", thinking: "high" };
+    await writeFile(executable, '#!/bin/zsh\nprintf "%s\\n" "$PI_SWARM_NODE" "$PI_SWARM_RUN" "$PI_SWARM_FAST_MODE" "$@" > args\nprintf "WORKER READY\\n"\nwhile true; do sleep 1; done\n', { mode: 0o700 });
+    const options = { run, node, cwd: root, directory: join(root, "state"), executable, model: "provider/model", thinking: "high", fast: true };
     const launched = await workers.start(options);
     let output = "";
     for (let i = 0; i < 50; i++) {
@@ -22,14 +22,15 @@ test("worker PTY launch, environment, literal arguments, capture and restart", a
     }
     expect(output).toContain("WORKER READY");
     const args = (await readFile(join(root, "args"), "utf8")).split("\n");
-    expect(args.slice(0, 2)).toEqual([node, run]);
+    expect(args.slice(0, 3)).toEqual([node, run, "on"]);
     expect(args).not.toContain("--no-extensions");
     expect(args).not.toContain("--extension");
     expect(args).toContain(launched.session);
     expect(await workers.alive(node)).toBe(true);
     await expect(workers.start(options)).rejects.toThrow();
     await workers.stop(node); expect(await workers.alive(node)).toBe(false);
-    expect((await workers.start(options)).session).toBe(launched.session);
+    expect((await workers.start({ ...options, fast: false })).session).toBe(launched.session);
+    expect(await readFile(join(options.directory, "worker.zsh"), "utf8")).toContain("export PI_SWARM_FAST_MODE='off'");
     await workers.stop(node);
   } finally {
     await workers.tmux("kill-server").catch(() => {});

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { git } from "./git.ts";
 import { SwarmStore } from "./state.ts";
 import { Swarm } from "./controller.ts";
+import { treeSnapshot } from "./prompts.ts";
+import { panel } from "./panel.ts";
 test("controller connects isolation, review, jobs, restart and guarded cleanup", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-controller-"));
   const live = new Set<string>(), stoppedJobs: string[] = [];
@@ -21,16 +23,37 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     const run = await store.create("session", repo, "Objective");
     const swarm = new Swarm(store, workers, async node => { stoppedJobs.push(node.id); });
     const a = await swarm.spawn(run.id, run.root, "A", "Task");
-    const b = await swarm.spawn(run.id, run.root, "B", "Task", undefined, { model: "openai-codex/test-model", thinking: "high" });
+    const b = await swarm.spawn(run.id, run.root, "B", "Task", undefined, { model: "openai-codex/test-model", thinking: "high", fast: true });
     expect(a.status).toBe("running");
     await expect(swarm.stop(run.id, a.id, b.id)).rejects.toThrow("direct parent");
     await store.complete(run.id, a.id, "Done"); await swarm.review(run.id, run.root, a.id, "accept", "Verified");
     expect(live.has(a.id)).toBe(false); expect(stoppedJobs).toContain(a.id);
+    await swarm.restart(run.id, run.root, a.id);
+    let snapshot = await new SwarmStore(store.root).read(run.id);
+    expect(snapshot.nodes[a.id]).toMatchObject({ status: "running", result: "Done", handoff: { revision: 1, status: "accepted", feedback: "Verified" } });
+    expect(treeSnapshot(snapshot).nodes.find(node => node.id === a.id)).toMatchObject({ handoff: "accepted", handoffRevision: 1 });
+    expect(panel(snapshot, run.root, live, 300, (_, text) => text).join("\n")).toContain("handoff accepted");
+    await store.complete(run.id, a.id, "Updated");
+    expect((await store.read(run.id)).nodes[a.id].handoff).toEqual({ revision: 2, status: "awaiting-parent" });
+    await swarm.review(run.id, run.root, a.id, "request-changes", "Fix check");
+    expect((await store.read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "changes-requested" });
+    await store.complete(run.id, a.id, "Fixed");
+    await swarm.review(run.id, run.root, a.id, "accept", "Verified again");
+    // Migrate an old accepted record before restart overwrites its lifecycle status.
+    await store.update(run.id, state => { delete state.nodes[a.id].handoff; });
+    await swarm.restart(run.id, run.root, a.id);
+    await swarm.stop(run.id, run.root, a.id);
+    snapshot = await new SwarmStore(store.root).read(run.id);
+    expect(snapshot.nodes[a.id]).toMatchObject({ status: "stopped", handoff: { revision: 1, status: "accepted" } });
+    await swarm.restart(run.id, run.root, a.id);
+    await store.complete(run.id, a.id, "Final");
+    await swarm.review(run.id, run.root, a.id, "accept", "Final review");
     await swarm.stop(run.id, run.root, b.id);
     await swarm.restart(run.id, run.root, b.id); expect(live.has(b.id)).toBe(true);
     expect(launches.at(-1).model).toBe("openai-codex/test-model");
     expect(launches.at(-1).thinking).toBe("high");
-    expect((await store.read(run.id)).nodes[b.id].launch).toEqual({ model: "openai-codex/test-model", thinking: "high" });
+    expect(launches.at(-1).fast).toBe(true);
+    expect((await store.read(run.id)).nodes[b.id].launch).toEqual({ model: "openai-codex/test-model", thinking: "high", fast: true });
     const start = workers.start;
     workers.start = async () => { throw new Error("launcher unavailable"); };
     await expect(swarm.spawn(run.id, run.root, "C", "Recover launch", undefined,
