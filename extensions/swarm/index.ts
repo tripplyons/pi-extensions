@@ -93,13 +93,16 @@ export default function install(pi: ExtensionAPI) {
         alerted.add(alert);
       }
       if (node.parent && (node.status === "review" || terminal(node.status))) return;
-      const reminder = ctx.hasPendingMessages() ? undefined : reviewReminders.next(run, node.id);
+      const reminder = reviewReminders.next(run, node.id);
       if (reminder) {
         ctx.ui.notify("Swarm review backlog needs a parent decision. Use swarm_reviews; no automatic decisions.", "warning");
         pi.sendMessage({ customType: "swarm-review-reminder", content: reminder, display: true,
-          details: { runId: run.id, owner: node.id, pending: queue.length, overdue, integrated },
+          details: { runId: run.id, owner: node.id, pending: queue.length, overdue, integrated, queuedAt: reviewReminders.snapshot(run, node.id).queuedAt },
         }, { triggerTurn: true, deliverAs: "steer" });
       }
+      const reminderState = reviewReminders.snapshot(run, node.id);
+      ctx.ui.setStatus("swarm-review-reminder", reminderState.state === "idle" ? undefined :
+        `swarm review reminder: ${reminderState.state} ${reminderState.queuedAt ?? reminderState.deliveredAt ?? reminderState.scheduledAt}${reminderState.state === "delivered" && reminderState.scheduledAt ? `; next ${reminderState.scheduledAt}` : ""}`);
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
         if (message.kind === "instruction" && !(await store.inbox(run.id, node.id)).some(entry => entry.id === message.id)) continue;
@@ -161,6 +164,7 @@ export default function install(pi: ExtensionAPI) {
     if (timer) clearInterval(timer);
     reviewReminders.reset();
     ctx.ui.setStatus("swarm-review", undefined);
+    ctx.ui.setStatus("swarm-review-reminder", undefined);
     identity = process.env.PI_SWARM_NODE && process.env.PI_SWARM_RUN
       ? { run: process.env.PI_SWARM_RUN, node: process.env.PI_SWARM_NODE } : restore<Identity>(ctx, key);
     if (identity) {
@@ -168,6 +172,12 @@ export default function install(pi: ExtensionAPI) {
       await saveCurrent(ctx); timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
     if (view) { if (identity) await show(ctx); else hide(ctx); }
   };
+  pi.on("message_end", (event) => {
+    if (event.message.role !== "custom" || event.message.customType !== "swarm-review-reminder") return;
+    const details = event.message.details as { runId?: string; owner?: string; queuedAt?: string } | undefined;
+    if (typeof details?.runId !== "string" || typeof details.owner !== "string" || typeof details.queuedAt !== "string") return;
+    reviewReminders.delivered(details.runId, details.owner, details.queuedAt);
+  });
   pi.on("session_start", load);
   pi.on("session_tree", load);
   pi.on("before_agent_start", async (event, ctx) => {
@@ -269,10 +279,11 @@ export default function install(pi: ExtensionAPI) {
   });
   tool("swarm_reviews", "List your pending direct-child handoffs oldest first, with age, overdue state, review owner and parent-reported integrated revisions. Set nodeId to inspect the full handoff. Decisions use swarm_review and do not imply code integration.", Type.Object({ nodeId: Type.Optional(Type.String()) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    if (!args.nodeId) return reviews(run, node.id);
+    const reminder = reviewReminders.snapshot(run, node.id);
+    if (!args.nodeId) return reviews(run, node.id).map(item => ({ ...item, reminder }));
     const worker = await (await controller()).owned(run.id, node.id, args.nodeId);
     if (worker.status !== "review") throw new Error("Worker has no result awaiting review");
-    return { ...reviews(run, node.id).find(item => item.nodeId === worker.id), result: worker.result, delivery: worker.delivery };
+    return { ...reviews(run, node.id).find(item => item.nodeId === worker.id), reminder, result: worker.result, delivery: worker.delivery };
   });
   tool("swarm_health", "Read-only worker process, job, and quiet-activity diagnostics. No automatic stop or restart. Known holds do not imply a stalled worker.", Type.Object({ quiet_seconds: Type.Optional(Type.Integer({ minimum: 1 })) }), async (args, ctx) => {
     const { run, node } = await active(ctx);

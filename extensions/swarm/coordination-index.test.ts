@@ -37,11 +37,12 @@ test("overdue direct-child backlog steers the parent once and preserves independ
     for (let i = 0; i < workers.length; i++) state.nodes[workers[i].id].handoff!.submitted = new Date(Date.now() - (900 - i) * 1000).toISOString();
   });
   const statuses: string[] = [];
-  h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "swarm-review") statuses.push(text); };
+  const reminderStatuses: string[] = [];
+  h.ctx.ui.setStatus = (key: string, text: string) => {
+    if (key === "swarm-review") statuses.push(text);
+    if (key === "swarm-review-reminder") reminderStatuses.push(text);
+  };
   const reminders = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-review-reminder");
-  await new Promise(resolve => setTimeout(resolve, 1100));
-  expect(reminders()).toHaveLength(0);
-  h.ctx.hasPendingMessages = () => false;
   const deadline = Date.now() + 4000;
   while (!reminders().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
   expect(reminders()).toHaveLength(1);
@@ -49,8 +50,17 @@ test("overdue direct-child backlog steers the parent once and preserves independ
   expect(reminders()[0].message.content).toContain("1 more");
   expect(reminders()[0].message.content).toContain("code integration recorded, handoff undecided");
   expect(statuses).toContain("swarm: 4 awaiting parent review (4 overdue; 1 with recorded integration, undecided)");
+  expect(reminderStatuses.at(-1)).toContain("queued");
+  const queue = (await h.call("swarm_reviews", {})).details;
+  expect(queue[0].reminder).toMatchObject({ state: "queued", queuedAt: expect.any(String) });
   await new Promise(resolve => setTimeout(resolve, 1100));
   expect(reminders()).toHaveLength(1);
+  await h.emit("message_end", { message: { ...reminders()[0].message, role: "custom" } });
+  const inspected = (await h.call("swarm_reviews", { nodeId: workers[0].id })).details;
+  expect(inspected.reminder).toMatchObject({ state: "delivered", deliveredAt: expect.any(String), scheduledAt: expect.any(String) });
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(reminders()).toHaveLength(1);
+  expect(reminderStatuses.at(-1)).toContain("delivered");
   const node = (await store.read(identity.run)).nodes[workers[0].id];
   expect(node.handoff?.status).toBe("awaiting-parent"); expect(node.status).toBe("review");
   expect(node.delivery?.[0].reviewed).toBeUndefined(); expect(node.delivery?.[0].tested).toBeUndefined();

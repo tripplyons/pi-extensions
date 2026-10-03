@@ -244,16 +244,23 @@ activity; a request for changes records a new queued instruction.
 The parent prompt lists the three oldest pending direct-child reviews on each
 new turn, plus the remaining count. `swarm_reviews` lists the full queue with
 submission times, wait ages, review owners, overdue state, and parent-reported
-integrated revisions. Pass `nodeId` to inspect a full handoff. `/swarm:reviews`
+integrated revisions. Each item also includes the owner's reminder state and
+scheduled, queued, and delivered timestamps. Pass `nodeId` to inspect a full handoff. `/swarm:reviews`
 offers inspect, accept, request-changes, and reject with feedback. Inspection
 does not record a decision. The parent must still read the diff and evidence.
 
 Handoffs become overdue after 300 seconds. While a direct-child backlog remains
-overdue, the extension sends the parent one aggregate steering reminder every
-five minutes. It lists up to three handoffs, oldest first, and asks for explicit
-`swarm_review` decisions before follow-on assignments. A busy parent receives it
-at a tool boundary; an idle parent gets a new turn. Reminders wait while the
-session already has pending messages so they do not pile up. Reminders do not cancel tools,
+overdue, the extension queues one aggregate steering reminder, even when other
+session messages are pending. It lists up to three handoffs, oldest first, and
+asks for explicit `swarm_review` decisions before follow-on assignments. A busy
+parent receives it at a tool boundary; an idle parent gets a new turn. Only one
+review reminder may remain queued in the current extension runtime. Pi's
+`message_end` event confirms delivery to the conversation, not that the parent
+read it or made a decision. The next reminder waits five minutes after delivery.
+The status line shows scheduled, queued, or delivered state with timestamps;
+`swarm_reviews` exposes the same state and the next scheduled time. There is no
+pending-message deferral state because other messages do not block queueing.
+Reminders do not cancel tools,
 accept handoffs, change permissions, stop workers, or integrate branches. Each
 parent handles its own direct children; ancestor sessions do not send reminders
 for a descendant's queue. Resolved, resumed, and stopped workers leave the queue.

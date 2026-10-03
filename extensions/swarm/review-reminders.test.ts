@@ -20,9 +20,15 @@ function fixture(count = 1) {
 test("reminders steer once per five minutes and stop after explicit decisions", () => {
   const run = fixture(), reminders = new ReviewReminders();
   expect(reminders.next(run, "root", start + 300_999)).toBeUndefined();
+  expect(reminders.snapshot(run, "root", start + 300_999)).toMatchObject({ state: "scheduled", scheduledAt: new Date(start + 301_000).toISOString() });
   expect(reminders.next(run, "root", start + 301_000)).toContain("worker-1");
+  expect(reminders.snapshot(run, "root", start + 301_000)).toMatchObject({ state: "queued", queuedAt: new Date(start + 301_000).toISOString() });
+  expect(reminders.next(run, "root", start + 900_000)).toBeUndefined();
+  expect(reminders.delivered("run", "root", new Date(start + 301_000).toISOString(), start + 301_000)).toBe(true);
+  expect(reminders.snapshot(run, "root", start + 301_000)).toMatchObject({ state: "delivered", deliveredAt: new Date(start + 301_000).toISOString(), scheduledAt: new Date(start + 601_000).toISOString() });
   expect(reminders.next(run, "root", start + 600_999)).toBeUndefined();
   expect(reminders.next(run, "root", start + 601_000)).toContain("overdue");
+  reminders.delivered("run", "root", new Date(start + 601_000).toISOString(), start + 601_000);
   for (const status of ["accepted", "rejected", "running", "stopped"] as const) {
     run.nodes["worker-1"].status = status;
     expect(reminders.next(run, "root", start + 901_000)).toBeUndefined();
@@ -31,6 +37,23 @@ test("reminders steer once per five minutes and stop after explicit decisions", 
   run.nodes["worker-1"].handoff = { revision: 2, status: "awaiting-parent", submitted: new Date(start + 901_000).toISOString() };
   expect(reminders.next(run, "root", start + 901_000)).toBeUndefined();
   expect(reminders.next(run, "root", start + 1_201_000)).toContain("revision 2");
+});
+
+test("queued reminders survive a long delivery wait and cadence starts at matching delivery", () => {
+  const run = fixture(), reminders = new ReviewReminders();
+  const queued = start + 301_000, delivered = start + 1_501_000;
+  expect(reminders.next(run, "root", queued)).toContain("worker-1");
+  expect(reminders.next(run, "root", delivered)).toBeUndefined();
+  expect(reminders.delivered("other-run", "root", new Date(queued).toISOString(), delivered)).toBe(false);
+  expect(reminders.delivered("run", "other-owner", new Date(queued).toISOString(), delivered)).toBe(false);
+  expect(reminders.delivered("run", "root", new Date(queued + 1).toISOString(), delivered)).toBe(false);
+  expect(reminders.snapshot(run, "root", delivered).state).toBe("queued");
+  expect(reminders.delivered("run", "root", new Date(queued).toISOString(), delivered)).toBe(true);
+  expect(reminders.delivered("run", "root", new Date(queued).toISOString(), delivered + 1000)).toBe(false);
+  expect(reminders.next(run, "root", delivered + 299_999)).toBeUndefined();
+  expect(reminders.next(run, "root", delivered + 300_000)).toContain("worker-1");
+  reminders.reset();
+  expect(reminders.delivered("run", "root", new Date(delivered + 300_000).toISOString())).toBe(false);
 });
 
 test("aggregate prompts are bounded, oldest first and restricted to direct children", () => {
@@ -45,6 +68,7 @@ test("aggregate prompts are bounded, oldest first and restricted to direct child
   run.nodes.new = newcomer;
   expect(reminders.next(run, "root", start + 900_001)).toBeUndefined();
   expect(reviewPrompt(reviews(run, "root", start + 900_000))).toContain("3 more");
+  reminders.delivered("run", "root", new Date(start + 900_000).toISOString(), start + 900_000);
   expect(reminders.next(run, "root", start + 1_200_000)).toContain("3 more");
   expect(coordinationGuidelines(run.nodes.root, run).join("\n")).toContain("3 more");
   expect(reminders.next(run, "worker-1", start + 900_000)).toContain("Nested");
@@ -57,6 +81,7 @@ test("legacy unknown ages get local reminders without invented submission times"
   expect(reviews(run, "root", start)[0]).toMatchObject({ waitingSeconds: null, overdue: false });
   expect(reminders.next(run, "root", start)).toBeUndefined();
   expect(reminders.next(run, "root", start + 300_000)).toContain("waiting unknown seconds");
+  reminders.delivered("run", "root", new Date(start + 300_000).toISOString(), start + 300_000);
   expect(reminders.next(run, "root", start + 599_999)).toBeUndefined();
   expect(reminders.next(run, "root", start + 600_000)).toContain("unknown");
   reminders.reset();
