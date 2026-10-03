@@ -28,7 +28,10 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     await expect(swarm.stop(run.id, a.id, b.id)).rejects.toThrow("direct parent");
     await store.complete(run.id, a.id, "Done"); await swarm.review(run.id, run.root, a.id, "accept", "Verified");
     expect(live.has(a.id)).toBe(false); expect(stoppedJobs).toContain(a.id);
+    const checkpoint = await store.send(run.id, run.root, a.id, "instruction", "Old checkpoint; stop and wait");
     await swarm.restart(run.id, run.root, a.id, { task: "Audit the next bounded slice; no builds." });
+    expect(await store.inbox(run.id, a.id)).toEqual([]);
+    expect((await store.read(run.id)).messages.find(message => message.id === checkpoint.id)?.superseded).toBe(true);
     let snapshot = await new SwarmStore(store.root).read(run.id);
     expect(snapshot.nodes[a.id]).toMatchObject({ status: "running", result: "Done", directive: { text: "Audit the next bounded slice; no builds.", source: "restart" }, handoff: { revision: 1, status: "accepted", feedback: "Verified" } });
     expect(snapshot.nodes[a.id].launch).not.toHaveProperty("task");
@@ -38,6 +41,14 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     expect((await store.read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "awaiting-parent", submitted: expect.any(String) });
     await swarm.review(run.id, run.root, a.id, "request-changes", "Fix check");
     expect((await store.read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "changes-requested" });
+    const resumeGeneration = (await store.read(run.id)).nodes[a.id].assignmentGeneration!;
+    await swarm.stop(run.id, run.root, a.id);
+    await swarm.restart(run.id, run.root, a.id, { task: "Fix with the revised source, not the old check" });
+    snapshot = await store.read(run.id);
+    expect(snapshot.nodes[a.id].assignmentGeneration).toBe(resumeGeneration + 1);
+    expect(snapshot.nodes[a.id].resume).toBeUndefined();
+    expect(snapshot.nodes[a.id].handoff?.status).toBe("changes-requested");
+    expect(await store.inbox(run.id, a.id)).toEqual([]);
     await store.complete(run.id, a.id, "Fixed");
     await swarm.review(run.id, run.root, a.id, "accept", "Verified again");
     // Migrate an old accepted record before restart overwrites its lifecycle status.

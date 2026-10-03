@@ -15,13 +15,26 @@ export type Provenance = {
 };
 export type Activity = "working" | "waiting-instructions" | "waiting-dependency";
 export function currentAssignment(node: Node) {
-  return node.directive ?? (!node.result ? { text: node.task, source: "original" as const } : undefined);
+  const assignment = node.directive ?? (!node.result ? { text: node.task, source: "original" as const } : undefined);
+  return assignment ? { ...assignment, generation: node.assignmentGeneration ?? 1 } : undefined;
+}
+export function setDirective(run: Run, node: Node, directive: NonNullable<Node["directive"]>) {
+  node.assignmentGeneration = (node.assignmentGeneration ?? 1) + 1;
+  node.directive = directive;
+  delete node.resume;
+  for (const message of run.messages) if (message.to === node.id && message.kind === "instruction" && !message.read) {
+    message.read = true;
+    message.superseded = true;
+  }
+  return directive;
 }
 export type Node = {
   id: string; parent?: string; name: string; task: string; depth: number; status: Status;
   launch?: { model?: string; thinking?: string; fast?: boolean };
   current?: { model: string; thinking: string };
   generation?: string;
+  assignmentGeneration?: number;
+  observedAssignment?: { generation: number; launchGeneration?: string; observed: string };
   runtime?: { revision: string; loaded: string };
   permission?: Permission;
   reload?: { barrier: string; stage: "requested" | "checkpointed" | "restarted" | "ready" | "released"; checkpoint?: string };
@@ -42,7 +55,7 @@ export function handoffRecord(node: Node): Handoff | undefined {
   const status = node.status === "review" ? "awaiting-parent" : node.status === "accepted" ? "accepted" : node.status === "rejected" ? "rejected" : "unknown";
   return { revision: 1, status, feedback: node.feedback };
 }
-export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean };
+export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean; superseded?: boolean };
 export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier> };
 const nonempty = (value: string, name: string) => { if (!value.trim()) throw new Error(`${name} must contain text`); };
 export function ownedChild(run: Run, actor: string, child: string) {
@@ -168,7 +181,7 @@ export class SwarmStore {
       }
       if (!activity && sender.status === "running" && sender.parent === to && kind === "message") sender.activity = { status: "checking-in", detail: text, updated: message.created, source: "message" };
       if (kind === "instruction") {
-        recipient.directive = { text, source: "parent", created: message.created, messageId: message.id };
+        setDirective(run, recipient, { text, source: "parent", created: message.created, messageId: message.id });
         recipient.activity = { status: "instruction-queued", detail: text, updated: message.created, source: "instruction" };
       }
       if (permission) {
@@ -189,7 +202,7 @@ export class SwarmStore {
       const messages: Message[] = children.map(node => ({ id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false }));
       if (kind === "instruction") for (const message of messages) {
         const node = run.nodes[message.to];
-        node.directive = { text, source: "parent", created, messageId: message.id };
+        setDirective(run, node, { text, source: "parent", created, messageId: message.id });
         node.activity = { status: "instruction-queued", detail: text, updated: created, source: "instruction" };
         if (permission) {
           if (!["released", "waiting-approval", "waiting-dependency"].includes(permission)) throw new Error("Invalid permission");
@@ -205,7 +218,19 @@ export class SwarmStore {
   async inbox(id: string, actor: string) {
     const run = await this.read(id);
     if (!run.nodes[actor]) throw new Error("Unknown swarm node");
-    return run.messages.filter(message => message.to === actor && !message.read);
+    const directive = run.nodes[actor].directive;
+    return run.messages.filter(message => message.to === actor && !message.read && !message.superseded &&
+      (message.kind !== "instruction" || (directive?.messageId ? message.id === directive.messageId :
+        directive && message.created === directive.created && message.text === directive.text)));
+  }
+  async observeAssignment(id: string, actor: string, generation: number, launchGeneration?: string) {
+    return this.update(id, run => {
+      const node = run.nodes[actor];
+      if (!node || currentAssignment(node)?.generation !== generation) throw new Error("Assignment changed; read swarm_task again");
+      if (node.parent && node.generation && node.generation !== launchGeneration) throw new Error("Worker launch generation is stale");
+      node.observedAssignment = { generation, launchGeneration: node.generation, observed: new Date().toISOString() };
+      return node;
+    });
   }
   async observeTool(id: string, actor: string, toolName: string) {
     return this.update(id, run => {
@@ -256,8 +281,8 @@ export class SwarmStore {
       node.replacement = { requested: new Date().toISOString() };
       const messageId = randomUUID();
       if (node.status === "running") {
-        node.directive = { text: "Finish only the current bounded step and prepare the requested replacement handoff. Do not start follow-on work.", source: "parent", created: node.replacement.requested, messageId };
-        node.activity = { status: "instruction-queued", detail: node.directive.text, updated: node.directive.created, source: "instruction" };
+        const directive = setDirective(run, node, { text: "Finish only the current bounded step and prepare the requested replacement handoff. Do not start follow-on work.", source: "parent", created: node.replacement.requested, messageId });
+        node.activity = { status: "instruction-queued", detail: directive.text, updated: directive.created, source: "instruction" };
       }
       if (node.status === "running") run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false,
         created: node.replacement.requested,
@@ -291,11 +316,11 @@ export class SwarmStore {
       node.feedback = feedback;
       if (decision === "request-changes") {
         const messageId = randomUUID();
-        node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
         node.permission = { status: "released", reason: feedback || "Revise the submitted result", source: "parent", updated: new Date().toISOString() };
         delete node.activity;
-        node.directive = { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString(), messageId };
-        node.activity = { status: "instruction-queued", detail: node.directive.text, updated: node.directive.created, source: "instruction" };
+        const directive = setDirective(run, node, { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString(), messageId });
+        node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
+        node.activity = { status: "instruction-queued", detail: directive.text, updated: directive.created, source: "instruction" };
         run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false, created: new Date().toISOString(),
           text: feedback || "Revise the submitted result and resubmit for review." });
       }

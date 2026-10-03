@@ -15,6 +15,7 @@ import { packageRevision } from "./version.ts";
 import { ownedJobs } from "./job-snapshot.ts";
 import { ReloadBarrier, health, reviews, type Health } from "./coordination.ts";
 import { coordinationGuidelines, treeSnapshot } from "./prompts.ts";
+import { allowedDuringHold } from "./permissions.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
 // The status panel renders the latest snapshot synchronously; a timer refreshes it.
@@ -88,6 +89,7 @@ export default function install(pi: ExtensionAPI) {
       if (node.parent && (node.status === "review" || terminal(node.status))) return;
       const messages = await store.inbox(run.id, node.id);
       for (const message of messages) {
+        if (message.kind === "instruction" && !(await store.inbox(run.id, node.id)).some(entry => entry.id === message.id)) continue;
         const sender = run.nodes[message.from];
         const senderName = sender?.name ?? "unknown worker";
         pi.sendMessage({
@@ -170,7 +172,7 @@ export default function install(pi: ExtensionAPI) {
     }
     const holding = node.permission?.status === "checkpoint-hold" && node.reload?.stage !== "requested";
     const waiting = node.permission?.status === "waiting-approval" || node.permission?.status === "waiting-dependency";
-    if (node.parent && (holding || waiting) && !["swarm_task", "swarm_tree", "swarm_send", "swarm_reload", "swarm_health", "swarm_reviews", "task_query", "task_output", "task_stop"].includes(event.toolName)) return { block: true, terminate: true, reason: holding ? "Worker is on reload checkpoint hold. Read swarm_task and wait for the parent's explicit barrier release." : `Worker permission is ${node.permission!.status}. Coordinate with the parent and wait for explicit released permission before editing or launching jobs.` };
+    if (node.parent && (holding || waiting) && !allowedDuringHold(event.toolName, event.input)) return { block: true, terminate: true, reason: holding ? "Worker is on reload checkpoint hold. Read-only inspection and context housekeeping are allowed. Wait for the parent's explicit barrier release before editing or launching jobs." : `Worker permission is ${node.permission!.status}. Read-only inspection and context housekeeping are allowed. Coordinate with the parent and wait for explicit released permission before editing or launching jobs.` };
     if (node.parent && (node.resume?.status === "delivered" || !event.toolName.startsWith("swarm_"))) await store.observeTool(run.id, node.id, event.toolName);
   });
   pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
@@ -234,8 +236,10 @@ export default function install(pi: ExtensionAPI) {
       } });
   }
   tool("swarm_task", "Read your durable assignment and root objective.", empty, async (_, ctx) => {
-    const { run, node } = await active(ctx);
-    return { objective: run.objective, node, currentAssignment: currentAssignment(node) ?? null,
+    const { run, node: loaded } = await active(ctx);
+    const assignment = currentAssignment(loaded);
+    const node = assignment ? await store.observeAssignment(run.id, loaded.id, assignment.generation, loaded.generation) : loaded;
+    return { objective: run.objective, node, currentAssignment: assignment ?? null,
       historicalHandoff: node.result ? { result: node.result, handoff: node.handoff, feedback: node.feedback } : undefined,
       parent: node.parent ? { id: node.parent, name: run.nodes[node.parent].name, branch: run.nodes[node.parent].branch, cwd: run.nodes[node.parent].worktree?.cwd } : undefined,
       siblings: Object.values(run.nodes).filter(entry => node.parent && entry.parent === node.parent && entry.id !== node.id && !terminal(entry.status)).map(entry => ({ id: entry.id, name: entry.name, status: entry.status })),

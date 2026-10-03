@@ -89,16 +89,17 @@ test("workers pause after completion and resume only after parent review", async
     expect(completed.terminate).toBe(true);
     expect(completed.details.status).toBe("review");
     expect((await store.inbox(run.id, run.root))[0].text).toContain(`swarm_tree nodeId=${child.id}`);
-    for (const toolName of ["bash", "write", "swarm_send"]) {
+    for (const toolName of ["bash", "write", "swarm_send", "read", "compress", "decompress"]) {
       expect(await h.emit("tool_call", { toolName })).toEqual([{
         block: true, terminate: true, reason: "Swarm pause snapshot: worker was review at this tool check (handoff revision 1). A later parent resume can supersede this snapshot. Check swarm_tree for current state.",
       }]);
     }
 
+    await store.send(run.id, run.root, child.id, "instruction", "Historical checkpoint; do not resume audit");
     await store.send(run.id, run.root, child.id, "message", "Wait for review.");
     await new Promise(resolve => setTimeout(resolve, 1100));
     expect(h.sentMessages).toHaveLength(1);
-    expect(await store.inbox(run.id, child.id)).toHaveLength(1);
+    expect(await store.inbox(run.id, child.id)).toHaveLength(2);
 
     await store.review(run.id, run.root, child.id, "request-changes", "Fix one check");
     expect((await store.read(run.id)).nodes[child.id].resume).toMatchObject({ revision: 1, status: "queued" });
@@ -107,6 +108,12 @@ test("workers pause after completion and resume only after parent review", async
     expect(h.sentMessages).toHaveLength(3);
     expect(h.sentMessages.slice(1).every(message => message.options.deliverAs === "steer")).toBe(true);
     expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("delivered");
+    expect(h.sentMessages.some(message => message.message.content.includes("Historical checkpoint"))).toBe(false);
+    const revised = (await h.call("swarm_task", {})).details;
+    expect(revised.currentAssignment.text).toBe("Fix one check");
+    expect(revised.currentAssignment.generation).toBeGreaterThan(assignment.currentAssignment.generation);
+    expect(revised.node.observedAssignment.generation).toBe(revised.currentAssignment.generation);
+    expect(revised.historicalHandoff.handoff.status).toBe("changes-requested");
     expect(await h.emit("tool_call", { toolName: "write" })).toEqual([undefined]);
     expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("observed");
     expect((await store.read(run.id)).nodes[child.id].activity).toMatchObject({ status: "tool-active", source: "tool-boundary", detail: "Tool boundary: write" });
@@ -115,7 +122,9 @@ test("workers pause after completion and resume only after parent review", async
 
     for (const status of ["accepted", "rejected", "stopped", "failed"] as const) {
       await store.update(run.id, state => { state.nodes[child.id].status = status; });
-      expect((await h.emit("tool_call", { toolName: "bash" }))[0]).toMatchObject({ block: true, terminate: true });
+      for (const toolName of ["bash", "read", "compress", "decompress"]) {
+        expect((await h.emit("tool_call", { toolName }))[0]).toMatchObject({ block: true, terminate: true });
+      }
     }
   } finally {
     await h.emit("session_shutdown");

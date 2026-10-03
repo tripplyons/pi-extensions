@@ -19,15 +19,26 @@ and permission to commit. Permission to proceed is separate from recent activity
 A check-in, instruction delivery, or tool event does not release a wait. Use
 `swarm_send` or `swarm_broadcast` with `kind: "instruction"` and
 `permission: "released"` to authorize a bounded step after a wait. Waiting workers
-can coordinate and inspect or stop tasks, but cannot edit or launch jobs. Old
-records without permission state show `unknown`; activity does not reconstruct it.
+can read files with `read`, `grep`, `find`, and `ls`, coordinate with the parent,
+inspect swarm state, and inspect or stop tasks. They can also manage context with
+`compress`, `search_context`, `acp_status`, `acp_cache`, and `decompress` without
+`toFile`. These calls do not release permission. The same rule applies to reload
+checkpoint holds. Bash, codemode, file-writing tools (including `decompress` with
+`toFile`), new jobs, and unknown tools stay blocked. Review and terminal workers
+remain paused for all tools. Old records without permission state show `unknown`;
+activity does not reconstruct it.
 Coordination guidelines are added to the system prompt
 on every turn, including after recovery. Workers ask their parent, not the user.
 They coordinate shared APIs before editing and report blockers rather than
 inventing substitute behavior or starting follow-on work.
 
 `swarm_task` returns the objective, full node record, parent ID and workspace,
-and nonterminal sibling IDs. `swarm_tree` returns compact summaries by default:
+and nonterminal sibling IDs. Its `currentAssignment` has a numeric generation,
+separate from the process launch generation. Each new directive increments it.
+`observedAssignment` records the generation and launch last read through
+`swarm_task`. It proves the durable assignment was read, not that work started or
+finished. A stale launch or a concurrent assignment change cannot acknowledge
+the new scope. Compact trees include both generations and the observation. `swarm_tree` returns compact summaries by default:
 active and terminal counts, status, branch, workspace, task preview, launch model,
 reported current model and thinking level, handoff state and revision, and code evidence.
 `finished` in the structured counts means terminal workers, not delivered code.
@@ -135,7 +146,13 @@ Neither state proves the model understood the instruction or completed the work.
 A pause error names the handoff revision and describes a snapshot at the tool
 check. A delayed snapshot can be superseded by a later parent resume.
 
-All messages use steering, so a busy worker reads them at the next tool boundary.
+A new parent directive, request-changes, restart task, or reload release
+supersedes older queued instructions. Superseded instructions stay in the saved
+message history but are not replayed to the worker. An explicit restart task
+also clears the old resume signal. Historical handoffs remain separate from the
+current assignment and retain their review decisions.
+
+Current messages use steering, so a busy worker reads them at the next tool boundary.
 Steering does not cancel a running tool. Use `swarm_stop` or `/swarm:kill` for a
 hard stop. Durable state updates retry lock contention for up to five seconds;
 other filesystem errors propagate. A stale lock is not deleted automatically.

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { descendants, ownedChild, terminal, type Node, type Run, type SwarmStore } from "./state.ts";
+import { descendants, ownedChild, setDirective, terminal, type Node, type Run, type SwarmStore } from "./state.ts";
 import type { Swarm } from "./controller.ts";
 
 export type Permission = { status: "released" | "waiting-approval" | "waiting-dependency" | "checkpoint-hold"; reason: string; updated: string; source: "parent" | "worker" };
@@ -40,7 +40,7 @@ export class ReloadBarrier {
         const text = `Reload checkpoint ${barrier.id}: finish only the current bounded step, stop or finish owned jobs, and call swarm_reload action=checkpoint alone with barrierId and a self-contained checkpoint. Do not submit a handoff or start follow-on work. Wait for restart and a separate explicit release.`;
         node.reload = { barrier: barrier.id, stage: "requested" };
         node.permission = { status: "checkpoint-hold", reason: text, source: "parent", updated: barrier.created };
-        node.directive = { text, source: "parent", created: barrier.created, messageId };
+        setDirective(run, node, { text, source: "parent", created: barrier.created, messageId });
         node.activity = { status: "instruction-queued", detail: text, updated: barrier.created, source: "instruction" };
         run.messages.push({ id: messageId, from: actor, to: id, kind: "instruction", text, created: barrier.created, read: false });
       }
@@ -103,7 +103,7 @@ export class ReloadBarrier {
         const messageId = randomUUID();
         node.reload.stage = "released";
         node.permission = { status: "released", reason: item.task, source: "parent", updated: created };
-        node.directive = { text: item.task, source: "parent", created, messageId };
+        setDirective(run, node, { text: item.task, source: "parent", created, messageId });
         node.activity = { status: "instruction-queued", detail: item.task, updated: created, source: "instruction" };
         run.messages.push({ id: messageId, from: actor, to: item.nodeId, kind: "instruction", text: item.task, created, read: false });
       }

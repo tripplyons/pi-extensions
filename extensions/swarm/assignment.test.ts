@@ -47,6 +47,35 @@ test("current parent directives survive recovery without reviving completed assi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("assignment generations expose observed scope and supersede queued historical instructions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-swarm-generations-"));
+  const store = new SwarmStore(root);
+  try {
+    const run = await store.create("session", root, "Objective");
+    const worker = await store.reserve(run.id, run.root, "Worker", "Task");
+    await store.update(run.id, state => { state.nodes[worker.id].status = "running"; state.nodes[worker.id].generation = "launch-1"; });
+    await store.observeAssignment(run.id, worker.id, 1, "launch-1");
+    const old = await store.send(run.id, run.root, worker.id, "instruction", "Checkpoint and wait");
+    const latest = await store.send(run.id, run.root, worker.id, "instruction", "Released source-only audit", undefined, "released");
+    expect((await store.inbox(run.id, worker.id)).map(message => message.id)).toEqual([latest.id]);
+    let state = await store.read(run.id);
+    expect(state.messages.find(message => message.id === old.id)).toMatchObject({ read: true, superseded: true });
+    expect(currentAssignment(state.nodes[worker.id])?.generation).toBe(3);
+    expect(state.nodes[worker.id].observedAssignment).toMatchObject({ generation: 1, launchGeneration: "launch-1" });
+    await expect(store.observeAssignment(run.id, worker.id, 2)).rejects.toThrow("Assignment changed");
+    await expect(store.observeAssignment(run.id, worker.id, 3, "old-launch")).rejects.toThrow("Worker launch generation is stale");
+    await store.observeAssignment(run.id, worker.id, 3, "launch-1");
+    state = await new SwarmStore(root).read(run.id);
+    expect(treeSnapshot(state).nodes.find(node => node.id === worker.id)).toMatchObject({ assignmentGeneration: 3, observedAssignment: { generation: 3 } });
+    // Older records can lack superseded flags. Inbox still follows the durable directive.
+    await store.update(run.id, state => {
+      const message = state.messages.find(message => message.id === old.id)!;
+      message.read = false; delete message.superseded;
+    });
+    expect((await store.inbox(run.id, worker.id)).map(message => message.id)).toEqual([latest.id]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("automatic activity records events without guessing progress or replaying stale instructions", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-activity-"));
   const store = new SwarmStore(root);

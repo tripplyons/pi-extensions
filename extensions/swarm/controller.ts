@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { SwarmStore, descendants, ownedChild, terminal, type Node, type Run } from "./state.ts";
+import { SwarmStore, descendants, ownedChild, setDirective, terminal, type Node, type Run } from "./state.ts";
 import { git, prepareWorktree, preflightWorktree, removeWorktree, type DirtyMode } from "./git.ts";
 import { inheritWorktree } from "./replacement.ts";
 import { Workers, type Launch } from "./worker.ts";
@@ -120,8 +120,9 @@ export class Swarm {
       const worker = ownedChild(state, actor, child);
       delete worker.activity;
       if (options.task !== undefined) {
-        worker.directive = { text: options.task, source: "restart", created: new Date().toISOString() };
-        if (worker.permission?.status !== "checkpoint-hold") worker.permission = { status: "released", reason: options.task, source: "parent", updated: worker.directive.created };
+        const created = new Date().toISOString();
+        setDirective(state, worker, { text: options.task, source: "restart", created });
+        if (worker.permission?.status !== "checkpoint-hold") worker.permission = { status: "released", reason: options.task, source: "parent", updated: created };
       } else if (!worker.directive && worker.result && worker.permission?.status !== "checkpoint-hold") worker.permission = { status: "waiting-approval", reason: "Restart requires a new bounded assignment", source: "parent", updated: new Date().toISOString() };
       return worker;
     });

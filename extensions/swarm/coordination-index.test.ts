@@ -31,17 +31,38 @@ test("checkpoint tool ends the worker turn and gates jobs until an explicit barr
   const checkpoint = await h.call("swarm_reload", { action: "checkpoint", barrierId: barrier.id, checkpoint: "No jobs; pinned base and dirty files retained" });
   expect(checkpoint.terminate).toBe(true);
   for (const toolName of ["bash", "write", "edit", "swarm_spawn", "task_watch"]) expect((await h.emit("tool_call", { toolName }))[0]).toMatchObject({ block: true, terminate: true, reason: expect.stringContaining("checkpoint hold") });
-  expect(await h.emit("tool_call", { toolName: "swarm_task" })).toEqual([undefined]);
+  for (const toolName of ["swarm_task", "read", "grep", "find", "ls", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
+    expect(await h.emit("tool_call", { toolName, input: {} })).toEqual([undefined]);
+    expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("checkpoint-hold");
+  }
+  expect((await h.emit("tool_call", { toolName: "decompress", input: { toFile: "checkpoint.md" } }))[0]).toMatchObject({ block: true, terminate: true });
   expect((await h.call("swarm_reload", { action: "status", barrierId: barrier.id })).details.members[0]).toMatchObject({ permission: { status: "checkpoint-hold" }, reload: { stage: "checkpointed" }, runtime: { revision: expect.any(String) } });
 }));
 
-test("permission waits block editing and jobs but permit parent coordination; tool activity does not release", () => fixture(async (h, store, root) => {
+test("permission waits permit read-only inspection and housekeeping without releasing edits or jobs", () => fixture(async (h, store, root) => {
   const run = await store.create("parent-session", root, "Objective"), worker = await store.reserve(run.id, run.root, "Worker", "Task");
   await store.update(run.id, state => { state.nodes[worker.id].status = "running"; });
   h.pi.appendEntry("pi:swarm", { run: run.id, node: worker.id }); await h.emit("session_start");
   await h.call("swarm_send", { to: run.root, kind: "message", text: "Need approval", activity: "waiting-instructions" });
-  expect((await h.emit("tool_call", { toolName: "write" }))[0]).toMatchObject({ block: true, reason: expect.stringContaining("waiting-approval") });
-  expect(await h.emit("tool_call", { toolName: "swarm_send" })).toEqual([undefined]);
+  for (const permission of ["waiting-approval", "waiting-dependency"] as const) {
+    await store.send(run.id, run.root, worker.id, "instruction", "Read revised guidance; keep implementation held", undefined, permission);
+    const before = (await store.read(run.id)).nodes[worker.id].permission;
+    const task = (await h.call("swarm_task", {})).details;
+    expect(task.currentAssignment.text).toBe("Read revised guidance; keep implementation held");
+    expect(typeof task.currentAssignment.generation).toBe("number");
+    expect(task.node.observedAssignment.generation).toBe(task.currentAssignment.generation);
+    expect((await store.read(run.id)).nodes[worker.id].observedAssignment?.generation).toBe(task.currentAssignment.generation);
+    for (const toolName of ["read", "grep", "find", "ls", "swarm_task", "swarm_send", "swarm_observe", "task_query", "task_output", "task_stop", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
+      expect(await h.emit("tool_call", { toolName, input: {} })).toEqual([undefined]);
+      expect((await store.read(run.id)).nodes[worker.id].permission).toEqual(before);
+    }
+    for (const toolName of ["write", "edit", "bash", "codemode", "swarm_spawn", "task_watch", "unknown_tool"]) {
+      expect((await h.emit("tool_call", { toolName, input: {} }))[0]).toMatchObject({ block: true, terminate: true, reason: expect.stringContaining(permission) });
+    }
+    expect((await h.emit("tool_call", { toolName: "decompress", input: { toFile: "guidance.md" } }))[0]).toMatchObject({ block: true, terminate: true });
+    const [prompt] = await h.emit("before_agent_start");
+    expect(prompt.systemPromptOptions.promptGuidelines.join("\n")).toContain("These calls do not release the hold");
+  }
   await store.send(run.id, run.root, worker.id, "instruction", "Bounded approved check", undefined, "released");
   expect(await h.emit("tool_call", { toolName: "bash" })).toEqual([undefined]);
   expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("released");
