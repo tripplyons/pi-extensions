@@ -8,7 +8,7 @@ async function fixture(run: (store: SwarmStore) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-state-"));
   try { await run(new SwarmStore(root)); } finally { await rm(root, { recursive: true, force: true }); }
 }
-test("durable tasks, sibling messages and parent-only authority", () => fixture(async store => {
+test("durable tasks, direct messages across the tree and parent-only authority", () => fixture(async store => {
   const run = await store.create("session", "/tmp", "Objective");
   const a = await store.reserve(run.id, run.root, "A", "Task A");
   const b = await store.reserve(run.id, run.root, "B", "Task B");
@@ -16,10 +16,15 @@ test("durable tasks, sibling messages and parent-only authority", () => fixture(
   await store.send(run.id, a.id, b.id, "message", "Shared API ready");
   expect((await store.inbox(run.id, b.id))[0].text).toBe("Shared API ready");
   await expect(store.send(run.id, a.id, b.id, "instruction", "Do this")).rejects.toThrow("parents");
-  await expect(store.send(run.id, a.id, a.id, "message", "Hi")).rejects.toThrow("relay");
+  await expect(store.send(run.id, a.id, a.id, "message", "Hi")).rejects.toThrow("yourself");
   await store.update(run.id, state => { state.nodes[b.id].status = "running"; });
   const nephew = await store.reserve(run.id, b.id, "Nephew", "Other task");
-  await expect(store.send(run.id, a.id, nephew.id, "message", "Hi")).rejects.toThrow("relay");
+  const shared = await store.send(run.id, a.id, nephew.id, "message", "Shared API available");
+  expect(await new SwarmStore(store.root).inbox(run.id, nephew.id)).toEqual([shared]);
+  await store.send(run.id, nephew.id, run.root, "message", "Nested report");
+  expect((await store.inbox(run.id, run.root))[0].text).toBe("Nested report");
+  await expect(store.send(run.id, a.id, nephew.id, "instruction", "Do this")).rejects.toThrow("parents");
+  await expect(store.send(run.id, run.root, nephew.id, "instruction", "Do this")).rejects.toThrow("parents");
   await expect(store.send(run.id, a.id, run.root, "instruction", "Do this")).rejects.toThrow("parents");
   const other = new SwarmStore(store.root);
   expect((await other.inbox(run.id, a.id))[0].text).toContain("Task A");
@@ -32,6 +37,54 @@ test("durable tasks, sibling messages and parent-only authority", () => fixture(
   expect((await other.read(run.id)).nodes[a.id].task).toBe("Task A");
   expect((await stat(join(store.path(run.id), "run.json"))).mode & 0o777).toBe(0o600);
 }));
+test("direct messages require different agents in the same run", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const worker = await store.reserve(run.id, run.root, "Worker", "Task");
+  const foreign = await store.create("other-session", "/tmp", "Other objective");
+  const before = await store.read(run.id);
+  for (const [from, to] of [
+    [run.root, foreign.root], [foreign.root, worker.id], ["unknown", worker.id], [run.root, "unknown"],
+    ["constructor", worker.id], [run.root, "__proto__"], [run.root, "toString"],
+  ]) {
+    await expect(store.send(run.id, from, to, "message", "Hello")).rejects.toThrow("same swarm run");
+  }
+  await expect(store.send(run.id, worker.id, worker.id, "message", "Hello")).rejects.toThrow("yourself");
+  await expect(store.send(run.id, run.root, worker.id, "message", " ")).rejects.toThrow("text");
+  await expect(store.send(run.id, run.root, worker.id, "invalid" as any, "Hello")).rejects.toThrow("kind");
+  expect(await store.read(run.id)).toEqual(before);
+  expect((await store.read(foreign.id)).messages).toEqual([]);
+}));
+
+test("cross-branch messages preserve assignments, permissions and parent authority", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective");
+  const left = await store.reserve(run.id, run.root, "Left", "Left task");
+  const right = await store.reserve(run.id, run.root, "Right", "Right task");
+  await store.update(run.id, state => { state.nodes[left.id].status = state.nodes[right.id].status = "running"; });
+  const sender = await store.reserve(run.id, left.id, "Sender", "Sender task");
+  const recipient = await store.reserve(run.id, right.id, "Recipient", "Recipient task");
+  await store.update(run.id, state => { state.nodes[sender.id].status = state.nodes[recipient.id].status = "running"; });
+  await store.send(run.id, right.id, recipient.id, "instruction", "Own recipient.ts; no commits");
+  for (const status of ["released", "waiting-approval", "waiting-dependency", "checkpoint-hold"] as const) {
+    await store.update(run.id, state => { state.nodes[recipient.id].permission!.status = status; });
+    const before = await store.read(run.id);
+    const message = await store.send(run.id, sender.id, recipient.id, "message", "API is ready; this is not permission to resume");
+    expect(message).toMatchObject({ from: sender.id, to: recipient.id, kind: "message", read: false });
+    expect((await store.read(run.id)).nodes).toEqual(before.nodes);
+  }
+  const before = await store.read(run.id);
+  await expect(store.send(run.id, sender.id, recipient.id, "instruction", "Change your task", undefined, undefined, "replace")).rejects.toThrow("parents");
+  await expect(store.send(run.id, sender.id, recipient.id, "message", "Resume", undefined, "released")).rejects.toThrow("Permission");
+  await expect(store.send(run.id, sender.id, recipient.id, "message", "Replace scope", undefined, undefined, "replace")).rejects.toThrow("assignmentMode");
+  for (const activity of ["working", "waiting-instructions", "waiting-dependency"] as const) {
+    await expect(store.send(run.id, sender.id, recipient.id, "message", "Peer report", activity)).rejects.toThrow("to their parent");
+  }
+  await expect(store.review(run.id, sender.id, recipient.id, "accept", "Peer review")).rejects.toThrow("direct parent");
+  expect(await store.read(run.id)).toEqual(before);
+  expect(await store.inbox(run.id, left.id)).toEqual([]);
+  expect(await store.inbox(run.id, right.id)).toEqual([]);
+  expect(await store.inbox(run.id, run.root)).toEqual([]);
+}));
+
 test("depth limit, descendant completion and review permissions", () => fixture(async store => {
   const run = await store.create("session", "/tmp", "Objective");
   const a = await store.reserve(run.id, run.root, "A", "Task");

@@ -177,13 +177,11 @@ export class SwarmStore {
     validateAssignmentMode(kind, assignmentMode);
     if (activity && !["working", "waiting-instructions", "waiting-dependency"].includes(activity)) throw new Error("Invalid activity");
     return this.update(id, run => {
+      if (!Object.hasOwn(run.nodes, from) || !Object.hasOwn(run.nodes, to)) throw new Error("Message sender and recipient must be nodes in the same swarm run");
       const sender = run.nodes[from], recipient = run.nodes[to];
-      const siblings = sender?.parent !== undefined && sender.parent === recipient?.parent;
-      if (!sender || !recipient || from === to || (recipient.parent !== from && sender.parent !== to && !siblings)) {
-        throw new Error("Messages require a parent, direct child, or sibling; ask your parent to relay other messages");
-      }
+      if (from === to) throw new Error("Cannot send a message to yourself");
       if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
-      if (kind === "instruction" && recipient.parent !== from) throw new Error("Only parents may send instructions");
+      if (kind === "instruction" && recipient.parent !== from) throw new Error("Only direct parents may send instructions");
       const message: Message = { id: randomUUID(), from, to, kind, text, created: new Date().toISOString(), read: false };
       if (activity) {
         if (sender.status !== "running" || sender.parent !== to || kind !== "message") throw new Error("Only running workers report activity to their parent");

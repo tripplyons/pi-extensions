@@ -31,7 +31,7 @@ and permission to commit. Permission to proceed is separate from recent activity
 A check-in, instruction delivery, or tool event does not release a wait. Use
 `swarm_send` or `swarm_broadcast` with `kind: "instruction"` and
 `permission: "released"` to authorize a bounded step after a wait. Waiting workers
-can read files with `read`, `grep`, `find`, and `ls`, coordinate with the parent,
+can read files with `read`, `grep`, `find`, and `ls`, coordinate with other agents,
 inspect swarm state, and inspect or stop tasks. They can also manage context with
 `compress`, `search_context`, `acp_status`, `acp_cache`, and `decompress` without
 `toFile`. These calls do not release permission. The same rule applies to reload
@@ -140,9 +140,32 @@ predecessor are blocked. Remove it only after manual provenance review.
 
 ## Messages and shared instructions
 
-`swarm_send` accepts informational messages to a parent, direct child, or sibling.
-Only parents may send instructions to their direct children. More distant nodes
-require a relay. Incoming messages identify the sender and show the text.
+`swarm_send` sends informational messages directly to any other agent in the same
+swarm run. This includes siblings, workers under different parents, and more
+distant ancestors or descendants. No parent relay is needed. Use `swarm_tree` to
+find recipient node IDs and parent relationships, then set `to` to the node ID.
+Names are display labels, not routing addresses. Self-messages and recipients
+from another run are rejected.
+
+Ask the responsible agent about APIs and dependencies directly. Send scope,
+ownership, permission decisions, and unresolved blockers to your parent.
+Only direct parents may send instructions, change assignments, or release
+permission waits. Messages from other agents are informational; they do not
+authorize edits, new jobs, or follow-on work.
+
+```json
+{"to":"<agent-node-id>","kind":"message","text":"Does getRecord(id: string): Record cover what client.ts needs?"}
+```
+
+Messages are stored in run state and delivered through the recipient's inbox.
+Incoming messages identify the sender by name and node ID. Messages from agents
+other than the worker's direct parent include an informational-only notice.
+A busy recipient receives the message at a tool boundary; an idle recipient
+gets a new turn. Review and terminal workers do not consume inbox messages.
+Their queued messages become eligible for delivery only if their parent resumes
+or restarts them. A message does not stop a running tool or resume a paused worker.
+Existing workers must reload this extension to send messages beyond their parent,
+direct children, and siblings.
 
 Instructions now **append by default**. Both tools accept `assignmentMode` for
 `kind: "instruction"`:
@@ -373,7 +396,8 @@ Tool results display plain-text previews. Expand a result to see all fields;
 structured result data is unchanged.
 
 Tests cover temporary Git repositories, isolated tmux servers with fake workers,
-real Pi worker shutdown, concurrent state writes, routing and authority, review
+real Pi worker shutdown, concurrent state writes, direct cross-branch messaging,
+same-run routing, parent-only authority, permission-preserving peer messages, review
 pauses, prompt injection, model reporting/filtering, independent delivery
 records, replacement of committed and dirty work, reload barrier recovery,
 explicit permissions, repeated and concurrent appended instructions, explicit task
