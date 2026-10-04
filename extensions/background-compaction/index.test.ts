@@ -7,7 +7,8 @@ afterEach(() => { Object.assign(tuning, { prepareAt: original.prepareAt, refresh
 
 // Each message is about 1,000 estimated tokens.
 function setup() {
-  const h = harness(), branch: any[] = [], calls: any[] = [];
+  const h = harness(), branch: any[] = [], calls: any[] = [], footer: (string | undefined)[] = [];
+  h.ctx.ui.setStatus = (key: string, text?: string) => { if (key === "background-compaction") footer.push(text); };
   let tokens = 12_000;
   Object.assign(tuning, { refreshTokens: 2_000, maxGapTokens: 4_000 });
   h.pi.getSettings = () => ({ compaction: { reserveTokens: 1_000, keepRecentTokens: 3_000 } });
@@ -34,16 +35,18 @@ function setup() {
   }))[0];
   const turn = async () => { await h.emit("turn_end", {}); await new Promise(resolve => setTimeout(resolve, 0)); };
   install(h.pi);
-  return { h, branch, calls, push, compact, turn, setTokens: (value: number) => { tokens = value; } };
+  return { h, branch, calls, footer, push, compact, turn, setTokens: (value: number) => { tokens = value; } };
 }
 
 test("a stored summary compacts at the threshold without a new summary call", async () => {
-  const { calls, push, compact, turn, setTokens } = setup();
+  const { calls, footer, push, compact, turn, setTokens } = setup();
   push(10); setTokens(5_000);
   await turn();
   expect(calls).toHaveLength(0);
+  expect(footer).toEqual([]);
   setTokens(12_000); await turn();
   expect(calls).toHaveLength(1);
+  expect(footer).toEqual(["background: preparing", "background: ready"]);
   expect(calls[0].messages).toHaveLength(7);
   expect(calls[0].previousSummary).toBeUndefined();
   const result = await compact();
@@ -67,7 +70,7 @@ test("refreshes summarize only new entries and build on the stored summary", asy
 });
 
 test("Pi summarizes when the stored summary is stale, too far behind, or custom instructions are given", async () => {
-  const { h, branch, push, compact, turn } = setup();
+  const { h, branch, footer, push, compact, turn, setTokens } = setup();
   push(10); await turn();
   expect(await compact("Focus on tests")).toBeUndefined();
   push(6);
@@ -76,17 +79,23 @@ test("Pi summarizes when the stored summary is stale, too far behind, or custom 
   expect((await compact())?.compaction.firstKeptEntryId).toBe("e8");
   branch.push({ type: "context_edit", id: "edit", parentId: "e10", timestamp: new Date().toISOString(), targetId: "e2", replacement: { content: [{ type: "text", text: "changed" }] } });
   expect(await compact()).toBeUndefined();
-  branch.pop();
+  setTokens(5_000); await turn();
+  expect(footer.at(-1)).toBeUndefined();
+  setTokens(12_000);
+  branch.pop(); await turn();
+  expect(footer.at(-1)).toBe("background: ready");
   await h.emit("session_compact", {});
+  expect(footer.at(-1)).toBeUndefined();
   expect(await compact()).toBeUndefined();
 });
 
 test("compaction waits for a summary that is still running", async () => {
-  const { calls, push, compact, turn } = setup();
+  const { calls, footer, push, compact, turn } = setup();
   let finish!: () => void;
   const summarize = deps.summarize;
   deps.summarize = (async (...args: any[]) => { await new Promise<void>(resolve => { finish = resolve; }); return (summarize as any)(...args); }) as any;
   push(10); await turn();
+  expect(footer.at(-1)).toBe("background: preparing");
   const pending = compact();
   finish();
   expect((await pending).compaction).toMatchObject({ firstKeptEntryId: "e8" });

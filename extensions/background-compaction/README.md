@@ -16,6 +16,11 @@ When Pi compacts, the extension returns the stored summary from
 the kept context can be larger than `keepRecentTokens`. If a background
 summary is still running, compaction waits for it.
 
+The footer shows `background: preparing` while a summary runs and
+`background: ready` when a stored summary matches the current branch. The
+status clears after compaction, tree navigation or a change to the summarized
+entries.
+
 Pi writes the summary itself when:
 
 - `/compact` has custom instructions.

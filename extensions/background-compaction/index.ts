@@ -73,15 +73,22 @@ function fileLists(fileOps: { read: Set<string>; written: Set<string>; edited: S
 
 export default function (pi: ExtensionAPI) {
   let cache: Cache | undefined, running: Promise<void> | undefined, controller: AbortController | undefined, epoch = 0, warned = false;
-  function reset() {
+  function show(ctx: ExtensionContext) {
+    try { ctx.ui.setStatus("background-compaction", running ? "background: preparing" : cache ? "background: ready" : undefined); } catch {}
+  }
+  function reset(ctx: ExtensionContext) {
     epoch++; cache = undefined; controller?.abort(); controller = undefined;
+    show(ctx);
   }
   function prepare(ctx: ExtensionContext) {
-    const model = ctx.model, usage = ctx.getContextUsage();
-    if (running || !model || usage?.tokens == null) return;
+    if (running) return;
+    const model = ctx.model, usage = ctx.getContextUsage(), current = span(ctx.sessionManager.getBranch());
+    // Drop a summary that no longer matches the branch so the footer does not show it as ready.
+    if (cache && covers(cache, current) === undefined) { cache = undefined; show(ctx); }
+    if (!model || usage?.tokens == null) return;
     const settings = compactionSettings(pi, model);
     if (!settings.enabled || usage.tokens < tuning.prepareAt * (usage.contextWindow - settings.reserveTokens)) return;
-    const current = span(ctx.sessionManager.getBranch()), end = cut(current, settings.keepRecentTokens);
+    const end = cut(current, settings.keepRecentTokens);
     if (end === undefined) return;
     const prior = cache, covered = prior ? covers(prior, current) : undefined, from = covered ?? current.start;
     const delta = current.entries.slice(from, end);
@@ -101,14 +108,16 @@ export default function (pi: ExtensionAPI) {
       } finally {
         if (controller === abort) controller = undefined;
         running = undefined;
+        if (started === epoch) show(ctx);
       }
     })();
+    show(ctx);
   }
 
-  pi.on("session_start", () => { reset(); warned = false; });
-  pi.on("session_tree", () => reset());
-  pi.on("session_compact", () => reset());
-  pi.on("session_shutdown", () => reset());
+  pi.on("session_start", (_event, ctx) => { reset(ctx); warned = false; });
+  pi.on("session_tree", (_event, ctx) => reset(ctx));
+  pi.on("session_compact", (_event, ctx) => reset(ctx));
+  pi.on("session_shutdown", (_event, ctx) => reset(ctx));
   pi.on("turn_end", (_event, ctx) => { prepare(ctx); });
   pi.on("session_before_compact", async (event, ctx) => {
     // Custom instructions change the summary, so Pi must write it.
