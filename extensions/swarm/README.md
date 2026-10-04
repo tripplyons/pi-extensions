@@ -406,19 +406,23 @@ quiet-activity diagnostics, and health-read errors only when present.
 Bash tasks and tmux jobs. It distinguishes `quiet-with-job`, `quiet-no-job`,
 `recent`, `awaiting-review`, and `unknown`. Unknown job ownership includes the
 read error. Quiet does not mean stalled, and a live job does not prove progress.
-The extension checks every ten seconds and warns once per warning episode for
-missing worker panes or quiet workers without a known permission wait. Use
-`/swarm:quiet <seconds>` to change the branch's quiet threshold, default 300.
-Inspect with `swarm_health` or `swarm_observe`. Diagnostics never stop or restart
-workers automatically.
+The extension checks every ten seconds. Once per warning episode, it sends the
+direct parent's agent a steering message for a missing worker pane or a quiet
+worker without a known permission wait. The message starts a turn for an idle
+parent and asks it to inspect the worker and report what it did. A
+`quiet-no-job` alert asks the parent to steer an idle worker and to stop or
+restart only a stuck one. These alerts do not go to the user as notifications;
+the panel still shows the state. A deeper worker's alert goes to its own parent.
+Use `/swarm:quiet <seconds>` to change the branch's quiet threshold, default 300.
+Diagnostics never stop or restart workers automatically.
 
 While non-review direct children remain active, each parent receives a worker
 check-in every five minutes. This steering message asks the parent to inspect
 `swarm_health`, `swarm_tree`, and unclear worker output, then report progress
 and the next check time. It starts a turn for an idle parent and reaches a busy
 parent at a tool boundary. It lists up to ten workers with status, latest activity
-report and age, nonreleased permission, reload stage, active job count from the
-last health check, and a missing pane. Only one check-in can remain queued. The next interval
+report and age, nonreleased permission, reload stage, active job count and quiet
+state from the last health check, and a missing pane. Only one check-in can remain queued. The next interval
 starts when Pi reports message delivery, not when the parent acts. Permission
 waits remain in force. Check-ins do not cancel a running tool or prove that the
 parent inspected workers. Reload starts a new five-minute interval.

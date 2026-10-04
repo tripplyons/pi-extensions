@@ -10,6 +10,8 @@ import { harness } from "../../lib/harness.ts";
 test("inbox messages reach the session as readable notifications", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  // A live pane keeps health alerts out of this message count.
+  const alive = Workers.prototype.alive; Workers.prototype.alive = async () => true;
   const h = harness(); install(h.pi);
   h.ctx.isIdle = () => false;
   try {
@@ -50,6 +52,7 @@ test("inbox messages reach the session as readable notifications", async () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
     expect(alerts).toHaveLength(1);
   } finally {
+    Workers.prototype.alive = alive;
     await h.emit("session_shutdown");
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });

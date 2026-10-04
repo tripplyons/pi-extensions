@@ -10,6 +10,7 @@ function line(node: Node, now: number, snapshot?: Health) {
   if (node.reload && node.reload.stage !== "released") facts.push(`reload ${node.reload.stage}`);
   if (snapshot?.error) facts.push("jobs unknown");
   else if (snapshot) facts.push(`${snapshot.jobs.filter(activeJob).length} active jobs`);
+  if (snapshot?.state.startsWith("quiet")) facts.push(`${snapshot.state} ${snapshot.quietSeconds}s`);
   if (snapshot?.process === "missing") facts.push("no pane");
   return `- ${node.name.slice(0, 80)} (${node.id}): ${facts.join("; ")}`;
 }

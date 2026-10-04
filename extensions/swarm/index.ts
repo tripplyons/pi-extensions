@@ -91,8 +91,16 @@ export default function install(pi: ExtensionAPI) {
           if (!warning) { healthAlerts.delete(worker.id); continue; }
           const token = `${worker.generation ?? worker.started}:${warning}`;
           if (healthAlerts.get(worker.id) === token) continue;
-          ctx.ui.notify(`Swarm ${worker.name}: ${warning}; last signal ${snapshot.quietSeconds ?? "unknown"} seconds ago. Inspect with swarm_health or swarm_observe; no automatic stop or restart.`, "warning");
           healthAlerts.set(worker.id, token);
+          // The direct parent's agent acts on the warning; a deeper worker's own parent receives it instead.
+          if (worker.parent !== node.id) continue;
+          const advice = warning === "quiet-with-job" ? "Check its job output with swarm_health and swarm_observe before deciding it is stalled."
+            : warning === "quiet-no-job" ? "It owns no active jobs. Inspect it with swarm_observe; if it is idle or waiting without a report, steer it with swarm_send, and stop or restart it only if it is stuck."
+            : "Its tmux session is gone. Inspect swarm_tree and its handoff state, then restart it or record why not.";
+          pi.sendMessage({ customType: "swarm-health-alert",
+            content: `Swarm health alert: ${worker.name} (${worker.id}) is ${warning}; last signal ${snapshot.quietSeconds ?? "unknown"} seconds ago. ${advice} Report what you found and what you did. Quiet does not prove a stall; nothing was stopped or restarted automatically.`,
+            display: true, details: { runId: run.id, nodeId: worker.id, warning, quietSeconds: snapshot.quietSeconds },
+          }, { triggerTurn: true, deliverAs: "steer" });
         }
       }
       const awaiting = descendants(run, node.id).filter(child => child.status === "review");

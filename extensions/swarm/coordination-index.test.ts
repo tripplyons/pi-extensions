@@ -7,6 +7,7 @@ import install from "./index.ts";
 import { SwarmStore } from "./state.ts";
 import { ReloadBarrier } from "./coordination.ts";
 import type { Swarm } from "./controller.ts";
+import { Workers } from "./worker.ts";
 
 async function fixture(check: (h: ReturnType<typeof harness>, store: SwarmStore, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-coordination-ui-"));
@@ -69,6 +70,42 @@ test("overdue direct-child backlog steers the parent once and preserves independ
   while (statuses.at(-1) !== undefined && Date.now() < clearDeadline) await new Promise(resolve => setTimeout(resolve, 25));
   expect(statuses.at(-1)).toBeUndefined(); expect(reminders()).toHaveLength(1);
 }));
+
+test("health warnings steer the direct parent's agent once per episode, not the user", () => fixture(async (h, store, root) => {
+  const alive = Workers.prototype.alive, notices: string[] = [];
+  let live = true;
+  Workers.prototype.alive = async () => live;
+  h.ctx.ui.notify = (text: string) => notices.push(text);
+  try {
+  h.ctx.cwd = root; await h.command("swarm:start", "Objective");
+  const identity = h.entries.find(entry => entry.customType === "pi:swarm").data;
+  const session = join(root, "worker.jsonl"); await writeFile(session, JSON.stringify({ type: "session", id: "worker-session" }));
+  const quiet = await store.reserve(identity.run, identity.node, "Quiet", "Task");
+  const old = new Date(Date.now() - 600_000).toISOString();
+  await store.update(identity.run, state => { Object.assign(state.nodes[quiet.id], { status: "running", session, started: old }); });
+  const alerts = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-health-alert");
+  const deadline = Date.now() + 3000;
+  while (!alerts().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+  expect(alerts()).toHaveLength(1);
+  expect(alerts()[0].message.content).toContain(`Quiet (${quiet.id}) is quiet-no-job`);
+  expect(alerts()[0].message.content).toContain("owns no active jobs");
+  expect(alerts()[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(alerts()).toHaveLength(1);
+  const nested = await store.reserve(identity.run, identity.node, "Parent", "Task");
+  await store.update(identity.run, state => { Object.assign(state.nodes[nested.id], { status: "running", session, started: new Date().toISOString() }); });
+  const grandchild = await store.reserve(identity.run, nested.id, "Grandchild", "Task");
+  await store.update(identity.run, state => { Object.assign(state.nodes[grandchild.id], { status: "running", session, started: old }); });
+  live = false;
+  const missing = Date.now() + 12_000;
+  while (alerts().length < 3 && Date.now() < missing) await new Promise(resolve => setTimeout(resolve, 50));
+  await new Promise(resolve => setTimeout(resolve, 500));
+  expect(alerts().map(entry => [entry.message.details.nodeId, entry.message.details.warning])).toEqual([
+    [quiet.id, "quiet-no-job"], [quiet.id, "worker pane missing"], [nested.id, "worker pane missing"],
+  ]);
+  expect(notices.filter(text => text.includes("quiet") || text.includes("pane"))).toEqual([]);
+  } finally { Workers.prototype.alive = alive; }
+}), 20_000);
 
 test("checkpoint tool ends the worker turn and gates jobs until an explicit barrier release", () => fixture(async (h, store, root) => {
   const run = await store.create("parent-session", root, "Objective"), worker = await store.reserve(run.id, run.root, "Worker", "Task");
