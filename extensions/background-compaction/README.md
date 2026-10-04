@@ -13,11 +13,13 @@ it updates the stored summary with only the new entries.
 
 When Pi compacts, the extension returns the stored summary from
 `session_before_compact`. Pi keeps every entry after the stored cut point, so
-the kept context can be larger than `keepRecentTokens`. If a background
-summary is still running, compaction waits for it.
+the kept context can be larger than `keepRecentTokens`. While a refresh runs,
+compaction uses the stored summary if it still fits the limits below. It waits
+for the running summary only when no stored summary fits.
 
-The footer shows `background: preparing` while a summary runs and
-`background: ready` when a stored summary matches the current branch. The
+The footer shows `background: ready` when compaction would use the stored
+summary at once, including while a refresh runs. It shows
+`background: preparing` while a summary runs and no stored summary fits. The
 status clears after compaction, tree navigation or a change to the summarized
 entries.
 

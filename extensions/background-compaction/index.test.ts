@@ -43,10 +43,10 @@ test("a stored summary compacts at the threshold without a new summary call", as
   push(10); setTokens(5_000);
   await turn();
   expect(calls).toHaveLength(0);
-  expect(footer).toEqual([]);
+  expect(footer.filter(Boolean)).toEqual([]);
   setTokens(12_000); await turn();
   expect(calls).toHaveLength(1);
-  expect(footer).toEqual(["background: preparing", "background: ready"]);
+  expect(footer.filter(Boolean)).toEqual(["background: preparing", "background: ready"]);
   expect(calls[0].messages).toHaveLength(7);
   expect(calls[0].previousSummary).toBeUndefined();
   const result = await compact();
@@ -100,4 +100,36 @@ test("compaction waits for a summary that is still running", async () => {
   finish();
   expect((await pending).compaction).toMatchObject({ firstKeptEntryId: "e8" });
   expect(calls).toHaveLength(1);
+});
+
+function hold() {
+  const summarize = deps.summarize, finish: (() => void)[] = [];
+  deps.summarize = (async (...args: any[]) => { await new Promise<void>(resolve => finish.push(resolve)); return (summarize as any)(...args); }) as any;
+  return () => { for (const resolve of finish.splice(0)) resolve(); };
+}
+
+test("a refresh does not delay compaction while the stored summary still fits", async () => {
+  const { calls, footer, push, compact, turn } = setup();
+  push(10); await turn();
+  const finish = hold();
+  push(3); await turn();
+  expect(footer.at(-1)).toBe("background: ready");
+  const result = await compact();
+  expect(result.compaction.firstKeptEntryId).toBe("e8");
+  expect(result.compaction.summary.startsWith("S1")).toBe(true);
+  expect(calls).toHaveLength(1);
+  finish();
+});
+
+test("compaction waits for a refresh when the stored summary is too far behind", async () => {
+  const { footer, push, compact, turn } = setup();
+  push(10); await turn();
+  const finish = hold();
+  push(6); await turn();
+  expect(footer.at(-1)).toBe("background: preparing");
+  const pending = compact();
+  finish();
+  const result = await pending;
+  expect(result.compaction.firstKeptEntryId).toBe("e14");
+  expect(result.compaction.summary.startsWith("S2")).toBe(true);
 });

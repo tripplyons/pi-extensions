@@ -55,6 +55,14 @@ export function covers(cache: Cache, current: Span) {
   if (current.entries.slice(current.start, end).some((entry, i) => entry.sourceEntry.id !== cache.ids[i])) return undefined;
   return hash(current, end) === cache.hash ? end : undefined;
 }
+// Index of the first kept entry if the stored summary is current and its cut keeps an acceptable amount of context.
+export function fits(cache: Cache, current: Span, keepRecentTokens: number, threshold: number) {
+  const end = covers(cache, current);
+  if (end === undefined) return undefined;
+  const kept = tokens(current.entries.slice(end)), summaryTokens = Math.ceil(cache.summary.length / 4);
+  // A stored cut far behind Pi's would leave too much context and compact again soon.
+  return kept - keepRecentTokens > tuning.maxGapTokens || kept + summaryTokens >= 0.75 * threshold ? undefined : end;
+}
 function add(a: Usage | undefined, b: Usage): Usage {
   if (!a) return b;
   return { ...b, input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, totalTokens: a.totalTokens + b.totalTokens,
@@ -73,19 +81,30 @@ function fileLists(fileOps: { read: Set<string>; written: Set<string>; edited: S
 
 export default function (pi: ExtensionAPI) {
   let cache: Cache | undefined, running: Promise<void> | undefined, controller: AbortController | undefined, epoch = 0, warned = false;
-  function show(ctx: ExtensionContext) {
-    try { ctx.ui.setStatus("background-compaction", running ? "background: preparing" : cache ? "background: ready" : undefined); } catch {}
+  function usable(ctx: ExtensionContext, current: Span) {
+    if (!cache || !ctx.model) return undefined;
+    const settings = compactionSettings(pi, ctx.model), usage = ctx.getContextUsage();
+    return fits(cache, current, settings.keepRecentTokens, usage ? usage.contextWindow - settings.reserveTokens : Infinity);
+  }
+  // Ready means compaction would use the stored summary now, even while a refresh runs.
+  function show(ctx: ExtensionContext, current = span(ctx.sessionManager.getBranch())) {
+    const text = usable(ctx, current) !== undefined ? "background: ready" : running ? "background: preparing" : undefined;
+    try { ctx.ui.setStatus("background-compaction", text); } catch {}
   }
   function reset(ctx: ExtensionContext) {
-    epoch++; cache = undefined; controller?.abort(); controller = undefined;
-    show(ctx);
+    epoch++; cache = undefined; running = undefined; controller?.abort(); controller = undefined;
+    try { ctx.ui.setStatus("background-compaction", undefined); } catch {}
   }
   function prepare(ctx: ExtensionContext) {
-    if (running) return;
-    const model = ctx.model, usage = ctx.getContextUsage(), current = span(ctx.sessionManager.getBranch());
-    // Drop a summary that no longer matches the branch so the footer does not show it as ready.
-    if (cache && covers(cache, current) === undefined) { cache = undefined; show(ctx); }
-    if (!model || usage?.tokens == null) return;
+    const current = span(ctx.sessionManager.getBranch());
+    // Drop a summary that no longer matches the branch.
+    if (cache && covers(cache, current) === undefined) cache = undefined;
+    start(ctx, current);
+    show(ctx, current);
+  }
+  function start(ctx: ExtensionContext, current: Span) {
+    const model = ctx.model, usage = ctx.getContextUsage();
+    if (running || !model || usage?.tokens == null) return;
     const settings = compactionSettings(pi, model);
     if (!settings.enabled || usage.tokens < tuning.prepareAt * (usage.contextWindow - settings.reserveTokens)) return;
     const end = cut(current, settings.keepRecentTokens);
@@ -94,7 +113,8 @@ export default function (pi: ExtensionAPI) {
     const delta = current.entries.slice(from, end);
     if (end <= from || (covered !== undefined && tokens(delta) < tuning.refreshTokens)) return;
     const started = epoch, abort = controller = new AbortController();
-    running = (async () => {
+    let job: Promise<void> | undefined;
+    job = running = (async () => {
       try {
         const result = await deps.summarize(delta.flatMap(messages), model, settings.reserveTokens, undefined, undefined, abort.signal, undefined,
           covered !== undefined ? prior!.summary : current.previous?.summary, pi.getThinkingLevel(), (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options));
@@ -107,11 +127,10 @@ export default function (pi: ExtensionAPI) {
         try { ctx.ui.notify(`Background compaction summary failed; Pi will summarize at the threshold: ${error instanceof Error ? error.message : String(error)}`, "warning"); } catch {}
       } finally {
         if (controller === abort) controller = undefined;
-        running = undefined;
+        if (running === job) running = undefined;
         if (started === epoch) show(ctx);
       }
     })();
-    show(ctx);
   }
 
   pi.on("session_start", (_event, ctx) => { reset(ctx); warned = false; });
@@ -122,15 +141,17 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, ctx) => {
     // Custom instructions change the summary, so Pi must write it.
     if (event.customInstructions) return;
-    if (running) await Promise.race([running, new Promise(resolve => event.signal.addEventListener("abort", resolve, { once: true }))]);
+    const { preparation } = event, current = span(event.branchEntries), usage = ctx.getContextUsage();
+    const threshold = usage ? usage.contextWindow - preparation.settings.reserveTokens : Infinity;
+    const check = () => cache && !event.signal.aborted ? fits(cache, current, preparation.settings.keepRecentTokens, threshold) : undefined;
+    let end = check();
+    // Wait for a running summary only when the stored one cannot be used.
+    if (end === undefined && running) {
+      await Promise.race([running, new Promise(resolve => event.signal.addEventListener("abort", resolve, { once: true }))]);
+      end = check();
+    }
     const stored = cache;
-    if (!stored || event.signal.aborted) return;
-    const current = span(event.branchEntries), end = covers(stored, current);
-    if (end === undefined) return;
-    const { preparation } = event, kept = tokens(current.entries.slice(end)), summaryTokens = Math.ceil(stored.summary.length / 4);
-    const usage = ctx.getContextUsage(), threshold = usage ? usage.contextWindow - preparation.settings.reserveTokens : Infinity;
-    // A stored cut far behind Pi's would leave too much context and compact again soon.
-    if (kept - preparation.settings.keepRecentTokens > tuning.maxGapTokens || kept + summaryTokens >= 0.75 * threshold) return;
+    if (end === undefined || !stored) return;
     const files = fileLists(preparation.fileOps, current.previous);
     return { compaction: { summary: stored.summary + files.text, firstKeptEntryId: current.entries[end].sourceEntry.id, tokensBefore: preparation.tokensBefore, usage: stored.usage,
       details: { readFiles: files.readFiles, modifiedFiles: files.modifiedFiles } } };
