@@ -30,6 +30,7 @@
       "./extensions/stash/index.ts",
       "./extensions/auto-rename/index.ts",
       "./extensions/btw/index.ts",
+      "./extensions/background-compaction/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/tripp-autoresearch/index.ts",
       "./extensions/web/index.ts",

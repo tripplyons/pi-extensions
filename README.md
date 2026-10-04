@@ -8,7 +8,7 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (24)
+## Extensions (25)
 
 | Extension | Behavior |
 | --- | --- |
@@ -34,6 +34,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Automatic session names through standalone model requests |
 | [btw](extensions/btw) | Side questions with optional tools |
+| [background-compaction](extensions/background-compaction) | Background compaction summaries, applied at once when Pi's threshold is reached |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |
 
