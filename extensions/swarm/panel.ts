@@ -47,7 +47,7 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
       if (node.status === "starting") flag("warning", "starting");
       else if (!activity) flag("warning", "activity unknown");
       else if (activity !== "working" && activity !== "tool-active") {
-        flag(activity === "checking-in" ? "muted" : "warning", `${activity} ${elapsed(node.activity!.updated, now) || "?"} ago`);
+        flag(activity === "checking-in" ? "muted" : activity === "errored" ? "error" : "warning", `${activity} ${elapsed(node.activity!.updated, now) || "?"} ago`);
       }
       const permission = node.permission?.status;
       // Waiting reports already explain these matching permission holds.
@@ -61,7 +61,7 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
 
     const message = run.messages.findLast(message => message.from === node.id && message.kind === "message");
     // Tool boundaries must not replace the worker's last message with a tool name.
-    const report = node.activity && ["working", "waiting-instructions", "waiting-dependency", "checking-in"].includes(node.activity.status) ? node.activity.detail : undefined;
+    const report = node.activity && ["working", "waiting-instructions", "waiting-dependency", "checking-in", "errored"].includes(node.activity.status) ? node.activity.detail : undefined;
     const preview = node.status === "review" ? node.result ?? message?.text : message?.text ?? report;
     const parts = [
       pad(paint(nameColor, truncateToWidth(names[index], nameWidth)), nameWidth),

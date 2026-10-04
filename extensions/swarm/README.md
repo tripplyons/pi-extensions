@@ -33,13 +33,16 @@ A check-in, instruction delivery, or tool event does not release a wait. Use
 `swarm_send` or `swarm_broadcast` with `kind: "instruction"` and
 `permission: "released"` to authorize a bounded step after a wait. Waiting workers
 can read files with `read`, `grep`, `find`, and `ls`, coordinate with other agents,
-inspect swarm state, and inspect or stop tasks. They can also manage context with
-`compress`, `search_context`, `acp_status`, `acp_cache`, and `decompress` without
-`toFile`. These calls do not release permission. The same rule applies to reload
+inspect swarm state, and inspect, watch, or stop tasks. They can run one read-only
+Bash command, such as `date`, `git status`, `git log`, or `git diff`, with a
+15-second limit and no redirection, chaining, or background mode. Pipes between
+read-only commands are allowed. They can also use `todo_write` and `complain`, and
+manage context with `compress`, `search_context`, `acp_status`, `acp_cache`, and
+`decompress` without `toFile`. These calls do not release permission. The same rule applies to reload
 checkpoint holds. Codemode can dispatch these allowed tools; Pi checks each
 nested call against the current worker state, including permission changes during
 a script. During a permission wait, but not a reload checkpoint hold, a worker can also
-submit a finished handoff with `swarm_complete`. Bash, file-writing tools
+submit a finished handoff with `swarm_complete`. Other Bash commands, file-writing tools
 (including `decompress` with `toFile`), new jobs, and unknown tools stay blocked. Do not use codemode model calls during a hold. Review and terminal workers
 remain paused for all tools. Old records without permission state show `unknown`;
 activity does not reconstruct it.
@@ -274,16 +277,28 @@ instructions authorize new work:
    barrier ID. It stops and restarts members without assigning new work. It
    checks both managed Bash tasks and tmux jobs. Unknown job ownership blocks
    checkpoint or restart instead of assuming no jobs.
+   Restart refuses when the installed package differs from the package the
+   parent loaded, because restarted workers would load the newer package. Reload
+   the parent first, or pass `allowRevisionChange: true` and reload the parent
+   before release.
 4. Reload the parent too if its source is old. Read `action=status` until every
-   member reports readiness from its new launch generation. Ready workers remain
-   on checkpoint hold. Matching source fingerprints are required for release.
+   member reports readiness from its new launch generation. Status shows the
+   parent, installed, and per-member revisions. Ready workers remain on
+   checkpoint hold. Matching source fingerprints are required for release. A
+   release error names the side to reload. Call `action=restart` again on a
+   ready barrier to restart only members whose revision differs from the
+   parent's or whose process stopped.
 5. Call `action=release` with one `{nodeId, task}` bounded assignment for every
    member. Release saves the new assignments, permissions, and steering messages
    atomically. Ordinary instructions cannot lift checkpoint holds.
 
 Barrier state, checkpoints, and readiness survive recovery. Failed restarts retain
 checkpoints and an error. Inspect the failure before retrying `action=restart`;
-workers with live restarted sessions are not launched twice. The barrier does not
+workers with live restarted sessions are not launched twice. `action=cancel` ends
+an unreleased barrier. It returns each member's checkpoint, removes the members
+from the barrier, and moves running members from checkpoint hold to a
+`waiting-approval` wait. Then release them with an instruction, request a new
+barrier, or restart stopped members with `swarm_restart`. The barrier does not
 commit, merge, or discard work. Workers running old code cannot call the checkpoint
 tool. Manually checkpoint and reload those sessions first; the barrier is not a
 way to add tools to an already loaded old runtime.
@@ -342,6 +357,11 @@ not resume a review worker.
 Workers report activity through `swarm_send` to their parent:
 `activity: "working"`, `"waiting-instructions"`, or `"waiting-dependency"`.
 The message text gives the reason. The tree exposes the report and timestamp.
+A waiting report also sets the worker's permission to the matching wait until
+the parent releases it. Report `working` to share status without a hold.
+When a turn ends with a model error, such as an early end of the provider
+stream, and Pi does not retry, the worker records `errored` activity with the
+error. The next successful turn clears it.
 The panel shows activity labels and signal ages for check-ins, instructions,
 and waits. Routine `working` and `tool-active` labels stay hidden. An ordinary
 worker-to-parent message records `checking-in` when it has no explicit activity
@@ -404,11 +424,12 @@ quiet-activity diagnostics, and health-read errors only when present.
 
 `swarm_health` reports process presence, recent activity age, and owned managed
 Bash tasks and tmux jobs. It distinguishes `quiet-with-job`, `quiet-no-job`,
-`recent`, `awaiting-review`, and `unknown`. Unknown job ownership includes the
+`recent`, `awaiting-review`, `errored`, and `unknown`. Unknown job ownership includes the
 read error. Quiet does not mean stalled, and a live job does not prove progress.
 The extension checks every ten seconds. Once per warning episode, it sends the
-direct parent's agent a steering message for a missing worker pane or a quiet
-worker without a known permission wait. The message starts a turn for an idle
+direct parent's agent a steering message for a missing worker pane, an
+`errored` worker, or a quiet worker without a known permission wait. An
+`errored` alert asks the parent to send the idle worker a message to resume it. The message starts a turn for an idle
 parent and asks it to inspect the worker and report what it did. A
 `quiet-no-job` alert asks the parent to steer an idle worker and to stop or
 restart only a stuck one. These alerts do not go to the user as notifications;

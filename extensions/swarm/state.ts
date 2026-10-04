@@ -50,7 +50,7 @@ export type Node = {
   reload?: { barrier: string; stage: "requested" | "checkpointed" | "restarted" | "ready" | "released"; checkpoint?: string };
   delivery?: Delivery[];
   directive?: { text: string; source: "parent" | "restart"; created: string; messageId?: string };
-  activity?: { status: Activity | "checking-in" | "instruction-queued" | "instruction-delivered" | "tool-active"; detail: string; updated: string; source?: "worker" | "message" | "instruction" | "tool-boundary" };
+  activity?: { status: Activity | "checking-in" | "instruction-queued" | "instruction-delivered" | "tool-active" | "errored"; detail: string; updated: string; source?: "worker" | "message" | "instruction" | "tool-boundary" };
   handoff?: Handoff;
   replacement?: { requested: string; successor?: string };
   predecessor?: string;
@@ -260,6 +260,16 @@ export class SwarmStore {
       if (node.parent && node.generation && node.generation !== launchGeneration) throw new Error("Worker launch generation is stale");
       node.observedAssignment = { generation, launchGeneration: node.generation, observed: new Date().toISOString() };
       return node;
+    });
+  }
+  // An undefined error clears an earlier errored state after a later turn succeeds.
+  async recordError(id: string, actor: string, error?: string) {
+    return this.update(id, run => {
+      const node = run.nodes[actor];
+      if (!node?.parent || node.status !== "running") return;
+      const updated = new Date().toISOString();
+      if (error) node.activity = { status: "errored", detail: `Turn ended with a model error: ${error.slice(0, 500)}`, updated, source: "worker" };
+      else if (node.activity?.status === "errored") node.activity = { status: "working", detail: "A later turn completed after the model error.", updated, source: "worker" };
     });
   }
   async observeTool(id: string, actor: string, toolName: string) {

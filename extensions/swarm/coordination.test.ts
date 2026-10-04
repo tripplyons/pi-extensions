@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SwarmStore, type Node } from "./state.ts";
-import { ReloadBarrier, health, reviews, type OwnedJob } from "./coordination.ts";
+import { ReloadBarrier, health, reviews, revisionMismatch, type OwnedJob } from "./coordination.ts";
 import { treeSnapshot } from "./prompts.ts";
 import { panel } from "./panel.ts";
 import { packageRevision } from "./version.ts";
@@ -61,7 +61,11 @@ test("reload checkpoints survive recovery and require all jobs stopped, readines
   await store.recordRuntime(run.id, b.id, "outdated", restarted.nodes[b.id].generation);
   await expect(manager.release(run.id, run.root, barrier.id, assignments.slice(0, 1))).rejects.toThrow("every member");
   await expect(manager.release(run.id, run.root, barrier.id, assignments)).rejects.toThrow("revisions must match");
-  await store.recordRuntime(run.id, b.id, "current", restarted.nodes[b.id].generation);
+  await expect(manager.release(run.id, run.root, barrier.id, assignments, "current")).rejects.toThrow(`Mismatched members: B (${b.id}) on outdated. The parent is current. To fix the members, call swarm_reload action=restart on this barrier again`);
+  // A second restart on the ready barrier relaunches only the mismatched member.
+  await manager.restart(run.id, run.root, barrier.id);
+  expect(launches.map(launch => launch.node)).toEqual([a.id, b.id, b.id]);
+  await store.recordRuntime(run.id, b.id, "current", (await store.read(run.id)).nodes[b.id].generation);
   await manager.release(run.id, run.root, barrier.id, assignments);
   const released = await recovered.read(run.id);
   expect(released.barriers?.[barrier.id].phase).toBe("released");
@@ -161,6 +165,7 @@ test("health distinguishes owned jobs, quiet activity, review waits, missing pan
   expect(health(node, false, [], 300, now).process).toBe("missing");
   expect(health(node, true, [], 300, now, "Unreadable session").state).toBe("unknown");
   expect(health({ ...node, status: "review" }, true, [], 300, now).state).toBe("awaiting-review");
+  expect(health({ ...node, activity: { status: "errored", detail: "stream ended", updated: new Date(now).toISOString(), source: "worker" } }, true, [], 300, now).state).toBe("errored");
   expect(health({ ...node, started: undefined }, true, [], 300, now).state).toBe("unknown");
   expect(health(node, true, [], 1000, now).state).toBe("recent");
 });
@@ -188,4 +193,39 @@ test("owned job snapshots read all worker task references without marking live r
   expect(await ownedJobs(root, new Jobs(join(root, "jobs")), node)).toEqual([{ id, status: "running", source: "bash" }]);
   expect(await readFile(path, "utf8")).toBe(content);
   await expect(ownedJobs(root, new Jobs(join(root, "jobs")), { ...node, session: undefined })).rejects.toThrow("ownership is unknown");
+}));
+
+test("release mismatch errors name the side to reload", () => {
+  const worker = (name: string, revision: string) => ({ id: name.toLowerCase(), name, runtime: { revision, loaded: "" } }) as Node;
+  expect(revisionMismatch("oldparent", [worker("A", "newerpkg")], "newerpkg")).toContain("The members loaded the newer installed package. Reload the parent session");
+  expect(revisionMismatch("newerpkg", [worker("A", "oldworkr")], "newerpkg")).toContain("The parent is current. To fix the members, call swarm_reload action=restart");
+  expect(revisionMismatch("oldparent", [worker("A", "oldworkr")], "newerpkg")).toContain("Reload the parent session (/reload) so it loads the installed package. Then, if members still differ");
+});
+
+test("a model error marks the worker errored until a later turn succeeds", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective"), worker = await store.reserve(run.id, run.root, "W", "Task");
+  await store.update(run.id, state => { state.nodes[worker.id].status = "running"; });
+  await store.recordError(run.id, worker.id, "OpenAI Responses stream ended early");
+  expect((await store.read(run.id)).nodes[worker.id].activity).toMatchObject({ status: "errored", detail: "Turn ended with a model error: OpenAI Responses stream ended early" });
+  await store.recordError(run.id, worker.id);
+  expect((await store.read(run.id)).nodes[worker.id].activity?.status).toBe("working");
+  await store.recordError(run.id, run.root, "root errors are not tracked");
+  expect((await store.read(run.id)).nodes[run.root].activity).toBeUndefined();
+}));
+
+test("cancelling a reload barrier returns checkpoints and leaves members on a parent wait", () => fixture(async (store, root) => {
+  const run = await store.create("session", root, "Objective"), worker = await store.reserve(run.id, run.root, "W", "Task");
+  await store.update(run.id, state => { state.nodes[worker.id].status = "running"; });
+  const manager = new ReloadBarrier(store, {} as Swarm, async () => []);
+  const barrier = await manager.request(run.id, run.root, [worker.id]);
+  await manager.checkpoint(run.id, worker.id, barrier.id, "Recovery W");
+  await expect(manager.cancel(run.id, worker.id, barrier.id)).rejects.toThrow("barrier owner");
+  expect(await manager.cancel(run.id, run.root, barrier.id)).toMatchObject({ phase: "cancelled", members: [{ nodeId: worker.id, checkpoint: "Recovery W" }] });
+  const state = await store.read(run.id);
+  expect(state.nodes[worker.id].reload).toBeUndefined();
+  expect(state.nodes[worker.id].permission).toMatchObject({ status: "waiting-approval", source: "parent" });
+  expect(state.messages.at(-1)).toMatchObject({ to: worker.id, kind: "message", text: expect.stringContaining("cancelled") });
+  await expect(manager.cancel(run.id, run.root, barrier.id)).rejects.toThrow("already cancelled");
+  await expect(manager.restart(run.id, run.root, barrier.id)).rejects.toThrow("request a new reload barrier");
+  expect((await manager.request(run.id, run.root, [worker.id])).members).toEqual([worker.id]);
 }));
