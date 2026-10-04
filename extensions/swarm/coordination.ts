@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { descendants, ownedChild, setDirective, terminal, type Node, type Run, type SwarmStore } from "./state.ts";
-import type { Swarm } from "./controller.ts";
+import { restartSettings, type Swarm } from "./controller.ts";
+import type { Launch } from "./worker.ts";
 import { resumeGrace } from "./error-resume.ts";
 
 export type Permission = { status: "released" | "waiting-approval" | "waiting-dependency" | "checkpoint-hold"; reason: string; updated: string; source: "parent" | "worker" };
 export type Barrier = { id: string; owner: string; created: string; phase: "checkpoint" | "restarting" | "failed" | "ready" | "released" | "cancelled"; error?: string; members: string[] };
+type Settings = Pick<Launch, "model" | "thinking" | "fast">;
 export type OwnedJob = { id: string; status: string; source: "bash" | "tmux" };
 export type Health = { nodeId: string; process: "present" | "missing"; state: "recent" | "quiet-with-job" | "quiet-no-job" | "unknown" | "awaiting-review" | "errored"; quietSeconds: number | null; jobs: OwnedJob[]; error?: string };
 export const activeJob = (job: OwnedJob) => ["queued", "running", "stopping"].includes(job.status);
@@ -75,10 +77,13 @@ export class ReloadBarrier {
       return worker.reload;
     });
   }
-  async restart(runId: string, actor: string, barrierId: string) {
+  // parent supplies defaults for members without saved settings; overrides map member IDs to new settings.
+  async restart(runId: string, actor: string, barrierId: string, parent: Settings = {}, overrides: Record<string, Settings> = {}) {
     const barrier = await this.store.update(runId, run => {
       const entry = run.barriers?.[barrierId];
       if (!entry || entry.owner !== actor) throw new Error("Only the barrier owner may restart it");
+      const outside = Object.keys(overrides).filter(id => !entry.members.includes(id));
+      if (outside.length) throw new Error(`Settings overrides name workers outside this barrier: ${outside.join(", ")}`);
       // A ready barrier restarts again to bring mismatched or stopped members onto the parent's revision.
       if (!["checkpoint", "failed", "ready"].includes(entry.phase)) throw new Error(entry.phase === "restarting" ? "Barrier restart is already in progress; inspect status, or cancel the barrier if it is stuck" : "Barrier is finished; request a new reload barrier");
       if (entry.members.some(id => !["checkpointed", "restarted", "ready"].includes(run.nodes[id].reload?.stage ?? ""))) throw new Error("Wait for every worker checkpoint before restart");
@@ -88,12 +93,14 @@ export class ReloadBarrier {
       for (const id of barrier.members) {
         const run = await this.store.read(runId), node = ownedChild(run, actor, id);
         const current = node.reload!.stage === "restarted" || (node.reload!.stage === "ready" && node.runtime?.revision === run.nodes[actor].runtime?.revision);
-        if (current && await this.swarm.workers.alive(id)) continue;
+        const saved = restartSettings(node, parent), settings = restartSettings(node, parent, overrides[id]);
+        const changed = (["model", "thinking", "fast"] as const).some(field => settings[field] !== saved[field]);
+        if (current && !changed && await this.swarm.workers.alive(id)) continue;
         if ((await this.jobs(node)).some(activeJob)) throw new Error(`Worker ${node.name} still owns active jobs`);
         // Stop only the member process; its descendants keep running.
         await this.swarm.stopNodes(runId, [node]);
         await this.store.update(runId, state => { state.nodes[id].reload!.stage = "restarted"; });
-        await this.swarm.restart(runId, actor, id);
+        await this.swarm.restart(runId, actor, id, settings);
       }
       return this.store.update(runId, run => {
         const entry = run.barriers![barrierId];

@@ -281,6 +281,11 @@ instructions authorize new work:
    parent loaded, because restarted workers would load the newer package. Reload
    the parent first, or pass `allowRevisionChange: true` and reload the parent
    before release.
+   Members keep their own model, thinking level and fast preference. Pass
+   `model`, `thinking` or `fast` to change them for every member, or
+   `members: [{nodeId, model?, thinking?, fast?}]` to change them per member.
+   Per-member values take precedence. A restart on a ready barrier also
+   relaunches members whose settings change.
 4. Reload the parent too if its source is old. Read `action=status` until every
    member reports readiness from its new launch generation. Status shows the
    parent, installed, and per-member revisions. Ready workers remain on

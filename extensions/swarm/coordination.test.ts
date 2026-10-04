@@ -93,6 +93,40 @@ test("failed reload launch preserves checkpoints and retries only workers withou
   expect((await store.read(run.id)).nodes[b.id].reload?.checkpoint).toBe("Saved checkpoint");
 }));
 
+test("reload restart keeps member settings, applies overrides and relaunches ready members whose settings change", () => fixture(async (store, root) => {
+  const run = await store.create("session", root, "Objective");
+  const a = await store.reserve(run.id, run.root, "A", "Task"), b = await store.reserve(run.id, run.root, "B", "Task");
+  await store.update(run.id, state => {
+    for (const node of [a, b]) Object.assign(state.nodes[node.id], { status: "running", worktree: { cwd: root, repository: root, shared: true }, launch: { model: "p/old", thinking: "high", fast: false } });
+    state.nodes[a.id].current = { model: "p/current", thinking: "low" };
+  });
+  await store.recordRuntime(run.id, run.root, "current");
+  const live = new Set([a.id, b.id]), launches: any[] = [];
+  const workers = {
+    async start(args: any) { launches.push(args); live.add(args.node); return { pane: args.node, session: join(root, "session.jsonl") }; },
+    async stop(id: string) { live.delete(id); }, async alive(id: string) { return live.has(id); }, async observe() { return ""; },
+  };
+  const manager = new ReloadBarrier(store, new Swarm(store, workers, async () => {}), async () => []);
+  const barrier = await manager.request(run.id, run.root);
+  for (const worker of [a, b]) await manager.checkpoint(run.id, worker.id, barrier.id, "Saved checkpoint");
+  const parent = { model: "p/parent", thinking: "medium", fast: false };
+  await expect(manager.restart(run.id, run.root, barrier.id, parent, { [run.root]: { fast: true } })).rejects.toThrow("outside this barrier");
+  await manager.restart(run.id, run.root, barrier.id, parent, { [b.id]: { model: "p/new", fast: true } });
+  expect(launches.map(({ node, model, thinking, fast }) => ({ node, model, thinking, fast }))).toEqual([
+    { node: a.id, model: "p/current", thinking: "low", fast: false },
+    { node: b.id, model: "p/new", thinking: "high", fast: true },
+  ]);
+  const restarted = await store.read(run.id);
+  for (const worker of [a, b]) await store.recordRuntime(run.id, worker.id, "current", restarted.nodes[worker.id].generation);
+  expect((await store.read(run.id)).barriers?.[barrier.id].phase).toBe("ready");
+  await manager.restart(run.id, run.root, barrier.id, parent, { [a.id]: { thinking: "medium" }, [b.id]: { model: "p/new" } });
+  expect(launches).toHaveLength(3);
+  expect(launches[2]).toMatchObject({ node: a.id, model: "p/current", thinking: "medium", fast: false });
+  await store.recordRuntime(run.id, a.id, "current", (await store.read(run.id)).nodes[a.id].generation);
+  await manager.restart(run.id, run.root, barrier.id, parent, { [a.id]: { thinking: "medium" } });
+  expect(launches).toHaveLength(3);
+}));
+
 test("reload rejects duplicate members and non-parent authority", () => fixture(async (store, root) => {
   const run = await store.create("session", root, "Objective"), a = await store.reserve(run.id, run.root, "A", "Task");
   await store.update(run.id, state => { state.nodes[a.id].status = "running"; });

@@ -374,8 +374,11 @@ export default function install(pi: ExtensionAPI) {
     const target = runNode(run, args.nodeId);
     return diagnostics(run, target.id, quietAfter, Boolean(target.parent));
   });
-  tool("swarm_reload", "Durable direct-child reload barrier. Request checkpoints; workers checkpoint alone only after finishing or stopping owned jobs. Parent restarts after every checkpoint, waits for readiness and matching package revisions, then separately releases with one explicit bounded assignment per worker. Restart refuses when the installed package differs from the parent's loaded package unless allowRevisionChange is set. Restart again on a ready barrier to restart only members whose revision differs from the parent's or whose process stopped. Cancel ends an unreleased barrier, returns each member's checkpoint, and leaves running members on a permission wait. Running descendants of a member keep running through the restart. Does not authorize work during restart.", Type.Object({ action: Type.Union(["request", "status", "checkpoint", "restart", "release", "cancel"].map(value => Type.Literal(value))), barrierId: Type.Optional(Type.String()), allowRevisionChange: Type.Optional(Type.Boolean({ description: "Restart even though the installed package differs from the parent's loaded package. Reload the parent before release." })), nodeIds: Type.Optional(Type.Array(Type.String(), { minItems: 1 })), checkpoint: Type.Optional(Type.String({ minLength: 1 })), assignments: Type.Optional(Type.Array(Type.Object({ nodeId: Type.String(), task: Type.String({ minLength: 1 }) }))) }), async (args, ctx) => {
+  tool("swarm_reload", "Durable direct-child reload barrier. Request checkpoints; workers checkpoint alone only after finishing or stopping owned jobs. Parent restarts after every checkpoint, waits for readiness and matching package revisions, then separately releases with one explicit bounded assignment per worker. Restart refuses when the installed package differs from the parent's loaded package unless allowRevisionChange is set. Restart again on a ready barrier to restart only members whose revision differs from the parent's or whose process stopped. Cancel ends an unreleased barrier, returns each member's checkpoint, and leaves running members on a permission wait. Running descendants of a member keep running through the restart. Restart keeps each member's own model, thinking level and fast preference; model, thinking and fast override them for every member, and members overrides them per worker. A restart on a ready barrier also relaunches members whose settings change. Does not authorize work during restart.", Type.Object({ action: Type.Union(["request", "status", "checkpoint", "restart", "release", "cancel"].map(value => Type.Literal(value))), barrierId: Type.Optional(Type.String()), allowRevisionChange: Type.Optional(Type.Boolean({ description: "Restart even though the installed package differs from the parent's loaded package. Reload the parent before release." })), nodeIds: Type.Optional(Type.Array(Type.String(), { minItems: 1 })), checkpoint: Type.Optional(Type.String({ minLength: 1 })), assignments: Type.Optional(Type.Array(Type.Object({ nodeId: Type.String(), task: Type.String({ minLength: 1 }) }))),
+    model: Type.Optional(Type.String({ minLength: 1, description: "Restart only: exact available provider/model for every member." })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()),
+    members: Type.Optional(Type.Array(Type.Object({ nodeId: Type.String(), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()) }), { minItems: 1, description: "Restart only: per-member settings that take precedence over model, thinking and fast." })) }), async (args, ctx) => {
     const { run, node } = await active(ctx), manager = await reloads();
+    if (args.action !== "restart" && [args.model, args.thinking, args.fast, args.members].some(value => value !== undefined)) throw new Error("model, thinking, fast and members apply only to action=restart");
     if (args.action === "request") return manager.request(run.id, node.id, args.nodeIds);
     if (!args.barrierId) throw new Error("barrierId is required");
     const barrier = run.barriers?.[args.barrierId];
@@ -384,7 +387,7 @@ export default function install(pi: ExtensionAPI) {
       const parent = run.nodes[barrier.owner].runtime?.revision;
       return { ...barrier, parentRevision: parent ?? null, installedRevision: packageRevision(), members: barrier.members.map(id => ({ nodeId: id, name: run.nodes[id].name, status: run.nodes[id].status, reload: run.nodes[id].reload, runtime: run.nodes[id].runtime,
         revisionState: !parent || !run.nodes[id].runtime ? "unknown" : run.nodes[id].runtime!.revision === parent ? "matches-parent" : "differs-from-parent",
-        generation: run.nodes[id].generation, permission: run.nodes[id].permission })) };
+        generation: run.nodes[id].generation, permission: run.nodes[id].permission, launch: run.nodes[id].launch, current: run.nodes[id].current })) };
     }
     if (args.action === "cancel") return manager.cancel(run.id, node.id, barrier.id);
     if (args.action === "checkpoint") return manager.checkpoint(run.id, node.id, barrier.id, args.checkpoint ?? "");
@@ -392,7 +395,15 @@ export default function install(pi: ExtensionAPI) {
       // Restarted workers load the installed package, so a newer install would fail release.
       const installed = packageRevision();
       if (installed !== revision && !args.allowRevisionChange) throw new Error(`The installed package (${shortRevision(installed)}) differs from the package this parent loaded (${shortRevision(revision)}). Restarted workers would load ${shortRevision(installed)} and release would fail. Reload this parent session (/reload) first, or pass allowRevisionChange: true and reload the parent before release.`);
-      return manager.restart(run.id, node.id, barrier.id);
+      const shared = { ...(args.model !== undefined ? { model: chooseModel(ctx, args.model) } : {}), ...(args.thinking !== undefined ? { thinking: args.thinking } : {}), ...(args.fast !== undefined ? { fast: args.fast } : {}) };
+      const overrides: Record<string, { model?: string; thinking?: string; fast?: boolean }> = {};
+      for (const id of barrier.members) if (Object.keys(shared).length) overrides[id] = { ...shared };
+      const listed = (args.members ?? []).map(member => member.nodeId);
+      if (new Set(listed).size !== listed.length) throw new Error("members lists a worker more than once");
+      for (const member of args.members ?? []) {
+        overrides[member.nodeId] = { ...overrides[member.nodeId], ...(member.model !== undefined ? { model: chooseModel(ctx, member.model) } : {}), ...(member.thinking !== undefined ? { thinking: member.thinking } : {}), ...(member.fast !== undefined ? { fast: member.fast } : {}) };
+      }
+      return manager.restart(run.id, node.id, barrier.id, { model: chooseModel(ctx), thinking: pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false }, overrides);
     }
     if (args.action === "release") return manager.release(run.id, node.id, barrier.id, args.assignments ?? [], packageRevision());
     throw new Error("Invalid reload action");

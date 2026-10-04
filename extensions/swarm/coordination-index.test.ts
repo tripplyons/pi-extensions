@@ -126,6 +126,7 @@ test("checkpoint tool ends the worker turn and gates jobs until an explicit barr
   }
   expect((await h.emit("tool_call", { toolName: "decompress", input: { toFile: "checkpoint.md" } }))[0]).toMatchObject({ block: true, terminate: true });
   expect((await h.call("swarm_reload", { action: "status", barrierId: barrier.id })).details.members[0]).toMatchObject({ permission: { status: "checkpoint-hold" }, reload: { stage: "checkpointed" }, runtime: { revision: expect.any(String) } });
+  await expect(h.call("swarm_reload", { action: "status", barrierId: barrier.id, thinking: "low" })).rejects.toThrow("apply only to action=restart");
 }));
 
 test("permission waits permit read-only inspection and housekeeping without releasing edits or jobs", () => fixture(async (h, store, root) => {
