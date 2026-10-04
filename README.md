@@ -22,7 +22,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
-| [presentation](extensions/presentation) | One-row previews for all tools, expanded output, and native context-window footer; no working indicator |
+| [presentation](extensions/presentation) | One-row tool previews, expanded output, and context footer with reserved background status; no working indicator |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
@@ -35,7 +35,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Automatic session names through standalone model requests |
 | [btw](extensions/btw) | Side questions with optional tools |
-| [background-compaction](extensions/background-compaction) | Background compaction summaries, applied at once when Pi's threshold is reached |
+| [background-compaction](extensions/background-compaction) | Background summaries with waiting/preparing/ready status, applied when Pi's threshold is reached |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |
 

@@ -25,7 +25,9 @@ User messages retain prompt-zone markers and have no background-only rows above
 or below their content. Spacing within expanded output stays unchanged.
 
 The one-line footer shows folder, model, reasoning, native context-window use,
-branch-local estimated cost, and extension statuses. It uses
+branch-local estimated cost, and extension statuses. Council omits the reasoning
+field because its presets fix effort. The footer reserves room for the background
+compaction state before shortening the other fields. It uses
 `ctx.getContextUsage()`. For example, `25%/272k` means the current context uses
 25% of a 272,000-token model window, not the old `/threshold` budget. Pi may not
 know usage just after compaction; that shows `?%/272k` until usage becomes

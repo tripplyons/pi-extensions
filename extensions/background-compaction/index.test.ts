@@ -43,10 +43,10 @@ test("a stored summary compacts at the threshold without a new summary call", as
   push(10); setTokens(5_000);
   await turn();
   expect(calls).toHaveLength(0);
-  expect(footer.filter(Boolean)).toEqual([]);
+  expect(footer.filter(Boolean)).toEqual(["background: waiting"]);
   setTokens(12_000); await turn();
   expect(calls).toHaveLength(1);
-  expect(footer.filter(Boolean)).toEqual(["background: preparing", "background: ready"]);
+  expect(footer.filter(Boolean)).toEqual(["background: waiting", "background: preparing", "background: ready"]);
   expect(calls[0].messages).toHaveLength(7);
   expect(calls[0].previousSummary).toBeUndefined();
   const result = await compact();
@@ -80,12 +80,12 @@ test("Pi summarizes when the stored summary is stale, too far behind, or custom 
   branch.push({ type: "context_edit", id: "edit", parentId: "e10", timestamp: new Date().toISOString(), targetId: "e2", replacement: { content: [{ type: "text", text: "changed" }] } });
   expect(await compact()).toBeUndefined();
   setTokens(5_000); await turn();
-  expect(footer.at(-1)).toBeUndefined();
+  expect(footer.at(-1)).toBe("background: waiting");
   setTokens(12_000);
   branch.pop(); await turn();
   expect(footer.at(-1)).toBe("background: ready");
   await h.emit("session_compact", {});
-  expect(footer.at(-1)).toBeUndefined();
+  expect(footer.at(-1)).toBe("background: waiting");
   expect(await compact()).toBeUndefined();
 });
 
@@ -132,4 +132,19 @@ test("compaction waits for a refresh when the stored summary is too far behind",
   const result = await pending;
   expect(result.compaction.firstKeptEntryId).toBe("e14");
   expect(result.compaction.summary.startsWith("S2")).toBe(true);
+});
+
+test("waiting is visible on startup and reset, but disabled compaction and shutdown clear it", async () => {
+  const { h, footer } = setup();
+  await h.emit("session_start");
+  expect(footer.at(-1)).toBe("background: waiting");
+  await h.emit("model_select");
+  expect(footer.at(-1)).toBe("background: waiting");
+  await h.emit("session_tree");
+  expect(footer.at(-1)).toBe("background: waiting");
+  h.pi.getSettings = () => ({ compaction: { enabled: false } });
+  await h.emit("turn_end");
+  expect(footer.at(-1)).toBeUndefined();
+  await h.emit("session_shutdown");
+  expect(footer.at(-1)).toBeUndefined();
 });

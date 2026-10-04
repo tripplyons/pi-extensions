@@ -58,7 +58,9 @@ toggle or request fast service for Anthropic. Priority is a request to the
 provider, not a guarantee that priority service is granted.
 
 Compaction summaries and other direct requests route to Sol at medium effort
-without a consultation or a change to the execution budget.
+without a consultation or a change to the execution budget. Background
+compaction uses the same direct route. Its waiting/preparing/ready state stays
+visible in the footer; Council's separate reasoning-effort field is hidden.
 
 ## Tests
 

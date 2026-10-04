@@ -88,11 +88,13 @@ export default function (pi: ExtensionAPI) {
   }
   // Ready means compaction would use the stored summary now, even while a refresh runs.
   function show(ctx: ExtensionContext, current = span(ctx.sessionManager.getBranch())) {
-    const text = usable(ctx, current) !== undefined ? "background: ready" : running ? "background: preparing" : undefined;
+    const text = !compactionSettings(pi, ctx.model).enabled ? undefined
+      : usable(ctx, current) !== undefined ? "background: ready" : running ? "background: preparing" : "background: waiting";
     try { ctx.ui.setStatus("background-compaction", text); } catch {}
   }
-  function reset(ctx: ExtensionContext) {
+  function reset(ctx: ExtensionContext, shutdown = false) {
     epoch++; cache = undefined; running = undefined; controller?.abort(); controller = undefined;
+    if (!shutdown) { show(ctx); return; }
     try { ctx.ui.setStatus("background-compaction", undefined); } catch {}
   }
   function prepare(ctx: ExtensionContext) {
@@ -136,7 +138,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => { reset(ctx); warned = false; });
   pi.on("session_tree", (_event, ctx) => reset(ctx));
   pi.on("session_compact", (_event, ctx) => reset(ctx));
-  pi.on("session_shutdown", (_event, ctx) => reset(ctx));
+  pi.on("model_select", (_event, ctx) => reset(ctx));
+  pi.on("session_shutdown", (_event, ctx) => reset(ctx, true));
   pi.on("turn_end", (_event, ctx) => { prepare(ctx); });
   pi.on("session_before_compact", async (event, ctx) => {
     // Custom instructions change the summary, so Pi must write it.

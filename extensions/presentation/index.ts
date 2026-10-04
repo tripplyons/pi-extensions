@@ -2,7 +2,7 @@ import { registerCompactToolRenderers } from "./tool-renderers.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
 
 export function tokens(count: number) {
@@ -20,6 +20,16 @@ export function usage(ctx: ExtensionContext) {
     last = { input: u.input + u.cacheRead + u.cacheWrite, output: u.output };
   }
   return { cost, last };
+}
+// Reserve the background state before truncating the other footer fields.
+export function footerLine(parts: string[], statuses: ReadonlyMap<string, string>, separator: string, width: number) {
+  const background = statuses.get("background-compaction");
+  const otherStatuses = [...statuses].filter(([key]) => key !== "background-compaction").map(([, text]) => text);
+  const left = [...parts, ...otherStatuses].join(separator);
+  if (!background) return truncateToWidth(left, width);
+  const available = width - visibleWidth(background) - visibleWidth(separator);
+  if (available <= 0) return truncateToWidth(background, width);
+  return truncateToWidth(left, available) + separator + background;
 }
 export default function presentation(pi: ExtensionAPI) {
   registerCompactToolRenderers(pi);
@@ -39,13 +49,13 @@ export default function presentation(pi: ExtensionAPI) {
       invalidate() {},
       render(width: number) {
         const { cost } = usage(ctx);
-        const parts = [theme.fg("accent", basename(ctx.cwd)), ctx.model?.id ?? "?", pi.getThinkingLevel()];
+        const parts = [theme.fg("accent", basename(ctx.cwd)), ctx.model?.id ?? "?"];
+        if (ctx.model?.provider !== "tripp" || ctx.model.id !== "council") parts.push(pi.getThinkingLevel());
         const context = ctx.getContextUsage();
         const window = context?.contextWindow ?? ctx.model?.contextWindow;
         parts.push(`${context?.percent === null || context?.percent === undefined ? "?" : Math.round(context.percent)}%/${window ? tokens(window) : "?"}`);
         parts.push(`$${cost.toFixed(2)}`);
-        parts.push(...data.getExtensionStatuses().values());
-        return [truncateToWidth(parts.join(theme.fg("dim", " | ")), width)];
+        return [footerLine(parts, data.getExtensionStatuses(), theme.fg("dim", " | "), width)];
       },
     }));
   };
