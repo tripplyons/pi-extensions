@@ -3,8 +3,23 @@
 Requires Pi 1.0.1 or newer. Hides the working indicator and shows one content
 row per collapsed tool call, with one blank separator between calls. The row
 contains the tool name, key argument, and a short result or execution status.
-Long previews truncate to the terminal width instead of wrapping. Errors stay
-on one row and use the theme's error color.
+While the model writes a tool call, the row shows the newest argument text and
+`writing N chars`, where N counts characters in the argument values. The count
+and text update as Pi supplies partial arguments. If a provider emits raw JSON
+chunks but leaves its parsed arguments empty, the presentation extension recovers
+partial arguments for display only. It does not change messages or execution input.
+Recovery keeps at most 1,048,576 JSON characters per call, then uses the provider's
+parsed arguments. The cache clears when the message ends or the session resets.
+Long arguments show their end instead of a fixed prefix. Expand the call to see
+its full input through the original renderer. Providers that emit no argument
+chunks cannot show the input before completion.
+
+After generation, the row changes to `pending`, then `running` when execution
+starts. Partial results show the latest nonempty output line. Codemode shows the
+active nested tool and completed-call count even when its partial text is empty.
+Completed results return to the compact summary. Long previews truncate to the
+terminal width instead of wrapping. Errors stay on one row and use the theme's
+error color.
 
 A `registerToolRenderer()` resolver covers native, extension, MCP, and unknown
 tools, including tools loaded after the session resumes. It changes rendering

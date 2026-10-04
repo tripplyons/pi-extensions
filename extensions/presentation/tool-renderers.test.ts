@@ -31,7 +31,7 @@ test("every collapsed tool has one content row through streaming, completion, er
     component.markExecutionStarted();
     component.updateResult({ content: [{ type: "text", text: "working\nmore" }], isError: false }, true);
     expect(plain(component)).toHaveLength(2);
-    expect(plain(component).join("\n")).toContain("working");
+    expect(plain(component).join("\n")).toContain("more");
     component.updateResult({ content: [{ type: "text", text: "finished\nmore" }], isError: false }, false);
     expect(plain(component)).toHaveLength(2);
     expect(plain(component).join("\n")).toContain("finished");

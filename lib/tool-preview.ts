@@ -1,5 +1,5 @@
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text, stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
+import type { ToolDefinition, ToolRenderContext } from "@earendil-works/pi-coding-agent";
+import { Text, sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // Format structured results without quoting or escaping their text payloads.
 export function previewText(value: unknown): string {
@@ -38,6 +38,26 @@ function singleLine(value: string): string {
   return stripTerminalSequences(value).replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1f\x7f]/g, "").replace(/ +/g, " ").trim();
 }
 
+export function writingArguments(context: ToolRenderContext): boolean {
+  return context.argsComplete === false && !context.executionStarted && context.isPartial !== false && !context.isError;
+}
+
+// Count argument values without serializing a growing script; retain only its newest text.
+export function argumentProgress(value: unknown): { chars: number; tail: string } {
+  if (value == null) return { chars: 0, tail: "" };
+  if (typeof value !== "object") {
+    const text = String(value);
+    return { chars: text.length, tail: text.slice(-512) };
+  }
+  let chars = 0, tail = "";
+  for (const item of Object.values(value)) {
+    const progress = argumentProgress(item);
+    chars += progress.chars;
+    if (progress.tail) tail = progress.tail;
+  }
+  return { chars, tail };
+}
+
 export function resultSummary(result: { content: Array<{ type: string; text?: string }>; details?: unknown }, isError = false, isPartial = false): string {
   const output = result.content.filter(block => block.type === "text").map(block => block.text ?? "").join("\n");
   let readable = output;
@@ -48,7 +68,7 @@ export function resultSummary(result: { content: Array<{ type: string; text?: st
   const first = lines[0] ?? "";
   const heading = first.trimEnd().endsWith(":") && lines[1] ? `${first} ${lines[1]}` : first;
   const images = result.content.filter(block => block.type === "image").length;
-  const summary = singleLine(heading) || (images ? `${images} ${images === 1 ? "image" : "images"}` : "");
+  const summary = singleLine(isPartial ? lines.at(-1) ?? "" : heading) || (images ? `${images} ${images === 1 ? "image" : "images"}` : "");
   if (isError) return `error${summary ? `: ${summary}` : ""}`;
   if (isPartial) return summary || "running";
   return summary || "done";
@@ -58,14 +78,21 @@ export function toolCall(name: string): NonNullable<ToolDefinition<any>["renderC
   return (input, theme, context) => {
     const args = (input ?? {}) as Record<string, unknown>;
     const title = theme.fg("accent", name === "bash" ? "$" : theme.bold(name));
-    const preview = (value: string) => ({
+    const preview = (value: string, keepEnd = false) => ({
       invalidate() {},
       render(width: number) {
-        const content = title + theme.fg("text", value ? ` ${singleLine(value)}` : "");
+        let line = singleLine(value);
+        if (keepEnd) {
+          const available = Math.max(0, width - visibleWidth(title) - 1);
+          const columns = visibleWidth(line);
+          if (columns > available) line = available > 3 ? `...${sliceByColumn(line, columns - available + 3, available - 3)}` : "";
+        }
+        const content = title + theme.fg("text", line ? ` ${line}` : "");
         if (!context?.expanded) return [truncateToWidth(content, width)];
         return new Text(title + theme.fg("text", value ? ` ${value}` : ""), 0, 0).render(width);
       },
     });
+    if (context && !context.expanded && writingArguments(context)) return preview(argumentProgress(args).tail, true);
     if (name === "bash") return preview(typeof args.command === "string" ? args.command : "...");
     if (name === "ask_user") {
       const question = typeof args?.question === "string" ? args.question : "...";
