@@ -192,9 +192,11 @@ export class Tasks {
       if (offset) while (start < bytesRead && (buffer[start] & 0xc0) === 0x80) start++;
       recent = buffer.subarray(start, bytesRead).toString("utf8").split("\n").slice(-5).join("\n");
     } finally { await file.close(); }
-    return { ...record, elapsed_seconds: Math.max(0, Math.floor((now - Date.parse(record.created_at)) / 1000)),
-      output_bytes: metadata.size, output_silence_seconds: Math.max(0, Math.floor((now - Date.parse(lastOutput)) / 1000)),
-      deadline_remaining_seconds: record.deadline_at ? Math.max(0, Math.ceil((Date.parse(record.deadline_at) - now) / 1000)) : null, recent_output: recent };
+    // A finished task's clock stops at finished_at; its deadline no longer applies.
+    const end = record.finished_at ? Date.parse(record.finished_at) : now;
+    return { ...record, elapsed_seconds: Math.max(0, Math.floor((end - Date.parse(record.created_at)) / 1000)),
+      output_bytes: metadata.size, output_silence_seconds: Math.max(0, Math.floor((end - Date.parse(lastOutput)) / 1000)),
+      deadline_remaining_seconds: record.deadline_at && !record.finished_at ? Math.max(0, Math.ceil((Date.parse(record.deadline_at) - now) / 1000)) : null, recent_output: recent };
   }
   async stop(id: string, reason?: string) {
     const task = this.running.get(id);

@@ -66,7 +66,8 @@ export function handoffRecord(node: Node): Handoff | undefined {
   return { revision: 1, status, feedback: node.feedback };
 }
 export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean; superseded?: boolean; assignmentMode?: AssignmentMode };
-export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier> };
+export type BoardEntry = { value: string; author: string; updated: string; revision: number };
+export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier>; board?: Record<string, BoardEntry> };
 const nonempty = (value: string, name: string) => { if (!value.trim()) throw new Error(`${name} must contain text`); };
 export function ownedChild(run: Run, actor: string, child: string) {
   const node = run.nodes[child];
@@ -227,6 +228,21 @@ export class SwarmStore {
       if (permission && kind !== "instruction") throw new Error("Permission requires a parent instruction");
       run.messages.push(...messages);
       return messages;
+    });
+  }
+  // Board entries are shared facts. Authors and their ancestors may change them; a missing value deletes the key.
+  async writeBoard(id: string, actor: string, key: string, value?: string) {
+    if (!/^[\w./-]{1,100}$/.test(key)) throw new Error("Board keys use 1-100 letters, digits, _, ., / or -");
+    if (value !== undefined) { nonempty(value, "Board value"); if (value.length > 8000) throw new Error("Board values are limited to 8000 characters"); }
+    return this.update(id, run => {
+      if (!run.nodes[actor]) throw new Error("Unknown swarm node");
+      const board = run.board ??= {}, entry = board[key];
+      if (value === undefined && !entry) throw new Error(`Unknown board key: ${key}`);
+      if (entry && entry.author !== actor && !descendants(run, actor).some(node => node.id === entry.author)) throw new Error(`Board key ${key} belongs to ${run.nodes[entry.author]?.name ?? entry.author}; only its author or the author's ancestors may change it`);
+      if (value === undefined) { delete board[key]; return { key, deleted: true }; }
+      if (!entry && Object.keys(board).length >= 200) throw new Error("Board is full at 200 keys; delete stale keys first");
+      board[key] = { value, author: actor, updated: new Date().toISOString(), revision: (entry?.revision ?? 0) + 1 };
+      return { key, ...board[key] };
     });
   }
   async inbox(id: string, actor: string) {

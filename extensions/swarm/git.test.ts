@@ -17,7 +17,7 @@ async function fixture(run: (root: string) => Promise<void>) {
 test("dirty rejection, exclude snapshot, protected shared mode, branch retention", () => fixture(async root => {
   await writeFile(join(root, "file"), "dirty");
   const target = join(root, "child");
-  await expect(prepareWorktree(root, target, "pi-swarm/test/one")).rejects.toThrow("Dirty");
+  await expect(prepareWorktree(root, target, "pi-swarm/test/one")).rejects.toThrow("Dirty worktree: choose dirtyMode exclude, commit-parent, commit-child, or shared. 1 dirty path: file");
   await expect(prepareWorktree(root, target, "pi-swarm/test/one", "shared")).rejects.toThrow("Protected");
   const child = await prepareWorktree(root, target, "pi-swarm/test/one", "exclude");
   expect(await readFile(join(child.cwd, "file"), "utf8")).toBe("original");

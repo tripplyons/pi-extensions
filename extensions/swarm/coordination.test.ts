@@ -89,14 +89,36 @@ test("failed reload launch preserves checkpoints and retries only workers withou
   expect((await store.read(run.id)).nodes[b.id].reload?.checkpoint).toBe("Saved checkpoint");
 }));
 
-test("reload rejects duplicate members, nested live workers, and non-parent authority", () => fixture(async (store, root) => {
+test("reload rejects duplicate members and non-parent authority", () => fixture(async (store, root) => {
   const run = await store.create("session", root, "Objective"), a = await store.reserve(run.id, run.root, "A", "Task");
   await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
   const manager = new ReloadBarrier(store, {} as Swarm, async () => []);
   await expect(manager.request(run.id, run.root, [a.id, a.id])).rejects.toThrow("distinct");
   await expect(manager.request(run.id, a.id, [a.id])).rejects.toThrow("direct parent");
-  await store.reserve(run.id, a.id, "Nested", "Task");
-  await expect(manager.request(run.id, run.root, [a.id])).rejects.toThrow("nested workers first");
+}));
+
+test("reload restarts a member while its running descendants keep running", () => fixture(async (store, root) => {
+  const run = await store.create("session", root, "Objective"), a = await store.reserve(run.id, run.root, "A", "Task");
+  await store.update(run.id, state => { state.nodes[a.id].status = "running"; });
+  const nested = await store.reserve(run.id, a.id, "Nested", "Task");
+  await store.update(run.id, state => { for (const node of [a, nested]) Object.assign(state.nodes[node.id], { status: "running", worktree: { cwd: root, repository: root, shared: true } }); });
+  const live = new Set([a.id, nested.id]), starts: string[] = [];
+  const workers = {
+    async start(args: any) { starts.push(args.node); live.add(args.node); return { pane: args.node, session: join(root, "session.jsonl") }; },
+    async stop(id: string) { live.delete(id); }, async alive(id: string) { return live.has(id); }, async observe() { return ""; },
+  };
+  const swarm = new Swarm(store, workers, async () => {});
+  const manager = new ReloadBarrier(store, swarm, async () => []);
+  const barrier = await manager.request(run.id, run.root, [a.id]);
+  expect((await store.read(run.id)).nodes[a.id].directive?.text).toContain("1 running descendant worker will keep running");
+  await manager.checkpoint(run.id, a.id, barrier.id, "Nested worker still owns its step");
+  await manager.restart(run.id, run.root, barrier.id);
+  expect(starts).toEqual([a.id]);
+  expect(live.has(nested.id)).toBe(true);
+  const state = await store.read(run.id);
+  expect(state.nodes[nested.id].status).toBe("running");
+  expect(state.nodes[a.id]).toMatchObject({ status: "running", reload: { stage: "restarted" }, permission: { status: "checkpoint-hold" } });
+  await expect(swarm.restart(run.id, run.root, a.id)).rejects.toThrow("already running");
 }));
 
 test("permission persists separately from ordinary messages, activity and tool events", () => fixture(async (store, root) => {

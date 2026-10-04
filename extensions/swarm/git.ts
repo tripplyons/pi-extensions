@@ -27,8 +27,11 @@ export async function prepareWorktree(parent: string, destination: string, branc
   try { await mkdir(lock); } catch { throw new Error("Another swarm Git preparation holds the lock; retry after it finishes"); }
   try {
     if (await git(cwd, ["diff", "--name-only", "--diff-filter=U"])) throw new Error("Unresolved merges block spawn");
-    const dirty = !!await git(cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    if (dirty && !mode) throw new Error("Dirty worktree: choose exclude, commit-parent, commit-child, or shared");
+    const status = await git(cwd, ["status", "--porcelain=v1", "--untracked-files=all"]), dirty = !!status;
+    if (dirty && !mode) {
+      const paths = status.split("\n").map(line => line.slice(3));
+      throw new Error(`Dirty worktree: choose dirtyMode exclude, commit-parent, commit-child, or shared. ${paths.length} dirty path${paths.length === 1 ? "" : "s"}: ${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ", ..." : ""}`);
+    }
     if (mode && !["exclude", "commit-parent", "commit-child", "shared"].includes(mode)) throw new Error("Invalid dirty mode");
     const current = await git(cwd, ["branch", "--show-current"]);
     if ((mode === "shared" || mode === "commit-parent") && ["main", "master"].includes(current)) throw new Error(`Protected branch: ${current}`);

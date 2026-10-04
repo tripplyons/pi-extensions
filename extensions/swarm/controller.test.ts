@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { git } from "./git.ts";
 import { SwarmStore } from "./state.ts";
-import { Swarm } from "./controller.ts";
+import { Swarm, restartSettings } from "./controller.ts";
 import { treeSnapshot } from "./prompts.ts";
 import { panel } from "./panel.ts";
 test("controller connects isolation, review, jobs, restart and guarded cleanup", async () => {
@@ -62,6 +62,10 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     await swarm.review(run.id, run.root, a.id, "accept", "Final review");
     await swarm.stop(run.id, run.root, b.id);
     await swarm.restart(run.id, run.root, b.id); expect(live.has(b.id)).toBe(true);
+    await expect(swarm.restart(run.id, run.root, b.id)).rejects.toThrow("Pass stop: true");
+    stoppedJobs.length = 0;
+    await swarm.restart(run.id, run.root, b.id, { stop: true });
+    expect(live.has(b.id)).toBe(true); expect(stoppedJobs).toEqual([b.id]);
     expect(launches.at(-1).model).toBe("openai-codex/test-model");
     expect(launches.at(-1).thinking).toBe("high");
     expect(launches.at(-1).fast).toBe(true);
@@ -85,4 +89,12 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     expect((await store.read(run.id)).nodes[a.id].status).toBe("accepted");
     expect(await git(repo, ["branch", "--list", "pi-swarm/*"])).toContain(a.id);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+test("restart settings prefer the worker's reported and launch settings over the parent's", () => {
+  const parent = { model: "anthropic/parent", thinking: "medium", fast: false };
+  const node = { id: "a", name: "A", task: "Task", depth: 1, status: "stopped" as const, launch: { model: "openai/launch", thinking: "high", fast: true } };
+  expect(restartSettings(node, parent)).toEqual({ model: "openai/launch", thinking: "high", fast: true });
+  expect(restartSettings({ ...node, current: { model: "openai/current", thinking: "low" } }, parent)).toEqual({ model: "openai/current", thinking: "low", fast: true });
+  expect(restartSettings({ ...node, launch: undefined }, parent)).toEqual(parent);
+  expect(restartSettings(node, parent, { model: "openai/override", thinking: "max", fast: false })).toEqual({ model: "openai/override", thinking: "max", fast: false });
 });

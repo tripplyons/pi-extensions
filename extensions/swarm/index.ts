@@ -6,8 +6,8 @@ import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { result, restore } from "../../lib/common.ts";
 import { Jobs } from "./jobs.ts";
-import { SwarmStore, currentAssignment, descendants, terminal, type Run } from "./state.ts";
-import { Swarm } from "./controller.ts";
+import { SwarmStore, currentAssignment, descendants, ownedChild, terminal, type Run } from "./state.ts";
+import { Swarm, restartSettings } from "./controller.ts";
 import { Workers } from "./worker.ts";
 import { preflightWorktree } from "./git.ts";
 import { panel } from "./panel.ts";
@@ -38,7 +38,7 @@ type View = { health?: Health[]; run?: Run; scope?: string; live: Set<string>; e
 export default function install(pi: ExtensionAPI) {
   const root = getAgentDir();
   const revision = packageRevision();
-  let healthAt = 0;
+  let healthAt = 0, latestHealth: Health[] = [];
   const healthAlerts = new Map<string, string>();
   const store = new SwarmStore(join(root, "swarm"));
   const workers = new Workers();
@@ -83,7 +83,7 @@ export default function install(pi: ExtensionAPI) {
       const { run, node } = await active(ctx);
       if (Date.now() - healthAt >= 10_000) {
         healthAt = Date.now();
-        const snapshots = await diagnostics(run, node.id, restore<number>(ctx, "pi:swarm-quiet") ?? 300);
+        const snapshots = latestHealth = await diagnostics(run, node.id, restore<number>(ctx, "pi:swarm-quiet") ?? 300);
         for (const snapshot of snapshots) {
           const worker = run.nodes[snapshot.nodeId];
           const expectedWait = worker.permission && worker.permission.status !== "released";
@@ -108,7 +108,7 @@ export default function install(pi: ExtensionAPI) {
         alerted.add(alert);
       }
       if (node.parent && (node.status === "review" || terminal(node.status))) return;
-      const checkin = workerCheckins.next(run, node.id);
+      const checkin = workerCheckins.next(run, node.id, Date.now(), latestHealth);
       if (checkin) pi.sendMessage({ customType: "swarm-worker-checkin", content: checkin.content, display: true,
         details: { runId: run.id, owner: node.id, queuedAt: checkin.queuedAt },
       }, { triggerTurn: true, deliverAs: "steer" });
@@ -219,7 +219,7 @@ export default function install(pi: ExtensionAPI) {
     }
     const holding = node.permission?.status === "checkpoint-hold" && node.reload?.stage !== "requested";
     const waiting = node.permission?.status === "waiting-approval" || node.permission?.status === "waiting-dependency";
-    if (node.parent && (holding || waiting) && !allowedDuringHold(event.toolName, event.input)) return { block: true, terminate: true, reason: holding ? "Worker is on reload checkpoint hold. Read-only inspection and context housekeeping are allowed. Wait for the parent's explicit barrier release before editing or launching jobs." : `Worker permission is ${node.permission!.status}. Read-only inspection and context housekeeping are allowed. Coordinate with the parent and wait for explicit released permission before editing or launching jobs.` };
+    if (node.parent && (holding || waiting) && !allowedDuringHold(event.toolName, event.input, holding ? "checkpoint" : "wait")) return { block: true, terminate: true, reason: holding ? "Worker is on reload checkpoint hold. Read-only inspection and context housekeeping are allowed. Wait for the parent's explicit barrier release before editing or launching jobs." : `Worker permission is ${node.permission!.status}. Read-only inspection, context housekeeping and a finished swarm_complete handoff are allowed. Coordinate with the parent and wait for explicit released permission before editing or launching jobs.` };
     if (node.parent && (node.resume?.status === "delivered" || !event.toolName.startsWith("swarm_"))) await store.observeTool(run.id, node.id, event.toolName);
   });
   pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
@@ -297,10 +297,10 @@ export default function install(pi: ExtensionAPI) {
     const current = ctx.model ? modelId(ctx.model) : undefined;
     return { scoped: Boolean(ctx.scopedModels?.length), models: modelChoices(ctx).map(choice => ({ ...choice, current: choice.model === current })) };
   });
-  tool("swarm_tree", "List compact worker summaries with launch/current models, handoff state and per-revision code evidence. Set nodeId for a full record, includeTerminal for retained workers, or model for an exact effective provider/model filter. Counts remain run-wide.", Type.Object({ nodeId: Type.Optional(Type.String()), includeTerminal: Type.Optional(Type.Boolean()), model: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
+  tool("swarm_tree", "List compact worker summaries with launch/current models, handoff state and per-revision code evidence. Set brief for one short line of state per worker, nodeId for a full record, includeTerminal for retained workers, or model for an exact effective provider/model filter. Counts remain run-wide.", Type.Object({ nodeId: Type.Optional(Type.String()), includeTerminal: Type.Optional(Type.Boolean()), model: Type.Optional(Type.String({ minLength: 1 })), brief: Type.Optional(Type.Boolean({ description: "Return only id, parent, name, status, activity, permission, reload stage, version state and handoff per worker." })) }), async (args, ctx) => {
     const { run } = await active(ctx);
-    if (args.nodeId && args.model) throw new Error("model filters compact summaries; omit nodeId");
-    if (!args.nodeId) return treeSnapshot(run, args.includeTerminal, args.model);
+    if (args.nodeId && (args.model || args.brief)) throw new Error("model and brief filter summaries; omit nodeId");
+    if (!args.nodeId) return treeSnapshot(run, args.includeTerminal, args.model, Date.now(), args.brief);
     const node = run.nodes[args.nodeId];
     if (!node) throw new Error("Unknown swarm node");
     return node;
@@ -341,6 +341,14 @@ export default function install(pi: ExtensionAPI) {
     const messages = await store.broadcast(run.id, node.id, args.kind, args.text, args.permission, args.assignmentMode);
     return { recipients: messages.map(message => message.to), count: messages.length };
   });
+  tool("swarm_board", "Shared key/value board for this swarm run, for facts such as the current base SHA, a file ownership table or cache-safety rules. action=read lists every entry, or one key; write sets a value; delete removes a key. Entries record author and time. Only the author or the author's ancestors may change an entry. Entries are informational: they do not assign work, change scope or release permission.", Type.Object({ action: Type.Union(["read", "write", "delete"].map(value => Type.Literal(value))), key: Type.Optional(Type.String({ minLength: 1 })), value: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
+    const { run, node } = await active(ctx);
+    if (args.action === "read") return Object.entries(run.board ?? {}).filter(([key]) => !args.key || key === args.key)
+      .map(([key, entry]) => ({ key, ...entry, authorName: run.nodes[entry.author]?.name ?? "unknown" }));
+    if (!args.key) throw new Error("key is required");
+    if (args.action === "write" && args.value === undefined) throw new Error("value is required");
+    return store.writeBoard(run.id, node.id, args.key, args.action === "write" ? args.value : undefined);
+  });
   tool("swarm_complete", "Submit a self-contained handoff: outcome, branch/tested base/commits, files, exact checks/results, evidence, limitations/blockers and next steps. All descendants must be terminal. Then wait; call alone, with no other tools in the batch.", Type.Object({ result: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
     return updated;
@@ -367,12 +375,13 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_stop", "Stop an owned child. Retain worktree and session.", child, async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).stop(run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action: "stop" };
   });
-  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply model (exact available provider/model), thinking or fast to override. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait. Does not change live workers.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()) }), async (args, ctx) => {
+  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Reuse the worker's own model, thinking level and fast preference (its reported current settings, then launch settings, then yours); supply model (exact available provider/model), thinking or fast to override. A live worker requires stop=true, which stops it first. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()), stop: Type.Optional(Type.Boolean({ description: "Stop a live worker before restarting it. Descendants must already be terminal." })) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    const model = chooseModel(ctx, args.model);
-    const thinking = args.thinking ?? pi.getThinkingLevel();
-    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, model, thinking, fast: args.fast ?? restore<boolean>(ctx, "pi:fast") ?? false });
-    return { nodeId: args.nodeId, action: "restart", model, thinking };
+    const settings = restartSettings(ownedChild(run, node.id, args.nodeId),
+      { model: chooseModel(ctx), thinking: pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false },
+      { model: args.model && chooseModel(ctx, args.model), thinking: args.thinking, fast: args.fast });
+    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, stop: args.stop, ...settings });
+    return { nodeId: args.nodeId, action: "restart", ...settings };
   });
   for (const action of ["kill", "cleanup"] as const) tool(`swarm_${action}`, `Root only: ${action === "kill" ? "stop all workers and their jobs" : "remove clean terminal worktrees"}. Preserve branches.`, empty, async (_, ctx) => {
     const { run, node } = await active(ctx); const ids = await (await controller())[action](run.id, node.id);

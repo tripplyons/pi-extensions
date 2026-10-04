@@ -1,13 +1,14 @@
 # Swarm
 
-`/swarm:start <objective>` activates nineteen swarm tools. Activation belongs to
+`/swarm:start <objective>` activates twenty swarm tools. Activation belongs to
 the root session branch. Workers run in attachable tmux sessions with dedicated
 Pi session files. They load the user's configured extensions and inherit the
 model, thinking level, and fast-mode preference at spawn. A replacement inherits
 the spawning parent's current fast-mode preference. This requests priority service
 only for OpenAI models and can affect billing. Parent toggles do not change live
-workers. Restarts copy the restarting parent's current model, thinking level, and fast-mode
-preference. `swarm_spawn` and `swarm_restart` accept `model` (exact
+workers. Restarts reuse the worker's own settings: its reported current model and
+thinking level, then its launch settings, then the restarting parent's current
+settings for any value still missing. `swarm_spawn` and `swarm_restart` accept `model` (exact
 `provider/model`), `thinking` (reasoning effort), and `fast` (boolean) to override the inherited values. Replacement starts accept the same fields, with `model` required. `swarm_models`
 lists the accepted models: Pi's scoped models (`/scoped-models`, `enabledModels`,
 or `--models`), or all authenticated models when no scope is set. Omitted fields stay inherited.
@@ -37,8 +38,9 @@ inspect swarm state, and inspect or stop tasks. They can also manage context wit
 `toFile`. These calls do not release permission. The same rule applies to reload
 checkpoint holds. Codemode can dispatch these allowed tools; Pi checks each
 nested call against the current worker state, including permission changes during
-a script. Bash, file-writing tools (including `decompress` with `toFile`), new
-jobs, and unknown tools stay blocked. Do not use codemode model calls during a hold. Review and terminal workers
+a script. During a permission wait, but not a reload checkpoint hold, a worker can also
+submit a finished handoff with `swarm_complete`. Bash, file-writing tools
+(including `decompress` with `toFile`), new jobs, and unknown tools stay blocked. Do not use codemode model calls during a hold. Review and terminal workers
 remain paused for all tools. Old records without permission state show `unknown`;
 activity does not reconstruct it.
 Coordination guidelines are added to the system prompt
@@ -52,7 +54,9 @@ separate from the process launch generation. Each new directive increments it.
 `observedAssignment` records the generation and launch last read through
 `swarm_task`. It proves the durable assignment was read, not that work started or
 finished. A stale launch or a concurrent assignment change cannot acknowledge
-the new scope. Compact trees include both generations and the observation. `swarm_tree` returns compact summaries by default:
+the new scope. Compact trees include both generations and the observation. Pass `brief: true` to
+`swarm_tree` for one short record per worker: ID, parent, name, status, activity,
+permission, reload stage, version state, and handoff. `swarm_tree` returns compact summaries by default:
 active and terminal counts, status, branch, workspace, task preview, launch model,
 reported current model and thinking level, handoff state and revision, and code evidence.
 `finished` in the structured counts means terminal workers, not delivered code.
@@ -232,13 +236,36 @@ hard stop. Durable state updates retry lock contention for up to five seconds;
 other filesystem errors propagate. A stale lock is not deleted automatically.
 An interrupted process may require manual inspection and lock removal.
 
+## Shared board
+
+`swarm_board` stores shared facts for one run, such as the current base SHA, a
+file ownership table, or cache-safety rules. Agents read it on demand instead of
+relying on copies in their context.
+
+```json
+{"action":"write","key":"main.sha","value":"b4238eb"}
+{"action":"read"}
+{"action":"delete","key":"main.sha"}
+```
+
+`read` lists every entry, or one key. Each entry records its author, time, and
+revision. Only the author or the author's ancestors can change or delete an
+entry. Keys use 1-100 letters, digits, `_`, `.`, `/`, or `-`. Values are
+limited to 8,000 characters, and a run holds at most 200 keys. Entries are
+informational, like messages from other agents: they do not assign work, change
+scope, or release permission. Workers can use the board during permission waits
+and checkpoint holds.
+
 ## Reload barrier
 
 Use a reload barrier to update running direct children without letting restart
 instructions authorize new work:
 
 1. Call `swarm_reload action=request`, optionally with `nodeIds`. Members must
-   be running direct children with terminal descendants and no pending replacement.
+   be running direct children with no pending replacement. A member's running
+   descendants keep running through its restart; the member lists them in its
+   checkpoint and manages them again after release. Reload them with the
+   member's own barrier.
 2. Each worker finishes only its existing bounded step, finishes or stops owned
    jobs, then calls `swarm_reload action=checkpoint` alone with `barrierId` and a
    self-contained `checkpoint`. Include dirty files, pinned bases, checks, and
@@ -264,7 +291,7 @@ way to add tools to an already loaded old runtime.
 ## Git isolation
 
 Dirty parents require an explicit `exclude`, `commit-parent`, `commit-child`, or
-`shared` choice. Shared/parent-commit modes reject `main` and `master`. Child
+`shared` choice. The error lists up to 20 dirty paths. Shared/parent-commit modes reject `main` and `master`. Child
 snapshots use a private Git index, preserving the parent's staged changes and
 HEAD. Git preparations are serialized by a repository lock.
 
@@ -279,11 +306,13 @@ Root clear preflights all worktrees before stopping anything.
 
 The root session owner can run `/swarm:kill` to stop all workers and their jobs.
 Records, worktrees, sessions, and branches are kept so parents can restart stopped
-workers. `swarm_restart` keeps the worker's session and worktree. It copies the
-parent's current model, thinking level, and fast-mode preference by default. Supply
-`model` from `swarm_models` or `thinking: "low"` (or `off`, `minimal`, `medium`,
-`high`, `xhigh`, `max`) to override them.
-Restart refuses a live worker; stop it first. It does not restart old jobs.
+workers. `swarm_restart` keeps the worker's session and worktree. It reuses the
+worker's reported current model and thinking level, then its launch settings and
+fast-mode preference, then the parent's current settings. Supply `model` from
+`swarm_models` or `thinking: "low"` (or `off`, `minimal`, `medium`, `high`,
+`xhigh`, `max`) to override them. Restart refuses a live worker unless you pass
+`stop: true`, which stops the worker and its jobs first. Descendants must already
+be terminal. It does not restart old jobs.
 
 `/swarm:status` shows or hides a compact panel below the editor. It lists
 nonterminal workers under the current node as a tree. Each row shows the worker's
@@ -387,7 +416,9 @@ While non-review direct children remain active, each parent receives a worker
 check-in every five minutes. This steering message asks the parent to inspect
 `swarm_health`, `swarm_tree`, and unclear worker output, then report progress
 and the next check time. It starts a turn for an idle parent and reaches a busy
-parent at a tool boundary. Only one check-in can remain queued. The next interval
+parent at a tool boundary. It lists up to ten workers with status, latest activity
+report and age, nonreleased permission, reload stage, active job count from the
+last health check, and a missing pane. Only one check-in can remain queued. The next interval
 starts when Pi reports message delivery, not when the parent acts. Permission
 waits remain in force. Check-ins do not cancel a running tool or prove that the
 parent inspected workers. Reload starts a new five-minute interval.

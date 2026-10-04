@@ -14,8 +14,12 @@ test("parent checks recur after delivery, not while queued, and stop without act
     const state = await store.read(run.id);
     const checks = new WorkerCheckins();
     expect(checks.next(state, run.root, 0)).toBeUndefined();
-    const first = checks.next(state, run.root, 300_000)!;
+    state.nodes[child.id].activity = { status: "waiting-instructions", detail: "Step done;\nwhat next?", updated: new Date(240_000).toISOString(), source: "worker" };
+    state.nodes[child.id].permission = { status: "waiting-approval", reason: "Step done", source: "worker", updated: new Date(240_000).toISOString() };
+    state.nodes[child.id].reload = { barrier: "barrier", stage: "checkpointed" };
+    const first = checks.next(state, run.root, 300_000, [{ nodeId: child.id, process: "present", state: "recent", quietSeconds: 60, jobs: [{ id: "job", status: "running", source: "bash" }, { id: "old", status: "succeeded", source: "tmux" }] }])!;
     expect(first.content).toContain("swarm_health");
+    expect(first.content).toContain(`- worker (${child.id}): starting; waiting-instructions 60s ago: "Step done; what next?"; permission waiting-approval; reload checkpointed; 1 active jobs`);
     expect(checks.next(state, run.root, 900_000)).toBeUndefined();
     expect(checks.delivered(run.id, run.root, "wrong", 900_000)).toBe(false);
     expect(checks.delivered(run.id, run.root, first.queuedAt, 900_000)).toBe(true);

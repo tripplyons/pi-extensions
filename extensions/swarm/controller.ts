@@ -5,6 +5,12 @@ import { git, prepareWorktree, preflightWorktree, removeWorktree, type DirtyMode
 import { inheritWorktree } from "./replacement.ts";
 import { Workers, type Launch } from "./worker.ts";
 export type WorkerRuntime = Pick<Workers, "start" | "stop" | "observe" | "alive">;
+type Settings = Pick<Launch, "model" | "thinking" | "fast">;
+// Restarts keep the worker's own settings: reported current, then launch, then the parent's.
+export function restartSettings(node: Node, parent: Settings, overrides: Settings = {}) {
+  const saved: Settings = { ...node.launch, ...node.current };
+  return { model: overrides.model ?? saved.model ?? parent.model, thinking: overrides.thinking ?? saved.thinking ?? parent.thinking, fast: overrides.fast ?? saved.fast ?? parent.fast };
+}
 export class Swarm {
   constructor(readonly store: SwarmStore, readonly workers: WorkerRuntime, readonly stopJobs: (node: Node) => Promise<void>) {}
   async owned(runId: string, actor: string, child: string) {
@@ -117,16 +123,19 @@ export class Swarm {
     }
     return reviewed;
   }
-  async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> & { task?: string } = {}) {
+  async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> & { task?: string; stop?: boolean } = {}) {
     const run = await this.store.read(runId);
     const node = ownedChild(run, actor, child);
-    if (await this.workers.alive(child)) throw new Error("Worker is already running");
+    const live = await this.workers.alive(child);
+    if (live && !options.stop) throw new Error("Worker is already running. Pass stop: true to stop it first, or call swarm_stop and then swarm_restart.");
     if (node.replacement) throw new Error("Predecessor is reserved for replacement; do not restart it");
     if (!node.worktree) throw new Error("Worker has no saved worktree");
     if (node.predecessor && !node.provenance) throw new Error("Incomplete replacement snapshot; inspect and recover manually before launch");
-    if (descendants(run, child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before restarting");
+    // A barrier restart keeps running descendants; they reach the member again through run state.
+    if (node.reload?.stage !== "restarted" && descendants(run, child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before restarting");
     if (node.reload && node.reload.stage !== "released" && node.reload.stage !== "restarted") throw new Error("Use the reload barrier to restart checkpoint members");
     if (options.task !== undefined && !options.task.trim()) throw new Error("Restart task must contain text");
+    if (live) await this.stopNodes(runId, [node]);
     const prepared = await this.store.update(runId, state => {
       const worker = ownedChild(state, actor, child);
       delete worker.activity;
@@ -137,7 +146,7 @@ export class Swarm {
       } else if (!worker.directive && worker.result && worker.permission?.status !== "checkpoint-hold") worker.permission = { status: "waiting-approval", reason: "Restart requires a new bounded assignment", source: "parent", updated: new Date().toISOString() };
       return worker;
     });
-    const { task: _task, ...settings } = options;
+    const { task: _task, stop: _stop, ...settings } = options;
     await this.launch(run, prepared, settings);
   }
   async cleanup(runId: string, actor: string) {

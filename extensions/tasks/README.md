@@ -31,6 +31,8 @@ task_watch task_id=<id> interval_seconds=300 expected_seconds=900 silence_second
 
 Reports show elapsed time, output bytes, bounded recent output, output silence,
 and remaining deadline. They do not move the output cursor or extend the deadline.
+For a finished task, elapsed time and output silence stop at `finished_at`, and
+the remaining deadline is null.
 `expected_seconds` is a user-supplied duration, not a measured ETA. Reports wait
 until Pi is idle. Every scheduled report wakes the conversation to check the task
 and give an evidence-based progress update. Expected-duration and output-silence

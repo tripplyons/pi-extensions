@@ -29,6 +29,13 @@ test("progress includes original deadline and bounded output without consuming t
   expect(progress).toMatchObject({ elapsed_seconds: 10, deadline_remaining_seconds: 50, output_bytes: 13, recent_output: "progress €\n" });
   expect((await tasks.output(id)).output).toBe("progress €\n");
   expect((await tasks.output(id)).output).toBe("");
+  await tasks.stop(id);
+  await waitFor(() => tasks.query(id).finished_at !== undefined);
+  const { created_at, finished_at } = tasks.query(id);
+  const finished = await tasks.progress(id, Date.parse(finished_at!) + 600_000);
+  expect(finished.elapsed_seconds).toBe(Math.floor((Date.parse(finished_at!) - Date.parse(created_at)) / 1000));
+  expect(finished.output_silence_seconds).toBeLessThan(5);
+  expect(finished.deadline_remaining_seconds).toBeNull();
 }));
 
 test("watch reports are opt-in, persistent, branch-owned and wake on every interval", () => fixture(async (h, tasks) => {

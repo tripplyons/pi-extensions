@@ -34,13 +34,13 @@ export class ReloadBarrier {
         const node = ownedChild(run, actor, id);
         if (node.status !== "running" || node.replacement) throw new Error("Reload requires running workers without pending replacement");
         if (node.reload && node.reload.stage !== "released") throw new Error("Worker already belongs to a reload barrier");
-        if (descendants(run, id).some(child => !terminal(child.status))) throw new Error("Checkpoint nested workers first; reload members must have terminal descendants");
       }
       const barrier: Barrier = { id: randomUUID(), owner: actor, created: new Date().toISOString(), phase: "checkpoint", members };
       (run.barriers ??= {})[barrier.id] = barrier;
       for (const id of members) {
         const node = run.nodes[id], messageId = randomUUID();
-        const text = `Reload checkpoint ${barrier.id}: finish only the current bounded step, stop or finish owned jobs, and call swarm_reload action=checkpoint alone with barrierId and a self-contained checkpoint. Do not submit a handoff or start follow-on work. Wait for restart and a separate explicit release.`;
+        const running = descendants(run, id).filter(child => !terminal(child.status)).length;
+        const text = `Reload checkpoint ${barrier.id}: finish only the current bounded step, stop or finish owned jobs, and call swarm_reload action=checkpoint alone with barrierId and a self-contained checkpoint. ${running ? `${running} running descendant worker${running === 1 ? "" : "s"} will keep running through the restart; list each one's ID, assignment and state in the checkpoint. ` : ""}Do not submit a handoff or start follow-on work. Wait for restart and a separate explicit release.`;
         node.reload = { barrier: barrier.id, stage: "requested" };
         node.permission = { status: "checkpoint-hold", reason: text, source: "parent", updated: barrier.created };
         setDirective(run, node, { text, source: "parent", created: barrier.created, messageId });
@@ -58,7 +58,6 @@ export class ReloadBarrier {
     return this.store.update(runId, state => {
       const worker = state.nodes[actor], barrier = state.barriers?.[barrierId];
       if (!barrier || barrier.phase !== "checkpoint" || worker.reload?.stage !== "requested" || worker.status !== "running") throw new Error("Checkpoint is not pending");
-      if (descendants(state, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before checkpointing");
       worker.reload.stage = "checkpointed"; worker.reload.checkpoint = text;
       const messageId = randomUUID(), created = new Date().toISOString();
       state.messages.push({ id: messageId, from: actor, to: barrier.owner, kind: "message", read: false, created, text: `Reload ${barrierId}: ${worker.name} checkpointed. Recovery details are in swarm_reload action=status.` });
@@ -78,7 +77,8 @@ export class ReloadBarrier {
         const run = await this.store.read(runId), node = ownedChild(run, actor, id);
         if (["restarted", "ready"].includes(node.reload!.stage) && await this.swarm.workers.alive(id)) continue;
         if ((await this.jobs(node)).some(activeJob)) throw new Error(`Worker ${node.name} still owns active jobs`);
-        await this.swarm.stop(runId, actor, id);
+        // Stop only the member process; its descendants keep running.
+        await this.swarm.stopNodes(runId, [node]);
         await this.store.update(runId, state => { state.nodes[id].reload!.stage = "restarted"; });
         await this.swarm.restart(runId, actor, id);
       }

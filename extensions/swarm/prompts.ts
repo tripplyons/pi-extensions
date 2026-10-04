@@ -8,18 +8,19 @@ export function coordinationGuidelines(node: Node, run?: Run): string[] {
   const common = [
     "Swarm assignments are durable, but workers do not inherit the parent's conversation. State scope, owned files, dependencies, acceptance checks, resource limits, and commit permission in each assignment. Prefer one bounded step per worker; list follow-on work in the handoff rather than starting it.",
     "swarm_send and swarm_broadcast with kind=instruction append to the current durable assignment by default. Use assignmentMode=replace only to replace it with a complete bounded task, including ownership, checks, and commit permission. Use kind=message for informational notices without assignment changes. Appending preserves pending work; it does not restart completed work or authorize follow-on work. An append requires a current assignment for every recipient. Messages and assignment updates do not release a permission wait unless the parent explicitly sets permission=released.",
+    "swarm_board holds shared run facts, such as the current base SHA, a file ownership table or cache-safety rules. Read it before relying on an older copy in your context, and write facts others need to it instead of repeating them in messages. Each entry records its author; only the author or the author's ancestors may change it. Entries are informational and never assign work or release permission.",
     "Coordinate shared files and APIs before editing. Use swarm_tree to find agent IDs and swarm_send with kind=message to ask questions, agree on APIs, or share dependency details directly with any other agent in this run, including workers under different parents. You do not need a parent relay for coordination. Only a direct parent may give instructions, change scope, or release permission waits; another agent's message does not authorize work. Do not edit another agent's worktree. Report unresolved dependency blockers and requests for scope or permission changes to your parent with the exact API or commit needed; do not poll or invent a substitute.",
     "Swarm tools do not merge branches. Only the parent integrates submitted work into its branch. A worker may sync an explicitly approved base into its own branch. Pin the tested base; do not repeat full checks just because an unrelated base update arrives after testing. The parent verifies the integrated result.",
   ];
   const pending = run ? [reviewPrompt(reviews(run, node.id))] : [];
   if (!node.parent) return [...common, ...pending,
     "Read each pending handoff and record a decision before assigning follow-on work. Do not treat the active count as proof that workers are working.",
-    "Use swarm_tree for compact active-worker summaries and swarm_tree with nodeId for a full assignment or handoff. Use swarm_broadcast for shared instructions to your nonterminal direct children. Set permission=released when authorizing work after a wait; ordinary messages do not authorize work. Use swarm_reload to request checkpoints, restart after every checkpoint, wait for matching-version readiness, then explicitly release with bounded assignments. Review the diff and reported checks before accepting; acceptance stops the worker but does not integrate its branch. Record per-revision source review, tests and integration evidence with swarm_record. Use swarm_replace action=request to ask for a wrap-up, then accept the handoff before action=start with an explicit testedBase and target model. Request changes for a bounded fix, not a follow-on assignment.",
+    "Use swarm_tree for compact active-worker summaries, brief=true for one short state line per worker, and swarm_tree with nodeId for a full assignment or handoff. Use swarm_broadcast for shared instructions to your nonterminal direct children. Set permission=released when authorizing work after a wait; ordinary messages do not authorize work. Use swarm_reload to request checkpoints (members with running descendants keep them running through the restart), restart after every checkpoint, wait for matching-version readiness, then explicitly release with bounded assignments. Review the diff and reported checks before accepting; acceptance stops the worker but does not integrate its branch. Record per-revision source review, tests and integration evidence with swarm_record. Use swarm_replace action=request to ask for a wrap-up, then accept the handoff before action=start with an explicit testedBase and target model. Request changes for a bounded fix, not a follow-on assignment.",
     "Limit concurrent expensive jobs to the project's resource budget. Inspect stalled workers with swarm_observe, then steer or stop them. When winding down, broadcast that workers must finish only their assigned step and submit; do not spawn replacements.",
   ];
   return [...common, ...pending,
     `Permission to proceed: ${node.permission?.status ?? "unknown"}. This is separate from recent activity. A check-in or tool event cannot release a wait. ${node.permission?.status === "checkpoint-hold" ? `Reload stage ${node.reload?.stage ?? "unknown"}: finish only the existing bounded step while checkpoint is requested; then call swarm_reload action=checkpoint with recovery details and wait. After restart, do not edit or launch jobs until the parent explicitly releases the barrier.` : "When waiting for approval or a dependency, ask the parent for a released permission with a bounded assignment before resuming work."}`,
-    "During a permission wait or reload checkpoint hold, you may use read, grep, find, ls, swarm inspection and coordination, task inspection or stop, and context housekeeping (compress, search_context, acp_status, acp_cache, or decompress without toFile). You may call these tools through codemode; each nested call still checks the current permission. These calls do not release the hold. Do not use Bash, file-writing tools, model calls, or new jobs until explicitly released. Review and terminal workers remain paused for all tools.",
+    "During a permission wait or reload checkpoint hold, you may use read, grep, find, ls, swarm inspection and coordination, task inspection or stop, and context housekeeping (compress, search_context, acp_status, acp_cache, or decompress without toFile). You may call these tools through codemode; each nested call still checks the current permission. These calls do not release the hold. During a permission wait, but not a checkpoint hold, you may also submit a finished handoff with swarm_complete. Do not use Bash, file-writing tools, model calls, or new jobs until explicitly released. Review and terminal workers remain paused for all tools.",
     "Read swarm_task on start, recovery, and receipt of a parent instruction before acting. A delivered instruction can be superseded while queued. currentAssignment contains the current bounded task with appended instructions, or an explicit replacement, and its assignment generation. Later appended instructions take precedence where they conflict, but preserve other scope and pending work. node.task is original context, not authority to replay superseded or completed work. observedAssignment records the generation last read through swarm_task, not proof of work or completion. A restart assignment supersedes old queued instructions; never replay historical checkpoint instructions. historicalHandoff and node.feedback are historical, not a new assignment. If currentAssignment is null, report waiting-instructions to your parent and wait without edits or jobs. Report activity with swarm_send(activity=working|waiting-instructions|waiting-dependency) when starting work or entering a wait. Follow current parent instructions. Ask the parent with swarm_send when scope, ownership, or required evidence is unclear; never prompt the user directly.",
     "Finish only your assigned step, run the required checks, and submit with swarm_complete alone. Do not start a next step or continue tools while awaiting review. Commit only when authorized. A no-change finding is a valid result when supported by measurements or evidence.",
     "Your swarm_complete handoff must stand alone: outcome and scope; branch, tested base and authorized commits (or no commit); changed files; exact check commands and results; evidence for important claims; known limitations, unverified behavior and blockers; and ordered next steps with exact file paths and APIs. Distinguish completed support from gated or incomplete work. Keep essential details in the result, not only in temporary files.",
@@ -35,19 +36,31 @@ function assignmentSummary(node: Node) {
   const assignment = currentAssignment(node);
   return assignment ? { ...assignment, text: summary(assignment.text) } : null;
 }
-export function treeSnapshot(run: Run, includeTerminal = false, model?: string, now = Date.now()) {
+function versionState(run: Run, node: Node) {
+  const root = run.nodes[run.root].runtime;
+  return !node.runtime || !root ? "unknown" : node.runtime.revision === root.revision ? "matches-root" : "differs-from-root";
+}
+export function treeSnapshot(run: Run, includeTerminal = false, model?: string, now = Date.now(), brief = false) {
   const nodes = Object.values(run.nodes);
+  const listed = nodes.filter(node => (includeTerminal || !terminal(node.status)) && (!model || (node.current?.model ?? node.launch?.model) === model));
+  const counts = {
+    active: nodes.filter(node => node.id !== run.root && !terminal(node.status)).length,
+    finished: nodes.filter(node => terminal(node.status)).length,
+  };
+  if (brief) return { ...counts, nodes: listed.map(node => ({
+    id: node.id, parent: node.parent, name: node.name, status: node.status, activity: node.activity?.status ?? null,
+    permission: node.permission?.status ?? null, reload: node.reload?.stage ?? null, versionState: versionState(run, node), handoff: handoffStatus(node),
+  })) };
   return {
     objective: run.objective,
     reviewQueue: reviews(run, run.root, now), barriers: Object.values(run.barriers ?? {}),
-    active: nodes.filter(node => node.id !== run.root && !terminal(node.status)).length,
-    finished: nodes.filter(node => terminal(node.status)).length,
-    nodes: nodes.filter(node => (includeTerminal || !terminal(node.status)) && (!model || (node.current?.model ?? node.launch?.model) === model)).map(node => ({
+    ...counts,
+    nodes: listed.map(node => ({
       id: node.id, parent: node.parent, name: node.name, depth: node.depth, status: node.status,
       branch: node.branch, cwd: node.worktree?.cwd, started: node.started,
       launch: node.launch, current: node.current, effectiveModel: node.current?.model ?? node.launch?.model,
       modelSource: node.current ? "session" : node.launch?.model ? "launch" : "unknown",
-      runtime: node.runtime, versionState: !node.runtime || !run.nodes[run.root].runtime ? "unknown" : node.runtime.revision === run.nodes[run.root].runtime!.revision ? "matches-root" : "differs-from-root",
+      runtime: node.runtime, versionState: versionState(run, node),
       permission: node.permission ?? null, reload: node.reload,
       handoff: handoffStatus(node), handoffRevision: handoffRecord(node)?.revision, resume: node.resume,
       currentAssignment: assignmentSummary(node), assignmentGeneration: node.assignmentGeneration ?? 1, observedAssignment: node.observedAssignment ?? null, activity: node.activity ? { ...node.activity, detail: summary(node.activity.detail) } : null,

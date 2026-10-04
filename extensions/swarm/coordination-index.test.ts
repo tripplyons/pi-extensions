@@ -79,7 +79,7 @@ test("checkpoint tool ends the worker turn and gates jobs until an explicit barr
   expect(await h.emit("tool_call", { toolName: "bash" })).toEqual([undefined]);
   const checkpoint = await h.call("swarm_reload", { action: "checkpoint", barrierId: barrier.id, checkpoint: "No jobs; pinned base and dirty files retained" });
   expect(checkpoint.terminate).toBe(true);
-  for (const toolName of ["bash", "write", "edit", "swarm_spawn", "task_watch"]) expect((await h.emit("tool_call", { toolName }))[0]).toMatchObject({ block: true, terminate: true, reason: expect.stringContaining("checkpoint hold") });
+  for (const toolName of ["bash", "write", "edit", "swarm_spawn", "task_watch", "swarm_complete"]) expect((await h.emit("tool_call", { toolName }))[0]).toMatchObject({ block: true, terminate: true, reason: expect.stringContaining("checkpoint hold") });
   for (const toolName of ["codemode", "swarm_task", "read", "grep", "find", "ls", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
     expect(await h.emit("tool_call", { toolName, input: {} })).toEqual([undefined]);
     expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("checkpoint-hold");
@@ -102,7 +102,7 @@ test("permission waits permit read-only inspection and housekeeping without rele
     expect(typeof task.currentAssignment.generation).toBe("number");
     expect(task.node.observedAssignment.generation).toBe(task.currentAssignment.generation);
     expect((await store.read(run.id)).nodes[worker.id].observedAssignment?.generation).toBe(task.currentAssignment.generation);
-    for (const toolName of ["codemode", "read", "grep", "find", "ls", "swarm_task", "swarm_send", "swarm_observe", "task_query", "task_output", "task_stop", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
+    for (const toolName of ["codemode", "read", "grep", "find", "ls", "swarm_task", "swarm_send", "swarm_board", "swarm_complete", "swarm_observe", "task_query", "task_output", "task_stop", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
       expect(await h.emit("tool_call", { toolName, input: {} })).toEqual([undefined]);
       expect((await store.read(run.id)).nodes[worker.id].permission).toEqual(before);
     }
@@ -116,6 +116,9 @@ test("permission waits permit read-only inspection and housekeeping without rele
   await store.send(run.id, run.root, worker.id, "instruction", "Bounded approved check", undefined, "released");
   expect(await h.emit("tool_call", { toolName: "bash" })).toEqual([undefined]);
   expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("released");
+  await h.call("swarm_send", { to: run.root, kind: "message", text: "Step done; what next?", activity: "waiting-instructions" });
+  expect(await h.emit("tool_call", { toolName: "swarm_complete", input: { result: "Finished handoff" } })).toEqual([undefined]);
+  expect((await h.call("swarm_complete", { result: "Finished handoff" })).details).toMatchObject({ status: "review", result: "Finished handoff" });
 }));
 
 test("review queue tool inspects only direct children and interactive command displays the handoff without deciding", () => fixture(async (h, store, root) => {

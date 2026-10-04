@@ -138,7 +138,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
-    install(h.pi); expect(h.tools.size).toBe(19);
+    install(h.pi); expect(h.tools.size).toBe(20);
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
     expect(await h.emit("before_agent_start")).toEqual([undefined]);
     await h.command("swarm:start", "Build the feature");
@@ -163,11 +163,24 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
     expect(snapshot.nodes[1].hasResult).toBe(true);
     expect(snapshot.nodes[1].result).toBeUndefined();
     expect((await h.call("swarm_tree", { includeTerminal: true })).details.nodes).toHaveLength(3);
+    expect((await h.call("swarm_tree", { brief: true })).details).toEqual({ active: 1, finished: 1, nodes: [
+      { id: identity.node, parent: undefined, name: "root", status: "running", activity: null, permission: "released", reload: null, versionState: expect.any(String), handoff: "none" },
+      { id: worker.id, parent: identity.node, name: "Worker", status: "review", activity: null, permission: "released", reload: null, versionState: "unknown", handoff: "awaiting-parent" },
+    ] });
+    await expect(h.call("swarm_tree", { nodeId: worker.id, brief: true })).rejects.toThrow("omit nodeId");
     expect((await h.call("swarm_tree", { nodeId: worker.id })).details.result).toBe("Detailed handoff ".repeat(100));
     expect((await h.call("swarm_tree", { nodeId: done.id })).details.status).toBe("accepted");
     await expect(h.call("swarm_tree", { nodeId: "unknown" })).rejects.toThrow("Unknown");
     expect((await h.call("swarm_broadcast", { kind: "instruction", text: "Finish this step", assignmentMode: "replace" })).details).toEqual({ recipients: [worker.id], count: 1 });
     expect((await store.inbox(identity.run, worker.id))[0].text).toBe("Finish this step");
+    expect((await h.call("swarm_board", { action: "write", key: "main.sha", value: "b4238eb" })).details).toMatchObject({ key: "main.sha", value: "b4238eb", author: identity.node, revision: 1 });
+    expect((await h.call("swarm_board", { action: "read" })).details).toEqual([{ key: "main.sha", value: "b4238eb", author: identity.node, authorName: "root", updated: expect.any(String), revision: 1 }]);
+    await expect(store.writeBoard(identity.run, worker.id, "main.sha", "stale")).rejects.toThrow("belongs to root");
+    await store.writeBoard(identity.run, worker.id, "worker.api", "getRecord(id)");
+    expect((await h.call("swarm_board", { action: "write", key: "worker.api", value: "getRecord(id: string)" })).details).toMatchObject({ author: identity.node, revision: 2 });
+    await h.call("swarm_board", { action: "delete", key: "worker.api" });
+    expect((await h.call("swarm_board", { action: "read", key: "worker.api" })).details).toEqual([]);
+    await expect(h.call("swarm_board", { action: "write", key: "bad key", value: "x" })).rejects.toThrow("Board keys");
     await expect(h.command("swarm:start", "Again")).rejects.toThrow("already");
     h.ctx.sessionManager.getSessionId = () => "other";
     await expect(h.call("swarm_tree", {})).rejects.toThrow("another root session");
@@ -253,13 +266,13 @@ test("spawn and replacement inherit the spawning parent's fast preference", asyn
     h.pi.getThinkingLevel = () => "low";
     h.ctx.model = { provider: "openai", id: "parent-model" };
     h.pi.appendEntry("pi:fast", true);
-    expect((await h.call("swarm_restart", { nodeId: second.id })).details.thinking).toBe("low");
-    expect(launches.at(-1)).toMatchObject({ node: second.id, cwd: saved.cwd, directory: saved.directory, model: "openai/parent-model", fast: true, thinking: "low" });
+    expect((await h.call("swarm_restart", { nodeId: second.id })).details).toMatchObject({ model: "openai/test-model", thinking: saved.thinking, fast: false });
+    expect(launches.at(-1)).toMatchObject({ node: second.id, cwd: saved.cwd, directory: saved.directory, model: "openai/test-model", fast: false, thinking: saved.thinking });
     await h.call("swarm_stop", { nodeId: second.id });
     h.pi.appendEntry("pi:fast", false);
     h.ctx.model = { provider: "openai", id: "another-parent-model" };
     expect((await h.call("swarm_restart", { nodeId: second.id, thinking: "high" })).details.thinking).toBe("high");
-    expect(launches.at(-1)).toMatchObject({ model: "openai/another-parent-model", fast: false, thinking: "high" });
+    expect(launches.at(-1)).toMatchObject({ model: "openai/test-model", fast: false, thinking: "high" });
     await h.call("swarm_stop", { nodeId: second.id });
     h.ctx.modelRegistry = { getAvailable: () => [{ provider: "openai", id: "another-parent-model" }, { provider: "anthropic", id: "claude" }] };
     h.ctx.scopedModels = [];
@@ -268,7 +281,7 @@ test("spawn and replacement inherit the spawning parent's fast preference", asyn
       { model: "anthropic/claude", thinking: undefined, current: false },
     ] });
     expect((await h.call("swarm_restart", { nodeId: second.id, model: "anthropic/claude" })).details.model).toBe("anthropic/claude");
-    expect(launches.at(-1)).toMatchObject({ node: second.id, model: "anthropic/claude", thinking: "low" });
+    expect(launches.at(-1)).toMatchObject({ node: second.id, model: "anthropic/claude", thinking: "high" });
     h.ctx.scopedModels = [{ model: { provider: "openai", id: "scoped" }, thinkingLevel: "high" }];
     expect((await h.call("swarm_models", {})).details).toEqual({ scoped: true, models: [{ model: "openai/scoped", thinking: "high", current: false }] });
     const count = launches.length;
