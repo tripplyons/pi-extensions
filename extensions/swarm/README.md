@@ -359,6 +359,8 @@ Workers report activity through `swarm_send` to their parent:
 The message text gives the reason. The tree exposes the report and timestamp.
 A waiting report also sets the worker's permission to the matching wait until
 the parent releases it. Report `working` to share status without a hold.
+A waiting report that arrives before the worker reads a newer parent release
+is delivered as a message only and does not undo that release.
 Pi retries transient provider errors first, using its `retry` settings. If a
 worker's turn still ends with a model error, such as an early end of the
 provider stream, the worker records `errored` activity with the error and

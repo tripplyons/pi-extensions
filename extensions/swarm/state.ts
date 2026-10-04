@@ -184,10 +184,17 @@ export class SwarmStore {
       if (kind !== "message" && kind !== "instruction") throw new Error("Invalid message kind");
       if (kind === "instruction" && recipient.parent !== from) throw new Error("Only direct parents may send instructions");
       const message: Message = { id: randomUUID(), from, to, kind, text, created: new Date().toISOString(), read: false };
+      let note: string | undefined;
       if (activity) {
         if (sender.status !== "running" || sender.parent !== to || kind !== "message") throw new Error("Only running workers report activity to their parent");
-        sender.activity = { status: activity, detail: text, updated: message.created, source: "worker" };
-        if (activity.startsWith("waiting") && sender.permission?.status !== "checkpoint-hold") sender.permission = { status: activity === "waiting-dependency" ? "waiting-dependency" : "waiting-approval", reason: text, source: "worker", updated: message.created };
+        // A wait sent before the worker reads its parent's release must not undo that release.
+        const release = sender.permission?.status === "released" && sender.permission.source === "parent"
+          ? run.messages.find(entry => entry.to === from && entry.from === to && entry.kind === "instruction" && !entry.read && entry.created >= sender.permission!.updated) : undefined;
+        if (activity.startsWith("waiting") && release) note = "Your parent released you with an instruction you have not read yet, so this wait report did not change your activity or permission. Read swarm_task for the new assignment.";
+        else {
+          sender.activity = { status: activity, detail: text, updated: message.created, source: "worker" };
+          if (activity.startsWith("waiting") && sender.permission?.status !== "checkpoint-hold") sender.permission = { status: activity === "waiting-dependency" ? "waiting-dependency" : "waiting-approval", reason: text, source: "worker", updated: message.created };
+        }
       }
       if (!activity && sender.status === "running" && sender.parent === to && kind === "message") sender.activity = { status: "checking-in", detail: text, updated: message.created, source: "message" };
       if (kind === "instruction") {
@@ -201,7 +208,7 @@ export class SwarmStore {
         if (recipient.permission?.status === "checkpoint-hold") throw new Error("Use reload release to lift a checkpoint hold");
         recipient.permission = { status: permission, reason: text, updated: message.created, source: "parent" };
       }
-      run.messages.push(message); return message;
+      run.messages.push(message); return note ? { ...message, note } : message;
     });
   }
   async broadcast(id: string, actor: string, kind: Message["kind"], text: string, permission?: "released" | "waiting-approval" | "waiting-dependency", assignmentMode?: AssignmentMode) {

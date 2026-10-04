@@ -205,3 +205,21 @@ test("broadcast targets nonterminal direct children, not siblings or grandchildr
   await expect(store.broadcast(run.id, "unknown", "instruction", "Hi")).rejects.toThrow("Unknown");
   await expect(store.broadcast(run.id, run.root, "message", " ")).rejects.toThrow("text");
 }));
+
+test("a wait report sent before the worker reads its release does not undo the release", () => fixture(async store => {
+  const run = await store.create("session", "/tmp", "Objective"), worker = await store.reserve(run.id, run.root, "W", "Task");
+  await store.update(run.id, state => { state.nodes[worker.id].status = "running"; });
+  await store.send(run.id, worker.id, run.root, "message", "Need approval", "waiting-instructions");
+  expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("waiting-approval");
+  const release = await store.send(run.id, run.root, worker.id, "instruction", "Next bounded step", undefined, "released");
+  const stale = await store.send(run.id, worker.id, run.root, "message", "Still waiting", "waiting-instructions");
+  expect(stale).toMatchObject({ note: expect.stringContaining("not read yet") });
+  let node = (await store.read(run.id)).nodes[worker.id];
+  expect(node.permission).toMatchObject({ status: "released", source: "parent" });
+  expect(node.activity?.status).toBe("instruction-queued");
+  expect((await store.read(run.id)).messages.at(-1)).not.toHaveProperty("note");
+  await store.acknowledge(run.id, worker.id, release.id);
+  await store.send(run.id, worker.id, run.root, "message", "Step done; waiting", "waiting-instructions");
+  node = (await store.read(run.id)).nodes[worker.id];
+  expect(node.permission).toMatchObject({ status: "waiting-approval", source: "worker" });
+}));
