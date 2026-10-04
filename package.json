@@ -23,6 +23,7 @@
       "./extensions/hide-empty-editor/index.ts",
       "./extensions/fast-mode/index.ts",
       "./extensions/models/index.ts",
+      "./extensions/council/index.ts",
       "./extensions/thinking-selector/index.ts",
       "./extensions/usage/index.ts",
       "./extensions/skills/index.ts",

@@ -8,7 +8,7 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (25)
+## Extensions (26)
 
 | Extension | Behavior |
 | --- | --- |
@@ -27,6 +27,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
 | [models](extensions/models) | Model listing and selection |
+| [council](extensions/council) | Three-model advice with bounded GPT 6.1 Sol execution and automatic reconsultation |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |

@@ -18,6 +18,6 @@ test("Pi loads every manifest entry without extension errors or duplicate tools"
     expect(names).toContain(name);
   for (const name of ["shell", "bg_process", "sleep", "list", "search", "view_image", "pruned_read"])
     expect(names).not.toContain(name);
-  for (const name of ["btw", "goal", "presentation", "complain", "swarm"])
+  for (const name of ["btw", "goal", "presentation", "complain", "swarm", "council"])
     expect(manifest.pi.extensions).toContain(`./extensions/${name}/index.ts`);
 });
