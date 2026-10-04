@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { descendants, ownedChild, setDirective, terminal, type Node, type Run, type SwarmStore } from "./state.ts";
 import type { Swarm } from "./controller.ts";
+import { resumeGrace } from "./error-resume.ts";
 
 export type Permission = { status: "released" | "waiting-approval" | "waiting-dependency" | "checkpoint-hold"; reason: string; updated: string; source: "parent" | "worker" };
 export type Barrier = { id: string; owner: string; created: string; phase: "checkpoint" | "restarting" | "failed" | "ready" | "released" | "cancelled"; error?: string; members: string[] };
@@ -20,7 +21,7 @@ export function reviews(run: Run, owner: string, now = Date.now()) {
 export function health(node: Node, live: boolean, jobs: OwnedJob[], quietAfter: number, now = Date.now(), error?: string): Health {
   const last = node.activity?.updated ?? node.started;
   const quietSeconds = last && Number.isFinite(Date.parse(last)) ? Math.max(0, Math.floor((now - Date.parse(last)) / 1000)) : null;
-  const state = node.status === "review" ? "awaiting-review" : node.status === "running" && node.activity?.status === "errored" ? "errored" : error || quietSeconds === null ? "unknown" : quietSeconds < quietAfter ? "recent" : jobs.some(activeJob) ? "quiet-with-job" : "quiet-no-job";
+  const state = node.status === "review" ? "awaiting-review" : node.status === "running" && node.activity?.status === "errored" && !(node.activity.resume && Date.parse(node.activity.resume) + resumeGrace > now) ? "errored" : error || quietSeconds === null ? "unknown" : quietSeconds < quietAfter ? "recent" : jobs.some(activeJob) ? "quiet-with-job" : "quiet-no-job";
   return { nodeId: node.id, process: live ? "present" : "missing", state, quietSeconds, jobs, error };
 }
 export const shortRevision = (revision?: string) => revision?.slice(0, 8) ?? "unknown";

@@ -359,9 +359,14 @@ Workers report activity through `swarm_send` to their parent:
 The message text gives the reason. The tree exposes the report and timestamp.
 A waiting report also sets the worker's permission to the matching wait until
 the parent releases it. Report `working` to share status without a hold.
-When a turn ends with a model error, such as an early end of the provider
-stream, and Pi does not retry, the worker records `errored` activity with the
-error. The next successful turn clears it.
+Pi retries transient provider errors first, using its `retry` settings. If a
+worker's turn still ends with a model error, such as an early end of the
+provider stream, the worker records `errored` activity with the error and
+resumes itself after 30 seconds, then 2 minutes, then 5 minutes. Each resume
+tells the worker to check its assignment, files, and jobs and not to rerun
+finished work. A new turn from any source cancels a pending resume. After three
+failed resumes, the worker stays idle and its parent gets a health alert. The
+next successful turn clears the state.
 The panel shows activity labels and signal ages for check-ins, instructions,
 and waits. Routine `working` and `tool-active` labels stay hidden. An ordinary
 worker-to-parent message records `checking-in` when it has no explicit activity
@@ -428,8 +433,9 @@ Bash tasks and tmux jobs. It distinguishes `quiet-with-job`, `quiet-no-job`,
 read error. Quiet does not mean stalled, and a live job does not prove progress.
 The extension checks every ten seconds. Once per warning episode, it sends the
 direct parent's agent a steering message for a missing worker pane, an
-`errored` worker, or a quiet worker without a known permission wait. An
-`errored` alert asks the parent to send the idle worker a message to resume it. The message starts a turn for an idle
+`errored` worker whose automatic resumes ran out, or a quiet worker without a
+known permission wait. An `errored` alert asks the parent to send the idle
+worker a message to resume it. The message starts a turn for an idle
 parent and asks it to inspect the worker and report what it did. A
 `quiet-no-job` alert asks the parent to steer an idle worker and to stop or
 restart only a stuck one. These alerts do not go to the user as notifications;

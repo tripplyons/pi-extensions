@@ -50,7 +50,7 @@ export type Node = {
   reload?: { barrier: string; stage: "requested" | "checkpointed" | "restarted" | "ready" | "released"; checkpoint?: string };
   delivery?: Delivery[];
   directive?: { text: string; source: "parent" | "restart"; created: string; messageId?: string };
-  activity?: { status: Activity | "checking-in" | "instruction-queued" | "instruction-delivered" | "tool-active" | "errored"; detail: string; updated: string; source?: "worker" | "message" | "instruction" | "tool-boundary" };
+  activity?: { status: Activity | "checking-in" | "instruction-queued" | "instruction-delivered" | "tool-active" | "errored"; detail: string; updated: string; source?: "worker" | "message" | "instruction" | "tool-boundary"; resume?: string };
   handoff?: Handoff;
   replacement?: { requested: string; successor?: string };
   predecessor?: string;
@@ -262,14 +262,15 @@ export class SwarmStore {
       return node;
     });
   }
-  // An undefined error clears an earlier errored state after a later turn succeeds.
-  async recordError(id: string, actor: string, error?: string) {
+  // An undefined error clears an earlier errored state after a later turn succeeds. resume is the time of a scheduled automatic resume.
+  async recordError(id: string, actor: string, error?: string, resume?: string) {
     return this.update(id, run => {
       const node = run.nodes[actor];
       if (!node?.parent || node.status !== "running") return;
       const updated = new Date().toISOString();
-      if (error) node.activity = { status: "errored", detail: `Turn ended with a model error: ${error.slice(0, 500)}`, updated, source: "worker" };
+      if (error) node.activity = { status: "errored", detail: `Turn ended with a model error: ${error.slice(0, 500)}${resume ? `; automatic resume at ${resume}` : "; automatic resumes exhausted"}`, updated, source: "worker", ...(resume ? { resume } : {}) };
       else if (node.activity?.status === "errored") node.activity = { status: "working", detail: "A later turn completed after the model error.", updated, source: "worker" };
+      return node;
     });
   }
   async observeTool(id: string, actor: string, toolName: string) {

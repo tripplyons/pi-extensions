@@ -47,7 +47,7 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
       if (node.status === "starting") flag("warning", "starting");
       else if (!activity) flag("warning", "activity unknown");
       else if (activity !== "working" && activity !== "tool-active") {
-        flag(activity === "checking-in" ? "muted" : activity === "errored" ? "error" : "warning", `${activity} ${elapsed(node.activity!.updated, now) || "?"} ago`);
+        flag(activity === "checking-in" ? "muted" : activity === "errored" && !node.activity!.resume ? "error" : "warning", `${activity} ${elapsed(node.activity!.updated, now) || "?"} ago`);
       }
       const permission = node.permission?.status;
       // Waiting reports already explain these matching permission holds.

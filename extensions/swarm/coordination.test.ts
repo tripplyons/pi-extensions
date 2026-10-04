@@ -206,7 +206,7 @@ test("a model error marks the worker errored until a later turn succeeds", () =>
   const run = await store.create("session", "/tmp", "Objective"), worker = await store.reserve(run.id, run.root, "W", "Task");
   await store.update(run.id, state => { state.nodes[worker.id].status = "running"; });
   await store.recordError(run.id, worker.id, "OpenAI Responses stream ended early");
-  expect((await store.read(run.id)).nodes[worker.id].activity).toMatchObject({ status: "errored", detail: "Turn ended with a model error: OpenAI Responses stream ended early" });
+  expect((await store.read(run.id)).nodes[worker.id].activity).toMatchObject({ status: "errored", detail: "Turn ended with a model error: OpenAI Responses stream ended early; automatic resumes exhausted" });
   await store.recordError(run.id, worker.id);
   expect((await store.read(run.id)).nodes[worker.id].activity?.status).toBe("working");
   await store.recordError(run.id, run.root, "root errors are not tracked");

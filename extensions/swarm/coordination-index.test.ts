@@ -8,6 +8,8 @@ import { SwarmStore } from "./state.ts";
 import { ReloadBarrier } from "./coordination.ts";
 import type { Swarm } from "./controller.ts";
 import { Workers } from "./worker.ts";
+import { resumeDelays } from "./error-resume.ts";
+import { health } from "./coordination.ts";
 
 async function fixture(check: (h: ReturnType<typeof harness>, store: SwarmStore, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-coordination-ui-"));
@@ -179,4 +181,35 @@ test("review queue tool inspects only direct children and interactive command di
   await h.command("swarm:quiet", "120");
   expect(h.entries.at(-1).data).toBe(120);
   await expect(h.command("swarm:quiet", "0")).rejects.toThrow("positive integer");
+}));
+
+test("a worker resumes itself after a model error, then reports errored when resumes run out", () => fixture(async (h, store, root) => {
+  const run = await store.create("parent-session", root, "Objective"), worker = await store.reserve(run.id, run.root, "Worker", "Task");
+  await store.update(run.id, state => { state.nodes[worker.id].status = "running"; });
+  h.pi.appendEntry("pi:swarm", { run: run.id, node: worker.id }); await h.emit("session_start");
+  h.ctx.isIdle = () => true;
+  const delays = resumeDelays.splice(0, resumeDelays.length, 20);
+  try {
+    const fail = async () => { await h.emit("message_end", { message: { role: "assistant", stopReason: "error", errorMessage: "OpenAI Responses stream ended before a terminal response event" } }); await h.emit("agent_settled"); };
+    await fail();
+    const pending = (await store.read(run.id)).nodes[worker.id];
+    expect(pending.activity?.status).toBe("errored");
+    expect(typeof pending.activity?.resume).toBe("string");
+    expect(health(pending, true, [], 300).state).not.toBe("errored");
+    const resumes = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-error-resume");
+    const deadline = Date.now() + 2000;
+    while (!resumes().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(resumes()).toHaveLength(1);
+    expect(resumes()[0].message.content).toContain("automatic resume 1 of 1");
+    expect(resumes()[0].options).toEqual({ triggerTurn: true });
+    await fail();
+    const exhausted = (await store.read(run.id)).nodes[worker.id];
+    expect(exhausted.activity?.resume).toBeUndefined();
+    expect(exhausted.activity?.detail).toContain("automatic resumes exhausted");
+    expect(health(exhausted, true, [], 300).state).toBe("errored");
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(resumes()).toHaveLength(1);
+    await h.emit("message_end", { message: { role: "assistant", stopReason: "stop" } }); await h.emit("agent_settled");
+    expect((await store.read(run.id)).nodes[worker.id].activity?.status).toBe("working");
+  } finally { resumeDelays.splice(0, resumeDelays.length, ...delays); }
 }));

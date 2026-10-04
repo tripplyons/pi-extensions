@@ -12,6 +12,7 @@ import { Workers } from "./worker.ts";
 import { preflightWorktree } from "./git.ts";
 import { panel } from "./panel.ts";
 import { packageRevision } from "./version.ts";
+import { resumeDelays, resumePrompt } from "./error-resume.ts";
 import { ownedJobs } from "./job-snapshot.ts";
 import { ReloadBarrier, health, reviews, shortRevision, type Health } from "./coordination.ts";
 import { coordinationGuidelines, treeSnapshot } from "./prompts.ts";
@@ -95,7 +96,7 @@ export default function install(pi: ExtensionAPI) {
           // The direct parent's agent acts on the warning; a deeper worker's own parent receives it instead.
           if (worker.parent !== node.id) continue;
           const advice = warning === "quiet-with-job" ? "Check its job output with swarm_health and swarm_observe before deciding it is stalled."
-            : warning === "errored" ? `Its last turn ended with a model error and it is idle: "${worker.activity!.detail}". Check its jobs and state with swarm_observe, then send it a message with swarm_send to resume it.`
+            : warning === "errored" ? `Its last turn ended with a model error, and automatic resumes did not recover it: "${worker.activity!.detail}". Check its jobs and state with swarm_observe, then send it a message with swarm_send to resume it.`
             : warning === "quiet-no-job" ? "It owns no active jobs. Inspect it with swarm_observe; if it is idle or waiting without a report, steer it with swarm_send, and stop or restart it only if it is stuck."
             : "Its tmux session is gone. Inspect swarm_tree and its handoff state, then restart it or record why not.";
           pi.sendMessage({ customType: "swarm-health-alert",
@@ -208,12 +209,33 @@ export default function install(pi: ExtensionAPI) {
   pi.on("message_end", (event) => {
     if (event.message.role === "assistant") streamError = event.message.stopReason === "error" ? event.message.errorMessage || "model request failed" : undefined;
   });
-  let errored = false;
-  pi.on("agent_settled", async () => {
+  // A worker resumes itself a few times with backoff, then health alerts its parent.
+  let errorAttempts = 0, resumeTimer: ReturnType<typeof setTimeout> | undefined;
+  const cancelResume = () => { if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; };
+  pi.on("agent_start", cancelResume);
+  pi.on("agent_settled", async (_event, ctx) => {
     const error = streamError; streamError = undefined;
-    if (!identity || (!error && !errored)) return;
-    errored = Boolean(error);
-    await store.recordError(identity.run, identity.node, error);
+    if (!identity) return;
+    if (!error) {
+      if (errorAttempts) { errorAttempts = 0; await store.recordError(identity.run, identity.node); }
+      return;
+    }
+    const delay = resumeDelays[errorAttempts++], attempt = errorAttempts, current = identity;
+    const resume = delay === undefined ? undefined : new Date(Date.now() + delay).toISOString();
+    const recorded = await store.recordError(identity.run, identity.node, error, resume);
+    if (!recorded || delay === undefined) return;
+    cancelResume();
+    resumeTimer = setTimeout(() => {
+      resumeTimer = undefined;
+      void (async () => {
+        if (identity !== current || !ctx.isIdle()) return;
+        const { node } = await active(ctx);
+        if (node.status !== "running" || node.activity?.status !== "errored") return;
+        pi.sendMessage({ customType: "swarm-error-resume", content: resumePrompt(error, attempt), display: true,
+          details: { runId: current.run, nodeId: current.node, attempt } }, { triggerTurn: true });
+      })().catch(() => {});
+    }, delay);
+    resumeTimer.unref?.();
   });
   pi.on("message_end", (event) => {
     if (event.message.role !== "custom" || !["swarm-review-reminder", "swarm-worker-checkin"].includes(event.message.customType)) return;
@@ -249,7 +271,7 @@ export default function install(pi: ExtensionAPI) {
     }
     if (node.parent && (node.resume?.status === "delivered" || !event.toolName.startsWith("swarm_"))) await store.observeTool(run.id, node.id, event.toolName);
   });
-  pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
+  pi.on("session_shutdown", async () => { cancelResume(); if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
     if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot activate swarms");
     if (identity) throw new Error("A swarm is already associated with this session");
