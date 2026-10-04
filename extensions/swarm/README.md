@@ -429,6 +429,11 @@ Rows show "no pane" when the worker's tmux session is gone. The panel refreshes
 every two seconds. It shows permission holds, unknown or mismatched source versions,
 quiet-activity diagnostics, and health-read errors only when present.
 
+Read-only tools work across the run. Any worker can call `swarm_observe` on
+another worker, `swarm_health` with `nodeId` for that node and its descendants,
+and `swarm_reviews` with `owner` or `nodeId` for another node's review queue or
+handoff. Stop, restart, and review decisions stay with the direct parent.
+
 `swarm_health` reports process presence, recent activity age, and owned managed
 Bash tasks and tmux jobs. It distinguishes `quiet-with-job`, `quiet-no-job`,
 `recent`, `awaiting-review`, `errored`, and `unknown`. Unknown job ownership includes the

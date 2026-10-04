@@ -213,3 +213,29 @@ test("a worker resumes itself after a model error, then reports errored when res
     expect((await store.read(run.id)).nodes[worker.id].activity?.status).toBe("working");
   } finally { resumeDelays.splice(0, resumeDelays.length, ...delays); }
 }));
+
+test("a worker can observe siblings read-only but cannot manage them", () => fixture(async (h, store, root) => {
+  const run = await store.create("parent-session", root, "Objective");
+  const reviewer = await store.reserve(run.id, run.root, "Reviewer", "Review siblings"), sibling = await store.reserve(run.id, run.root, "Sibling", "Build");
+  const done = await store.reserve(run.id, run.root, "Done", "Finished step");
+  await store.update(run.id, state => {
+    for (const node of [reviewer, sibling]) state.nodes[node.id].status = "running";
+    Object.assign(state.nodes[done.id], { status: "review", result: "Handoff text" });
+  });
+  const observe = Workers.prototype.observe, alive = Workers.prototype.alive;
+  Workers.prototype.observe = async (id: string, lines: number) => `pane ${id} ${lines}`;
+  Workers.prototype.alive = async () => true;
+  try {
+    h.pi.appendEntry("pi:swarm", { run: run.id, node: reviewer.id }); await h.emit("session_start");
+    expect((await h.call("swarm_observe", { nodeId: sibling.id, lines: 5 })).content[0].text).toContain(`pane ${sibling.id} 5`);
+    await expect(h.call("swarm_observe", { nodeId: run.root, lines: 5 })).rejects.toThrow("root session");
+    await expect(h.call("swarm_observe", { nodeId: "missing", lines: 5 })).rejects.toThrow("Unknown node");
+    expect((await h.call("swarm_health", {})).details).toEqual([]);
+    expect((await h.call("swarm_health", { nodeId: run.root })).details.map((item: any) => item.nodeId).sort()).toEqual([reviewer.id, sibling.id, done.id].sort());
+    expect((await h.call("swarm_health", { nodeId: sibling.id })).details).toMatchObject([{ nodeId: sibling.id, process: "present" }]);
+    expect((await h.call("swarm_reviews", { owner: run.root })).details).toMatchObject([{ nodeId: done.id }]);
+    expect((await h.call("swarm_reviews", { nodeId: done.id })).details).toMatchObject({ nodeId: done.id, result: "Handoff text" });
+    await expect(h.call("swarm_stop", { nodeId: sibling.id })).rejects.toThrow("direct parent");
+    await expect(h.call("swarm_review", { nodeId: done.id, decision: "accept", feedback: "ok" })).rejects.toThrow();
+  } finally { Workers.prototype.observe = observe; Workers.prototype.alive = alive; }
+}));

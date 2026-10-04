@@ -62,12 +62,17 @@ export default function install(pi: ExtensionAPI) {
     });
   };
   const reloads = async () => new ReloadBarrier(store, await controller(), node => ownedJobs(root, jobs, node));
-  async function diagnostics(run: Run, scope: string, quietAfter: number) {
-    return Promise.all(descendants(run, scope).filter(node => !terminal(node.status)).map(async node => {
+  async function diagnostics(run: Run, scope: string, quietAfter: number, includeScope = false) {
+    return Promise.all([...(includeScope ? [run.nodes[scope]] : []), ...descendants(run, scope)].filter(node => !terminal(node.status)).map(async node => {
       const live = await workers.alive(node.id);
       try { return health(node, live, await ownedJobs(root, jobs, node), quietAfter); }
       catch (error) { return health(node, live, [], quietAfter, Date.now(), String(error)); }
     }));
+  }
+  // Read-only tools may inspect any node in the run; management stays with the direct parent.
+  function runNode(run: Run, id: string) {
+    if (!Object.hasOwn(run.nodes, id)) throw new Error("Unknown node in this swarm run; use swarm_tree to find node IDs");
+    return run.nodes[id];
   }
   async function active(ctx: ExtensionContext) {
     if (!identity) throw new Error("Swarm is inactive. Only the user can activate /swarm:start <objective>");
@@ -354,17 +359,20 @@ export default function install(pi: ExtensionAPI) {
     if (!node) throw new Error("Unknown swarm node");
     return node;
   });
-  tool("swarm_reviews", "List your pending direct-child handoffs oldest first, with age, overdue state, review owner and parent-reported integrated revisions. Set nodeId to inspect the full handoff. Decisions use swarm_review and do not imply code integration.", Type.Object({ nodeId: Type.Optional(Type.String()) }), async (args, ctx) => {
+  tool("swarm_reviews", "List pending direct-child handoffs oldest first, with age, overdue state, review owner and parent-reported integrated revisions. Lists your own queue unless owner names another node in the run. Set nodeId to inspect the full handoff of any worker awaiting review in the run. Read-only. Only the worker's parent decides, with swarm_review; decisions do not imply code integration.", Type.Object({ nodeId: Type.Optional(Type.String()), owner: Type.Optional(Type.String({ description: "Node whose review queue to list; defaults to you." })) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    const reminder = reviewReminders.snapshot(run, node.id);
-    if (!args.nodeId) return reviews(run, node.id).map(item => ({ ...item, reminder }));
-    const worker = await (await controller()).owned(run.id, node.id, args.nodeId);
-    if (worker.status !== "review") throw new Error("Worker has no result awaiting review");
-    return { ...reviews(run, node.id).find(item => item.nodeId === worker.id), reminder, result: worker.result, delivery: worker.delivery };
+    const owner = args.owner ? runNode(run, args.owner).id : node.id;
+    const reminder = owner === node.id ? reviewReminders.snapshot(run, node.id) : undefined;
+    if (!args.nodeId) return reviews(run, owner).map(item => ({ ...item, ...(reminder ? { reminder } : {}) }));
+    const worker = runNode(run, args.nodeId);
+    if (worker.status !== "review" || !worker.parent) throw new Error("Worker has no result awaiting review");
+    return { ...reviews(run, worker.parent).find(item => item.nodeId === worker.id), ...(worker.parent === node.id ? { reminder } : {}), result: worker.result, delivery: worker.delivery };
   });
-  tool("swarm_health", "Read-only worker process, job, and quiet-activity diagnostics. No automatic stop or restart. Known holds do not imply a stalled worker.", Type.Object({ quiet_seconds: Type.Optional(Type.Integer({ minimum: 1 })) }), async (args, ctx) => {
-    const { run, node } = await active(ctx);
-    return diagnostics(run, node.id, args.quiet_seconds ?? restore<number>(ctx, "pi:swarm-quiet") ?? 300);
+  tool("swarm_health", "Read-only worker process, job, and quiet-activity diagnostics for your descendants, or for nodeId and its descendants when set. Any node in the run may be inspected. No automatic stop or restart. Known holds do not imply a stalled worker.", Type.Object({ quiet_seconds: Type.Optional(Type.Integer({ minimum: 1 })), nodeId: Type.Optional(Type.String({ description: "Inspect this node and its descendants instead of your own descendants." })) }), async (args, ctx) => {
+    const { run, node } = await active(ctx), quietAfter = args.quiet_seconds ?? restore<number>(ctx, "pi:swarm-quiet") ?? 300;
+    if (!args.nodeId) return diagnostics(run, node.id, quietAfter);
+    const target = runNode(run, args.nodeId);
+    return diagnostics(run, target.id, quietAfter, Boolean(target.parent));
   });
   tool("swarm_reload", "Durable direct-child reload barrier. Request checkpoints; workers checkpoint alone only after finishing or stopping owned jobs. Parent restarts after every checkpoint, waits for readiness and matching package revisions, then separately releases with one explicit bounded assignment per worker. Restart refuses when the installed package differs from the parent's loaded package unless allowRevisionChange is set. Restart again on a ready barrier to restart only members whose revision differs from the parent's or whose process stopped. Cancel ends an unreleased barrier, returns each member's checkpoint, and leaves running members on a permission wait. Running descendants of a member keep running through the restart. Does not authorize work during restart.", Type.Object({ action: Type.Union(["request", "status", "checkpoint", "restart", "release", "cancel"].map(value => Type.Literal(value))), barrierId: Type.Optional(Type.String()), allowRevisionChange: Type.Optional(Type.Boolean({ description: "Restart even though the installed package differs from the parent's loaded package. Reload the parent before release." })), nodeIds: Type.Optional(Type.Array(Type.String(), { minItems: 1 })), checkpoint: Type.Optional(Type.String({ minLength: 1 })), assignments: Type.Optional(Type.Array(Type.Object({ nodeId: Type.String(), task: Type.String({ minLength: 1 }) }))) }), async (args, ctx) => {
     const { run, node } = await active(ctx), manager = await reloads();
@@ -429,8 +437,10 @@ export default function install(pi: ExtensionAPI) {
     for (const field of ["name", "task", "model", "testedBase"] as const) if (!args[field]?.trim()) throw new Error(`Replacement start requires ${field}`);
     return (await controller()).replace(run.id, node.id, args.nodeId, args.name, args.task, args.testedBase, { model: chooseModel(ctx, args.model), thinking: args.thinking ?? pi.getThinkingLevel(), fast: args.fast ?? restore<boolean>(ctx, "pi:fast") ?? false });
   });
-  tool("swarm_observe", "Capture bounded terminal output from a direct child.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {
-    const { run, node } = await active(ctx); await (await controller()).owned(run.id, node.id, args.nodeId); return workers.observe(args.nodeId, args.lines);
+  tool("swarm_observe", "Capture bounded terminal output from any other worker in this run. Read-only; it does not grant management rights.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {
+    const { run, node } = await active(ctx), target = runNode(run, args.nodeId);
+    if (target.id === node.id || !target.parent) throw new Error("swarm_observe reads another worker's pane; the root session has none");
+    return workers.observe(target.id, args.lines);
   });
   tool("swarm_stop", "Stop an owned child. Retain worktree and session.", child, async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).stop(run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action: "stop" };
