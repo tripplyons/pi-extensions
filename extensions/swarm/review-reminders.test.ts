@@ -101,7 +101,7 @@ test("recorded integration flags undecided handoffs without deciding or inferrin
   expect(new ReviewReminders().next(run, "root", now)).toContain("code integration recorded, handoff undecided");
   expect(treeSnapshot(run, false, undefined, now).nodes[1]).toMatchObject({ handoff: "awaiting-parent", code: { records: [{ reviewed: false, tested: false, integrated: true }] } });
   const row = panel(run, "root", new Set([worker.id]), 300, (_, text) => text, now)[1];
-  expect(row).toContain("review overdue"); expect(row).toContain("code integration recorded; handoff undecided");
+  expect(row).toContain("review overdue"); expect(row).toContain("integrated; undecided");
   expect(run).toEqual(before);
   worker.status = "accepted";
   expect(reviews(run, "root", now)).toEqual([]);

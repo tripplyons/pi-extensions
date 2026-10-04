@@ -36,7 +36,7 @@ test("controller connects isolation, review, jobs, restart and guarded cleanup",
     expect(snapshot.nodes[a.id]).toMatchObject({ status: "running", result: "Done", directive: { text: "Audit the next bounded slice; no builds.", source: "restart" }, handoff: { revision: 1, status: "accepted", feedback: "Verified" } });
     expect(snapshot.nodes[a.id].launch).not.toHaveProperty("task");
     expect(treeSnapshot(snapshot).nodes.find(node => node.id === a.id)).toMatchObject({ handoff: "accepted", handoffRevision: 1 });
-    expect(panel(snapshot, run.root, live, 300, (_, text) => text).join("\n")).toContain("handoff accepted");
+    expect(panel(snapshot, run.root, live, 300, (_, text) => text).join("\n")).not.toContain("handoff accepted");
     await store.complete(run.id, a.id, "Updated");
     expect((await store.read(run.id)).nodes[a.id].handoff).toMatchObject({ revision: 2, status: "awaiting-parent", submitted: expect.any(String) });
     await swarm.review(run.id, run.root, a.id, "request-changes", "Fix check");

@@ -65,9 +65,9 @@ Existing workers must reload this extension to report model changes.
 
 Each session reports a package-source fingerprint captured when the extension
 loads. The tree exposes `runtime.revision`, `runtime.loaded`, and whether the
-revision matches the root's reported source. The panel shows a short fingerprint,
-a mismatch, or `version unknown`. This is a source fingerprint, not a Git commit
-or a claim that tests passed. Old workers remain unknown until they load the new
+revision matches the root's reported source. The panel shows a short fingerprint
+only for a mismatch, or `version unknown` when either source is missing. This is a
+source fingerprint, not a Git commit or a claim that tests passed. Old workers remain unknown until they load the new
 extension. Editing files does not update a loaded session's fingerprint.
 
 `swarm_complete` submits a self-contained handoff: outcome, branch and tested
@@ -262,12 +262,16 @@ parent's current model, thinking level, and fast-mode preference by default. Sup
 `high`, `xhigh`, `max`) to override them.
 Restart refuses a live worker; stop it first. It does not restart old jobs.
 
-`/swarm:status` shows or hides a panel below the editor. It lists active
-workers under the current node, including status, elapsed time, model, thinking
-level, handoff state, recorded code-stage counts, unread messages, and task.
-Running or starting workers label retained results as "previous handoff". A new
-submission in review shows the current handoff. Both labels retain separate code
-evidence; restarting a worker does not clear its handoff decision.
+`/swarm:status` shows or hides a compact panel below the editor. It lists
+nonterminal workers under the current node as a tree. Each row shows the worker's
+name, age since launch, and latest outgoing swarm message on one line. Tool events
+and incoming instructions do not replace the message preview. A worker with no
+message shows its activity report, or "No messages yet". Review rows preview the
+current handoff. The panel adds labels for check-ins, queued or delivered
+instructions, starts, waits, review requests, and diagnostic warnings. Healthy
+workers omit routine activity, released permission, matching source versions,
+models, thinking levels, unread counts, and code-stage counts. Use `swarm_tree`
+for full details; restarting a worker does not clear its handoff decision.
 `swarm_restart` accepts an optional `task` for the next bounded assignment.
 It saves that assignment before launch. `swarm_task.currentAssignment` exposes the
 current task with appended instructions, explicit replacement, or restart assignment,
@@ -281,15 +285,16 @@ not resume a review worker.
 Workers report activity through `swarm_send` to their parent:
 `activity: "working"`, `"waiting-instructions"`, or `"waiting-dependency"`.
 The message text gives the reason. The tree exposes the report and timestamp.
-The panel shows the latest activity signal and its age instead of calling every
-running process working. An ordinary worker-to-parent message records `checking-in`
-when it has no explicit activity report. Non-swarm tool checks record `tool-active`.
+The panel shows activity labels and signal ages for check-ins, instructions,
+and waits. Routine `working` and `tool-active` labels stay hidden. An ordinary
+worker-to-parent message records `checking-in` when it has no explicit activity
+report. Non-swarm tool checks record `tool-active`.
 Parent instructions replace old waiting labels with `instruction-queued`, then
 `instruction-delivered` when Pi accepts the instruction. Acknowledging an older
 instruction cannot replace the state of a newer one. Recovery also corrects legacy
 waiting reports when a newer matching parent instruction is present.
-The tree identifies each signal's source. The panel distinguishes observed events
-from explicit worker reports. Tool checks and check-ins do not prove useful progress,
+The tree identifies each signal's source. The panel retains the last message
+across tool checks. Tool checks and check-ins do not prove useful progress,
 completed tool execution, or instruction understanding. Reading swarm state alone
 does not mark a worker tool-active. Workers should still explicitly report waits.
 Activity with no report or observed event is `unknown`. Restart and completion clear
@@ -330,9 +335,12 @@ integrated. It never implies acceptance, source review, or successful tests.
 The active count includes workers paused for review. The header gives a separate
 `awaiting-parent` count, and review rows show `await-parent` in warning color.
 Parents also receive a warning for each new handoff revision and a pending-review
-status indicator with direct-child overdue and recorded-integration counts. The header counts terminal workers, not completed code. Rows show "no pane" when the worker's tmux
-session is gone. The panel refreshes every two seconds. It also shows permission state, source
-version, review age and owner, and quiet-activity diagnostics.
+status indicator with direct-child overdue and recorded-integration counts.
+The header counts terminal workers, not completed code. Review rows include the
+wait age, overdue warnings, and recorded integration with an undecided handoff.
+Rows show "no pane" when the worker's tmux session is gone. The panel refreshes
+every two seconds. It shows permission holds, unknown or mismatched source versions,
+quiet-activity diagnostics, and health-read errors only when present.
 
 `swarm_health` reports process presence, recent activity age, and owned managed
 Bash tasks and tmux jobs. It distinguishes `quiet-with-job`, `quiet-no-job`,

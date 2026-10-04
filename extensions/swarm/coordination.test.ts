@@ -126,7 +126,7 @@ test("review queue is direct-child, oldest-first, durable and shows unknown lega
   expect(reviews(fresh, run.root, now).map(item => [item.nodeId, item.waitingSeconds])).toEqual([[older.id, 120], [newer.id, 60], [legacy.id, null]]);
   expect(reviews(fresh, older.id, now)).toEqual([]);
   expect(treeSnapshot(fresh, false, undefined, now).reviewQueue[0].parent).toBe(run.root);
-  expect(panel(fresh, run.root, new Set(), 500, (_, text) => text, now).join("\n")).toContain("review age 120s; owner root");
+  expect(panel(fresh, run.root, new Set(), 500, (_, text) => text, now).join("\n")).toContain("await-parent 2m");
   await store.review(run.id, run.root, older.id, "request-changes", "One bounded fix");
   expect(reviews(await store.read(run.id), run.root)).toHaveLength(2);
 }));
