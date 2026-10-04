@@ -7,6 +7,8 @@ const inspectionTools = new Set([
 ]);
 
 export function allowedDuringHold(toolName: string, input?: Record<string, unknown>): boolean {
+  // Codemode is a sandboxed dispatcher. Pi sends each nested tool through this gate.
+  if (toolName === "codemode") return true;
   if (toolName === "decompress") return input?.toFile === undefined;
   return inspectionTools.has(toolName);
 }

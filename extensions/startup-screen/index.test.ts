@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Container, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import startupScreenExtension, {
@@ -14,7 +16,7 @@ const theme = {
 
 describe("startup header", () => {
 	test("renders a centered PI logo and abbreviated directory within the width", () => {
-		const lines = renderHeader(theme as any, "/Users/tripp/projects/pi-extensions", 32);
+		const lines = renderHeader(theme as any, join(homedir(), "projects", "pi-extensions"), 32);
 		expect(lines.join("\n")).toContain("██████╗ ██╗");
 		expect(lines.join("\n")).toContain("~/projects/pi-extensions");
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(32);

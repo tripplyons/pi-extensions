@@ -35,8 +35,10 @@ can read files with `read`, `grep`, `find`, and `ls`, coordinate with the parent
 inspect swarm state, and inspect or stop tasks. They can also manage context with
 `compress`, `search_context`, `acp_status`, `acp_cache`, and `decompress` without
 `toFile`. These calls do not release permission. The same rule applies to reload
-checkpoint holds. Bash, codemode, file-writing tools (including `decompress` with
-`toFile`), new jobs, and unknown tools stay blocked. Review and terminal workers
+checkpoint holds. Codemode can dispatch these allowed tools; Pi checks each
+nested call against the current worker state, including permission changes during
+a script. Bash, file-writing tools (including `decompress` with `toFile`), new
+jobs, and unknown tools stay blocked. Do not use codemode model calls during a hold. Review and terminal workers
 remain paused for all tools. Old records without permission state show `unknown`;
 activity does not reconstruct it.
 Coordination guidelines are added to the system prompt
