@@ -43,8 +43,8 @@ Read and modified file lists are appended to the summary and carried forward
 like Pi's own compactions. Summary usage is recorded on the compaction entry.
 Background summaries that are never used still cost tokens.
 
-Virtual models work through Pi's direct-request routing. With `tripp/council`,
-Sol writes the background summary at medium effort without consulting advisors
+Virtual models work through Pi's direct-request routing. With `tripp/council`
+or `tripp/council-openai`, Sol writes the background summary at medium effort without consulting advisors
 or spending an executor response slot. Council's advice and budget stay in
 branch-local state when the summary is applied. The footer omits Council's
 selected effort because its presets already fix each model's effort.

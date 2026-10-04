@@ -7,7 +7,10 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Provider
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import council from "./index.ts";
 
-test("real SDK consults before dispatch, injects advice, and refreshes after eight tool turns", async () => {
+test.each([
+	{ id: "council", count: 3, effort: ["medium", "medium", "low"] },
+	{ id: "council-openai", count: 2, effort: ["high", "high"] },
+])("real SDK routes $id and refreshes after eight tool turns", async ({ id: modelId, count, effort: expectedEffort }) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-council-sdk-"));
 	const runtime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json"), refreshOnCreate: false });
 	let advisors = 0;
@@ -15,7 +18,7 @@ test("real SDK consults before dispatch, injects advice, and refreshes after eig
 	let steps = 0;
 	const tiers: unknown[] = [];
 	const effort: unknown[] = [];
-	for (const id of ["openai", "anthropic"]) {
+	for (const id of modelId === "council-openai" ? ["openai"] : ["openai", "anthropic"]) {
 		const models = runtime.getModels(id).filter(model => ["gpt-6.1-sol", "gpt-6-astra", "claude-opus-5-5"].includes(model.id));
 		const provider: Provider = {
 			id, name: id,
@@ -34,8 +37,9 @@ test("real SDK consults before dispatch, injects advice, and refreshes after eig
 						effort.push(options?.reasoning);
 					} else {
 						execution++;
-						expect(advisors).toBe(execution <= 8 ? 3 : 6);
-						expect(JSON.stringify(context.messages.at(-1))).toContain("Synthesize the three advisory answers");
+						expect(advisors).toBe(execution <= 8 ? count : count * 2);
+						expect(options?.reasoning).toBe("medium");
+						expect(JSON.stringify(context.messages.at(-1))).toContain(`Synthesize all ${count} advisory answers`);
 						tiers.push(payload);
 					}
 					const content: AssistantMessage["content"] = isAdvisor
@@ -77,7 +81,7 @@ test("real SDK consults before dispatch, injects advice, and refreshes after eig
 	try {
 		const errors: string[] = [];
 		await session.bindExtensions({ onError: event => errors.push(event.error) });
-		const virtual = runtime.getModel("tripp", "council")!;
+		const virtual = runtime.getModel("tripp", modelId)!;
 		expect(virtual).toBeDefined();
 		await session.setModel(virtual);
 		await session.prompt("Perform nine test steps, then stop.");
@@ -85,8 +89,8 @@ test("real SDK consults before dispatch, injects advice, and refreshes after eig
 		expect(session.messages.filter(message => message.role === "assistant").map(message => message.errorMessage).filter(Boolean)).toEqual([]);
 		expect(steps).toBe(9);
 		expect(execution).toBe(10);
-		expect(advisors).toBe(6);
-		expect(effort).toEqual(["medium", "medium", "low", "medium", "medium", "low"]);
+		expect(advisors).toBe(count * 2);
+		expect(effort).toEqual([...expectedEffort, ...expectedEffort]);
 		expect(tiers.every(payload => (payload as any)?.service_tier === "priority")).toBe(true);
 		const saved = session.sessionManager.getBranch().filter(entry => entry.type === "custom" &&
 			entry.customType === "pi.virtual-model-state");

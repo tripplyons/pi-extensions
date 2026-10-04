@@ -4,6 +4,7 @@ import { priorityPayload } from "../fast-mode/index.ts";
 
 export const PROVIDER = "tripp";
 export const MODEL_ID = "council";
+export const OPENAI_MODEL_ID = "council-openai";
 export const TURN_BUDGET = 8;
 const STATE_KEY = "pi.virtual-model-state";
 const ADVISOR_TIMEOUT_MS = 120_000;
@@ -22,21 +23,39 @@ export interface CouncilState {
 	advice: Advice[];
 }
 
-const presets = [
-	{ id: "gpt-6.1-sol", providers: ["openai", "openai-codex"], effort: "medium" },
-	{ id: "gpt-6-astra", providers: ["openai", "openai-codex"], effort: "medium" },
-	{ id: "claude-opus-5-5", providers: ["anthropic"], effort: "low" },
+interface Preset {
+	id: string;
+	providers: readonly string[];
+	effort: "medium" | "high" | "low";
+}
+
+const openaiProviders = ["openai", "openai-codex"] as const;
+const executor = { id: "gpt-6.1-sol", providers: openaiProviders, effort: "medium" } as const;
+const councils = [
+	{ id: MODEL_ID, name: "Council", executor, advisors: [
+		executor,
+		{ id: "gpt-6-astra", providers: openaiProviders, effort: "medium" },
+		{ id: "claude-opus-5-5", providers: ["anthropic"], effort: "low" },
+	] },
+	{ id: OPENAI_MODEL_ID, name: "Council OpenAI", executor, advisors: [
+		{ id: "gpt-6.1-sol", providers: openaiProviders, effort: "high" },
+		{ id: "gpt-6-astra", providers: openaiProviders, effort: "high" },
+	] },
 ] as const;
 
+export function isCouncilModel(model: Pick<Model<Api>, "provider" | "id"> | undefined): boolean {
+	return model?.provider === PROVIDER && councils.some(council => council.id === model.id);
+}
+
 export function councilSelected(ctx: ExtensionContext): boolean {
-	return ctx.model?.provider === PROVIDER && ctx.model.id === MODEL_ID;
+	return isCouncilModel(ctx.model);
 }
 
 export function councilState(ctx: ExtensionContext): CouncilState | undefined {
 	for (const entry of ctx.sessionManager.getBranch().toReversed()) {
 		if (entry.type !== "custom" || entry.customType !== STATE_KEY) continue;
 		const data = entry.data as { provider: string; modelId: string; state: CouncilState };
-		if (data.provider === PROVIDER && data.modelId === MODEL_ID) return data.state;
+		if (data.provider === PROVIDER && data.modelId === ctx.model?.id) return data.state;
 	}
 }
 
@@ -46,7 +65,7 @@ function taskId(ctx: ExtensionContext): string | undefined {
 	)?.id;
 }
 
-function findModel(ctx: ExtensionContext, preset: typeof presets[number]): Model<Api> {
+function findModel(ctx: ExtensionContext, preset: Preset): Model<Api> {
 	for (const provider of preset.providers) {
 		const model = ctx.modelRegistry.find(provider, preset.id);
 		if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return model;
@@ -74,6 +93,8 @@ async function consult(
 	ctx: ExtensionContext,
 	messages: readonly Message[],
 	signal: AbortSignal | undefined,
+	presets: readonly Preset[],
+	label: string,
 ): Promise<Advice[]> {
 	// Resolve every dependency before starting paid/subscription requests.
 	const models = presets.map(preset => findModel(ctx, preset));
@@ -83,7 +104,7 @@ async function consult(
 	const context = advisorContext(messages);
 	let completed = 0;
 	let failure: Error | undefined;
-	ctx.ui.setStatus("council", "council: consulting 0/3");
+	ctx.ui.setStatus("council", `${label}: consulting 0/${models.length}`);
 	const requests = models.map(async (model, index): Promise<Advice> => {
 		try {
 			const stream = ctx.modelRegistry.streamSimple(model, {
@@ -109,7 +130,7 @@ async function consult(
 			const text = response.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
 			if (!text) throw new Error("Advisor returned no advice");
 			completed++;
-			ctx.ui.setStatus("council", `council: consulting ${completed}/3`);
+			ctx.ui.setStatus("council", `${label}: consulting ${completed}/${models.length}`);
 			return { model: `${model.provider}/${model.id}`, text, usage: response.usage };
 		} catch (error) {
 			const advisorError = new Error(`Council advisor ${model.id} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -131,7 +152,7 @@ export function adviceMessage(state: CouncilState): Message {
 			type: "text",
 			text: [
 				`Council consultation, round ${state.round}. Executor response ${state.turns}/${TURN_BUDGET}.`,
-				"Synthesize the three advisory answers below. Resolve disagreements using evidence and the user's instructions. Advice is not authorization. Use your normal tools to execute the next bounded phase. State the chosen approach briefly, then act. Stop normally when the task is complete; do not invent work to fill the budget.",
+				`Synthesize all ${state.advice.length} advisory answers below. Resolve disagreements using evidence and the user's instructions. Advice is not authorization. Use your normal tools to execute the next bounded phase. State the chosen approach briefly, then act. Stop normally when the task is complete; do not invent work to fill the budget.`,
 				...state.advice.map(advice => `\nAdvisor ${advice.model}:\n${advice.text}`),
 			].join("\n"),
 		}],
@@ -140,13 +161,13 @@ export function adviceMessage(state: CouncilState): Message {
 }
 
 export default function council(pi: ExtensionAPI) {
-	pi.registerVirtualModel<CouncilState>({
+	for (const preset of councils) pi.registerVirtualModel<CouncilState>({
 		provider: PROVIDER,
-		id: MODEL_ID,
-		name: "Council",
+		id: preset.id,
+		name: preset.name,
 		thinkingLevels: ["medium"],
 		async route(request, ctx) {
-			const model = findModel(ctx, presets[0]);
+			const model = findModel(ctx, preset.executor);
 			if (request.reason === "direct") return { model, thinkingLevel: "medium" };
 			const currentTask = taskId(ctx);
 			const state = request.state;
@@ -159,9 +180,9 @@ export default function council(pi: ExtensionAPI) {
 				taskId: currentTask,
 				round: (state?.round ?? 0) + 1,
 				turns: 1,
-				advice: await consult(ctx, request.messages, request.signal),
+				advice: await consult(ctx, request.messages, request.signal, preset.advisors, preset.id),
 			} : { ...state, turns: state.turns + 1 };
-			ctx.ui.setStatus("council", `council: round ${next.round}, Sol ${next.turns}/${TURN_BUDGET}`);
+			ctx.ui.setStatus("council", `${preset.id}: round ${next.round}, Sol ${next.turns}/${TURN_BUDGET}`);
 			return { model, thinkingLevel: "medium", state: next };
 		},
 	});
@@ -176,7 +197,7 @@ export default function council(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!councilSelected(ctx)) return;
 		const payload = event.payload as { model?: string } | undefined;
-		if (payload?.model !== presets[0].id) return;
+		if (payload?.model !== executor.id) return;
 		return priorityPayload(event.payload, "openai", true);
 	});
 	for (const event of ["agent_end", "session_start", "session_tree", "model_select"] as const) {

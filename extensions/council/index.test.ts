@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ExtensionVirtualModel } from "@earendil-works/pi-coding-agent";
-import council, { advisorContext, adviceMessage, MODEL_ID, PROVIDER, TURN_BUDGET, type CouncilState } from "./index.ts";
+import council, { advisorContext, adviceMessage, MODEL_ID, OPENAI_MODEL_ID, PROVIDER, TURN_BUDGET, type CouncilState } from "./index.ts";
 
 const usage = { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 14,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -13,11 +13,12 @@ function response(model: Model<any>, overrides: Partial<AssistantMessage> = {}):
 		stopReason: "stop", usage, timestamp: 1, ...overrides };
 }
 
-function harness() {
-	let definition!: ExtensionVirtualModel<CouncilState>;
+function harness(modelId = MODEL_ID) {
+	const definitions = new Map<string, ExtensionVirtualModel<CouncilState>>();
 	const handlers = new Map<string, Function>();
 	const calls: { model: Model<any>; context: Context; options: SimpleStreamOptions }[] = [];
 	const branch: any[] = [{ type: "message", id: "task-1", message: messages[0] }];
+	const statuses: (string | undefined)[] = [];
 	const models = ["gpt-6.1-sol", "gpt-6-astra", "claude-opus-5-5"].map(id => ({
 		id, provider: id.startsWith("claude") ? "anthropic" : "openai", api: "fixture",
 		name: id, baseUrl: "https://fixture.invalid", reasoning: true, input: ["text"],
@@ -26,7 +27,7 @@ function harness() {
 	let answer = (model: Model<any>) => Promise.resolve(response(model));
 	let aborted = false;
 	const ctx: any = {
-		model: { id: MODEL_ID, provider: PROVIDER },
+		model: { id: modelId, provider: PROVIDER },
 		sessionManager: { getBranch: () => branch },
 		modelRegistry: {
 			find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id),
@@ -36,22 +37,24 @@ function harness() {
 				return { result: () => answer(model) };
 			},
 		},
-		ui: { setStatus() {} },
+		ui: { setStatus(_key: string, value?: string) { statuses.push(value); } },
 		abort: () => { aborted = true; },
 	};
-	council({ registerVirtualModel: (model: typeof definition) => { definition = model; },
+	council({ registerVirtualModel: (model: ExtensionVirtualModel<CouncilState>) => { definitions.set(model.id, model); },
 		on: (event: string, handler: Function) => { handlers.set(event, handler); } } as any);
-	let state: CouncilState | undefined;
+	const states = new Map<string, CouncilState>();
 	async function route(reason: "user" | "continuation" | "retry" | "direct" = "user", signal?: AbortSignal) {
-		const result = await definition.route({ model: ctx.model, thinkingLevel: "medium", reason, messages, state, signal }, ctx);
+		const id = ctx.model.id;
+		const result = await definitions.get(id)!.route({ model: ctx.model, thinkingLevel: "medium", reason, messages, state: states.get(id), signal }, ctx);
 		if (result.state) {
-			state = result.state;
+			states.set(id, result.state);
 			branch.push({ type: "custom", customType: "pi.virtual-model-state",
-				data: { provider: PROVIDER, modelId: MODEL_ID, state } });
+				data: { provider: PROVIDER, modelId: id, state: result.state } });
 		}
 		return result;
 	}
-	return { ctx, branch, models, calls, handlers, definition, route, get state() { return state; },
+	return { ctx, branch, models, calls, statuses, handlers, definitions, get definition() { return definitions.get(ctx.model.id)!; }, route,
+		get state() { return states.get(ctx.model.id); },
 		setAnswer(fn: typeof answer) { answer = fn; }, get aborted() { return aborted; } };
 }
 
@@ -83,6 +86,69 @@ test("registers Council and consults all three in parallel with exact efforts an
 	expect(transformed.messages.at(-1).content[0].text).toContain("claude-opus-5-5");
 	expect(h.handlers.get("before_provider_request")!({ payload: { model: "gpt-6.1-sol" } }, h.ctx))
 		.toEqual({ model: "gpt-6.1-sol", service_tier: "priority" });
+});
+
+test("Council OpenAI consults two high-effort priority advisors without Anthropic auth", async () => {
+	const h = harness(OPENAI_MODEL_ID);
+	h.ctx.modelRegistry.hasConfiguredAuth = (model: Model<any>) => model.provider === "openai";
+	const releases: (() => void)[] = [];
+	h.setAnswer(model => new Promise(resolve => releases.push(() => resolve(response(model)))));
+	const pending = h.route();
+	expect([...h.definitions.keys()]).toEqual([MODEL_ID, OPENAI_MODEL_ID]);
+	expect(h.calls).toHaveLength(2);
+	expect(h.calls.map(call => call.model.id)).toEqual(["gpt-6.1-sol", "gpt-6-astra"]);
+	expect(h.calls.map(call => call.options.reasoning)).toEqual(["high", "high"]);
+	for (const call of h.calls) {
+		expect(await call.options.onPayload!({ model: call.model.id }, call.model)).toEqual({ model: call.model.id, service_tier: "priority" });
+	}
+	releases.forEach(release => release());
+	const result = await pending;
+	expect(result.model.id).toBe("gpt-6.1-sol");
+	expect(result.thinkingLevel).toBe("medium");
+	expect(h.statuses).toContain("council-openai: consulting 0/2");
+	expect(h.statuses).toContain("council-openai: consulting 2/2");
+	const text = JSON.stringify(adviceMessage(h.state!));
+	expect(text).toContain("Synthesize all 2 advisory answers");
+	expect(text).not.toContain("claude");
+	expect(h.handlers.get("before_provider_request")!({ payload: { model: result.model.id } }, h.ctx))
+		.toEqual({ model: "gpt-6.1-sol", service_tier: "priority" });
+});
+
+test("switching variants keeps advice and execution slots separate on the same branch", async () => {
+	const h = harness();
+	await h.route();
+	const originalState = h.state!;
+	h.ctx.model.id = OPENAI_MODEL_ID;
+	await h.route();
+	expect(h.calls).toHaveLength(5);
+	expect(h.state?.turns).toBe(1);
+	expect(h.state?.advice).toHaveLength(2);
+	let context = h.handlers.get("context_with_system")!({ messages }, h.ctx);
+	expect(JSON.stringify(context.messages.at(-1))).toContain("Synthesize all 2 advisory answers");
+	h.ctx.model.id = MODEL_ID;
+	context = h.handlers.get("context_with_system")!({ messages }, h.ctx);
+	expect(context.messages.at(-1)).toEqual(adviceMessage(originalState));
+	await h.route("continuation");
+	expect(h.calls).toHaveLength(5);
+	expect(h.state?.turns).toBe(2);
+	expect(h.state?.advice).toHaveLength(3);
+	h.ctx.model.id = OPENAI_MODEL_ID;
+	await h.route("direct");
+	expect(h.calls).toHaveLength(5);
+	expect(h.state?.turns).toBe(1);
+	await h.route("retry");
+	expect(h.state?.turns).toBe(1);
+	expect(h.calls).toHaveLength(5);
+});
+
+test("Council OpenAI fails closed when either advisor fails", async () => {
+	for (const id of ["gpt-6.1-sol", "gpt-6-astra"]) {
+		const h = harness(OPENAI_MODEL_ID);
+		h.setAnswer(model => Promise.resolve(response(model, model.id === id ? { stopReason: "error", errorMessage: "fixture failure" } : {})));
+		await expect(h.route()).rejects.toThrow("Council advisor");
+		expect(h.state).toBeUndefined();
+		expect(h.calls.every(call => call.options.signal?.aborted)).toBe(true);
+	}
 });
 
 test("reconsults only at the ninth response and reuses retries", async () => {
@@ -164,12 +230,16 @@ test("context handles strings, marks truncation and images, and omits private th
 	expect(text).not.toContain("private-image");
 });
 
-test("uses exact Codex models when OpenAI auth is unavailable", async () => {
-	const h = harness();
+test.each([MODEL_ID, OPENAI_MODEL_ID])("%s uses exact Codex models when OpenAI auth is unavailable", async modelId => {
+	const h = harness(modelId);
 	for (const model of h.models) if (model.provider === "openai") model.provider = "openai-codex";
 	const result = await h.route();
 	expect(result.model.provider).toBe("openai-codex");
-	expect(h.calls.map(call => call.model.provider)).toEqual(["openai-codex", "openai-codex", "anthropic"]);
+	expect(h.calls.map(call => call.model.provider)).toEqual(modelId === OPENAI_MODEL_ID
+		? ["openai-codex", "openai-codex"] : ["openai-codex", "openai-codex", "anthropic"]);
+	for (const call of h.calls.filter(call => call.model.provider === "openai-codex")) {
+		expect(await call.options.onPayload!({ model: call.model.id }, call.model)).toEqual({ model: call.model.id, service_tier: "priority" });
+	}
 });
 
 test("reports the original advisor failure rather than a sibling cancellation", async () => {

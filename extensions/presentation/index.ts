@@ -4,6 +4,7 @@ import { installCompactUserMessages } from "./user-messages.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
+import { isCouncilModel } from "../council/index.ts";
 
 export function tokens(count: number) {
   if (count < 1000) return count.toFixed(0);
@@ -50,7 +51,7 @@ export default function presentation(pi: ExtensionAPI) {
       render(width: number) {
         const { cost } = usage(ctx);
         const parts = [theme.fg("accent", basename(ctx.cwd)), ctx.model?.id ?? "?"];
-        if (ctx.model?.provider !== "tripp" || ctx.model.id !== "council") parts.push(pi.getThinkingLevel());
+        if (!isCouncilModel(ctx.model)) parts.push(pi.getThinkingLevel());
         const context = ctx.getContextUsage();
         const window = context?.contextWindow ?? ctx.model?.contextWindow;
         parts.push(`${context?.percent === null || context?.percent === undefined ? "?" : Math.round(context.percent)}%/${window ? tokens(window) : "?"}`);

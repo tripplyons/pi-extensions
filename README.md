@@ -27,7 +27,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
 | [models](extensions/models) | Model listing and selection |
-| [council](extensions/council) | Three-model advice with bounded GPT 6.1 Sol execution and automatic reconsultation |
+| [council](extensions/council) | Council and OpenAI-only Council presets with bounded Sol execution and automatic reconsultation |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
