@@ -40,7 +40,8 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 				timestamp: Date.now(),
 			}],
 		},
-		{ maxTokens: 64 },
+		// Keep this nested request out of the provider's live agent session.
+		{ maxTokens: 64, cacheRetention: "none" },
 	);
 
 	let response: AssistantMessage | undefined;

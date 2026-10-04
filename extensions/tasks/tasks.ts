@@ -231,7 +231,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   const notifications = new Set<string>();
   let watchTimer: ReturnType<typeof setInterval> | undefined;
   let watching = false;
-  const watches = new Map<string, { config: Watch; due: number; warnings: string[] }>();
+  const watches = new Map<string, { config: Watch; due: number }>();
   function restoreWatches(ctx: ExtensionContext) {
     const configs = new Map<string, Watch>();
     for (const entry of ctx.sessionManager.getBranch()) if (entry.type === "custom" && entry.customType === watchKey) {
@@ -241,7 +241,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     for (const [id, config] of configs) {
       if (!owned.has(id) || !config.enabled || terminal(tasks.query(id).status)) { watches.delete(id); continue; }
       const previous = watches.get(id);
-      if (!previous || JSON.stringify(previous.config) !== JSON.stringify(config)) watches.set(id, { config, due: Date.now() + config.interval_seconds * 1000, warnings: [] });
+      if (!previous || JSON.stringify(previous.config) !== JSON.stringify(config)) watches.set(id, { config, due: Date.now() + config.interval_seconds * 1000 });
     }
     for (const id of watches.keys()) if (!configs.has(id) || !owned.has(id)) watches.delete(id);
     if (watches.size && !watchTimer) { watchTimer = setInterval(() => void watchProgress(), 1000); watchTimer.unref(); }
@@ -258,10 +258,9 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
         const progress = await tasks.progress(id);
         if (current !== ctx || shuttingDown) return;
         const warnings = watchWarnings(progress, watch.config);
-        const investigate = warnings.some(warning => !watch.warnings.includes(warning));
-        watch.warnings = warnings; watch.due = Date.now() + watch.config.interval_seconds * 1000;
+        watch.due = Date.now() + watch.config.interval_seconds * 1000;
         const expectation = watch.config.expected_seconds === undefined ? "Expected duration: not set." : `Expected duration: ${watch.config.expected_seconds}s; expected time remaining: ${Math.max(0, watch.config.expected_seconds - progress.elapsed_seconds)}s (not a measured ETA).`;
-        pi.sendMessage({ customType: "pi-task-progress", content: `Background Bash task ${id}: ${progress.status}. Elapsed ${progress.elapsed_seconds}s; ${progress.output_bytes} output bytes; output silence ${progress.output_silence_seconds}s; deadline remaining ${progress.deadline_remaining_seconds ?? "unknown"}s. ${expectation}\nRecent output:\n${progress.recent_output || "(none)"}${warnings.length ? `\nWarnings: ${warnings.join(", ")}. Investigate the process and recent output instead of just waiting. Update the user with progress and an evidence-based ETA; do not invent one.` : ""}`, display: true, details: { ...progress, warnings } }, { triggerTurn: investigate, deliverAs: "steer" });
+        pi.sendMessage({ customType: "pi-task-progress", content: `Background Bash task ${id}: ${progress.status}. Elapsed ${progress.elapsed_seconds}s; ${progress.output_bytes} output bytes; output silence ${progress.output_silence_seconds}s; deadline remaining ${progress.deadline_remaining_seconds ?? "unknown"}s. ${expectation}\nRecent output:\n${progress.recent_output || "(none)"}\nCheck the task and report progress to the user with an evidence-based ETA, or explain why an ETA is not available.${warnings.length ? `\nWarnings: ${warnings.join(", ")}. Investigate the process and recent output instead of just waiting.` : ""}`, display: true, details: { ...progress, warnings } }, { triggerTurn: true, deliverAs: "steer" });
       }
       if (!watches.size) { clearInterval(watchTimer); watchTimer = undefined; }
     } catch (error) { ctx.ui.setStatus("task-watch-error", String(error)); }
@@ -319,7 +318,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     },
   });
   pi.registerTool({ name: "task_watch", label: "task_watch", renderCall: toolCall("task_watch"), renderResult,
-    description: "Opt in to progress reports for a task on this branch. Reports include elapsed time, bounded recent output, output silence, and remaining deadline without moving output cursors. Expected-duration or silence warnings wake the conversation once per warning episode to investigate. Reports wait until Pi is idle. Disable with enabled=false. Watching never extends a deadline or stops a process.",
+    description: "Opt in to progress reports for a task on this branch. Reports include elapsed time, bounded recent output, output silence, and remaining deadline without moving output cursors. Every scheduled report wakes the conversation to check progress and update the user. Expected-duration or silence warnings ask the agent to investigate. Reports wait until Pi is idle. Disable with enabled=false. Watching never extends a deadline or stops a process.",
     parameters: Type.Object({ task_id: Type.String(), enabled: Type.Optional(Type.Boolean()), interval_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), expected_seconds: Type.Optional(Type.Integer({ minimum: 1 })), silence_seconds: Type.Optional(Type.Integer({ minimum: 1 })) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx, args.task_id); signal?.throwIfAborted(); current = ctx;

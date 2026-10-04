@@ -18,7 +18,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe tasks, bounded UTF-8 output and opt-in progress reports |
+| [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe tasks, bounded UTF-8 output and opt-in progress reports that wake the agent |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
@@ -32,7 +32,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
 | [goal](extensions/goal) | Persistent objectives and steering continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
-| [auto-rename](extensions/auto-rename) | Automatic session names |
+| [auto-rename](extensions/auto-rename) | Automatic session names through standalone model requests |
 | [btw](extensions/btw) | Side questions with optional tools |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |

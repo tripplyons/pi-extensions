@@ -166,6 +166,7 @@ test("uses the registered provider with resolved auth and preserves the naming r
 		headers: { "x-fixture": "yes" },
 		env: { REGION: "test" },
 		maxTokens: 64,
+		cacheRetention: "none",
 	});
 	expect(getCurrentSystemPrompt(calls[0].context.messages)).toContain("Name coding-agent sessions.");
 	const prompt = calls[0].context.messages.find(message => message.role === "user")!.content;
@@ -178,6 +179,28 @@ test("uses the registered provider with resolved auth and preserves the naming r
 		{ key: "auto-rename", value: "naming…" },
 		{ key: "auto-rename", value: undefined },
 	]);
+});
+
+test("routes Claude bridge naming through the tool-free standalone path", async () => {
+	const selectedModel = model("claude-bridge", "claude-opus-5-5");
+	const harness = renameHarness({
+		model: selectedModel,
+		entries: [{ type: "message", message: { role: "user", content: "Build Brawl with Bazel", timestamp: 1 } }],
+		streamSimple: (requestModel, context, options) => {
+			// The bridge folds transcript system messages before checking its standalone contract.
+			const messages = context.messages.filter(message => message.role !== "system");
+			if (options?.cacheRetention !== "none" || context.tools !== undefined ||
+				messages.length !== 1 || messages[0].role !== "user") {
+				return terminalStream(response(requestModel, undefined, "error", "Naming request entered the live agent session"), "error");
+			}
+			return terminalStream(response(requestModel, "Build Brawl with Bazel"));
+		},
+	});
+
+	await harness.runAgentEnd();
+
+	expect(harness.getName()).toBe("Build Brawl with Bazel");
+	expect(harness.notices).toEqual([]);
 });
 
 test("reports an unavailable provider and clears status", async () => {

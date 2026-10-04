@@ -31,7 +31,7 @@ test("progress includes original deadline and bounded output without consuming t
   expect((await tasks.output(id)).output).toBe("");
 }));
 
-test("watch reports are opt-in, persistent, branch-owned and wake only once for a warning episode", () => fixture(async (h, tasks) => {
+test("watch reports are opt-in, persistent, branch-owned and wake on every interval", () => fixture(async (h, tasks) => {
   const reply = await h.call("bash", { command: "fake job", run_in_background: true });
   const id = reply.details.task_id;
   expect(h.entries.some(entry => entry.customType === watchKey)).toBe(false);
@@ -43,7 +43,8 @@ test("watch reports are opt-in, persistent, branch-owned and wake only once for 
   expect(h.sentMessages[0].message.content).toContain("not a measured ETA");
   expect(h.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
   await waitFor(() => h.sentMessages.length >= 2);
-  expect(h.sentMessages[1].options.triggerTurn).toBe(false);
+  expect(h.sentMessages[1].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+  expect(h.sentMessages[1].message.details.warnings).toEqual(["expected duration exceeded"]);
   expect((await tasks.output(id)).output).toBe("progress €\n");
   await h.call("task_watch", { task_id: id, enabled: false });
   const count = h.sentMessages.length;
@@ -54,6 +55,17 @@ test("watch reports are opt-in, persistent, branch-owned and wake only once for 
   h.entries.push(...branch);
   await h.emit("session_tree");
   expect(h.entries.find(entry => entry.customType === taskKey).data).toBe(id);
+}));
+
+test("normal progress reports wake the agent without warning thresholds", () => fixture(async h => {
+  const reply = await h.call("bash", { command: "fake job", run_in_background: true });
+  await h.call("task_watch", { task_id: reply.details.task_id, interval_seconds: 1 });
+  await waitFor(() => h.sentMessages.length >= 2);
+  for (const report of h.sentMessages) {
+    expect(report.message.details.warnings).toEqual([]);
+    expect(report.message.content).toContain("Check the task and report progress to the user");
+    expect(report.options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+  }
 }));
 
 test("watch reports wait for idle and restored watches resume without changing deadlines", () => fixture(async (h, tasks) => {

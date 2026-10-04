@@ -32,10 +32,11 @@ task_watch task_id=<id> interval_seconds=300 expected_seconds=900 silence_second
 Reports show elapsed time, output bytes, bounded recent output, output silence,
 and remaining deadline. They do not move the output cursor or extend the deadline.
 `expected_seconds` is a user-supplied duration, not a measured ETA. Reports wait
-until Pi is idle. A new expected-duration or output-silence warning wakes the
-conversation to investigate and give an evidence-based update. Further reports
-in the same warning episode do not each start a new turn. Warning thresholds are
-optional; the default report interval is 300 seconds and the maximum is 300.
+until Pi is idle. Every scheduled report wakes the conversation to check the task
+and give an evidence-based progress update. Expected-duration and output-silence
+warnings ask the agent to investigate, including when a warning persists across
+reports. Warning thresholds are optional; the default report interval is 300
+seconds and the maximum is 300.
 
 Watching is off unless requested. Disable it with `enabled: false`. Watch settings
 are branch-local session entries. Reload restores enabled watches for live tasks
