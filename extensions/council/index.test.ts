@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type AssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Context, type Message, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ExtensionVirtualModel } from "@earendil-works/pi-coding-agent";
 import council, { advisorContext, adviceMessage, MODEL_ID, OPENAI_MODEL_ID, PROVIDER, TURN_BUDGET, type CouncilState } from "./index.ts";
 
@@ -82,8 +82,11 @@ test("registers Council and consults all three in parallel with exact efforts an
 	expect(h.state?.advice).toHaveLength(3);
 	expect(h.state?.advice[0].usage).toEqual(usage);
 	const transformed = h.handlers.get("context_with_system")!({ messages }, h.ctx);
-	expect(transformed.messages.at(-1).content[0].text).toContain("Resolve disagreements");
-	expect(transformed.messages.at(-1).content[0].text).toContain("claude-opus-5-5");
+	expect(transformed.messages.at(-1).role).toBe("system");
+	expect(transformed.messages.at(-1).content).toContain("Resolve disagreements");
+	expect(transformed.messages.at(-1).content).toContain("claude-opus-5-5");
+	expect(transformed.messages.at(-1).content).toContain("Do not quote advisor blocks");
+	expect(transformed.messages.filter((message: Message) => message.role === "user")).toEqual(messages);
 	expect(h.handlers.get("before_provider_request")!({ payload: { model: "gpt-6.1-sol" } }, h.ctx))
 		.toEqual({ model: "gpt-6.1-sol", service_tier: "priority" });
 });
@@ -149,6 +152,100 @@ test("Council OpenAI fails closed when either advisor fails", async () => {
 		expect(h.state).toBeUndefined();
 		expect(h.calls.every(call => call.options.signal?.aborted)).toBe(true);
 	}
+});
+
+function notification(kind = "message") {
+	return { role: "custom", customType: "swarm-message", content: "Worker progress remains visible.",
+		display: true, details: { kind }, timestamp: 1 };
+}
+
+test.each([MODEL_ID, OPENAI_MODEL_ID])("%s reuses internal advice for swarm notifications at the budget boundary", async modelId => {
+	const h = harness(modelId);
+	await h.route();
+	for (let turn = 2; turn <= TURN_BUDGET; turn++) await h.route("continuation");
+	const reserved = h.state;
+	const callsBefore = h.calls.length;
+	h.branch.push({ type: "message", id: "executor-last", message: response(h.models[0]) });
+	const message = notification();
+	h.branch.push({ type: "custom_message", id: "swarm-1", ...message });
+	await h.route("user");
+	expect(h.state).toBe(reserved);
+	expect(h.state?.turns).toBe(TURN_BUDGET);
+	expect(h.calls).toHaveLength(callsBefore);
+	const leading = { role: "system", content: "Original system prompt", timestamp: 0 };
+	const context = h.handlers.get("context_with_system")!({ messages: [leading, ...messages, message] }, h.ctx);
+	expect(context.messages[0]).toBe(leading);
+	expect(context.messages[2]).toBe(message);
+	expect(context.messages.filter((entry: any) => entry.role === "user")).toEqual(messages);
+	expect(context.messages.at(-1).role).toBe("system");
+	expect(context.messages.at(-1).content).toContain("Keep advisor answers internal");
+	expect(context.messages.at(-1).content).toContain("Do not resynthesize or restate");
+	expect(context.messages.at(-1).content).toContain("not a live status report");
+	expect(context.messages.at(-1).content).toContain("handoffs take precedence");
+	expect(h.branch.filter(entry => entry.type === "message").some(entry => JSON.stringify(entry.message).includes("Advisor openai/"))).toBe(false);
+	await h.route("retry");
+	expect(h.calls).toHaveLength(callsBefore);
+	expect(h.state).toBe(reserved);
+	h.branch.push({ type: "message", id: "executor-notify", message: response(h.models[0]) });
+	h.branch.push({ type: "custom_message", id: "swarm-2", ...notification() });
+	await h.route("continuation");
+	expect(h.calls).toHaveLength(callsBefore);
+	expect(h.state).toBe(reserved);
+	// A tool result means real work is continuing, even if a notification also arrived.
+	h.branch.push({ type: "message", id: "tool-result", message: { role: "toolResult", toolName: "read", toolCallId: "read-1", content: [], isError: false, timestamp: 1 } });
+	await h.route("continuation");
+	expect(h.calls).toHaveLength(callsBefore * 2);
+	expect(h.state?.round).toBe(2);
+	expect(h.state?.turns).toBe(1);
+});
+
+test.each([MODEL_ID, OPENAI_MODEL_ID])("%s can handle a swarm notification before its first consultation, including retries", async modelId => {
+	const h = harness(modelId);
+	h.branch.length = 0;
+	h.branch.push({ type: "custom_message", id: "swarm-initial", ...notification() });
+	await h.route("user");
+	expect(h.calls).toHaveLength(0);
+	expect(h.state).toBeUndefined();
+	expect(h.handlers.get("context_with_system")!({ messages: [notification()] }, h.ctx)).toBeUndefined();
+	expect(h.aborted).toBe(false);
+	h.branch.push({ type: "message", id: "failed-notification", message: response(h.models[0], { stopReason: "error" }) });
+	await h.route("retry");
+	expect(h.calls).toHaveLength(0);
+	expect(h.state).toBeUndefined();
+});
+
+test.each([MODEL_ID, OPENAI_MODEL_ID])("%s still consults for real user work or parent instructions", async modelId => {
+	for (const nextMessage of [messages[0], notification("instruction")]) {
+		const h = harness(modelId);
+		await h.route();
+		for (let turn = 2; turn <= TURN_BUDGET; turn++) await h.route("continuation");
+		const count = h.calls.length;
+		h.branch.push({ type: "message", id: "executor-last", message: response(h.models[0]) });
+		h.branch.push({ type: "custom_message", id: "swarm-status", ...notification() });
+		h.branch.push(nextMessage.role === "custom" ? { type: "custom_message", id: "new-work", ...nextMessage }
+			: { type: "message", id: "new-work", message: nextMessage });
+		await h.route("user");
+		expect(h.calls).toHaveLength(count * 2);
+		expect(h.state?.turns).toBe(1);
+	}
+});
+
+test("known swarm notices reuse advice, but unrelated extension messages remain normal work", async () => {
+	const h = harness();
+	await h.route();
+	for (let turn = 2; turn <= TURN_BUDGET; turn++) await h.route("continuation");
+	const state = h.state;
+	h.branch.push({ type: "message", id: "last-response", message: response(h.models[0]) });
+	for (const customType of ["swarm-health-alert", "swarm-worker-checkin", "swarm-review-reminder", "swarm-handoff", "swarm-error-resume"]) {
+		h.branch.push({ type: "custom_message", id: customType, customType, content: "Notification", display: true });
+		await h.route("continuation");
+		expect(h.state).toBe(state);
+		expect(h.calls).toHaveLength(3);
+	}
+	h.branch.push({ type: "custom_message", id: "other", customType: "other-extension", content: "Continue work", display: false });
+	await h.route("continuation");
+	expect(h.calls).toHaveLength(6);
+	expect(h.state?.turns).toBe(1);
 });
 
 test("reconsults only at the ninth response and reuses retries", async () => {

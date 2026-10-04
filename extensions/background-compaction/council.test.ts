@@ -111,9 +111,15 @@ test.each([
     expect(routerState()).toEqual(before);
     expect(manager.getBranch().findLast(entry => entry.type === "compaction")).toMatchObject({ fromHook: true });
     expect(footer.render(60)[0]).toContain("background: waiting");
+    await session.sendCustomMessage({ customType: "swarm-message", content: "Worker progress after compaction.", display: true,
+      details: { kind: "message" } }, { triggerTurn: true, deliverAs: "steer" });
+    expect(routerState()).toEqual(before);
+    expect(advisors).toBe(count);
+    expect(summaries).toBe(1);
+    expect(footer.render(60)[0]).toContain("background: waiting");
     await session.prompt("Answer briefly using the compacted context.");
     expect(advisors).toBe(count * 2);
-    expect(executors).toBe(2);
+    expect(executors).toBe(3);
     expect(routerState().round).toBe(2);
     expect(summaries).toBe(1);
     if (modelId === "council") {

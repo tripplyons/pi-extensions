@@ -30,8 +30,17 @@ Anthropic model or login.
 Sol receives every advisory answer, synthesizes them, and executes through the
 session's normal tools. Each round permits 8 Sol responses and their tool
 batches. Before the next response, the selected variant consults its advisors
-using the work so far. Each new user or steering message starts a fresh round.
+using the work so far. Each new user message, including user steering, starts a
+fresh round.
 A finished task stops normally. Council never forces another agent turn.
+
+Informational swarm messages, check-ins, review reminders, health alerts,
+handoffs, and error-resume notices are notification wake-ups. When they are the
+only new inputs, Council handles them with Sol without consulting advisors or
+spending an execution slot, even at the 8-response boundary. Existing advice
+stays internal and the next normal work request can refresh it. This also works
+before the first consultation and after compaction. Real user inputs, parent
+instructions, and tool follow-ups are not exempt.
 
 ## Limits and failure behavior
 
@@ -56,10 +65,16 @@ or execution slots.
 Advisory usage is stored there separately; Pi's native session usage totals do
 not include these nested chat calls.
 
-Advice is appended to each executor request without adding user messages to the
-saved transcript. It is guidance, not permission to act. This request-local
-suffix can reduce prompt-cache reuse. Consultation adds three model requests
-per round for Council, or two for Council OpenAI, in addition to execution.
+Advice is supplied as internal system context, not as a new user message or a
+visible swarm message. The executor is instructed not to quote advisor blocks,
+repeat consultation headers, or resynthesize advice just to answer a notification.
+Cached answers are snapshots of earlier context, not live status reports.
+Current swarm messages, assignments, permissions, jobs, and handoffs take
+precedence over advisory status claims. The executor must check current evidence
+and avoid repeated stale-advisor or completed-setup commentary.
+Advice is guidance, not permission to act. This request-local context can reduce
+prompt-cache reuse. Consultation adds three model requests per round for
+Council, or two for Council OpenAI, in addition to execution.
 
 ## Authentication and fast mode
 
