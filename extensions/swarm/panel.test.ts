@@ -18,6 +18,11 @@ function fixture(extra: Partial<Node> = {}): Run {
 }
 const plain = (_color: string, text: string) => text;
 const row = (run: Run, snapshots: Health[] = []) => panel(run, "root", new Set(["worker"]), 300, plain, now, snapshots)[1];
+function colors(run: Run, snapshots: Health[] = [], live = new Set(["worker"])) {
+  const painted = new Map<string, string>();
+  panel(run, "root", live, 300, (color, text) => { painted.set(text, color); return text; }, now, snapshots);
+  return painted;
+}
 
 test("healthy rows show only name, age, and the latest worker message", () => {
   const run = fixture({ current: { model: "openai/sol", thinking: "max" }, result: "Previous slice",
@@ -27,6 +32,14 @@ test("healthy rows show only name, age, and the latest worker message", () => {
   run.nodes.worker.activity!.status = "working";
   expect(row(run)).toBe("  worker  2m  Tests pass. Checking the diff.");
   expect(run.nodes.worker.handoff?.status).toBe("accepted");
+  for (const status of ["working", "tool-active", "checking-in"] as const) {
+    run.nodes.worker.activity!.status = status;
+    const painted = colors(run);
+    expect(painted.get("worker")).toBe("success");
+    expect(painted.get("2m")).toBe("dim");
+    expect(painted.has("Tests pass. Checking the diff.")).toBe(false);
+    if (status === "checking-in") expect(painted.get("checking-in 2m ago")).toBe("muted");
+  }
 });
 
 test("panel lists active workers as a tree and counts terminal ones", () => {
@@ -34,14 +47,33 @@ test("panel lists active workers as a tree and counts terminal ones", () => {
   run.nodes.helper = node("helper", "worker", 2, "review", { result: "Ready for review", handoff: { revision: 1, status: "awaiting-parent", submitted: start } });
   run.nodes.done = node("done", "root", 1, "accepted");
   expect(panel(run, "root", new Set(["worker", "helper"]), 200, plain, now)).toEqual([
-    "swarm · 2 active (1 awaiting-parent) · 1 terminal · Ship it",
+    "swarm | 2 active | 1 awaiting-parent | 1 terminal | Ship it",
     "  worker    2m  Tests pass. Checking the diff.",
     "    helper  2m  await-parent 2m  Ready for review",
   ]);
   expect(panel(run, "worker", new Set(["helper"]), 200, plain, now)[1]).toBe("  helper  2m  await-parent 2m  Ready for review");
   expect(panel(run, "helper", new Set(), 200, plain, now)).toEqual([
-    "swarm · 0 active (0 awaiting-parent) · 0 terminal · Ship it", "  No active workers",
+    "swarm | 0 active | 0 awaiting-parent | 0 terminal | Ship it", "  No active workers",
   ]);
+});
+
+test("header counts use semantic colors and dim pipe separators", () => {
+  const run = fixture();
+  run.nodes.helper = node("helper", "worker", 2, "review", { result: "Ready for review" });
+  run.nodes.done = node("done", "root", 1, "accepted");
+  run.nodes.failed = node("failed", "root", 1, "failed");
+  const painted = colors(run, [], new Set(["worker", "helper"]));
+  expect(painted.get("swarm")).toBe("accent");
+  expect(painted.get("2 active")).toBe("accent");
+  expect(painted.get("1 awaiting-parent")).toBe("warning");
+  // Terminal counts include failures, not just accepted handoffs.
+  expect(painted.get("2 terminal")).toBe("muted");
+  expect(painted.get(" | ")).toBe("dim");
+  expect(painted.get("Ship it")).toBe("dim");
+  expect(painted.get("  helper")).toBe("warning");
+  run.nodes = { root: run.nodes.root };
+  const empty = colors(run);
+  for (const count of ["0 active", "0 awaiting-parent", "0 terminal"]) expect(empty.get(count)).toBe("dim");
 });
 
 test("check-ins, instructions, and waits show their status without duplicate holds", () => {
@@ -52,18 +84,26 @@ test("check-ins, instructions, and waits show their status without duplicate hol
     expect(row(run)).toContain(`${status} 20s ago`);
     expect(row(run)).toContain("Tests pass. Checking the diff.");
     expect(row(run).split(status)).toHaveLength(2);
+    const painted = colors(run);
+    expect(painted.get("worker")).toBe(status === "checking-in" ? "success" : "warning");
+    expect(painted.get(`${status} 20s ago`)).toBe(status === "checking-in" ? "muted" : "warning");
     if (status === "waiting-instructions") expect(row(run)).not.toContain("waiting-approval");
   }
   const run = fixture({ activity: { status: "checking-in", detail: "Still held", updated: start } });
   run.nodes.worker.permission!.status = "checkpoint-hold";
   expect(row(run)).toContain("checkpoint-hold");
   expect(row(run)).toContain("checking-in");
+  expect(colors(run).get("worker")).toBe("warning");
 });
 
 test("starting and unknown activity remain visible", () => {
   expect(row(fixture({ status: "starting" }))).toContain("starting");
   expect(row(fixture({ activity: undefined }))).toContain("activity unknown");
   expect(row(fixture({ permission: undefined }))).toContain("permission unknown");
+  for (const run of [fixture({ status: "starting" }), fixture({ activity: undefined }), fixture({ permission: undefined })]) {
+    expect(colors(run).get("worker")).toBe("warning");
+  }
+  expect(colors(fixture({ activity: undefined })).get("activity unknown")).toBe("warning");
 });
 
 test("handoff previews flag overdue and recorded integration without showing routine code counts", () => {
@@ -72,6 +112,8 @@ test("handoff previews flag overdue and recorded integration without showing rou
     handoff: { revision: 1, status: "awaiting-parent", submitted: "2025-12-31T23:55:00Z" },
     delivery: [{ revision: "b".repeat(40), integrated: { actor: "root", text: "Cherry-picked", recorded: start } }] });
   expect(row(run)).toBe("  worker  2m  await-parent 7m  review overdue  integrated; undecided  Done. All checks pass.");
+  const painted = colors(run);
+  for (const text of ["worker", "await-parent 7m", "review overdue", "integrated; undecided"]) expect(painted.get(text)).toBe("warning");
   delete run.nodes.worker.handoff!.submitted;
   expect(row(run)).toContain("await-parent ?");
   expect(row(run)).not.toContain("review overdue");
@@ -80,17 +122,27 @@ test("handoff previews flag overdue and recorded integration without showing rou
 test("missing panes, runtime mismatches, quiet workers, and health errors remain visible", () => {
   const run = fixture();
   expect(panel(run, "root", new Set(), 300, plain, now)[1]).toContain("no pane");
+  expect(colors(run, [], new Set()).get("worker")).toBe("error");
+  expect(colors(run, [], new Set()).get("no pane")).toBe("error");
   run.nodes.worker.runtime!.revision = "b".repeat(40);
   expect(row(run)).toContain("version differs:bbbbbbbb");
+  expect(colors(run).get("worker")).toBe("warning");
+  expect(colors(run).get("version differs:bbbbbbbb")).toBe("warning");
+  expect(colors(run, [], new Set()).get("worker")).toBe("error");
   delete run.nodes.worker.runtime;
   expect(row(run)).toContain("version unknown");
+  expect(colors(run).get("worker")).toBe("warning");
   for (const state of ["quiet-with-job", "quiet-no-job"] as const) {
     const snapshot: Health = { nodeId: "worker", process: "present", state, quietSeconds: 600,
       jobs: [{ id: "job", source: "bash", status: "running" }, { id: "done", source: "bash", status: "succeeded" }] };
     expect(row(fixture(), [snapshot])).toContain(`${state} (1 live jobs)`);
+    expect(colors(fixture(), [snapshot]).get("worker")).toBe("warning");
+    expect(colors(fixture(), [snapshot]).get(`${state} (1 live jobs)`)).toBe("warning");
   }
   const snapshot: Health = { nodeId: "worker", process: "present", state: "unknown", quietSeconds: null, jobs: [], error: "Cannot read jobs" };
   expect(row(fixture(), [snapshot])).toContain("health error");
+  expect(colors(run, [snapshot]).get("worker")).toBe("error");
+  expect(colors(run, [snapshot]).get("health error")).toBe("error");
 });
 
 test("message previews survive tool activity and use reports or an explicit empty state", () => {
@@ -108,7 +160,8 @@ test("message previews survive tool activity and use reports or an explicit empt
 test("narrow and wide-character rows fit the available width and leave room for the message", () => {
   const run = fixture({ name: "界".repeat(20) });
   run.messages[1].text = "Latest report with a long message";
-  const paint = (color: string, text: string) => `\x1b[${color === "dim" ? 90 : 33}m${text}\x1b[0m`;
+  const ansi: Record<string, number> = { accent: 36, success: 32, warning: 33, error: 31, muted: 90, dim: 90 };
+  const paint = (color: string, text: string) => `\x1b[${ansi[color]}m${text}\x1b[0m`;
   for (const width of [1, 10, 30, 40, 80, 200]) {
     for (const line of panel(run, "root", new Set(["worker"]), width, paint, now)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
   }

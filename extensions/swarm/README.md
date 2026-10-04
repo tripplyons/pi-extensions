@@ -264,9 +264,14 @@ Restart refuses a live worker; stop it first. It does not restart old jobs.
 
 `/swarm:status` shows or hides a compact panel below the editor. It lists
 nonterminal workers under the current node as a tree. Each row shows the worker's
-name, age since launch, and latest outgoing swarm message on one line. Tool events
-and incoming instructions do not replace the message preview. A worker with no
-message shows its activity report, or "No messages yet". Review rows preview the
+name, age since launch, and latest outgoing swarm message on one line. Names use
+the theme's success color (green) for healthy workers, warning color (yellow) for
+starts, waits, reviews, unknown state, or diagnostic warnings, and error color
+(red) for missing panes or health-read errors. Errors take priority over warnings.
+Status labels use the same warning and error colors; routine check-in labels stay
+muted. Ages and separators stay dim, and message previews use normal text.
+Tool events and incoming instructions do not replace the message preview. A worker
+with no message shows its activity report, or "No messages yet". Review rows preview the
 current handoff. The panel adds labels for check-ins, queued or delivered
 instructions, starts, waits, review requests, and diagnostic warnings. Healthy
 workers omit routine activity, released permission, matching source versions,
@@ -332,8 +337,11 @@ panel, and parent prompts. This is parent-reported evidence for listed revisions
 possibly from an earlier handoff, not proof that the whole current result is
 integrated. It never implies acceptance, source review, or successful tests.
 
-The active count includes workers paused for review. The header gives a separate
-`awaiting-parent` count, and review rows show `await-parent` in warning color.
+The active count includes workers paused for review. The header separates active,
+`awaiting-parent`, and terminal counts with dim `|` characters. Active counts use
+the accent color, pending review counts use the warning color, and terminal
+counts stay muted because they include failures and stopped workers. Zero counts
+stay dim. Review rows show `await-parent` in warning color.
 Parents also receive a warning for each new handoff revision and a pending-review
 status indicator with direct-child overdue and recorded-integration counts.
 The header counts terminal workers, not completed code. Review rows include the

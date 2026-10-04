@@ -19,39 +19,52 @@ export function panel(run: Run, scope: string, live: Set<string>, width: number,
   const ages = active.map(node => elapsed(node.started, now) || "?");
   const nameWidth = Math.min(24, Math.max(1, Math.floor(width / 3)), Math.max(0, ...names.map(visibleWidth)));
   const ageWidth = Math.max(0, ...ages.map(visibleWidth));
-  const header = [paint("accent", "swarm"), `${active.length} active (${active.filter(node => node.status === "review").length} awaiting-parent)`, `${nodes.length - active.length} terminal`, paint("dim", run.objective)].join(paint("dim", " · "));
+  const awaiting = active.filter(node => node.status === "review").length;
+  const terminalCount = nodes.length - active.length;
+  const header = [
+    paint("accent", "swarm"),
+    paint(active.length ? "accent" : "dim", `${active.length} active`),
+    paint(awaiting ? "warning" : "dim", `${awaiting} awaiting-parent`),
+    paint(terminalCount ? "muted" : "dim", `${terminalCount} terminal`),
+    paint("dim", run.objective),
+  ].join(paint("dim", " | "));
   const rows = active.map((node, index) => {
     const activity = node.status === "running" ? node.activity?.status : undefined;
     const snapshot = snapshots.find(item => item.nodeId === node.id);
     const review = reviews(run, node.parent!, now).find(item => item.nodeId === node.id);
     const flags: string[] = [];
-    if (!live.has(node.id)) flags.push(paint("error", "no pane"));
+    let nameColor: "success" | "warning" | "error" = "success";
+    const flag = (color: "muted" | "warning" | "error", text: string) => {
+      flags.push(paint(color, text));
+      if (color === "error" || (color === "warning" && nameColor !== "error")) nameColor = color;
+    };
+    if (!live.has(node.id)) flag("error", "no pane");
     if (review) {
-      flags.push(paint("warning", `await-parent ${elapsed(review.submitted ?? undefined, now) || "?"}`));
-      if (review.overdue) flags.push(paint("warning", "review overdue"));
-      if (review.integratedRevisions.length) flags.push(paint("warning", "integrated; undecided"));
+      flag("warning", `await-parent ${elapsed(review.submitted ?? undefined, now) || "?"}`);
+      if (review.overdue) flag("warning", "review overdue");
+      if (review.integratedRevisions.length) flag("warning", "integrated; undecided");
     } else {
-      if (node.status === "starting") flags.push(paint("warning", "starting"));
-      else if (!activity) flags.push(paint("muted", "activity unknown"));
+      if (node.status === "starting") flag("warning", "starting");
+      else if (!activity) flag("warning", "activity unknown");
       else if (activity !== "working" && activity !== "tool-active") {
-        flags.push(paint(activity === "checking-in" ? "muted" : "warning", `${activity} ${elapsed(node.activity!.updated, now) || "?"} ago`));
+        flag(activity === "checking-in" ? "muted" : "warning", `${activity} ${elapsed(node.activity!.updated, now) || "?"} ago`);
       }
       const permission = node.permission?.status;
       // Waiting reports already explain these matching permission holds.
       const reportedHold = (activity === "waiting-instructions" && permission === "waiting-approval") || (activity === "waiting-dependency" && permission === "waiting-dependency");
-      if (permission !== "released" && !reportedHold) flags.push(paint("warning", permission ?? "permission unknown"));
+      if (permission !== "released" && !reportedHold) flag("warning", permission ?? "permission unknown");
     }
-    if (!node.runtime || !run.nodes[scope].runtime) flags.push(paint("warning", "version unknown"));
-    else if (node.runtime.revision !== run.nodes[scope].runtime.revision) flags.push(paint("warning", `version differs:${node.runtime.revision.slice(0, 8)}`));
-    if (snapshot?.state.startsWith("quiet")) flags.push(paint("warning", `${snapshot.state} (${snapshot.jobs.filter(activeJob).length} live jobs)`));
-    if (snapshot?.error) flags.push(paint("error", "health error"));
+    if (!node.runtime || !run.nodes[scope].runtime) flag("warning", "version unknown");
+    else if (node.runtime.revision !== run.nodes[scope].runtime.revision) flag("warning", `version differs:${node.runtime.revision.slice(0, 8)}`);
+    if (snapshot?.state.startsWith("quiet")) flag("warning", `${snapshot.state} (${snapshot.jobs.filter(activeJob).length} live jobs)`);
+    if (snapshot?.error) flag("error", "health error");
 
     const message = run.messages.findLast(message => message.from === node.id && message.kind === "message");
     // Tool boundaries must not replace the worker's last message with a tool name.
     const report = node.activity && ["working", "waiting-instructions", "waiting-dependency", "checking-in"].includes(node.activity.status) ? node.activity.detail : undefined;
     const preview = node.status === "review" ? node.result ?? message?.text : message?.text ?? report;
     const parts = [
-      pad(truncateToWidth(names[index], nameWidth), nameWidth),
+      pad(paint(nameColor, truncateToWidth(names[index], nameWidth)), nameWidth),
       paint("dim", pad(ages[index], ageWidth)),
       ...flags,
       (preview ?? "No messages yet").replace(/\s+/g, " ").trim(),

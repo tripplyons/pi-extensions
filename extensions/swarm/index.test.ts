@@ -326,7 +326,7 @@ test("/swarm:kill stops workers and /swarm:status toggles the panel", async () =
     expect((await store.read(identity.run)).nodes[child.id].status).toBe("stopped");
     expect(notices.at(-1)).toBe("Stopped 1 swarm worker. Worktrees, sessions and branches are kept.");
     expect(renders.length).toBeGreaterThan(0);
-    expect(component.render(120)).toEqual(["swarm · 0 active (0 awaiting-parent) · 1 terminal · Build the feature", "  No active workers"]);
+    expect(component.render(120)).toEqual(["swarm | 0 active | 0 awaiting-parent | 1 terminal | Build the feature", "  No active workers"]);
     await h.command("swarm:kill");
     expect(notices.at(-1)).toBe("No swarm workers are active.");
 

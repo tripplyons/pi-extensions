@@ -13,7 +13,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | Isolated workers with model overrides, compact status rows, task-preserving instructions, reload barriers, permission checks, review reminders and health checks |
+| [swarm](extensions/swarm) | Isolated workers with model overrides, status-colored rows, task-preserving instructions, reload barriers, permission checks, review reminders and health checks |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
