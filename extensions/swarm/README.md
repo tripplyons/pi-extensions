@@ -8,10 +8,18 @@ the spawning parent's current fast-mode preference. This requests priority servi
 only for OpenAI models and can affect billing. Parent toggles do not change live
 workers. Restarts copy the restarting parent's current model, thinking level, and fast-mode
 preference. `swarm_spawn` and `swarm_restart` accept `model` (exact
-`provider/model`) and `thinking` to override the inherited values. `swarm_models`
+`provider/model`), `thinking` (reasoning effort), and `fast` (boolean) to override the inherited values. Replacement starts accept the same fields, with `model` required. `swarm_models`
 lists the accepted models: Pi's scoped models (`/scoped-models`, `enabledModels`,
-or `--models`), or all authenticated models when no scope is set. Fast mode stays
-inherited. Tasks and messages live under
+or `--models`), or all authenticated models when no scope is set. Omitted fields stay inherited.
+For example, spawn or restart with `model: "openai/gpt-5.4"`,
+`thinking: "max"`, and `fast: true` (use an available model ID).
+Reasoning effort accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
+`max`. The selected model determines which efforts Pi can use.
+To resume a paused review worker with different settings, pass these fields to
+`swarm_review` with `decision: "request-changes"`. The worker process is stopped
+and relaunched in its saved session. Omitted fields retain the worker's reported
+model/thinking and saved fast preference. Without overrides, review resumes the
+existing process as before. Accept/reject decisions do not accept overrides. Tasks and messages live under
 `~/.pi/agent/swarm` (`PI_CODING_AGENT_DIR` overrides this).
 
 ## Assignments and handoffs
@@ -249,7 +257,7 @@ Records, worktrees, sessions, and branches are kept so parents can restart stopp
 workers. `swarm_restart` keeps the worker's session and worktree. It copies the
 parent's current model, thinking level, and fast-mode preference by default. Supply
 `model` from `swarm_models` or `thinking: "low"` (or `off`, `minimal`, `medium`,
-`high`, `xhigh`) to override them.
+`high`, `xhigh`, `max`) to override them.
 Restart refuses a live worker; stop it first. It does not restart old jobs.
 
 `/swarm:status` shows or hides a panel below the editor. It lists active

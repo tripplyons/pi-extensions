@@ -20,7 +20,7 @@ import { ReviewReminders } from "./review-reminders.ts";
 import { WorkerCheckins } from "./worker-checkins.ts";
 const key = "pi:swarm";
 type Identity = { run: string; node: string };
-const thinkingLevel = Type.Union(["off", "minimal", "low", "medium", "high", "xhigh"].map(level => Type.Literal(level)));
+const thinkingLevel = Type.Union(["off", "minimal", "low", "medium", "high", "xhigh", "max"].map(level => Type.Literal(level)));
 const assignmentMode = Type.Optional(Type.Union([Type.Literal("append"), Type.Literal("replace")], { description: "Instructions append to the current assignment by default. Use replace only for a complete new bounded task. Invalid for messages." }));
 const modelId = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
 // Workers may use the session's scoped models, or every authenticated model when no scope is set.
@@ -327,9 +327,9 @@ export default function install(pi: ExtensionAPI) {
     if (args.action === "release") return manager.release(run.id, node.id, barrier.id, args.assignments ?? []);
     throw new Error("Invalid reload action");
   });
-  tool("swarm_spawn", "Spawn one bounded step in an isolated worktree. Include scope, owned files, dependencies, checks, resource limits and commit permission. Workers do not inherit your conversation. Dirty trees require explicit dirtyMode. Maximum depth three. Uses your current model and thinking level unless model (exact available provider/model) or thinking is supplied.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel) }), async (args, ctx) => {
+  tool("swarm_spawn", "Spawn one bounded step in an isolated worktree. Include scope, owned files, dependencies, checks, resource limits and commit permission. Workers do not inherit your conversation. Dirty trees require explicit dirtyMode. Maximum depth three. Uses your current model, thinking level and fast preference unless model (exact available provider/model), thinking or fast is supplied.", Type.Object({ name: Type.String({ minLength: 1 }), task: Type.String({ minLength: 1 }), dirtyMode: Type.Optional(Type.Union(["exclude", "commit-parent", "commit-child", "shared"].map(value => Type.Literal(value)))), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
-    return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: chooseModel(ctx, args.model), thinking: args.thinking ?? pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    return (await controller()).spawn(run.id, node.id, args.name, args.task, args.dirtyMode, { model: chooseModel(ctx, args.model), thinking: args.thinking ?? pi.getThinkingLevel(), fast: args.fast ?? restore<boolean>(ctx, "pi:fast") ?? false });
   });
   tool("swarm_send", "Message your parent, direct child, or sibling by node ID. Only parents may send instructions. Instructions append to the durable assignment by default; assignmentMode=replace discards it and requires a complete new bounded task. Use kind=message for notices that must not change the assignment. Neither kind releases permission without an explicit permission update; instructions do not resume review workers. Sibling messages are informational. Workers may report activity to their parent as working, waiting-instructions or waiting-dependency. Activity is a dated self-report, not proof of progress.", Type.Object({ to: Type.String(), kind: Type.Union([Type.Literal("message"), Type.Literal("instruction")]), text: Type.String({ minLength: 1 }), assignmentMode, activity: Type.Optional(Type.Union(["working", "waiting-instructions", "waiting-dependency"].map(value => Type.Literal(value)))), permission: Type.Optional(Type.Union(["released", "waiting-approval", "waiting-dependency"].map(value => Type.Literal(value)))) }), async (args, ctx) => {
     const { run, node } = await active(ctx); return store.send(run.id, node.id, args.to, args.kind, args.text, args.activity, args.permission, args.assignmentMode);
@@ -343,19 +343,21 @@ export default function install(pi: ExtensionAPI) {
     const { run, node } = await active(ctx); const updated = await store.complete(run.id, node.id, args.result);
     return updated;
   });
-  tool("swarm_review", "Accept/reject a direct child's handoff and stop it without merging. This does not mark code reviewed, tested or integrated; use swarm_record for per-revision evidence.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String() }), async (args, ctx) => {
-    const { run, node } = await active(ctx); return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback);
+  tool("swarm_review", "Accept/reject a direct child's handoff and stop it without merging. For request-changes, optional model, thinking and fast overrides relaunch the paused worker in its saved session. This does not mark code reviewed, tested or integrated; use swarm_record for per-revision evidence.", Type.Object({ nodeId: Type.String(), decision: Type.Union(["accept", "reject", "request-changes"].map(value => Type.Literal(value))), feedback: Type.String(), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()) }), async (args, ctx) => {
+    const { run, node } = await active(ctx);
+    const options = { ...(args.model !== undefined ? { model: chooseModel(ctx, args.model) } : {}), ...(args.thinking !== undefined ? { thinking: args.thinking } : {}), ...(args.fast !== undefined ? { fast: args.fast } : {}) };
+    return (await controller()).review(run.id, node.id, args.nodeId, args.decision, args.feedback, options);
   });
   tool("swarm_record", "Record parent-reported evidence for a direct child's revision: reviewed, tested or integrated. These are independent states, never inferred from handoff acceptance. Use a full commit hash, or result for a no-commit handoff. Include exact checks or integration commit in evidence.", Type.Object({ nodeId: Type.String(), revision: Type.String(), stage: Type.Union(["reviewed", "tested", "integrated"].map(value => Type.Literal(value))), evidence: Type.String({ minLength: 1 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     return store.recordDelivery(run.id, node.id, args.nodeId, args.revision, args.stage, args.evidence);
   });
-  tool("swarm_replace", "Graceful direct-child replacement. action=request sends one wrap-up instruction without stopping tools. After swarm_complete and parent acceptance, action=start requires name, task, explicit model and testedBase. Copies predecessor commits and dirty WIP to an isolated successor without committing, merging or deleting the predecessor. Failed successors require inspection, not another start.", Type.Object({ nodeId: Type.String(), action: Type.Union([Type.Literal("request"), Type.Literal("start")]), name: Type.Optional(Type.String({ minLength: 1 })), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(Type.String()), testedBase: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
+  tool("swarm_replace", "Graceful direct-child replacement. action=request sends one wrap-up instruction without stopping tools. After swarm_complete and parent acceptance, action=start requires name, task, explicit model and testedBase. Copies predecessor commits and dirty WIP to an isolated successor without committing, merging or deleting the predecessor. Failed successors require inspection, not another start.", Type.Object({ nodeId: Type.String(), action: Type.Union([Type.Literal("request"), Type.Literal("start")]), name: Type.Optional(Type.String({ minLength: 1 })), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()), testedBase: Type.Optional(Type.String({ minLength: 1 })) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     if (args.action === "request") return store.requestReplacement(run.id, node.id, args.nodeId);
     if (args.action !== "start") throw new Error("Invalid replacement action");
     for (const field of ["name", "task", "model", "testedBase"] as const) if (!args[field]?.trim()) throw new Error(`Replacement start requires ${field}`);
-    return (await controller()).replace(run.id, node.id, args.nodeId, args.name, args.task, args.testedBase, { model: args.model, thinking: args.thinking ?? pi.getThinkingLevel(), fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    return (await controller()).replace(run.id, node.id, args.nodeId, args.name, args.task, args.testedBase, { model: chooseModel(ctx, args.model), thinking: args.thinking ?? pi.getThinkingLevel(), fast: args.fast ?? restore<boolean>(ctx, "pi:fast") ?? false });
   });
   tool("swarm_observe", "Capture bounded terminal output from a direct child.", Type.Object({ nodeId: Type.String(), lines: Type.Integer({ minimum: 1, maximum: 2000 }) }), async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).owned(run.id, node.id, args.nodeId); return workers.observe(args.nodeId, args.lines);
@@ -363,11 +365,11 @@ export default function install(pi: ExtensionAPI) {
   tool("swarm_stop", "Stop an owned child. Retain worktree and session.", child, async (args, ctx) => {
     const { run, node } = await active(ctx); await (await controller()).stop(run.id, node.id, args.nodeId); return { nodeId: args.nodeId, action: "stop" };
   });
-  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply model (exact available provider/model) or thinking to override. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait. Does not change live workers.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel) }), async (args, ctx) => {
+  tool("swarm_restart", "Restart an owned child. Retain worktree and session. Copy the parent's current model, thinking level and fast preference; supply model (exact available provider/model), thinking or fast to override. Pass task for a new bounded assignment, saved before launch. Without current instructions after a completed handoff, the worker must ask the parent and wait. Does not change live workers.", Type.Object({ nodeId: Type.String(), task: Type.Optional(Type.String({ minLength: 1 })), model: Type.Optional(Type.String({ minLength: 1 })), thinking: Type.Optional(thinkingLevel), fast: Type.Optional(Type.Boolean()) }), async (args, ctx) => {
     const { run, node } = await active(ctx);
     const model = chooseModel(ctx, args.model);
     const thinking = args.thinking ?? pi.getThinkingLevel();
-    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, model, thinking, fast: restore<boolean>(ctx, "pi:fast") ?? false });
+    await (await controller()).restart(run.id, node.id, args.nodeId, { task: args.task, model, thinking, fast: args.fast ?? restore<boolean>(ctx, "pi:fast") ?? false });
     return { nodeId: args.nodeId, action: "restart", model, thinking };
   });
   for (const action of ["kill", "cleanup"] as const) tool(`swarm_${action}`, `Root only: ${action === "kill" ? "stop all workers and their jobs" : "remove clean terminal worktrees"}. Preserve branches.`, empty, async (_, ctx) => {

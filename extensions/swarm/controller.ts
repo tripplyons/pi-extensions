@@ -95,15 +95,26 @@ export class Swarm {
     if (actor !== run.root) throw new Error("Only root can stop the entire swarm");
     return this.stopNodes(runId, descendants(run, run.root));
   }
-  async review(runId: string, actor: string, child: string, decision: "accept" | "reject" | "request-changes", feedback: string) {
+  async review(runId: string, actor: string, child: string, decision: "accept" | "reject" | "request-changes", feedback: string, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
     const node = await this.owned(runId, actor, child);
     if (node.status !== "review") throw new Error("Worker has no result awaiting review");
+    const reconfigure = Object.keys(options).length > 0;
+    if (reconfigure && decision !== "request-changes") throw new Error("Model, thinking and fast overrides require request-changes");
+    if (reconfigure) {
+      if (descendants(await this.store.read(runId), child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before changing resume settings");
+      await this.workers.stop(child);
+      await this.stopJobs(node);
+    }
     if (decision !== "request-changes") {
       if (decision !== "accept" && decision !== "reject") throw new Error("Invalid review decision");
       await this.workers.stop(child);
       await this.stopJobs(node);
     }
     const reviewed = await this.store.review(runId, actor, child, decision, feedback);
+    if (reconfigure) {
+      await this.launch(await this.store.read(runId), reviewed, { ...node.launch, ...node.current, ...options });
+      return (await this.store.read(runId)).nodes[child];
+    }
     return reviewed;
   }
   async restart(runId: string, actor: string, child: string, options: Pick<Launch, "model" | "thinking" | "fast"> & { task?: string } = {}) {
