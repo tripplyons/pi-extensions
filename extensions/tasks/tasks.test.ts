@@ -69,6 +69,50 @@ test("failed foreground Bash returns native diagnostics and error metadata", asy
   } finally { await h.emit("session_shutdown"); }
 });
 
+test("foreground pipefail is opt-in and preserves native failure diagnostics", async () => {
+  const { root, tasks } = await setup(1000);
+  const h = harness(); registrations.push(h); h.ctx.cwd = root;
+  registerTaskTools(h.pi, tasks);
+  const command = "(printf 'pipeline diagnostic\\n'; exit 7) | tee pipeline.log";
+  for (const pipefail of [undefined, false, true]) {
+    const reply = await h.call("bash", { command, ...(pipefail === undefined ? {} : { pipefail }) });
+    const id = h.entries.filter(entry => entry.customType === taskKey).at(-1).data;
+    expect(tasks.query(id)).toMatchObject({ command, status: pipefail ? "failed" : "succeeded", exit_code: pipefail ? 7 : 0 });
+    expect(reply.content[0].text).toContain("pipeline diagnostic");
+    expect(Boolean(reply.isError)).toBe(pipefail === true);
+    if (pipefail) expect(reply.structuredContent.exit_code).toBe(7);
+  }
+});
+
+test("background pipefail records the rightmost failure and does not enable errexit", async () => {
+  const { h, tasks } = await taskHarness();
+  for (const pipefail of [false, true]) {
+    const command = "(exit 7) | (exit 3) | cat";
+    const id = (await h.call("bash", { command, pipefail, run_in_background: true })).details.task_id;
+    expect(await settled(tasks, id)).toMatchObject({ status: pipefail ? "failed" : "succeeded", exit_code: pipefail ? 3 : 0 });
+  }
+  for (const command of ["printf success | cat", "false | cat; printf continued"]) {
+    const id = (await h.call("bash", { command, pipefail: true, run_in_background: true })).details.task_id;
+    expect((await settled(tasks, id)).status).toBe("succeeded");
+    expect((await tasks.output(id, 0)).output).toBe(command.includes("continued") ? "continued" : "success");
+  }
+});
+
+test("auto-promoted pipefail keeps pipeline failure status", async () => {
+  const { h, tasks } = await taskHarness();
+  const reply = await h.call("bash", { command: "sleep 0.05; (exit 7) | cat", pipefail: true });
+  expect(reply.details.status).toBe("auto_promoted");
+  expect(await settled(tasks, reply.details.task_id)).toMatchObject({ status: "failed", exit_code: 7 });
+});
+
+test("redirected logs report progress separately from captured output", async () => {
+  const { root, tasks } = await setup(1000); let id = "";
+  await tasks.run(root, { command: "printf 'log progress €\\n' > job.log" }, undefined, value => { id = value; }, ignore);
+  const progress = await tasks.progress(id, Date.now(), "job.log");
+  expect(progress).toMatchObject({ output_bytes: 0, recent_output: "", log: { path: join(root, "job.log"), bytes: 17, recent_output: "log progress €\n" } });
+  expect((await tasks.output(id)).output).toBe("");
+});
+
 test("large failed foreground output keeps native truncation and its full output path", async () => {
   const { root, tasks } = await setup(1000); let id = "";
   const reply = await tasks.run(root, { command: "head -c 60000 /dev/zero; printf 'last diagnostic'; exit 1" }, undefined, value => { id = value; }, ignore);

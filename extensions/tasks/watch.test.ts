@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harness } from "../../lib/harness.ts";
@@ -83,14 +84,101 @@ test("watch reports wait for idle and restored watches resume without changing d
   await new Promise(resolve => setTimeout(resolve, 1200)); expect(h.sentMessages).toHaveLength(0);
   h.ctx.isIdle = () => true; await h.emit("session_tree");
   await waitFor(() => h.sentMessages.length > 0);
-  expect(h.sentMessages[0].message.details.warnings).toContain("output silent");
+  expect(h.sentMessages[0].message.details.warnings).toContain("captured output is silent");
   expect(tasks.query(id).deadline_at).toBe(deadline);
 }));
+
+test("log watches resolve against task cwd and survive reload and branch changes", () => fixture(async (h, tasks, root) => {
+  const id = (await h.call("bash", { command: "fake job", run_in_background: true })).details.task_id;
+  const path = join(root, "job.log");
+  await writeFile(path, "first line\n");
+  h.ctx.cwd = tmpdir();
+  const reply = await h.call("task_watch", { task_id: id, log_path: "job.log", interval_seconds: 1 });
+  expect(reply.details.watch.log_path).toBe(path);
+  expect(reply.details.progress.log).toMatchObject({ path, bytes: 11, recent_output: "first line\n" });
+  const branch = h.entries.splice(0);
+  await h.emit("session_tree");
+  await expect(h.call("task_watch", { task_id: id, log_path: path })).rejects.toThrow("not on this session branch");
+  h.entries.push(...branch);
+  await h.emit("session_shutdown", { reason: "reload" });
+  const reloaded = harness(); reloaded.ctx.isIdle = () => true;
+  reloaded.entries.push(...branch);
+  registerTaskTools(reloaded.pi, tasks);
+  try {
+    await reloaded.emit("session_start");
+    await appendFile(path, "second line\n");
+    await waitFor(() => reloaded.sentMessages.length > 0);
+    const report = reloaded.sentMessages[0].message;
+    expect(report.details.log).toMatchObject({ path, bytes: 23, recent_output: "first line\nsecond line\n" });
+    expect(report.content).toContain("Recent log lines:");
+    expect(report.content).toContain("does not prove that the process is stuck");
+    expect((await tasks.output(id)).output).toBe("progress €\n");
+    await reloaded.call("task_watch", { task_id: id, enabled: false });
+    const count = reloaded.sentMessages.length;
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    expect(reloaded.sentMessages).toHaveLength(count);
+  } finally { await reloaded.emit("session_shutdown"); }
+}));
+
+test("log progress handles growth, truncation, rotation and bounded UTF-8 tails", () => fixture(async (h, tasks, root) => {
+  const id = (await h.call("bash", { command: "fake job", run_in_background: true })).details.task_id;
+  const path = join(root, "job.log");
+  const text = "€".repeat(1000) + "\n1\n2\n3\n4\n5";
+  await writeFile(path, text);
+  const first = (await tasks.progress(id, Date.now(), path)).log!;
+  expect(first.bytes).toBe(Buffer.byteLength(text));
+  expect(first.recent_output).toBe("1\n2\n3\n4\n5");
+  await writeFile(path, "€".repeat(1000));
+  const tail = (await tasks.progress(id, Date.now(), path)).log!;
+  expect(Buffer.byteLength(tail.recent_output)).toBeLessThanOrEqual(2048);
+  expect(tail.recent_output).not.toContain("�");
+  await appendFile(path, "grow");
+  expect((await tasks.progress(id, Date.now(), path)).log!.bytes).toBe(3004);
+  await writeFile(path, "short");
+  expect((await tasks.progress(id, Date.now(), path)).log).toMatchObject({ bytes: 5, recent_output: "short" });
+  await rename(path, path + ".old");
+  await writeFile(path, "replacement");
+  const timestamp = new Date(Date.now() - 10_000);
+  await utimes(path, timestamp, timestamp);
+  const rotated = (await tasks.progress(id, timestamp.getTime() + 15_000, path)).log!;
+  expect(rotated).toMatchObject({ bytes: 11, recent_output: "replacement", unchanged_seconds: 15 });
+}));
+
+test("missing, unreadable and nonregular logs do not break reports and recover when replaced", () => fixture(async (h, tasks, root) => {
+  const id = (await h.call("bash", { command: "fake job", run_in_background: true })).details.task_id;
+  const path = join(root, "missing.log");
+  const reply = await h.call("task_watch", { task_id: id, log_path: path, interval_seconds: 1 });
+  expect(reply.details.progress.log.error).toContain("ENOENT");
+  await waitFor(() => h.sentMessages.length > 0);
+  expect(h.sentMessages[0].message.details.warnings).toContain("watched log is unavailable");
+  expect(h.sentMessages[0].message.content).toContain("unavailable");
+  await writeFile(path, "recovered");
+  await waitFor(() => h.sentMessages.length > 1);
+  expect(h.sentMessages[1].message.details.log).toMatchObject({ bytes: 9, recent_output: "recovered" });
+  expect((await tasks.progress(id, Date.now(), root)).log!.error).toContain("Not a regular file");
+  const fifo = join(root, "fifo");
+  execFileSync("mkfifo", [fifo]);
+  expect((await tasks.progress(id, Date.now(), fifo)).log!.error).toContain("Not a regular file");
+  if (process.getuid?.() !== 0) {
+    await chmod(path, 0);
+    try { expect((await tasks.progress(id, Date.now(), path)).log!.error).toContain("EACCES"); }
+    finally { await chmod(path, 0o600); }
+  }
+  await expect(h.call("task_watch", { task_id: id, log_path: "  " })).rejects.toThrow("log_path must not be empty");
+}));
+
+test("captured silence and unchanged log warnings are separate", () => {
+  const watch: Watch = { task_id: "task", enabled: true, interval_seconds: 300, silence_seconds: 60 };
+  const log = { path: "/job.log", bytes: 10, modified_at: new Date().toISOString(), unchanged_seconds: 0, recent_output: "progress" };
+  expect(watchWarnings({ elapsed_seconds: 100, output_silence_seconds: 100, log }, watch)).toEqual(["captured output is silent"]);
+  expect(watchWarnings({ elapsed_seconds: 100, output_silence_seconds: 0, log: { ...log, unchanged_seconds: 100 } }, watch)).toEqual(["watched log is unchanged"]);
+  expect(watchWarnings({ elapsed_seconds: 100, output_silence_seconds: 100, log: { ...log, unchanged_seconds: 100 } }, watch)).toEqual(["captured output is silent", "watched log is unchanged"]);
+});
 
 test("expected-duration and silence warnings are independent and require configured thresholds", () => {
   const watch: Watch = { task_id: "task", enabled: true, interval_seconds: 300, expected_seconds: 600, silence_seconds: 60 };
   expect(watchWarnings({ elapsed_seconds: 599, output_silence_seconds: 59 }, watch)).toEqual([]);
   expect(watchWarnings({ elapsed_seconds: 600, output_silence_seconds: 59 }, watch)).toEqual(["expected duration exceeded"]);
-  expect(watchWarnings({ elapsed_seconds: 600, output_silence_seconds: 60 }, watch)).toEqual(["expected duration exceeded", "output silent"]);
+  expect(watchWarnings({ elapsed_seconds: 600, output_silence_seconds: 60 }, watch)).toEqual(["expected duration exceeded", "captured output is silent"]);
   expect(watchWarnings({ elapsed_seconds: 9999, output_silence_seconds: 9999 }, { task_id: "task", enabled: true, interval_seconds: 300 })).toEqual([]);
 });
