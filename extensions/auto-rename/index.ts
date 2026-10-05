@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { priorityPayload } from "../fast-mode/index.ts";
 
 const MAX_CONVERSATION_CHARS = 60_000;
 const SYSTEM_PROMPT = `Name coding-agent sessions.
@@ -24,8 +25,10 @@ function conversationText(ctx: ExtensionContext): string {
 }
 
 async function generateName(ctx: ExtensionContext): Promise<string> {
-	const model = ctx.model;
-	if (!model) throw new Error("No model selected");
+	const model = ["openai", "openai-codex"]
+		.map(provider => ctx.modelRegistry.find(provider, "gpt-6-luna"))
+		.find(model => model && ctx.modelRegistry.hasConfiguredAuth(model));
+	if (!model) throw new Error("Title generation requires gpt-6-luna with OpenAI authentication. Use /login and check /model.");
 
 	const provider = ctx.modelRegistry.getProvider(model.provider);
 	if (!provider) throw new Error(`No provider registered for "${model.provider}"`);
@@ -41,7 +44,12 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 			}],
 		},
 		// Keep this nested request out of the provider's live agent session.
-		{ maxTokens: 64, cacheRetention: "none" },
+		{
+			maxTokens: 64,
+			reasoning: "low",
+			cacheRetention: "none",
+			onPayload: (payload, physical) => priorityPayload(payload, physical.provider, true),
+		},
 	);
 
 	let response: AssistantMessage | undefined;

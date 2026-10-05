@@ -6,7 +6,7 @@ function emptyUsage() {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 }
 
-function model(provider = "fixture", id = "model"): Model<any> {
+function model(provider = "openai", id = "gpt-6-luna"): Model<any> {
 	return {
 		provider, id, name: id, api: "fixture", baseUrl: "https://original.invalid",
 		reasoning: false, input: ["text"], contextWindow: 100_000, maxTokens: 2_000,
@@ -70,6 +70,9 @@ interface RenameHarness {
 
 function renameHarness(options: {
 	model?: Model<any>;
+	namingModel?: Model<any>;
+	available?: boolean;
+	configuredAuth?: boolean;
 	provider?: Provider;
 	streamSimple?: StreamFactory;
 	auth?: AuthResult;
@@ -78,15 +81,18 @@ function renameHarness(options: {
 	initialName?: string;
 	entries?: any[];
 } = {}): RenameHarness {
-	const selectedModel = options.model ?? model();
+	const selectedModel = options.model ?? model("anthropic", "claude-opus-5-5");
+	const namingModel = options.namingModel ?? model();
 	const authCalls: Model<any>[] = [];
 	const notices: string[] = [];
 	const statuses: Array<{ key: string; value: string | undefined }> = [];
 	let sessionName = options.initialName;
 	const handlers = new Map<string, Function[]>();
-	const provider = options.provider ?? providerFor(selectedModel, options.streamSimple ?? ((requestModel) => terminalStream(response(requestModel, "Repair parser"))));
+	const provider = options.provider ?? providerFor(namingModel, options.streamSimple ?? ((requestModel) => terminalStream(response(requestModel, "Repair parser"))));
 	const registry = {
-		getProvider: options.getProvider ?? ((providerId: string) => providerId === selectedModel.provider ? provider : undefined),
+		find: (providerId: string, id: string) => options.available !== false && providerId === namingModel.provider && id === namingModel.id ? namingModel : undefined,
+		hasConfiguredAuth: () => options.configuredAuth !== false,
+		getProvider: options.getProvider ?? ((providerId: string) => providerId === namingModel.provider ? provider : undefined),
 		getApiKeyAndHeaders: async (requestModel: Model<any>) => {
 			authCalls.push(requestModel);
 			if (options.authResolver) return options.authResolver(requestModel);
@@ -135,7 +141,7 @@ function renameHarness(options: {
 	};
 }
 
-test("uses the registered provider with resolved auth and preserves the naming request", async () => {
+test("uses Luna with low reasoning and fast mode regardless of the selected model", async () => {
 	const selectedModel = model("custom", "custom-name");
 	const entries = [
 		{ type: "message", message: { role: "user", content: "Fix the parser", timestamp: 1 } },
@@ -160,20 +166,24 @@ test("uses the registered provider with resolved auth and preserves the naming r
 
 	expect(harness.getName()).toBe("Repair parser");
 	expect(calls).toHaveLength(1);
-	expect(calls[0].model).toMatchObject({ provider: "custom", id: "custom-name", baseUrl: "https://resolved.invalid" });
+	expect(calls[0].model).toMatchObject({ provider: "openai", id: "gpt-6-luna", baseUrl: "https://resolved.invalid" });
 	expect(calls[0].options).toEqual({
 		apiKey: "secret",
 		headers: { "x-fixture": "yes" },
 		env: { REGION: "test" },
 		maxTokens: 64,
+		reasoning: "low",
 		cacheRetention: "none",
+		onPayload: expect.any(Function),
 	});
+	expect(await calls[0].options!.onPayload!({ model: "gpt-6-luna" }, calls[0].model)).toEqual({ model: "gpt-6-luna", service_tier: "priority" });
 	expect(getCurrentSystemPrompt(calls[0].context.messages)).toContain("Name coding-agent sessions.");
 	const prompt = calls[0].context.messages.find(message => message.role === "user")!.content;
 	expect(prompt).toEqual([{ type: "text", text: expect.stringContaining("User: Fix the parser\n\nAssistant: The parser is fixed") }]);
 	expect(String(prompt[0].text)).not.toContain("Do not include this");
 	expect(String(prompt[0].text)).not.toContain("read parser.ts");
-	expect(harness.authCalls).toEqual([selectedModel]);
+	expect(harness.authCalls).toEqual([expect.objectContaining({ provider: "openai", id: "gpt-6-luna" })]);
+	expect(harness.ctx.model).toBe(selectedModel);
 	expect(harness.notices).toEqual([]);
 	expect(harness.statuses).toEqual([
 		{ key: "auto-rename", value: "naming…" },
@@ -181,13 +191,16 @@ test("uses the registered provider with resolved auth and preserves the naming r
 	]);
 });
 
-test("routes Claude bridge naming through the tool-free standalone path", async () => {
+test("uses the Codex Luna fallback through the tool-free standalone path", async () => {
 	const selectedModel = model("claude-bridge", "claude-opus-5-5");
 	const harness = renameHarness({
 		model: selectedModel,
+		namingModel: model("openai-codex"),
 		entries: [{ type: "message", message: { role: "user", content: "Build Brawl with Bazel", timestamp: 1 } }],
 		streamSimple: (requestModel, context, options) => {
-			// The bridge folds transcript system messages before checking its standalone contract.
+			expect(requestModel.provider).toBe("openai-codex");
+			expect(requestModel.id).toBe("gpt-6-luna");
+			expect(options!.onPayload!({}, requestModel)).toEqual({ service_tier: "priority" });
 			const messages = context.messages.filter(message => message.role !== "system");
 			if (options?.cacheRetention !== "none" || context.tools !== undefined ||
 				messages.length !== 1 || messages[0].role !== "user") {
@@ -203,13 +216,24 @@ test("routes Claude bridge naming through the tool-free standalone path", async 
 	expect(harness.notices).toEqual([]);
 });
 
+for (const options of [{ available: false }, { configuredAuth: false }]) {
+	test(`reports unavailable Luna or authentication: ${JSON.stringify(options)}`, async () => {
+		const harness = renameHarness(options);
+		await harness.runAgentEnd();
+		expect(harness.getName()).toBeUndefined();
+		expect(harness.notices.at(-1)).toBe("Auto-rename failed: Title generation requires gpt-6-luna with OpenAI authentication. Use /login and check /model.");
+		expect(harness.authCalls).toHaveLength(0);
+		expect(harness.statuses.at(-1)).toEqual({ key: "auto-rename", value: undefined });
+	});
+}
+
 test("reports an unavailable provider and clears status", async () => {
 	const harness = renameHarness({ getProvider: () => undefined });
 
 	await harness.runAgentEnd();
 
 	expect(harness.getName()).toBeUndefined();
-	expect(harness.notices.at(-1)).toBe("Auto-rename failed: No provider registered for \"fixture\"");
+	expect(harness.notices.at(-1)).toBe("Auto-rename failed: No provider registered for \"openai\"");
 	expect(harness.statuses.at(-1)).toEqual({ key: "auto-rename", value: undefined });
 	expect(harness.authCalls).toHaveLength(0);
 });
