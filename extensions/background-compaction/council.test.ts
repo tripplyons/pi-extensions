@@ -149,5 +149,9 @@ test.each([
       (message.stopReason === "error" || message.stopReason === "aborted"))).toEqual([]);
     expect(errors).toEqual([]);
     expect(notices).toEqual([]);
-  } finally { session.dispose(); await rm(dir, { recursive: true, force: true }); }
+  } finally {
+    await session.extensionRunner.emit({ type: "session_shutdown" });
+    session.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

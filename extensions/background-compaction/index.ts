@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { installPromptAdmission } from "./prompt-admission.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Model, Usage } from "@earendil-works/pi-ai";
 import { buildSessionProjection, estimateTokens, generateSummaryWithUsage, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -135,11 +136,12 @@ export default function (pi: ExtensionAPI) {
     })();
   }
 
-  pi.on("session_start", (_event, ctx) => { reset(ctx); warned = false; });
+  let restoreAdmission: (() => void) | undefined;
+  pi.on("session_start", (_event, ctx) => { restoreAdmission ??= installPromptAdmission(); reset(ctx); warned = false; });
   pi.on("session_tree", (_event, ctx) => reset(ctx));
   pi.on("session_compact", (_event, ctx) => reset(ctx));
   pi.on("model_select", (_event, ctx) => reset(ctx));
-  pi.on("session_shutdown", (_event, ctx) => reset(ctx, true));
+  pi.on("session_shutdown", (_event, ctx) => { restoreAdmission?.(); restoreAdmission = undefined; reset(ctx, true); });
   pi.on("turn_end", (_event, ctx) => { prepare(ctx); });
   pi.on("session_before_compact", async (event, ctx) => {
     // Custom instructions change the summary, so Pi must write it.

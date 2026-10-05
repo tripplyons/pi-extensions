@@ -39,6 +39,13 @@ Pi writes the summary itself when:
 - No background summary exists yet or the last one failed. A failure shows one
   warning per session.
 
+The extension also guards Pi 1.0.1's prompt preflight. A prompt can trigger
+compaction before Pi marks the run active. Queued input and extension wakeups
+wait until that prompt starts or its preflight ends, so they cannot start a
+second run in that gap. Pi still handles input expansion and steering/follow-up
+delivery. The reversible adapter uses the exported `AgentSession` prototype
+and is removed when the last extension instance shuts down.
+
 Read and modified file lists are appended to the summary and carried forward
 like Pi's own compactions. Summary usage is recorded on the compaction entry.
 Background summaries that are never used still cost tokens.
