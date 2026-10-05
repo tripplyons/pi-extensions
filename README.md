@@ -8,7 +8,7 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (26)
+## Extensions (27)
 
 | Extension | Behavior |
 | --- | --- |
@@ -19,6 +19,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
 | [tasks](extensions/tasks) | Native Bash with failure diagnostics, reload-safe tasks, bounded UTF-8 output and opt-in progress reports that wake the agent |
+| [python](extensions/python) | Inline Python with uv, script-defined dependencies and Python versions, and managed background tasks |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |

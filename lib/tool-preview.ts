@@ -109,6 +109,12 @@ export function toolCall(name: string): NonNullable<ToolDefinition<any>["renderC
       ].filter(Boolean);
       return preview(`${typeof value === "string" ? value : "..."} (${options.join(", ")})`);
     }
+    if (name === "python") {
+      const code = typeof args.code === "string" ? args.code : "...";
+      const options = `background, ${args.timeout ?? 1800}s deadline`;
+      if (context?.expanded) return preview(`${code}\nArgs: ${JSON.stringify(args.args ?? [])}\n${options}`);
+      return preview(`inline script (${code.length} chars, ${options})`);
+    }
     if (name === "grep" || name === "find") {
       const pattern = typeof args?.pattern === "string" ? args.pattern : "...";
       const path = typeof args?.path === "string" ? ` in ${args.path}` : "";

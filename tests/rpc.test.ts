@@ -6,13 +6,15 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import manifest from "../package.json";
 
-test("real Pi RPC loads without local dependencies and activates native tools, tasks, and swarm without model requests", async () => {
+test("real Pi RPC loads without local host dependencies and activates native tools, tasks, and swarm without model requests", async () => {
   const home = await mkdtemp(join(tmpdir(), "pi-rpc-"));
   const project = resolve(import.meta.dir, "..");
-  // Test the shipped package, not imports accidentally supplied by test-only
-  // node_modules links. Pi must supply its documented extension imports.
+  // Copy declared runtime dependencies, but not test-only host packages.
+  // Pi must supply its documented extension imports.
   const installed = join(home, "package");
   for (const directory of ["extensions", "lib"]) await cp(join(project, directory), join(installed, directory), { recursive: true });
+  for (const dependency of Object.keys(manifest.dependencies))
+    await cp(join(project, "node_modules", dependency), join(installed, "node_modules", dependency), { recursive: true });
   const args = [join(project, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"),
     "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"];
   for (const path of manifest.pi.extensions) args.push("--extension", join(installed, path));

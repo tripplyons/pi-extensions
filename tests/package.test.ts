@@ -14,10 +14,10 @@ test("Pi loads every manifest entry without extension errors or duplicate tools"
   for (const name of ["read", "edit", "write", "grep", "find", "ls"]) expect(names).not.toContain(name);
   const presentation = loaded.extensions.find(extension => extension.path.endsWith("/presentation/index.ts"));
   expect(presentation?.toolRenderers).toHaveLength(1);
-  for (const name of ["web_search", "web_extract", "bash", "todo_write", "complain", "create_goal", "swarm_task"])
+  for (const name of ["web_search", "web_extract", "bash", "python", "todo_write", "complain", "create_goal", "swarm_task"])
     expect(names).toContain(name);
   for (const name of ["shell", "bg_process", "sleep", "list", "search", "view_image", "pruned_read"])
     expect(names).not.toContain(name);
-  for (const name of ["btw", "goal", "presentation", "complain", "swarm", "council"])
+  for (const name of ["btw", "goal", "presentation", "complain", "swarm", "council", "python"])
     expect(manifest.pi.extensions).toContain(`./extensions/${name}/index.ts`);
 });
