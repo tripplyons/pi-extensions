@@ -72,18 +72,25 @@ Cached answers are snapshots of earlier context, not live status reports.
 Current swarm messages, assignments, permissions, jobs, and handoffs take
 precedence over advisory status claims. The executor must check current evidence
 and avoid repeated stale-advisor or completed-setup commentary.
-Advice is guidance, not permission to act. Council inserts the same round
-guidance after the leading system messages and before the conversation. It does
-not put the changing execution-slot number in the prompt. Tool turns and retries
-can therefore reuse the growing prompt prefix within a round. Slot progress
-stays in the footer. Notification-specific instructions go at the end of the
-request, without changing the round guidance.
+Advice is guidance, not permission to act. Each consultation appends internal
+guidance at the end of the conversation as it stands when the round starts.
+Council saves that position with the round state. Later requests retain earlier
+guidance at its original positions, then append new conversation messages and
+new round guidance. The initial system messages stay unchanged. Guidance uses
+system-role messages inside the transcript, not the initial system-prompt block.
 
-A new consultation changes the round guidance and can invalidate the cached
-conversation prefix. Compaction, model changes, and other prompt changes can
-also reduce cache reuse. Provider cache hits are not guaranteed. Consultation
-adds three model requests per round for Council, or two for Council OpenAI, in
-addition to execution.
+The execution-slot number stays in the footer, not the prompt. Notification
+handling rules are part of the stable guidance. Tool turns, retries, and new
+consultations can therefore extend the existing cached prefix instead of
+rewriting it. The positions survive reloads and follow the session branch.
+When compaction removes an insertion point, Council carries current advice to
+the new conversation tail without consulting again. Legacy state gets an
+insertion point on its next routed request.
+
+Compaction, model or variant changes, and other prompt changes can still reduce
+cache reuse. Provider cache hits are not guaranteed. Consultation adds three
+model requests per round for Council, or two for Council OpenAI, in addition to
+execution.
 
 ## Authentication and fast mode
 

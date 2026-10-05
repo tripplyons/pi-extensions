@@ -31,7 +31,7 @@ test.each([{ id: "council", count: 3 }, { id: "council-openai", count: 2 }])(
             if (phase === "work") workTurns++;
             const internal = context.messages.filter(message => message.role === "system" &&
               String(message.content).startsWith("Internal Council guidance"));
-            expect(internal).toHaveLength(advisors ? 1 : 0);
+            expect(internal).toHaveLength(advisors / count);
             if (internal.length) {
               expect(internal[0].content).toContain("Current swarm messages");
               expect(internal[0].content).toContain("not a live status report");

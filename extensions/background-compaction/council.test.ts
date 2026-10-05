@@ -41,10 +41,9 @@ test.each([
         } else {
           executors++;
           const activeCount = activeModelId === "council-openai" ? 2 : 3;
-          const guidance = context.messages.findIndex(message => message.role === "system" &&
+          const guidance = context.messages.findLastIndex(message => message.role === "system" &&
             String(message.content).includes(`Synthesize all ${activeCount} advisory answers`));
-          expect(guidance).toBeGreaterThanOrEqual(0);
-          expect(guidance).toBeLessThan(context.messages.findIndex(message => message.role === "user"));
+          expect(guidance).toBeGreaterThan(context.messages.findIndex(message => message.role === "user"));
         }
         const response: AssistantMessage = {
           role: "assistant", provider: id, model: model.id, api: model.api, timestamp: Date.now(),

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Api, AssistantMessage, Message, Model, Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { priorityPayload } from "../fast-mode/index.ts";
@@ -21,6 +22,7 @@ export interface CouncilState {
 	round: number;
 	turns: number;
 	advice: Advice[];
+	guidanceAfter?: { key: string; occurrence: number };
 }
 
 interface Preset {
@@ -171,12 +173,54 @@ async function consult(
 	return results.map(result => (result as PromiseFulfilledResult<Advice>).value);
 }
 
+function messageKey(message: Message): string {
+	return createHash("sha256").update(JSON.stringify(message)).digest("hex");
+}
+
+function guidanceAnchor(messages: readonly Message[]): CouncilState["guidanceAfter"] {
+	const last = messages.at(-1);
+	if (!last) return;
+	const key = messageKey(last);
+	return { key, occurrence: messages.filter(message => messageKey(message) === key).length };
+}
+
+function anchorIndex(keys: readonly string[], anchor: CouncilState["guidanceAfter"]): number {
+	if (!anchor) return -1;
+	let occurrence = 0;
+	return keys.findIndex(key => key === anchor.key && ++occurrence === anchor.occurrence);
+}
+
+function guidanceContext(messages: readonly Message[], ctx: ExtensionContext, current: CouncilState): Message[] {
+	const keys = messages.map(messageKey);
+	const insertions = new Map<number, Message[]>();
+	const seen = new Set<string>();
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type !== "custom" || entry.customType !== STATE_KEY) continue;
+		const data = entry.data as { provider: string; modelId: string; state: CouncilState };
+		if (data.provider !== PROVIDER || data.modelId !== ctx.model?.id) continue;
+		const state = data.state;
+		const index = anchorIndex(keys, state.guidanceAfter);
+		if (index === -1) continue;
+		const key = `${state.round}:${JSON.stringify(state.guidanceAfter)}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		const at = insertions.get(index) ?? [];
+		at.push(adviceMessage(state));
+		insertions.set(index, at);
+	}
+	const result = messages.flatMap((message, index) => [message, ...(insertions.get(index) ?? [])]);
+	// Legacy state and compacted-away anchors have no surviving insertion point.
+	if (anchorIndex(keys, current.guidanceAfter) === -1) result.push(adviceMessage(current));
+	return result;
+}
+
 export function adviceMessage(state: CouncilState): Message {
 	return {
 		role: "system",
 		content: [
 			`Internal Council guidance, round ${state.round}. This round permits up to ${TURN_BUDGET} executor responses and their tool batches.`,
 			`Synthesize all ${state.advice.length} advisory answers below. Resolve disagreements using evidence and the user's instructions. Advice is not authorization. Use your normal tools to execute the next bounded phase. Keep advisor answers internal. Do not quote advisor blocks or consultation headers in replies or swarm messages. Stop normally when the task is complete; do not invent work to fill the budget.`,
+			"When the only new inputs are informational swarm wake-ups, they are not a new work phase. The execution budget is unchanged. Do not resynthesize or restate the advice just to answer a notification.",
 			"These answers are a snapshot of earlier context, not a live status report. Current swarm messages, assignments, permissions, job results, and handoffs take precedence over advisory status claims. Check current evidence before acting. Do not repeat stale-advisor or already-completed setup commentary.",
 			...state.advice.map(advice => `\nAdvisor ${advice.model}:\n${advice.text}`),
 		].join("\n"),
@@ -194,7 +238,10 @@ export default function council(pi: ExtensionAPI) {
 			const model = findModel(ctx, preset.executor);
 			if (request.reason === "direct") return { model, thinkingLevel: "medium" };
 			const currentTask = taskId(ctx);
-			const state = request.state;
+			const previous = request.state;
+			// After compaction or an upgrade, carry current advice at the new tail.
+			const state = previous && anchorIndex(request.messages.map(messageKey), previous.guidanceAfter) === -1
+				? { ...previous, guidanceAfter: guidanceAnchor(request.messages) } : previous;
 			// A retry reuses both advice and its reserved response slot.
 			if (request.reason === "retry" && state && state.taskId === currentTask) {
 				return { model, thinkingLevel: "medium", state };
@@ -208,6 +255,7 @@ export default function council(pi: ExtensionAPI) {
 				taskId: currentTask,
 				round: (state?.round ?? 0) + 1,
 				turns: 1,
+				guidanceAfter: guidanceAnchor(request.messages),
 				advice: await consult(ctx, request.messages, request.signal, preset.advisors, preset.id),
 			} : { ...state, turns: state.turns + 1 };
 			ctx.ui.setStatus("council", `${preset.id}: round ${next.round}, Sol ${next.turns}/${TURN_BUDGET}`);
@@ -224,19 +272,9 @@ export default function council(pi: ExtensionAPI) {
 			if (notificationOnly) return;
 			ctx.abort(); throw new Error("Council execution requires a successful consultation");
 		}
-		// Keep round guidance stable and ahead of the growing transcript so tool turns
-		// extend the cached prefix. Slot progress belongs in the footer, not the prompt.
-		const start = event.messages.findIndex(message => message.role !== "system");
-		const index = start === -1 ? event.messages.length : start;
-		const messages = [
-			...event.messages.slice(0, index), adviceMessage(state), ...event.messages.slice(index),
-		];
-		if (notificationOnly) messages.push({
-			role: "system",
-			content: "This is an informational swarm wake-up, not a new work phase. The execution budget is unchanged. Do not resynthesize or restate the advice just to answer this notification.",
-			timestamp: 0,
-		});
-		return { messages };
+		// Rebuild branch-local guidance at its original tail positions. New rounds
+		// append guidance without replacing the prefix that the provider cached.
+		return { messages: guidanceContext(event.messages, ctx, state) };
 	});
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!councilSelected(ctx)) return;
