@@ -18,6 +18,7 @@ test.each([
 	let steps = 0;
 	const tiers: unknown[] = [];
 	const effort: unknown[] = [];
+	let previousPrompt: { round: number; length: number; text: string } | undefined;
 	for (const id of modelId === "council-openai" ? ["openai"] : ["openai", "anthropic"]) {
 		const models = runtime.getModels(id).filter(model => ["gpt-6.1-sol", "gpt-6-astra", "claude-opus-5-5"].includes(model.id));
 		const provider: Provider = {
@@ -39,7 +40,15 @@ test.each([
 						execution++;
 						expect(advisors).toBe(execution <= 8 ? count : count * 2);
 						expect(options?.reasoning).toBe("medium");
-						expect(JSON.stringify(context.messages.at(-1))).toContain(`Synthesize all ${count} advisory answers`);
+						const round = execution <= 8 ? 1 : 2;
+						const guidance = context.messages.findIndex(message => message.role === "system" &&
+							String(message.content).includes(`Synthesize all ${count} advisory answers`));
+						expect(guidance).toBeGreaterThan(0);
+						expect(guidance).toBeLessThan(context.messages.findIndex(message => message.role === "user"));
+						if (previousPrompt?.round === round) {
+							expect(JSON.stringify(context.messages.slice(0, previousPrompt.length))).toBe(previousPrompt.text);
+						}
+						previousPrompt = { round, length: context.messages.length, text: JSON.stringify(context.messages) };
 						tiers.push(payload);
 					}
 					const content: AssistantMessage["content"] = isAdvisor

@@ -72,9 +72,18 @@ Cached answers are snapshots of earlier context, not live status reports.
 Current swarm messages, assignments, permissions, jobs, and handoffs take
 precedence over advisory status claims. The executor must check current evidence
 and avoid repeated stale-advisor or completed-setup commentary.
-Advice is guidance, not permission to act. This request-local context can reduce
-prompt-cache reuse. Consultation adds three model requests per round for
-Council, or two for Council OpenAI, in addition to execution.
+Advice is guidance, not permission to act. Council inserts the same round
+guidance after the leading system messages and before the conversation. It does
+not put the changing execution-slot number in the prompt. Tool turns and retries
+can therefore reuse the growing prompt prefix within a round. Slot progress
+stays in the footer. Notification-specific instructions go at the end of the
+request, without changing the round guidance.
+
+A new consultation changes the round guidance and can invalidate the cached
+conversation prefix. Compaction, model changes, and other prompt changes can
+also reduce cache reuse. Provider cache hits are not guaranteed. Consultation
+adds three model requests per round for Council, or two for Council OpenAI, in
+addition to execution.
 
 ## Authentication and fast mode
 

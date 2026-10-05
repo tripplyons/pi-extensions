@@ -171,12 +171,11 @@ async function consult(
 	return results.map(result => (result as PromiseFulfilledResult<Advice>).value);
 }
 
-export function adviceMessage(state: CouncilState, notificationOnly = false): Message {
+export function adviceMessage(state: CouncilState): Message {
 	return {
 		role: "system",
 		content: [
-			`Internal Council guidance, round ${state.round}. Reserved executor slot ${state.turns}/${TURN_BUDGET}.`,
-			...(notificationOnly ? ["This is an informational swarm wake-up, not a new work phase. The execution budget is unchanged. Do not resynthesize or restate the advice just to answer this notification."] : []),
+			`Internal Council guidance, round ${state.round}. This round permits up to ${TURN_BUDGET} executor responses and their tool batches.`,
 			`Synthesize all ${state.advice.length} advisory answers below. Resolve disagreements using evidence and the user's instructions. Advice is not authorization. Use your normal tools to execute the next bounded phase. Keep advisor answers internal. Do not quote advisor blocks or consultation headers in replies or swarm messages. Stop normally when the task is complete; do not invent work to fill the budget.`,
 			"These answers are a snapshot of earlier context, not a live status report. Current swarm messages, assignments, permissions, job results, and handoffs take precedence over advisory status claims. Check current evidence before acting. Do not repeat stale-advisor or already-completed setup commentary.",
 			...state.advice.map(advice => `\nAdvisor ${advice.model}:\n${advice.text}`),
@@ -225,7 +224,19 @@ export default function council(pi: ExtensionAPI) {
 			if (notificationOnly) return;
 			ctx.abort(); throw new Error("Council execution requires a successful consultation");
 		}
-		return { messages: [...event.messages, adviceMessage(state, notificationOnly)] };
+		// Keep round guidance stable and ahead of the growing transcript so tool turns
+		// extend the cached prefix. Slot progress belongs in the footer, not the prompt.
+		const start = event.messages.findIndex(message => message.role !== "system");
+		const index = start === -1 ? event.messages.length : start;
+		const messages = [
+			...event.messages.slice(0, index), adviceMessage(state), ...event.messages.slice(index),
+		];
+		if (notificationOnly) messages.push({
+			role: "system",
+			content: "This is an informational swarm wake-up, not a new work phase. The execution budget is unchanged. Do not resynthesize or restate the advice just to answer this notification.",
+			timestamp: 0,
+		});
+		return { messages };
 	});
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!councilSelected(ctx)) return;

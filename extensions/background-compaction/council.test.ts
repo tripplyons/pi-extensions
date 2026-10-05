@@ -41,7 +41,10 @@ test.each([
         } else {
           executors++;
           const activeCount = activeModelId === "council-openai" ? 2 : 3;
-          expect(JSON.stringify(context.messages.at(-1))).toContain(`Synthesize all ${activeCount} advisory answers`);
+          const guidance = context.messages.findIndex(message => message.role === "system" &&
+            String(message.content).includes(`Synthesize all ${activeCount} advisory answers`));
+          expect(guidance).toBeGreaterThanOrEqual(0);
+          expect(guidance).toBeLessThan(context.messages.findIndex(message => message.role === "user"));
         }
         const response: AssistantMessage = {
           role: "assistant", provider: id, model: model.id, api: model.api, timestamp: Date.now(),
@@ -89,6 +92,9 @@ test.each([
     expect(footer.render(60)[0]).toContain("background: waiting");
     expect(footer.render(60)[0]).not.toContain("medium");
     await session.prompt("Finish the seeded task.");
+    expect(session.messages.filter(message => message.role === "assistant" &&
+      (message.stopReason === "error" || message.stopReason === "aborted"))).toEqual([]);
+    expect(errors).toEqual([]);
     expect(statuses.get("background-compaction")).toBe("background: preparing");
     statuses.set("council", `${modelId}: round 123, Sol 8/8`);
     expect(footer.render(60)[0]).toContain("background: preparing");

@@ -82,13 +82,48 @@ test("registers Council and consults all three in parallel with exact efforts an
 	expect(h.state?.advice).toHaveLength(3);
 	expect(h.state?.advice[0].usage).toEqual(usage);
 	const transformed = h.handlers.get("context_with_system")!({ messages }, h.ctx);
-	expect(transformed.messages.at(-1).role).toBe("system");
-	expect(transformed.messages.at(-1).content).toContain("Resolve disagreements");
-	expect(transformed.messages.at(-1).content).toContain("claude-opus-5-5");
-	expect(transformed.messages.at(-1).content).toContain("Do not quote advisor blocks");
+	expect(transformed.messages[0].role).toBe("system");
+	expect(transformed.messages[0].content).toContain("Resolve disagreements");
+	expect(transformed.messages[0].content).toContain("claude-opus-5-5");
+	expect(transformed.messages[0].content).toContain("Do not quote advisor blocks");
 	expect(transformed.messages.filter((message: Message) => message.role === "user")).toEqual(messages);
 	expect(h.handlers.get("before_provider_request")!({ payload: { model: "gpt-6.1-sol" } }, h.ctx))
 		.toEqual({ model: "gpt-6.1-sol", service_tier: "priority" });
+});
+
+test.each([MODEL_ID, OPENAI_MODEL_ID])("%s keeps the round prompt prefix stable across tool turns and retries", async modelId => {
+	const h = harness(modelId);
+	const transcript: Message[] = [
+		{ role: "system", content: "Original system prompt", timestamp: 0 },
+		{ role: "system", content: "Additional system context", timestamp: 0 },
+		...messages,
+	];
+	const transform = () => h.handlers.get("context_with_system")!({ messages: transcript }, h.ctx).messages as Message[];
+	await h.route();
+	const initial = transform();
+	expect(initial.slice(0, 2)).toEqual(transcript.slice(0, 2));
+	expect(initial[2]).toEqual(adviceMessage(h.state!));
+	let previous = initial;
+	for (let turn = 2; turn <= TURN_BUDGET; turn++) {
+		transcript.push(response(h.models[0], { stopReason: "toolUse", content: [
+			{ type: "toolCall", id: `read-${turn}`, name: "read", arguments: { path: "parser.ts" } },
+		] }), {
+			role: "toolResult", toolCallId: `read-${turn}`, toolName: "read", isError: false,
+			content: [{ type: "text", text: `Result ${turn}` }], timestamp: turn,
+		});
+		await h.route("continuation");
+		const next = transform();
+		expect(next.slice(0, previous.length)).toEqual(previous);
+		expect(next[2]).toEqual(initial[2]);
+		await h.route("retry");
+		expect(transform()).toEqual(next);
+		previous = next;
+	}
+	expect(h.calls).toHaveLength(modelId === OPENAI_MODEL_ID ? 2 : 3);
+	expect(h.state?.turns).toBe(TURN_BUDGET);
+	await h.route("continuation");
+	expect(transform()[2]).not.toEqual(initial[2]);
+	expect(h.state?.round).toBe(2);
 });
 
 test("Council OpenAI consults two high-effort priority advisors without Anthropic auth", async () => {
@@ -127,10 +162,10 @@ test("switching variants keeps advice and execution slots separate on the same b
 	expect(h.state?.turns).toBe(1);
 	expect(h.state?.advice).toHaveLength(2);
 	let context = h.handlers.get("context_with_system")!({ messages }, h.ctx);
-	expect(JSON.stringify(context.messages.at(-1))).toContain("Synthesize all 2 advisory answers");
+	expect(JSON.stringify(context.messages[0])).toContain("Synthesize all 2 advisory answers");
 	h.ctx.model.id = MODEL_ID;
 	context = h.handlers.get("context_with_system")!({ messages }, h.ctx);
-	expect(context.messages.at(-1)).toEqual(adviceMessage(originalState));
+	expect(context.messages[0]).toEqual(adviceMessage(originalState));
 	await h.route("continuation");
 	expect(h.calls).toHaveLength(5);
 	expect(h.state?.turns).toBe(2);
@@ -175,13 +210,14 @@ test.each([MODEL_ID, OPENAI_MODEL_ID])("%s reuses internal advice for swarm noti
 	const leading = { role: "system", content: "Original system prompt", timestamp: 0 };
 	const context = h.handlers.get("context_with_system")!({ messages: [leading, ...messages, message] }, h.ctx);
 	expect(context.messages[0]).toBe(leading);
-	expect(context.messages[2]).toBe(message);
+	expect(context.messages[3]).toBe(message);
 	expect(context.messages.filter((entry: any) => entry.role === "user")).toEqual(messages);
 	expect(context.messages.at(-1).role).toBe("system");
-	expect(context.messages.at(-1).content).toContain("Keep advisor answers internal");
+	expect(context.messages[1]).toEqual(adviceMessage(reserved!));
+	expect(context.messages[1].content).toContain("Keep advisor answers internal");
 	expect(context.messages.at(-1).content).toContain("Do not resynthesize or restate");
-	expect(context.messages.at(-1).content).toContain("not a live status report");
-	expect(context.messages.at(-1).content).toContain("handoffs take precedence");
+	expect(context.messages[1].content).toContain("not a live status report");
+	expect(context.messages[1].content).toContain("handoffs take precedence");
 	expect(h.branch.filter(entry => entry.type === "message").some(entry => JSON.stringify(entry.message).includes("Advisor openai/"))).toBe(false);
 	await h.route("retry");
 	expect(h.calls).toHaveLength(callsBefore);
@@ -357,5 +393,5 @@ test("context restores advice from branch state without retaining another branch
 	expect(() => h.handlers.get("context_with_system")!({ messages }, h.ctx)).toThrow();
 	h.branch.push({ type: "custom", customType: "pi.virtual-model-state",
 		data: { provider: PROVIDER, modelId: MODEL_ID, state: JSON.parse(JSON.stringify(state)) } });
-	expect(h.handlers.get("context_with_system")!({ messages }, h.ctx).messages.at(-1)).toEqual(adviceMessage(state));
+	expect(h.handlers.get("context_with_system")!({ messages }, h.ctx).messages[0]).toEqual(adviceMessage(state));
 });
