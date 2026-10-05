@@ -9,7 +9,7 @@ afterEach(() => { Object.assign(tuning, { prepareAt: original.prepareAt, refresh
 function setup() {
   const h = harness(), branch: any[] = [], calls: any[] = [], footer: (string | undefined)[] = [];
   h.ctx.ui.setStatus = (key: string, text?: string) => { if (key === "background-compaction") footer.push(text); };
-  let tokens = 15_000;
+  let tokens = 16_000;
   Object.assign(tuning, { refreshTokens: 2_000, maxGapTokens: 4_000 });
   h.pi.getSettings = () => ({ compaction: { reserveTokens: 1_000, keepRecentTokens: 3_000 } });
   h.ctx.model = { provider: "test", id: "model" };
@@ -38,7 +38,7 @@ function setup() {
   return { h, branch, calls, footer, push, compact, turn, setTokens: (value: number) => { tokens = value; } };
 }
 
-test("preparation starts at 75% of Pi's threshold and its summary compacts without a new call", async () => {
+test("preparation starts at 80% of Pi's threshold and its summary compacts without a new call", async () => {
   const { calls, footer, push, compact, turn, setTokens } = setup();
   push(10); setTokens(5_000);
   await turn();
@@ -46,18 +46,18 @@ test("preparation starts at 75% of Pi's threshold and its summary compacts witho
   expect(footer.filter(Boolean)).toEqual(["background: waiting"]);
   setTokens(12_000); await turn();
   expect(calls).toHaveLength(0);
-  // 75% of (20,000 context tokens - 1,000 reserved tokens) is 14,250.
-  setTokens(14_249); await turn();
+  // 80% of (20,000 context tokens - 1,000 reserved tokens) is 15,200.
+  setTokens(15_199); await turn();
   expect(calls).toHaveLength(0);
   expect(footer.at(-1)).toBe("background: waiting");
-  setTokens(14_250); await turn();
+  setTokens(15_200); await turn();
   expect(calls).toHaveLength(1);
   expect(footer.filter(Boolean)).toEqual(["background: waiting", "background: waiting", "background: waiting", "background: preparing", "background: ready"]);
   expect(calls[0].messages).toHaveLength(7);
   expect(calls[0].previousSummary).toBeUndefined();
   const result = await compact();
   expect(calls).toHaveLength(1);
-  expect(result.compaction).toMatchObject({ firstKeptEntryId: "e8", tokensBefore: 14_250, usage: { totalTokens: 15 }, details: { readFiles: ["a.ts"], modifiedFiles: ["b.ts"] } });
+  expect(result.compaction).toMatchObject({ firstKeptEntryId: "e8", tokensBefore: 15_200, usage: { totalTokens: 15 }, details: { readFiles: ["a.ts"], modifiedFiles: ["b.ts"] } });
   expect(result.compaction.summary).toBe("S1\n\n<read-files>\na.ts\n</read-files>\n\n<modified-files>\nb.ts\n</modified-files>");
 });
 
@@ -87,7 +87,7 @@ test("Pi summarizes when the stored summary is stale, too far behind, or custom 
   expect(await compact()).toBeUndefined();
   setTokens(5_000); await turn();
   expect(footer.at(-1)).toBe("background: waiting");
-  setTokens(15_000);
+  setTokens(16_000);
   branch.pop(); await turn();
   expect(footer.at(-1)).toBe("background: ready");
   await h.emit("session_compact", {});

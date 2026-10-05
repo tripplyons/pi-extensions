@@ -3,7 +3,7 @@
 Prepares the compaction summary before Pi needs it, so automatic compaction
 does not wait for a summary request.
 
-After each turn, the extension checks context usage. When usage reaches 75% of
+After each turn, the extension checks context usage. When usage reaches 80% of
 Pi's compaction threshold (`contextWindow - reserveTokens`), it summarizes the
 entries before Pi's usual cut point in the background. It uses Pi's own
 compaction prompt, the session model and thinking level, and the

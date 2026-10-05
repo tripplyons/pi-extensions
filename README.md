@@ -36,7 +36,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Session names from the first user message using GPT 6 Luna with low reasoning and fast mode |
 | [btw](extensions/btw) | Side questions with optional tools |
-| [background-compaction](extensions/background-compaction) | Background summaries with waiting/preparing/ready status and a guard against queued-message races during compaction |
+| [background-compaction](extensions/background-compaction) | Background summaries prepared at 80% of Pi's compaction threshold, with waiting/preparing/ready status and a guard against queued-message races during compaction |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |
 

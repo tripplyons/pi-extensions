@@ -48,7 +48,7 @@ test.each([
         const response: AssistantMessage = {
           role: "assistant", provider: id, model: model.id, api: model.api, timestamp: Date.now(),
           stopReason: "stop", content: [{ type: "text", text: isSummary ? "Prepared background summary." : isAdvisor ? "Answer the user and stop." : "Done." }],
-          usage: usage(isAdvisor || isSummary ? 10 : executors === 1 ? 15_000 : 5_000),
+          usage: usage(isAdvisor || isSummary ? 10 : executors === 1 ? 16_000 : 5_000),
         };
         const stream = createAssistantMessageEventStream();
         const finish = () => { stream.push({ type: "done", reason: "stop", message: response }); stream.end(); };

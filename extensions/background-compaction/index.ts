@@ -7,7 +7,7 @@ import { buildSessionProjection, estimateTokens, generateSummaryWithUsage, type 
 // prepareAt: share of Pi's compaction threshold where background summaries start.
 // refreshTokens: newly summarizable tokens that trigger an incremental refresh.
 // maxGapTokens: extra verbatim tokens a stored summary may leave beyond keepRecentTokens.
-export const tuning = { prepareAt: 0.75, refreshTokens: 8_000, maxGapTokens: 16_000 };
+export const tuning = { prepareAt: 0.8, refreshTokens: 8_000, maxGapTokens: 16_000 };
 // Tests replace the summarizer; production uses Pi's own compaction prompt.
 export const deps = { summarize: generateSummaryWithUsage };
 const defaults = { reserveTokens: 16_384, keepRecentTokens: 20_000 };
