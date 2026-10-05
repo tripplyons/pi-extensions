@@ -33,7 +33,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
 | [goal](extensions/goal) | Persistent objectives and steering continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
-| [auto-rename](extensions/auto-rename) | Automatic session names through standalone GPT 6 Luna requests with low reasoning and fast mode |
+| [auto-rename](extensions/auto-rename) | Session names from the first user message using GPT 6 Luna with low reasoning and fast mode |
 | [btw](extensions/btw) | Side questions with optional tools |
 | [background-compaction](extensions/background-compaction) | Background summaries with waiting/preparing/ready status, applied when Pi's threshold is reached |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |

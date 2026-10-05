@@ -151,6 +151,7 @@ test("uses Luna with low reasoning and fast mode regardless of the selected mode
 			{ type: "text", text: "The parser is fixed" },
 			{ type: "toolCall", id: "read", name: "read", arguments: { path: "parser.ts" } },
 		], timestamp: 3 } },
+		{ type: "message", message: { role: "user", content: "Now change the database", timestamp: 4 } },
 	];
 	const calls: StreamCall[] = [];
 	const harness = renameHarness({
@@ -179,7 +180,7 @@ test("uses Luna with low reasoning and fast mode regardless of the selected mode
 	expect(await calls[0].options!.onPayload!({ model: "gpt-6-luna" }, calls[0].model)).toEqual({ model: "gpt-6-luna", service_tier: "priority" });
 	expect(getCurrentSystemPrompt(calls[0].context.messages)).toContain("Name coding-agent sessions.");
 	const prompt = calls[0].context.messages.find(message => message.role === "user")!.content;
-	expect(prompt).toEqual([{ type: "text", text: expect.stringContaining("User: Fix the parser\n\nAssistant: The parser is fixed") }]);
+	expect(prompt).toEqual([{ type: "text", text: "Name this session from the first user message below. Do not answer the task.\n\nFix the parser" }]);
 	expect(String(prompt[0].text)).not.toContain("Do not include this");
 	expect(String(prompt[0].text)).not.toContain("read parser.ts");
 	expect(harness.authCalls).toEqual([expect.objectContaining({ provider: "openai", id: "gpt-6-luna" })]);
@@ -190,6 +191,34 @@ test("uses Luna with low reasoning and fast mode regardless of the selected mode
 		{ key: "auto-rename", value: undefined },
 	]);
 });
+
+for (const [label, content, expected] of [
+	["text blocks", [{ type: "text", text: " Fix the parser" }, { type: "image", data: "ignored", mimeType: "image/png" }, { type: "text", text: "Add a test " }], "Fix the parser\nAdd a test"],
+	["long message", "x".repeat(60_001), "x".repeat(60_000)],
+	["empty first message", "   ", ""],
+] as const) {
+	test(`uses only the first user message: ${label}`, async () => {
+		const calls: StreamCall[] = [];
+		const harness = renameHarness({
+			entries: [
+				{ type: "message", message: { role: "assistant", content: "Earlier assistant reply" } },
+				{ type: "custom", customType: "unrelated", data: {} },
+				{ type: "message", message: { role: "user", content } },
+				{ type: "message", message: { role: "user", content: "Do not use this later message" } },
+			],
+			streamSimple: (requestModel, context, options) => {
+				calls.push({ model: requestModel, context, options });
+				return terminalStream(response(requestModel, "Repair parser"));
+			},
+		});
+
+		await harness.runAgentEnd();
+
+		expect(calls).toHaveLength(1);
+		const prompt = calls[0].context.messages.find(message => message.role === "user")!.content;
+		expect(prompt).toEqual([{ type: "text", text: `Name this session from the first user message below. Do not answer the task.\n\n${expected}` }]);
+	});
+}
 
 test("uses the Codex Luna fallback through the tool-free standalone path", async () => {
 	const selectedModel = model("claude-bridge", "claude-opus-5-5");

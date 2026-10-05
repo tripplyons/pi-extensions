@@ -2,26 +2,22 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { priorityPayload } from "../fast-mode/index.ts";
 
-const MAX_CONVERSATION_CHARS = 60_000;
+const MAX_MESSAGE_CHARS = 60_000;
 const SYSTEM_PROMPT = `Name coding-agent sessions.
 Return only a short, specific name of 3 to 8 words. Do not use quotes or punctuation-only decoration.`;
 
-function conversationText(ctx: ExtensionContext): string {
-	const turns: string[] = [];
-
+function firstUserMessageText(ctx: ExtensionContext): string {
 	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "message") continue;
-		if (entry.message.role !== "user" && entry.message.role !== "assistant") continue;
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
 
 		const content = entry.message.content;
-		const text = (typeof content === "string"
+		return (typeof content === "string"
 			? content
 			: content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n")
-		).trim();
-		if (text) turns.push(`${entry.message.role === "user" ? "User" : "Assistant"}: ${text}`);
+		).trim().slice(0, MAX_MESSAGE_CHARS);
 	}
 
-	return turns.join("\n\n").slice(0, MAX_CONVERSATION_CHARS);
+	return "";
 }
 
 async function generateName(ctx: ExtensionContext): Promise<string> {
@@ -39,7 +35,7 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 			systemPrompt: SYSTEM_PROMPT,
 			messages: [{
 				role: "user",
-				content: [{ type: "text", text: `Name this session from the conversation below. Do not answer the task.\n\n${conversationText(ctx)}` }],
+				content: [{ type: "text", text: `Name this session from the first user message below. Do not answer the task.\n\n${firstUserMessageText(ctx)}` }],
 				timestamp: Date.now(),
 			}],
 		},
