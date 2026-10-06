@@ -38,7 +38,8 @@
       "./extensions/tasks/index.ts",
       "./extensions/python/index.ts",
       "./extensions/todos/index.ts",
-      "./extensions/openai-subscription/index.ts"
+      "./extensions/openai-subscription/index.ts",
+      "./extensions/lm-studio/index.ts"
     ]
   },
   "devDependencies": {
