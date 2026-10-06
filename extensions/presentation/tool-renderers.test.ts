@@ -79,7 +79,7 @@ test("image shell adapter hides collapsed image rows and restores them when expa
   component.addChild(image);
   const restore = installCompactToolSpacing();
   try {
-    expect(plain(component)).toHaveLength(2);
+    expect(plain(component)).toHaveLength(1);
     internal.expanded = true;
     expect(plain(component)).toContain("IMAGE");
     expect(internal.imageComponents).toEqual([image]);

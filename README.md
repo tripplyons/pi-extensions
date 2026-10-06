@@ -23,7 +23,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
-| [presentation](extensions/presentation) | One-row tool previews with streaming arguments and progress, expanded output, and context footer with reserved background status; no working indicator |
+| [presentation](extensions/presentation) | One-row tool previews with group separators only, streaming arguments and progress, expanded output, and context footer with reserved background status; no working indicator or hidden-thinking placeholders |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |

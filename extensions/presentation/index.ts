@@ -1,6 +1,7 @@
 import { registerCompactToolRenderers } from "./tool-renderers.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
+import { installHiddenThinkingBlocks } from "./thinking-blocks.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
@@ -36,11 +37,13 @@ export default function presentation(pi: ExtensionAPI) {
   registerCompactToolRenderers(pi);
   let restoreToolSpacing: (() => void) | undefined;
   let restoreUserMessages: (() => void) | undefined;
+  let restoreThinkingBlocks: (() => void) | undefined;
   const install = (_event: unknown, ctx: ExtensionContext) => {
     if (!ctx.hasUI) return;
     ctx.ui.setToolsExpanded(false);
     if (ctx.mode === "tui") {
       restoreUserMessages ??= installCompactUserMessages();
+      restoreThinkingBlocks ??= installHiddenThinkingBlocks();
       restoreToolSpacing ??= installCompactToolSpacing();
     }
     ctx.ui.setWorkingIndicator({ frames: [] });
@@ -61,5 +64,5 @@ export default function presentation(pi: ExtensionAPI) {
     }));
   };
   pi.on("session_start", install);
-  pi.on("session_shutdown", (_event, ctx) => { restoreUserMessages?.(); restoreUserMessages = undefined; restoreToolSpacing?.(); restoreToolSpacing = undefined; ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); });
+  pi.on("session_shutdown", (_event, ctx) => { restoreUserMessages?.(); restoreUserMessages = undefined; restoreThinkingBlocks?.(); restoreThinkingBlocks = undefined; restoreToolSpacing?.(); restoreToolSpacing = undefined; ctx.ui.setFooter(undefined); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); });
 }

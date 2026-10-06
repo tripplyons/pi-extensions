@@ -1,7 +1,9 @@
 # Presentation
 
 Requires Pi 1.0.1 or newer. Hides the working indicator and shows one content
-row per collapsed tool call, with one blank separator between calls. The row
+row per collapsed tool call. Each group starts with one blank separator, with
+no blank lines between calls in the group. Visible user messages and assistant
+prose start a new group; empty messages and hidden thinking do not. The row
 contains the tool name, key argument, and a short result or execution status.
 While the model writes a tool call, the row shows the newest argument text and
 `writing N chars`, where N counts characters in the argument values. The count
@@ -35,7 +37,11 @@ retain their lines when expanded.
 
 Pi appends images outside tool renderers and has no public user-message spacing
 hook. Small tested component adapters suppress collapsed images, remove vertical
-padding from default tool shells, and restore the original renderers on shutdown.
+padding from default tool shells and separators between adjacent tool calls,
+keep mouse targets aligned, and restore the original renderers on shutdown.
+Hidden thinking blocks omit the `Thinking...` placeholder and its spacing.
+Visible thinking remains unchanged; Pi's `hideThinkingBlock` setting controls
+visibility. Messages and thinking content stay unchanged in session history.
 User messages retain prompt-zone markers and have no background-only rows above
 or below their content. Spacing within expanded output stays unchanged.
 
