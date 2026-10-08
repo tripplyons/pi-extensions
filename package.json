@@ -28,6 +28,7 @@
       "./extensions/usage/index.ts",
       "./extensions/skills/index.ts",
       "./extensions/swarm/index.ts",
+      "./extensions/session-search/index.ts",
       "./extensions/stash/index.ts",
       "./extensions/auto-rename/index.ts",
       "./extensions/btw/index.ts",

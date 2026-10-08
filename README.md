@@ -8,12 +8,13 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (28)
+## Extensions (29)
 
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | Isolated workers with direct agent messaging, a shared board, model overrides, task-preserving instructions, reload barriers, permission checks, review reminders and health checks |
+| [swarm](extensions/swarm) | Isolated workers with messaging, a shared board, model overrides, reload barriers, permission checks, reviews, health checks and saved-conversation inspection |
+| [session-search](extensions/session-search) | Local project-history search with original-message retrieval, summary expansion and a read-only inspector |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |

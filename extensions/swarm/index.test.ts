@@ -141,7 +141,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
-    install(h.pi); expect(h.tools.size).toBe(20);
+    install(h.pi); expect(h.tools.size).toBe(21);
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
     expect(await h.emit("before_agent_start")).toEqual([undefined]);
     await h.command("swarm:start", "Build the feature");

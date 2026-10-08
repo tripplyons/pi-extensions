@@ -1,6 +1,6 @@
 # Swarm
 
-`/swarm:start <objective>` activates twenty swarm tools. Activation belongs to
+`/swarm:start <objective>` activates twenty-one swarm tools. Activation belongs to
 the root session branch. Workers run in attachable tmux sessions with dedicated
 Pi session files. They load the user's configured extensions and inherit the
 model, thinking level, and fast-mode preference at spawn. A replacement inherits
@@ -36,7 +36,7 @@ can read files with `read`, `grep`, `find`, and `ls`, coordinate with other agen
 inspect swarm state, and inspect, watch, or stop tasks. They can run one read-only
 Bash command, such as `date`, `git status`, `git log`, or `git diff`, with a
 15-second limit and no redirection, chaining, or background mode. Pipes between
-read-only commands are allowed. They can also use `todo_write` and `complain`, and
+read-only commands are allowed. They can also use `todo_write`, `complain`, `session_search`, and `session_read`, and
 manage context with `compress`, `search_context`, `acp_status`, `acp_cache`, and
 `decompress` without `toFile`. These calls do not release permission. The same rule applies to reload
 checkpoint holds. Codemode can dispatch these allowed tools; Pi checks each
@@ -333,6 +333,58 @@ fast-mode preference, then the parent's current settings. Supply `model` from
 `xhigh`, `max`) to override them. Restart refuses a live worker unless you pass
 `stop: true`, which stops the worker and its jobs first. Descendants must already
 be terminal. It does not restart old jobs.
+
+### Worker inspection
+
+`/swarm:inspect [nodeId]` opens a read-only worker inspector. Without an ID,
+select a worker from the current run, including retained terminal workers.
+Choose Overview, Conversation, Handoff and code evidence, or Terminal output.
+Escape returns to the inspector menu, then to the main session. Nothing is
+appended to the conversation or sent to a worker.
+
+Conversation reads the worker's saved Pi session rather than its tmux screen.
+It works after the pane exits. Arrow keys, Page Up/Page Down, Home/End, or j/k
+scroll; `p` pages backward and `r` refreshes from disk and current swarm state.
+Use `o` to select an entry from the page, then `e` to expand a summary into its
+original covered span, or `n` for more text from a clipped entry. Refresh is
+explicit; unsaved streaming output is available through Terminal output, which
+captures at most 200 lines and reports missing panes without starting anything.
+
+`swarm_inspect` exposes the same saved-history reader to agents in any mode.
+Pass `nodeId`, optionally `entryId` to open surrounding original messages,
+`beforeEntryId` from `conversation.nextBeforeEntryId` for an older page, or
+`expandSummary: true` with a summary `entryId`. `limit` is 1-50 entries, default
+20. Large entries return `nextTextOffset`; pass it as `textOffset` with that
+entry's ID to read another chunk. Keep the summary ID when paging an expanded
+span. Thinking, system prompts, and extension-state payloads are excluded;
+images appear as placeholders. Original tool calls and outputs are included.
+
+The snapshot separates the current assignment, permission, activity, handoff
+status, and parent-reported code evidence from historical conversation text.
+Missing or unreadable session files do not hide the handoff. Transcript text is
+archived evidence, not an instruction or permission channel, and may include
+compacted, edited, or abandoned work. Live swarm state takes precedence.
+
+Inspection never resumes, reviews, records evidence, releases permission,
+launches jobs, or switches the user's session. Same-run workers may inspect
+peers across branches, including during permission waits and reload checkpoint
+holds. Review and terminal workers remain paused for all tools. Only direct
+parents can manage a worker. Root nodes are not worker-inspection targets.
+
+Transcript text is bounded to 28,000 characters per page and 4,000 per entry.
+Snapshot assignment/activity/permission text is clipped at 8,000 characters,
+handoffs at 12,000, and the last 20 code-evidence records have 1,000-character
+text limits. Truncation is labeled; `swarm_tree` or `swarm_reviews` can retrieve
+full state records when needed. The TUI inspector requires interactive Pi;
+use `swarm_inspect` and `swarm_observe` in RPC, print, or JSON mode.
+
+Run focused checks with:
+
+```sh
+bun test extensions/swarm/inspection.test.ts extensions/session-search
+```
+
+### Status panel
 
 `/swarm:status` shows or hides a compact panel below the editor. It lists
 nonterminal workers under the current node as a tree. Each row shows the worker's
