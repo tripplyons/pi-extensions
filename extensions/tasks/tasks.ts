@@ -97,6 +97,26 @@ export class Tasks {
     }
     return record;
   }
+  private async foregroundResult(task: Running) {
+    const native = task.output!;
+    const truncation = native.details?.truncation;
+    if (!truncation?.truncated || truncation.content || truncation.outputBytes) return native;
+    // Pi can discard a trimmed long final line at its trailing newline. Read
+    // our captured prefix only for that empty-preview defect, not normal tails.
+    const preview = await this.output(task.record.task_id, 0);
+    if (!preview.output) return native;
+    const outputLines = preview.output.split("\n").length - (preview.output.endsWith("\n") ? 1 : 0);
+    const lastLinePartial = !preview.output.endsWith("\n") && preview.next_offset < truncation.totalBytes;
+    const limit = outputLines >= 2000 ? "lines" : "bytes";
+    const notice = `[Recovered leading preview: ${preview.next_offset} bytes, ${outputLines} of ${truncation.totalLines} lines${lastLinePartial ? "; last line is partial" : ""}. Full output: ${native.details?.fullOutputPath}]`;
+    const status = task.record.exit_code ? `\n\nCommand exited with code ${task.record.exit_code}` : "";
+    return {
+      ...native,
+      content: [{ type: "text" as const, text: `${preview.output}\n\n${notice}${status}` }],
+      details: { ...native.details, truncation: { ...truncation, content: preview.output,
+        truncatedBy: limit as "lines" | "bytes", outputLines, outputBytes: preview.next_offset, lastLinePartial } },
+    };
+  }
   async run(cwd: string, args: { command: string; timeout?: number; run_in_background?: boolean; pipefail?: boolean }, signal: AbortSignal | undefined, started: (id: string) => void, completed: (id: string) => void) {
     signal?.throwIfAborted();
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -161,7 +181,7 @@ export class Tasks {
       signal?.removeEventListener("abort", abort);
       if (terminal(record.status)) {
         if (task.error) throw task.error;
-        return task.output!;
+        return this.foregroundResult(task);
       }
       signal?.throwIfAborted();
       task.background = true;

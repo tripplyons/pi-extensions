@@ -14,6 +14,13 @@ return the native stdout/stderr, exit status, truncation metadata, and full-outp
 path when present. Task failure tracking does not replace those diagnostics with
 an exit-code-only error.
 
+Normal foreground previews keep Pi's native output tail. If Pi reports truncated
+output but returns an empty preview, the runner recovers a leading preview from
+its captured output, bounded to 2,000 lines or 50 KB with intact UTF-8 characters.
+The notice identifies the leading preview and any partial final line. The native
+full-output path, structured result, and exit diagnostics remain available;
+recovery does not consume the task's automatic output cursor.
+
 Tasks belong to their launching session branch. Completion notifications wait
 for idle and arrive in one steering message per batch. They never queue a
 separate follow-up turn. Observing terminal status acknowledges the
@@ -22,6 +29,13 @@ advance the automatic output cursor. Each output read returns at most 2,000 line
 or 50 KB and keeps UTF-8 characters intact. `next_offset` counts bytes actually
 returned, so the next read preserves unread output. Use `next_offset` for explicit
 reads instead of guessing a byte offset within a character.
+
+`task_output` accepts `wait_ms` (default 0, capped at 30,000 ms). It waits only
+when a live task has no unread bytes at the requested or automatic cursor.
+Unread output and terminal status return immediately. A silent live task can
+return empty output and an unchanged `next_offset` after the wait expires;
+that does not mean it skipped the wait. New output or completion wakes the read
+early. `wait_ms` is not a minimum polling interval and does not stop the task.
 
 ## Opt-in pipeline failure detection
 

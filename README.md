@@ -19,7 +19,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with opt-in pipeline failure detection, reload-safe tasks, bounded UTF-8 output and progress reports with optional log-file watching |
+| [tasks](extensions/tasks) | Native Bash with opt-in pipeline failure detection, reload-safe tasks, bounded UTF-8 output with empty-preview recovery, and progress reports with optional log-file watching |
 | [python](extensions/python) | Inline Python with uv, script-defined dependencies and Python versions, and managed background tasks |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |

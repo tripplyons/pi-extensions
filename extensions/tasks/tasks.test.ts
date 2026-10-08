@@ -125,6 +125,66 @@ test("large failed foreground output keeps native truncation and its full output
   await rm(reply.details!.fullOutputPath!, { force: true });
 });
 
+for (const exitCode of [0, 7]) {
+  test(`empty native Bash previews recover leading output and preserve exit ${exitCode}`, async () => {
+    const text = `2\npath/a\npath/b\n${"x".repeat(650000)}\n`;
+    const { h, tasks } = await taskHarness({ exec: async (_command, _cwd, { onData }) => {
+      onData(Buffer.from(text)); return { exitCode };
+    } });
+    const reply = await h.call("bash", { command: "controlled" });
+    const id = h.entries.find(entry => entry.customType === taskKey).data;
+    expect(Boolean(reply.isError)).toBe(exitCode !== 0);
+    expect(reply.content[0].text).toStartWith("2\npath/a\npath/b\n");
+    expect(reply.content[0].text).toContain("Recovered leading preview");
+    expect(reply.content[0].text).not.toContain("(no output)");
+    expect(reply.content[0].text).not.toContain("Showing lines 5-4");
+    if (exitCode) expect(reply.content[0].text).toContain(`Command exited with code ${exitCode}`);
+    const truncation = reply.details.truncation;
+    expect(truncation).toMatchObject({ truncated: true, totalLines: 4, totalBytes: Buffer.byteLength(text), outputLines: 4, outputBytes: 51200, lastLinePartial: true });
+    expect(Buffer.byteLength(truncation.content)).toBe(51200);
+    expect(await readFile(reply.details.fullOutputPath, "utf8")).toBe(text);
+    expect(reply.structuredContent).toMatchObject({ output: text, exit_code: exitCode, truncated: false });
+    // Recovery uses an explicit read and must not consume the task's cursor.
+    expect((await h.call("task_output", { task_id: id })).details.output).toBe(truncation.content);
+    expect(tasks.query(id).status).toBe(exitCode ? "failed" : "succeeded");
+    await rm(reply.details.fullOutputPath, { force: true });
+  });
+}
+
+for (const text of [`${"€".repeat(220000)}\n`, `${"short\n".repeat(2005)}${"x".repeat(650000)}\n`]) {
+  test(`recovered leading Bash previews respect ${text.startsWith("€") ? "UTF-8 byte" : "line"} limits`, async () => {
+    const { h } = await taskHarness({ exec: async (_command, _cwd, { onData }) => {
+      onData(Buffer.from(text)); return { exitCode: 0 };
+    } });
+    const reply = await h.call("bash", { command: "controlled" });
+    const truncation = reply.details.truncation;
+    expect(reply.content[0].text).toContain("Recovered leading preview");
+    expect(truncation.content).not.toContain("\ufffd");
+    expect(Buffer.byteLength(truncation.content)).toBeLessThanOrEqual(51200);
+    if (text.startsWith("€")) {
+      expect(truncation.content).toBe("€".repeat(Math.floor(51200 / 3)));
+      expect(truncation).toMatchObject({ outputLines: 1, lastLinePartial: true });
+    } else {
+      expect(truncation.content).toBe("short\n".repeat(2000));
+      expect(truncation).toMatchObject({ outputLines: 2000, lastLinePartial: false });
+    }
+    await rm(reply.details.fullOutputPath, { force: true });
+  });
+}
+
+test("nonempty native Bash tail previews remain unchanged", async () => {
+  const text = `first line\n${"middle\n".repeat(10000)}last diagnostic\n`;
+  const { h } = await taskHarness({ exec: async (_command, _cwd, { onData }) => {
+    onData(Buffer.from(text)); return { exitCode: 0 };
+  } });
+  const reply = await h.call("bash", { command: "controlled" });
+  expect(reply.content[0].text).toContain("last diagnostic");
+  expect(reply.content[0].text).not.toContain("first line");
+  expect(reply.content[0].text).not.toContain("Recovered leading preview");
+  expect(reply.details.truncation.outputLines).toBe(2000);
+  await rm(reply.details.fullOutputPath, { force: true });
+});
+
 test("promoted foreground deadlines still terminate commands", async () => {
   const { root, tasks } = await setup(); let id = "";
   await tasks.run(root, { command: "sleep 5", timeout: 0.08 }, undefined, value => { id = value; }, ignore);
