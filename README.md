@@ -8,7 +8,7 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (29)
+## Extensions (30)
 
 | Extension | Behavior |
 | --- | --- |
@@ -31,6 +31,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [models](extensions/models) | Model listing and selection |
 | [lm-studio](extensions/lm-studio) | Local LM Studio provider with model discovery, catalog-based thinking levels, and catalog refresh |
 | [council](extensions/council) | Council presets with append-only round guidance, 10-response Sol execution rounds, and advisor-free swarm notification handling |
+| [extension-manager](extensions/extension-manager) | `/extensions` menu to enable or disable installed extensions globally |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |
