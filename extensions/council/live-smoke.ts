@@ -65,13 +65,13 @@ const { session } = await createAgentSession({
 	}),
 	customTools: [{
 		name: "council_smoke_step", label: "Smoke step",
-		description: "Increment a harmless in-memory counter by one. No file or network access. Call this once per assistant response until the count reaches 9, then finish.",
+		description: "Increment a harmless in-memory counter by one. No file or network access. Call this once per assistant response until the count reaches 11, then finish.",
 		parameters: Type.Object({}),
 		async execute() {
-			assert(steps < 9, "The smoke task must stop after nine steps");
+			assert(steps < 11, "The smoke task must stop after eleven steps");
 			steps++;
 			console.log(JSON.stringify({ event: "step", count: steps }));
-			return { content: [{ type: "text", text: `Counter is ${steps}. ${steps < 9 ? "Call once again in your next response." : "Finish now. Do not call more tools."}` }], details: undefined };
+			return { content: [{ type: "text", text: `Counter is ${steps}. ${steps < 11 ? "Call once again in your next response." : "Finish now. Do not call more tools."}` }], details: undefined };
 		},
 	}],
 });
@@ -81,17 +81,17 @@ try {
 	await session.setModel(runtime.getModel("tripp", "council")!);
 	const timer = setTimeout(() => session.abort(), 240_000);
 	try {
-		await session.prompt("This is an authorized live Council smoke test. The entire task is to call council_smoke_step exactly once per assistant response, for nine separate responses. Do not combine calls in one response. After the tool reports 9, reply briefly that the test is complete. Do not inspect or change files. No other work is needed.");
+		await session.prompt("This is an authorized live Council smoke test. The entire task is to call council_smoke_step exactly once per assistant response, for eleven separate responses. Do not combine calls in one response. After the tool reports 11, reply briefly that the test is complete. Do not inspect or change files. No other work is needed.");
 	} finally { clearTimeout(timer); }
 	assert.deepEqual(errors, []);
 	const failures = session.messages.filter(message => message.role === "assistant" &&
 		(message.stopReason === "error" || message.stopReason === "aborted"));
 	assert.equal(failures.length, 0, "A live model request failed or was aborted");
-	assert.equal(steps, 9);
+	assert.equal(steps, 11);
 	const advisors = records.filter(record => record.role === "advisor");
 	const executors = records.filter(record => record.role === "executor");
 	assert.equal(advisors.length, 6, "Expected two consultations of three models");
-	assert.equal(executors.length, 10, "Expected nine tool responses and one final answer");
+	assert.equal(executors.length, 12, "Expected eleven tool responses and one final answer");
 	for (const record of records) {
 		assert.equal(record.effort, record.model === "claude-opus-5-5" ? "low" : "medium");
 		if (record.model !== "claude-opus-5-5") assert.equal(record.tier, "priority");

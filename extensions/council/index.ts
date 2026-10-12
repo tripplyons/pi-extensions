@@ -6,7 +6,7 @@ import { priorityPayload } from "../fast-mode/index.ts";
 export const PROVIDER = "tripp";
 export const MODEL_ID = "council";
 export const OPENAI_MODEL_ID = "council-openai";
-export const TURN_BUDGET = 8;
+export const TURN_BUDGET = 10;
 const STATE_KEY = "pi.virtual-model-state";
 const ADVISOR_TIMEOUT_MS = 120_000;
 const MAX_CONTEXT_CHARS = 120_000;

@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import council from "./index.ts";
+import council, { TURN_BUDGET } from "./index.ts";
 
 test.each([
 	{ id: "council", count: 3, effort: ["medium", "medium", "low"] },
 	{ id: "council-openai", count: 2, effort: ["high", "high"] },
-])("real SDK routes $id and refreshes after eight tool turns", async ({ id: modelId, count, effort: expectedEffort }) => {
+])("real SDK routes $id and refreshes after ten tool turns", async ({ id: modelId, count, effort: expectedEffort }) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-council-sdk-"));
 	const runtime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json"), refreshOnCreate: false });
 	let advisors = 0;
@@ -38,13 +38,13 @@ test.each([
 						effort.push(options?.reasoning);
 					} else {
 						execution++;
-						expect(advisors).toBe(execution <= 8 ? count : count * 2);
+						expect(advisors).toBe(execution <= TURN_BUDGET ? count : count * 2);
 						expect(options?.reasoning).toBe("medium");
-						const round = execution <= 8 ? 1 : 2;
+						const round = execution <= TURN_BUDGET ? 1 : 2;
 						const guidance = context.messages.filter(message => message.role === "system" &&
 							String(message.content).includes(`Synthesize all ${count} advisory answers`));
 						expect(guidance).toHaveLength(round);
-						if (execution === 1 || execution === 9) expect(context.messages.at(-1)).toBe(guidance.at(-1));
+						if (execution === 1 || execution === TURN_BUDGET + 1) expect(context.messages.at(-1)).toBe(guidance.at(-1));
 						if (previousPrompt) {
 							expect(JSON.stringify(context.messages.slice(0, previousPrompt.length))).toBe(previousPrompt.text);
 						}
@@ -53,11 +53,11 @@ test.each([
 					}
 					const content: AssistantMessage["content"] = isAdvisor
 						? [{ type: "text", text: `Advice from ${model.id}` }]
-						: execution <= 9
+						: execution <= TURN_BUDGET + 1
 							? [{ type: "toolCall", id: `step-${execution}`, name: "council_test_step", arguments: {} }]
 							: [{ type: "text", text: "Done." }];
 					const message: AssistantMessage = { role: "assistant", provider: id, model: model.id, api: model.api,
-						content, stopReason: isAdvisor || execution > 9 ? "stop" : "toolUse", timestamp: Date.now(),
+						content, stopReason: isAdvisor || execution > TURN_BUDGET + 1 ? "stop" : "toolUse", timestamp: Date.now(),
 						usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 					stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message });
@@ -93,17 +93,17 @@ test.each([
 		const virtual = runtime.getModel("tripp", modelId)!;
 		expect(virtual).toBeDefined();
 		await session.setModel(virtual);
-		await session.prompt("Perform nine test steps, then stop.");
+		await session.prompt(`Perform ${TURN_BUDGET + 1} test steps, then stop.`);
 		expect(errors).toEqual([]);
 		expect(session.messages.filter(message => message.role === "assistant").map(message => message.errorMessage).filter(Boolean)).toEqual([]);
-		expect(steps).toBe(9);
-		expect(execution).toBe(10);
+		expect(steps).toBe(TURN_BUDGET + 1);
+		expect(execution).toBe(TURN_BUDGET + 2);
 		expect(advisors).toBe(count * 2);
 		expect(effort).toEqual([...expectedEffort, ...expectedEffort]);
 		expect(tiers.every(payload => (payload as any)?.service_tier === "priority")).toBe(true);
 		const saved = session.sessionManager.getBranch().filter(entry => entry.type === "custom" &&
 			entry.customType === "pi.virtual-model-state");
-		expect(saved).toHaveLength(10);
+		expect(saved).toHaveLength(TURN_BUDGET + 2);
 		const last = saved.at(-1) as any;
 		expect(last.data.state.round).toBe(2);
 		expect(last.data.state.turns).toBe(2);

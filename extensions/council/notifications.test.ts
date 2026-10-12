@@ -79,7 +79,7 @@ test.each([{ id: "council", count: 3 }, { id: "council-openai", count: 2 }])(
       expect(advisors).toBe(0);
       expect(state()).toBeUndefined();
       phase = "work";
-      await session.prompt("Perform eight bounded test responses, then stop.");
+      await session.prompt("Perform ten bounded test responses, then stop.");
       expect(workTurns).toBe(TURN_BUDGET);
       expect(advisors).toBe(count);
       const before = structuredClone(state());

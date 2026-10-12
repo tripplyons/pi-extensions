@@ -334,7 +334,7 @@ test("known swarm notices reuse advice, but unrelated extension messages remain 
 	expect(h.state?.turns).toBe(1);
 });
 
-test("reconsults only at the ninth response and reuses retries", async () => {
+test("reconsults only at the eleventh response and reuses retries", async () => {
 	const h = harness();
 	await h.route();
 	for (let turn = 2; turn <= TURN_BUDGET; turn++) {

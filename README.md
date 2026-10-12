@@ -30,7 +30,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
 | [models](extensions/models) | Model listing and selection |
 | [lm-studio](extensions/lm-studio) | Local LM Studio provider with model discovery, catalog-based thinking levels, and catalog refresh |
-| [council](extensions/council) | Council presets with append-only round guidance, bounded Sol execution, and advisor-free swarm notification handling |
+| [council](extensions/council) | Council presets with append-only round guidance, 10-response Sol execution rounds, and advisor-free swarm notification handling |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
 | [overseer](extensions/overseer) | Terminal busy/attention glow |

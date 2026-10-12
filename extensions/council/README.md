@@ -28,7 +28,7 @@ Anthropic model or login.
 ## Execution
 
 Sol receives every advisory answer, synthesizes them, and executes through the
-session's normal tools. Each round permits 8 Sol responses and their tool
+session's normal tools. Each round permits 10 Sol responses and their tool
 batches. Before the next response, the selected variant consults its advisors
 using the work so far. Each new user message, including user steering, starts a
 fresh round.
@@ -37,7 +37,7 @@ A finished task stops normally. Council never forces another agent turn.
 Informational swarm messages, check-ins, review reminders, health alerts,
 handoffs, and error-resume notices are notification wake-ups. When they are the
 only new inputs, Council handles them with Sol without consulting advisors or
-spending an execution slot, even at the 8-response boundary. Existing advice
+spending an execution slot, even at the 10-response boundary. Existing advice
 stays internal and the next normal work request can refresh it. This also works
 before the first consultation and after compaction. Real user inputs, parent
 instructions, and tool follow-ups are not exempt.
@@ -126,6 +126,6 @@ bun extensions/council/live-smoke.ts
 ```
 
 It gives Sol only an in-memory counter tool. It verifies two three-model
-consultations, nine separate tool responses, a final answer, exact efforts, and
+consultations, eleven separate tool responses, a final answer, exact efforts, and
 OpenAI priority payloads. It does not save a session or expose file and shell
 tools. Advisory calls can incur Anthropic API charges depending on your login.

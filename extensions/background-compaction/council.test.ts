@@ -95,7 +95,7 @@ test.each([
       (message.stopReason === "error" || message.stopReason === "aborted"))).toEqual([]);
     expect(errors).toEqual([]);
     expect(statuses.get("background-compaction")).toBe("background: preparing");
-    statuses.set("council", `${modelId}: round 123, Sol 8/8`);
+    statuses.set("council", `${modelId}: round 123, Sol 10/10`);
     expect(footer.render(60)[0]).toContain("background: preparing");
     expect(footer.render(120)[0]).not.toContain("medium");
     expect(finishSummary).toBeDefined();
