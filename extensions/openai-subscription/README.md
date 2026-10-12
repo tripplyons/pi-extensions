@@ -30,7 +30,7 @@ Use `/model openai/gpt-6.1-sol` after login.
 
 ## Interrupted responses
 
-Pi 1.0.1 does not classify `upstream stream ended before a completion event;
+Pi 1.2.0 does not classify `upstream stream ended before a completion event;
 this turn may be incomplete` as a retryable error. The wrapper labels that exact
 failure as a connection error so Pi's existing retry budget and backoff apply.
 It does not mark the failed turn successful, execute partial tool calls, or

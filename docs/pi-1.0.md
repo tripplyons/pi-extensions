@@ -1,6 +1,6 @@
 # Pi 1.0 migration
 
-The package requires Pi 1.0.1 or newer. Dotfiles owns settings, instructions, theme,
+The package requires Pi 1.2.0 or newer. Dotfiles owns settings, instructions, theme,
 keybindings, and custom model configuration. Credentials, caches, task output,
 and sessions stay outside both repositories.
 
@@ -14,7 +14,7 @@ expanded calls retain their registered result renderers.
 Small tested adapters remain where Pi has no public spacing hook.
 
 Background Bash, completion notifications, branch ownership, goals, swarm,
-todos, web access, session export, and autoresearch remain available.
+web access, session export, and autoresearch remain available.
 
 ## Native behavior
 
@@ -26,14 +26,24 @@ removed from the active set by this package.
 
 MiniMax archiving, request admission, compacted checkpoints, and reminder
 projection are retired. Existing session files and old archive files are not
-deleted. Todos and task records retain their old storage keys.
+deleted. Task records retain their old storage keys.
 
 The footer reports native context-window use, including unknown usage after
 compaction. Catalog costs are estimates, not subscription charges.
 Dotfiles drops old catalog copies and artificial context caps. Custom endpoints
 and models stay configured.
 
-Skill, goal, autoresearch, and todo instructions use native prompt sections.
+Skill, goal, and autoresearch instructions use native prompt sections.
+The todos extension is retired; `update_plan` from Online Context Compact
+replaces `todo_write`. Old todo entries stay in session files.
+
+## Pi 1.2.0
+
+Pi 1.2.0 marks a run active before prompt preflight compaction, so the
+background-compaction prototype patch is retired. Runs started with
+`pi.sendMessage(..., { triggerTurn: true })` now store a system-role entry
+before the first request; Council ignores it when it checks for new input.
+Action Fusion wraps the native edit and write tools to add `then_run`.
 
 ## ChatGPT-only OpenAI use
 
@@ -60,6 +70,6 @@ dependency and provider changes.
 
 ## Dependencies
 
-The SDK test dependencies are pinned to Pi 1.0.1. `npm audit` reports no
+The SDK test dependencies are pinned to Pi 1.2.0. `npm audit` reports no
 vulnerabilities for this lockfile. The extension install uses
 `npm ci --omit=dev`; update the global Pi installation separately.

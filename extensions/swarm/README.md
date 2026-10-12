@@ -45,7 +45,7 @@ can read files with `read`, `grep`, `find`, and `ls`, coordinate with other agen
 inspect swarm state, and inspect, watch, or stop tasks. They can run one read-only
 Bash command, such as `date`, `git status`, `git log`, or `git diff`, with a
 15-second limit and no redirection, chaining, or background mode. Pipes between
-read-only commands are allowed. They can also use `todo_write`, `complain`, `session_search`, and `session_read`, and
+read-only commands are allowed. They can also use `update_plan`, `complain`, `session_search`, and `session_read`, and
 manage context with `compress`, `search_context`, `acp_status`, `acp_cache`, and
 `decompress` without `toFile`. These calls do not release permission. The same rule applies to reload
 checkpoint holds. Codemode can dispatch these allowed tools; Pi checks each

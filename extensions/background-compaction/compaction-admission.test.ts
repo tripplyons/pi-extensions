@@ -3,9 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
-import { AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import background from "./index.ts";
-import { installPromptAdmission } from "./prompt-admission.ts";
 
 const usage = (input: number) => ({ input, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: input + 10,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
@@ -98,16 +97,4 @@ test.each([
     session.dispose();
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test("admission restores prototypes only after the last owner shuts down", () => {
-  const prompt = AgentSession.prototype.prompt, custom = AgentSession.prototype.sendCustomMessage;
-  const first = installPromptAdmission(), second = installPromptAdmission();
-  const guarded = AgentSession.prototype.prompt;
-  expect(guarded).not.toBe(prompt);
-  first(); first();
-  expect(AgentSession.prototype.prompt).toBe(guarded);
-  second();
-  expect(AgentSession.prototype.prompt).toBe(prompt);
-  expect(AgentSession.prototype.sendCustomMessage).toBe(custom);
 });

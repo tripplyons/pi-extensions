@@ -1,5 +1,6 @@
 import tasks from "../extensions/tasks/index.ts";
-import todos from "../extensions/todos/index.ts";
+import observationPack from "../extensions/observation-pack/index.ts";
+import onlineContextCompact from "../extensions/online-context-compact/index.ts";
 import { registerCompactToolRenderers } from "../extensions/presentation/tool-renderers.ts";
 import askUser from "../extensions/ask-user/index.ts";
 import { expect, test } from "bun:test";
@@ -19,7 +20,7 @@ function render(value: any, expanded = true, width = 100, isError = false) {
 
 test("all JSON-result tools register the text preview renderer", () => {
   const h = harness();
-  for (const install of [goals, tasks, todos, complain, swarm]) install(h.pi);
+  for (const install of [goals, tasks, onlineContextCompact, observationPack, complain, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
     if (["read", "edit", "write", "grep", "glob"].includes(name)) { expect(tool.renderResult).toBeFunction(); continue; }
     expect(tool.renderResult).toBe(renderResult);
@@ -66,7 +67,7 @@ test("collapsed previews bound wrapped output; expanded previews show all lines"
 
 test("tool names use accent, without coloring Bash commands", () => {
   const h = harness();
-  for (const install of [goals, tasks, todos, complain, swarm]) install(h.pi);
+  for (const install of [goals, tasks, onlineContextCompact, observationPack, complain, swarm]) install(h.pi);
   for (const [name, tool] of h.tools) {
     const colors: [string, string][] = [];
     const theme = {

@@ -38,22 +38,25 @@
       "./extensions/web/index.ts",
       "./extensions/tasks/index.ts",
       "./extensions/python/index.ts",
-      "./extensions/todos/index.ts",
+      "./extensions/action-fusion/index.ts",
+      "./extensions/observation-pack/index.ts",
+      "./extensions/evidence-preserving-reducer/index.ts",
+      "./extensions/online-context-compact/index.ts",
       "./extensions/openai-subscription/index.ts",
       "./extensions/lm-studio/index.ts",
       "./extensions/extension-manager/index.ts"
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.1",
-    "@earendil-works/pi-coding-agent": "1.0.1",
-    "@earendil-works/pi-tui": "1.0.1",
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@earendil-works/pi-tui": "1.2.0",
     "typebox": "1.3.27"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.0.1",
-    "@earendil-works/pi-coding-agent": ">=1.0.1",
-    "@earendil-works/pi-tui": ">=1.0.1",
+    "@earendil-works/pi-ai": ">=1.2.0",
+    "@earendil-works/pi-coding-agent": ">=1.2.0",
+    "@earendil-works/pi-tui": ">=1.2.0",
     "typebox": ">=1.0.0"
   },
   "peerDependenciesMeta": {

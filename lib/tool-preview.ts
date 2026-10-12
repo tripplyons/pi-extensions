@@ -125,7 +125,12 @@ export function toolCall(name: string): NonNullable<ToolDefinition<any>["renderC
       if (key) return preview(String(args[key]));
       const scalar = Object.entries(args).find(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean");
       if (scalar) return preview(`${scalar[0]}: ${scalar[1]}`);
-      if (Array.isArray(args.todos)) return preview(`${args.todos.length} tasks`);
+      if (Array.isArray(args.steps)) {
+        const steps = args.steps as Array<{ status?: unknown; goal?: unknown }>;
+        const active = steps.find(step => step?.status === "in_progress")?.goal;
+        const done = steps.filter(step => step?.status === "completed").length;
+        return preview(`${done}/${steps.length} done${typeof active === "string" ? `: ${active}` : ""}`);
+      }
       return preview("");
     }
     const path = typeof args?.path === "string" ? args.path : name === "ls" ? "." : "...";
@@ -134,6 +139,8 @@ export function toolCall(name: string): NonNullable<ToolDefinition<any>["renderC
       typeof args?.limit === "number" ? `limit: ${args.limit}` : undefined,
     ].filter(Boolean);
     const suffix = range.length ? ` (${range.join(", ")})` : "";
-    return preview(`${path}${suffix}`);
+    // Action Fusion adds a command that runs after the edit or write.
+    const thenRun = (args?.then_run as { command?: unknown } | undefined)?.command;
+    return preview(`${path}${suffix}${typeof thenRun === "string" ? `, then $ ${thenRun}` : ""}`);
   };
 }

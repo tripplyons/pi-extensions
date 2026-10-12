@@ -79,7 +79,8 @@ function swarmNotificationOnly(ctx: ExtensionContext): boolean {
 			entry.message.stopReason !== "error" && entry.message.stopReason !== "aborted"));
 	const pending = branch.slice(boundary + 1).filter(entry => {
 		if (entry.type === "custom_message" || entry.type === "branch_summary") return true;
-		if (entry.type !== "message") return false;
+		// Pi stores the run's system prompt before its first request; it is setup, not new input.
+		if (entry.type !== "message" || entry.message.role === "system") return false;
 		return entry.message.role !== "assistant" || !["error", "aborted"].includes(entry.message.stopReason);
 	});
 	return pending.length > 0 && pending.every(entry => {

@@ -34,7 +34,7 @@ export async function* retryableStream(events: AsyncIterable<AssistantMessageEve
   for await (const event of events) {
     if (event.type === "error" && event.reason === "error" &&
       event.error.errorMessage === "upstream stream ended before a completion event; this turn may be incomplete") {
-      // Pi 1.0.1 recognizes connection errors, but not this Responses EOF text.
+      // Pi 1.2.0 recognizes connection errors, but not this Responses EOF text.
       // Keep the failed turn failed. Pi owns the retry budget and backoff.
       yield { ...event, error: { ...event.error, errorMessage: `Connection error: ${event.error.errorMessage}` } };
     } else yield event;

@@ -300,7 +300,7 @@ test("reports a provider stream that ends without a terminal result", async () =
 	await harness.runAgentEnd();
 
 	expect(harness.getName()).toBeUndefined();
-	expect(harness.notices.at(-1)).toBe("Auto-rename failed: Naming request ended without a terminal result");
+	expect(harness.notices.at(-1)).toBe("Auto-rename failed: Request ended without a terminal result");
 	expect(harness.statuses.at(-1)).toEqual({ key: "auto-rename", value: undefined });
 });
 

@@ -20,7 +20,7 @@ test("the resolver changes no tool definitions and handles tools registered late
 });
 
 test("every collapsed tool has one content row through streaming, completion, errors and resize", () => {
-  for (const name of ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_user", "web_search", "swarm_spawn", "task_output", "todo_write", "mcp_future"]) {
+  for (const name of ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_user", "web_search", "swarm_spawn", "task_output", "update_plan", "mcp_future"]) {
     const component = tool(name, { path: "界".repeat(80), command: "echo first\necho second", question: "hello\nworld", query: "test" });
     for (const width of [1, 8, 30, 100]) {
       const lines = plain(component, width);

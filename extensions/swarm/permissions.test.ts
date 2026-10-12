@@ -7,7 +7,7 @@ test("holds allow single read-only commands and reject writes, chaining and exec
 });
 
 test("waits allow housekeeping tools and handoff; checkpoints refuse the handoff", () => {
-  for (const tool of ["todo_write", "complain", "task_watch", "swarm_board"]) for (const hold of ["checkpoint", "wait"] as const) expect(allowedDuringHold(tool, {}, hold)).toBe(true);
+  for (const tool of ["update_plan", "complain", "task_watch", "swarm_board"]) for (const hold of ["checkpoint", "wait"] as const) expect(allowedDuringHold(tool, {}, hold)).toBe(true);
   expect(allowedDuringHold("bash", { command: "git status" }, "checkpoint")).toBe(true);
   expect(allowedDuringHold("bash", { command: "git status", run_in_background: true }, "wait")).toBe(false);
   expect(allowedDuringHold("bash", { command: "npm test" }, "wait")).toBe(false);
