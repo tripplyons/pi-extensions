@@ -13,13 +13,13 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | Extension | Behavior |
 | --- | --- |
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
-| [swarm](extensions/swarm) | Isolated workers with messaging, a shared board, model overrides, reload barriers, permission checks, reviews, health checks and saved-conversation inspection |
+| [swarm](extensions/swarm) | Isolated workers with messaging, reviews, reload barriers, health checks, saved-conversation inspection, and T3 Code running-state reporting |
 | [session-search](extensions/session-search) | Local project-history search with original-message retrieval, summary expansion and a read-only inspector |
 | [ask-user](extensions/ask-user) | Free-text questions with numbered suggestions and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with opt-in pipeline failure detection, reload-safe tasks, bounded UTF-8 output with empty-preview recovery, and progress reports with optional log-file watching |
+| [tasks](extensions/tasks) | Native Bash with reload-safe background tasks, T3 Code running-state reporting, opt-in pipeline failure detection, bounded output, and progress reports |
 | [python](extensions/python) | Inline Python with uv, script-defined dependencies and Python versions, and managed background tasks |
 | [todos](extensions/todos) | Persistent branch-local task lists |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |

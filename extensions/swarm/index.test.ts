@@ -7,6 +7,47 @@ import { SwarmStore } from "./state.ts";
 import { Workers, type Launch } from "./worker.ts";
 import { git } from "./git.ts";
 import { harness } from "../../lib/harness.ts";
+test("publishes active swarm descendants including reviews, not the root or terminal workers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-swarm-background-"));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  const h = harness(); install(h.pi);
+  const snapshots: any[] = [];
+  h.pi.events.on("t3:background-tasks", (snapshot: unknown) => snapshots.push(snapshot));
+  try {
+    await h.command("swarm:start", "Build the feature");
+    const identity = h.entries.at(-1).data;
+    const store = new SwarmStore(join(root, "swarm"));
+    expect(snapshots.at(-1)).toEqual({ source: "swarm", sessionFile: "/test/session.jsonl", tasks: [] });
+    const child = await store.reserve(identity.run, identity.node, "Worker", "Build a part");
+    await store.update(identity.run, run => { run.nodes[child.id].status = "running"; });
+    const nested = await store.reserve(identity.run, child.id, "Nested", "Build another part");
+    await store.update(identity.run, run => { run.nodes[child.id].status = "starting"; run.nodes[nested.id].status = "running"; });
+    await h.call("swarm_tree", {});
+    expect(snapshots.at(-1).tasks).toEqual([child, nested].map(worker => ({ taskId: `swarm:${identity.run}:${worker.id}`, kind: "subagent", description: worker.name })));
+    await store.update(identity.run, run => { run.nodes[child.id].status = "review"; });
+    await h.call("swarm_tree", {});
+    expect(snapshots.at(-1).tasks).toHaveLength(2);
+    await store.update(identity.run, run => { run.nodes[nested.id].status = "stopped"; });
+    await h.call("swarm_tree", {});
+    expect(snapshots.at(-1).tasks).toHaveLength(1);
+    await store.update(identity.run, run => { run.nodes[child.id].status = "accepted"; });
+    await h.call("swarm_tree", {});
+    expect(snapshots.at(-1).tasks).toEqual([]);
+    await store.update(identity.run, run => { run.nodes[child.id].status = "running"; });
+    await h.call("swarm_tree", {});
+    expect(snapshots.at(-1).tasks).toHaveLength(1);
+    await h.emit("session_start");
+    expect(snapshots.at(-1).tasks).toHaveLength(1);
+    h.entries.length = 0;
+    await h.emit("session_tree");
+    expect(snapshots.at(-1).tasks).toEqual([]);
+  } finally {
+    await h.emit("session_shutdown");
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("inbox messages reach the session as readable notifications", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
@@ -14,6 +55,8 @@ test("inbox messages reach the session as readable notifications", async () => {
   const alive = Workers.prototype.alive; Workers.prototype.alive = async () => true;
   const h = harness(); install(h.pi);
   h.ctx.isIdle = () => false;
+  const background: any[] = [];
+  h.pi.events.on("t3:background-tasks", (snapshot: unknown) => background.push(snapshot));
   try {
     await h.command("swarm:start", "Build the feature");
     const identity = h.entries.at(-1).data;
@@ -38,6 +81,7 @@ test("inbox messages reach the session as readable notifications", async () => {
       options: { triggerTurn: true, deliverAs: "steer" },
     });
     expect(await store.inbox(identity.run, identity.node)).toEqual([]);
+    expect(background.at(-1).tasks).toHaveLength(1);
     const alerts: string[] = [];
     const statuses: Array<string | undefined> = [];
     h.ctx.ui.notify = (text: string) => alerts.push(text);
@@ -48,6 +92,7 @@ test("inbox messages reach the session as readable notifications", async () => {
     while ((!alerts.length || h.sentMessages.length < 2) && Date.now() < alertDeadline) await new Promise(resolve => setTimeout(resolve, 25));
     expect(alerts).toEqual(["Swarm Worker awaits parent review (handoff revision 1)."]);
     expect(statuses).toContain("swarm: 1 awaiting parent review");
+    expect(background.at(-1).tasks).toHaveLength(1);
     expect(h.sentMessages[1].message.content).toContain("Awaiting parent review: handoff revision 1");
     await new Promise(resolve => setTimeout(resolve, 1100));
     expect(alerts).toHaveLength(1);

@@ -45,6 +45,27 @@ export default function install(pi: ExtensionAPI) {
   const store = new SwarmStore(join(root, "swarm"));
   const workers = new Workers();
   let identity: Identity | undefined;
+  let currentContext: ExtensionContext | undefined;
+  let lastBackgroundSnapshot: string | undefined;
+  async function publishBackground(ctx: ExtensionContext, loaded?: { run: Run; node: Run["nodes"][string] }, force = false) {
+    const owner = identity;
+    const state = loaded ?? (owner ? await active(ctx) : undefined);
+    if (!currentContext || identity !== owner) return;
+    if (state && (!owner || state.run.id !== owner.run || state.node.id !== owner.node)) return;
+    const snapshot = {
+      source: "swarm", sessionFile: ctx.sessionManager.getSessionFile(),
+      tasks: state ? descendants(state.run, state.node.id)
+        .filter(worker => !terminal(worker.status))
+        .map(worker => ({ taskId: `swarm:${state.run.id}:${worker.id}`, kind: "subagent", description: worker.name })) : [],
+    };
+    const serialized = JSON.stringify(snapshot);
+    if (!force && serialized === lastBackgroundSnapshot) return;
+    lastBackgroundSnapshot = serialized;
+    pi.events.emit("t3:background-tasks", snapshot);
+  }
+  const detachBackground = pi.events.on("t3:background-tasks-request", () => {
+    if (currentContext) void publishBackground(currentContext, undefined, true).catch(() => {});
+  });
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   const alerted = new Set<string>();
@@ -88,6 +109,7 @@ export default function install(pi: ExtensionAPI) {
     polling = true;
     try {
       const { run, node } = await active(ctx);
+      await publishBackground(ctx, { run, node });
       if (Date.now() - healthAt >= 10_000) {
         healthAt = Date.now();
         const snapshots = latestHealth = await diagnostics(run, node.id, restore<number>(ctx, "pi:swarm-quiet") ?? 300);
@@ -198,6 +220,8 @@ export default function install(pi: ExtensionAPI) {
   pi.on("model_select", (event, ctx) => saveCurrent(ctx, event.model));
   pi.on("thinking_level_select", (event, ctx) => saveCurrent(ctx, ctx.model, event.level));
   const load = async (_event: unknown, ctx: ExtensionContext) => {
+    currentContext = ctx;
+    lastBackgroundSnapshot = undefined;
     if (timer) clearInterval(timer);
     reviewReminders.reset();
     workerCheckins.reset();
@@ -208,6 +232,7 @@ export default function install(pi: ExtensionAPI) {
     if (identity) {
       await store.recordRuntime(identity.run, identity.node, revision, process.env.PI_SWARM_GENERATION || undefined);
       await saveCurrent(ctx); timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
+    await publishBackground(ctx);
     if (view) { if (identity) await show(ctx); else hide(ctx); }
   };
   // A failed model stream leaves a worker idle. Report it once Pi stops retrying so the parent can resume the worker.
@@ -277,7 +302,7 @@ export default function install(pi: ExtensionAPI) {
     }
     if (node.parent && (node.resume?.status === "delivered" || !event.toolName.startsWith("swarm_"))) await store.observeTool(run.id, node.id, event.toolName);
   });
-  pi.on("session_shutdown", async () => { cancelResume(); if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
+  pi.on("session_shutdown", async () => { currentContext = undefined; detachBackground(); cancelResume(); if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
   pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
     if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot activate swarms");
     if (identity) throw new Error("A swarm is already associated with this session");
@@ -338,8 +363,10 @@ export default function install(pi: ExtensionAPI) {
       annotations: name === "swarm_inspect" ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } : undefined,
       async execute(_id, args, signal, _update, ctx) {
         signal?.throwIfAborted();
-        const output = result(await execute(args, ctx, signal));
-        return completing || (name === "swarm_reload" && args.action === "checkpoint") ? { ...output, terminate: true } : output;
+        try {
+          const output = result(await execute(args, ctx, signal));
+          return completing || (name === "swarm_reload" && args.action === "checkpoint") ? { ...output, terminate: true } : output;
+        } finally { await publishBackground(ctx).catch(() => {}); }
       } });
   }
   tool("swarm_task", "Read your durable assignment and root objective. currentAssignment includes appended instructions; node.task is the original task, not authority to replay superseded work.", empty, async (_, ctx) => {

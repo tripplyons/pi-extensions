@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 // Lightweight event harness. Runtime loading is checked separately through Pi RPC.
 export function harness() {
+  const events = new EventEmitter();
   const tools = new Map<string, any>();
   const toolRenderers: any[] = [];
   const shortcuts = new Map<string, any>();
@@ -11,7 +12,7 @@ export function harness() {
   const sentMessages: Array<{ message: any; options: any }> = [];
   const ctx: any = {
     cwd: process.cwd(), getContextUsage: () => undefined, hasUI: true, hasPendingMessages: () => false,
-    sessionManager: { getBranch: () => entries, getSessionId: () => "test-session" },
+    sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => "/test/session.jsonl" },
     ui: { setStatus() {}, notify() {}, input: async () => "answer" },
   };
   const pi: any = {
@@ -21,7 +22,13 @@ export function harness() {
     registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (name: string, fn: Function) => hooks.set(name, [...(hooks.get(name) ?? []), fn]),
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data: structuredClone(data) }),
-    events: new EventEmitter(), getThinkingLevel: () => "high",
+    events: {
+      emit: (channel: string, data: unknown) => { events.emit(channel, data); },
+      on: (channel: string, handler: (data: unknown) => void) => {
+        events.on(channel, handler);
+        return () => { events.off(channel, handler); };
+      },
+    }, getThinkingLevel: () => "high",
     sendMessage: (message: any, options: any) => sentMessages.push({ message, options }),
     sendUserMessage: (message: string) => sent.push(message),
   };

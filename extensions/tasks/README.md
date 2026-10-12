@@ -37,6 +37,13 @@ return empty output and an unchanged `next_offset` after the wait expires;
 that does not mean it skipped the wait. New output or completion wakes the read
 early. `wait_ms` is not a minimum polling interval and does not stop the task.
 
+When run through T3 Code's Pi provider, live background tasks keep the thread
+marked as running after Pi's foreground turn ends. This includes explicit
+background Bash, auto-promoted commands, and Python tasks. Completion or stop
+clears the task without waiting for its notification to reach an idle agent.
+Update both T3 Code and these extensions, then restart the Pi provider session
+to load the reporting bridge.
+
 ## Opt-in pipeline failure detection
 
 Pass `pipefail: true` to `bash` when a pipeline must expose an upstream failure:

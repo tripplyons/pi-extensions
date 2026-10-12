@@ -74,6 +74,14 @@ export class Tasks {
     this.completions.on("complete", listener);
     return () => { this.completions.off("complete", listener); };
   }
+  background(ids: string[]) {
+    return ids.flatMap(id => {
+      const task = this.running.get(id);
+      return task?.background && !terminal(task.record.status)
+        ? [{ taskId: id, kind: "command" as const, description: task.record.command.slice(0, 1000) }]
+        : [];
+    });
+  }
   pending(ids: string[]) { return ids.filter(id => this.completion.get(id) === "pending"); }
   acknowledge(id: string, state: "observed" | "notified") { this.completion.set(id, state); }
   constructor(readonly root = join(getAgentDir(), "minimax", "tasks"), private operations: BashOperations = createLocalBashOperations(), private yieldMs = 15_000) {}
@@ -308,8 +316,18 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     } catch (error) { ctx.ui.setStatus("task-watch-error", String(error)); }
     finally { watching = false; }
   }
-  const detach = tasks.onComplete(id => { notifications.add(id); flush(); });
+  const detach = tasks.onComplete(id => { publishBackground(); notifications.add(id); flush(); });
   const ids = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === taskKey ? [entry.data as string] : []);
+  // Full branch-scoped snapshots let hosts restore state after either extension reloads.
+  function publishBackground() {
+    if (!current || shuttingDown) return;
+    pi.events.emit("t3:background-tasks", {
+      sessionFile: current.sessionManager.getSessionFile(),
+      source: "tasks",
+      tasks: tasks.background(ids(current)),
+    });
+  }
+  const detachBackground = pi.events.on("t3:background-tasks-request", publishBackground);
   function flush() {
     if (!current || shuttingDown) return;
     if (!notifications.size) return;
@@ -330,6 +348,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   }
   const load = (_event: unknown, ctx: ExtensionContext) => {
     current = ctx;
+    publishBackground();
     restoreWatches(ctx);
     for (const id of tasks.pending(ids(ctx))) notifications.add(id);
     flush();
@@ -338,7 +357,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   pi.on("session_tree", load);
   pi.on("before_agent_start", load);
   pi.on("session_shutdown", async event => {
-    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); clearInterval(watchTimer); detach();
+    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); clearInterval(watchTimer); detach(); detachBackground();
     if (event.reason && event.reason !== "quit") return;
     await tasks.shutdown();
     const pool = pools[poolKey];
@@ -356,7 +375,9 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Timeout in seconds; foreground defaults to 120, non-positive values use 120, maximum 300. Explicit background defaults to 1800 seconds; positive timeouts are capped at 2147483.647. Expiry kills the process tree." })), run_in_background: Type.Optional(Type.Boolean()), pipefail: Type.Optional(Type.Boolean({ description: "Enable set -o pipefail: a pipeline returns the rightmost nonzero exit status, or zero if all commands succeed. Off by default; does not enable set -e or report each command's status." })) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
-      return tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), () => {});
+      try {
+        return await tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), () => {});
+      } finally { publishBackground(); }
     },
   });
   pi.registerTool({ name: "task_watch", label: "task_watch", renderCall: toolCall("task_watch"), renderResult,

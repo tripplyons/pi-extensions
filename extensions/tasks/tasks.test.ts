@@ -36,6 +36,48 @@ async function settled(tasks: Tasks, id: string) {
 }
 const ignore = () => {};
 
+test("publishes live branch rosters for explicit and promoted tasks and clears on stop", async () => {
+  const { h } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { exitCode: 0 };
+  } });
+  const snapshots: any[] = [];
+  h.pi.events.on("t3:background-tasks", (snapshot: unknown) => snapshots.push(snapshot));
+  for (const run_in_background of [true, false]) {
+    const { task_id: id } = (await h.call("bash", { command: "controlled job", run_in_background })).details;
+    expect(snapshots.at(-1)).toEqual({ sessionFile: "/test/session.jsonl", source: "tasks", tasks: [{ taskId: id, kind: "command", description: "controlled job" }] });
+    const branch = [...h.entries];
+    h.entries.length = 0;
+    await h.emit("session_tree");
+    expect(snapshots.at(-1).tasks).toEqual([]);
+    h.entries.push(...branch);
+    h.pi.events.emit("t3:background-tasks-request", undefined);
+    expect(snapshots.at(-1).tasks).toHaveLength(1);
+    await h.call("task_stop", { task_id: id });
+    expect(snapshots.at(-1).tasks).toEqual([]);
+  }
+});
+
+test("completion publishes an empty roster while Pi is busy and foreground work is excluded", async () => {
+  let finish: () => void = () => {};
+  const { h, tasks } = await taskHarness({ exec: async (command) => {
+    if (command === "foreground") return { exitCode: 0 };
+    await new Promise<void>(resolve => { finish = resolve; });
+    return { exitCode: 0 };
+  } });
+  const snapshots: any[] = [];
+  h.pi.events.on("t3:background-tasks", (snapshot: unknown) => snapshots.push(snapshot));
+  await h.call("bash", { command: "foreground" });
+  expect(snapshots.at(-1).tasks).toEqual([]);
+  await h.call("bash", { command: "background", run_in_background: true });
+  expect(snapshots.at(-1).tasks).toHaveLength(1);
+  const completed = new Promise<void>(resolve => tasks.onComplete(() => resolve()));
+  finish();
+  await completed;
+  expect(snapshots.at(-1).tasks).toEqual([]);
+  expect(h.sentMessages).toEqual([]);
+});
+
 test("foreground promotion keeps one process, deadline, output and completion notification", async () => {
   const { root, tasks } = await setup();
   let id = ""; const completed: string[] = [];

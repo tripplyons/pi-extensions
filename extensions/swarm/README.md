@@ -23,6 +23,15 @@ model/thinking and saved fast preference. Without overrides, review resumes the
 existing process as before. Accept/reject decisions do not accept overrides. Tasks and messages live under
 `~/.pi/agent/swarm` (`PI_CODING_AGENT_DIR` overrides this).
 
+When run through T3 Code's Pi provider, active descendants keep the parent
+thread marked as running, even between the parent's turns. This matches the
+swarm's active count, including workers awaiting review or permission. Accepted,
+rejected, stopped, and failed workers no longer count. Nested workers count too;
+the root itself does not. Reports refresh after swarm tools and through the
+existing one-second inbox check, without opening the status panel. Update both
+T3 Code and these extensions, then restart the Pi provider session to load the
+reporting bridge.
+
 ## Assignments and handoffs
 
 Workers do not inherit the parent's conversation. Each assignment should describe
