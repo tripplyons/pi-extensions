@@ -15,7 +15,7 @@ registration or documentation. This list tracks deliverables, not completion.
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
 | Context | Native Pi 1.0 output limits and context management; MiniMax projection retired | Native codemode integration tests |
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
-| Overseer | Terminal OSC glow, lifecycle and input waits | Implemented; state test; TTY audit pending |
+| Overseer | Terminal OSC glow, lifecycle and input waits | Owned by the separate Overseer integration; not bundled here |
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Implemented; formatting tests; TTY audit pending |
 | Shell/background | Managed Bash, deadlines, branch-owned tasks and completion notifications; legacy shell/sleep tools removed | Unit and process tests; swarm retains its internal tmux runner |
 | Files/images | Native Pi read/edit/write/grep/find/ls and image admission | Native codemode integration tests |

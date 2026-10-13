@@ -17,7 +17,6 @@
       "./extensions/complain/index.ts",
       "./extensions/codemode-timeout/index.ts",
       "./extensions/goal/index.ts",
-      "./extensions/overseer/index.ts",
       "./extensions/presentation/index.ts",
       "./extensions/startup-screen/index.ts",
       "./extensions/hide-empty-editor/index.ts",

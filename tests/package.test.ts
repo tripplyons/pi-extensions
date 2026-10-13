@@ -8,6 +8,8 @@ test("Pi loads every manifest entry without extension errors or duplicate tools"
   const loaded = await loadExtensions(paths, resolve(import.meta.dir, ".."));
   expect(loaded.errors).toEqual([]);
   expect(loaded.extensions).toHaveLength(paths.length);
+  // The separate Overseer integration owns the glow, not this package.
+  expect(manifest.pi.extensions).not.toContain("./extensions/overseer/index.ts");
   const names = loaded.extensions.flatMap(extension => [...extension.tools.keys()]);
   expect(new Set(names).size).toBe(names.length);
   for (const name of ["glob", "archive_read"]) expect(names).not.toContain(name);

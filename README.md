@@ -8,7 +8,7 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (33)
+## Extensions (32)
 
 | Extension | Behavior |
 | --- | --- |
@@ -37,7 +37,6 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [extension-manager](extensions/extension-manager) | `/extensions` menu to enable or disable installed extensions globally |
 | [thinking-selector](extensions/thinking-selector) | Ctrl+T reasoning effort picker |
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
-| [overseer](extensions/overseer) | Terminal busy/attention glow |
 | [goal](extensions/goal) | Persistent objectives and steering continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Session names from the first user message using GPT 6 Luna with low reasoning and fast mode |
@@ -62,6 +61,10 @@ Implementation and runtime audits are ongoing.
 Run `npm install` and `npm test` (requires Bun). Install with
 `pi install /absolute/path/to/pi-extensions`. Reload Pi after installation or
 updates. The manifest discovers entry points only, not adjacent tests.
+
+The Pi pane glow lives in the [Overseer repository](https://github.com/tripplyons/overseer)
+and is installed separately with `sh ../overseer/scripts/install-pi-hooks.sh`.
+It is not bundled here, so only one extension controls the glow.
 
 Historical third-party license notices are retained under `licenses/`.
 Action Fusion, ObservationPack, Evidence-Preserving Reducer, and Online Context
