@@ -28,6 +28,11 @@ and its request history. A new prompt after a finished plan does the same.
 If Pi refuses to compact, the task continues with the existing context.
 Pressing Escape during compaction stops the task.
 
+Before the planned stop, the extension emits `pi:online-compaction` on
+`pi.events` with phase `aborting`. It emits `continuing` before the hidden turn
+and `stopped` when Escape cancels compaction. The goal extension uses these
+phases so a planned stop does not pause an active goal.
+
 This extension replaces the todos extension and its `todo_write` tool.
 
 Adapted from [SoL-Pi](https://github.com/NVlabs/SoL-Pi) Online Context Compact.

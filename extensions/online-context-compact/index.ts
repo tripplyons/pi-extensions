@@ -22,6 +22,9 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
 export const STATE_KEY = "online-context-compact";
 export const KEEP_RECENT_TOKENS = 20_000;
 const SUMMARY_TOKENS = 1_000;
+/** Announces planned run stops so loops such as goals do not treat them as failures. */
+export const COMPACTION_EVENT = "pi:online-compaction";
+export type CompactionPhase = "aborting" | "continuing" | "stopped";
 export const COMPACTION_INSTRUCTIONS = "Preserve completed work, verification results, important decisions, and remaining work.";
 const CONTINUE_AFTER_COMPACTION = "Online context compaction finished. The task is still active. Continue the remaining work from the current plan. Keep existing step IDs when updating it.";
 const CONTINUE_AFTER_SKIP = "Online context compaction was skipped. The existing context is still available. Continue the remaining work from the current plan.";
@@ -240,6 +243,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
     });
     if (!decision.compact) return;
     selected = decision;
+    pi.events.emit(COMPACTION_EVENT, { phase: "aborting" satisfies CompactionPhase, ctx });
     ctx.abort();
   });
 
@@ -258,11 +262,15 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
     compacting = false;
     pendingDebt = undefined;
     // Escape during compaction stops the task as well.
-    if (error && (error.name === "AbortError" || error.message === "Compaction cancelled")) return;
+    if (error && (error.name === "AbortError" || error.message === "Compaction cancelled")) {
+      pi.events.emit(COMPACTION_EVENT, { phase: "stopped" satisfies CompactionPhase, ctx });
+      return;
+    }
     if (error) {
       refused = true;
       if (ctx.hasUI) ctx.ui.notify(`Online compaction skipped: ${error.message}`, "warning");
     }
+    pi.events.emit(COMPACTION_EVENT, { phase: "continuing" satisfies CompactionPhase, ctx });
     pi.sendMessage(
       { customType: STATE_KEY, content: error ? CONTINUE_AFTER_SKIP : CONTINUE_AFTER_COMPACTION, display: false },
       { triggerTurn: true },

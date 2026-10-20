@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
 import { decideCompaction } from "./economics.ts";
-import onlineContextCompact, { COMPACTION_INSTRUCTIONS, STATE_KEY } from "./index.ts";
+import onlineContextCompact, { COMPACTION_EVENT, COMPACTION_INSTRUCTIONS, STATE_KEY } from "./index.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -30,6 +30,8 @@ function setup(compactError?: Error) {
     if (compactError) options.onError(compactError);
     else options.onComplete({ summary: "summary" });
   };
+  const phases: string[] = [];
+  h.pi.events.on(COMPACTION_EVENT, ({ phase }: { phase: string }) => phases.push(phase));
   onlineContextCompact(h.pi);
   const plan = (statuses: string[]) => h.call("update_plan", { steps: statuses.map((status, index) => ({ id: `s${index}`, goal: `step ${index}`, status })) });
   // Project the current branch and count provider requests as Pi would.
@@ -44,11 +46,11 @@ function setup(compactError?: Error) {
     await h.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ toolCallId: callId, toolName: "update_plan", isError: false }] });
     await h.emit("agent_settled", { aborted: true });
   };
-  return { h, compactions, aborted: () => aborted, plan, requests, finishTurn };
+  return { h, compactions, aborted: () => aborted, phases, plan, requests, finishTurn };
 }
 
 test("completing a step on a long task compacts and continues", async () => {
-  const { h, compactions, aborted, plan, requests, finishTurn } = setup();
+  const { h, compactions, aborted, phases, plan, requests, finishTurn } = setup();
   await h.emit("session_start", {});
   await plan(["in_progress", "pending", "pending"]);
   h.entries.push(...conversation());
@@ -62,6 +64,7 @@ test("completing a step on a long task compacts and continues", async () => {
   expect(h.sentMessages[0]!.message).toMatchObject({ customType: STATE_KEY, display: false });
   expect(h.sentMessages[0]!.message.content).toContain("compaction finished");
   expect(h.sentMessages[0]!.options).toEqual({ triggerTurn: true });
+  expect(phases).toEqual(["aborting", "continuing"]);
 });
 
 test("finishing the last step keeps the context", async () => {
@@ -99,7 +102,7 @@ test("a refused compaction still continues the task", async () => {
 });
 
 test("a cancelled compaction does not restart the task", async () => {
-  const { h, plan, requests, finishTurn } = setup(new Error("Compaction cancelled"));
+  const { h, phases, plan, requests, finishTurn } = setup(new Error("Compaction cancelled"));
   await h.emit("session_start", {});
   await plan(["in_progress", "pending", "pending"]);
   h.entries.push(...conversation());
@@ -107,6 +110,7 @@ test("a cancelled compaction does not restart the task", async () => {
   await plan(["completed", "in_progress", "pending"]);
   await finishTurn();
   expect(h.sentMessages).toHaveLength(0);
+  expect(phases).toEqual(["aborting", "stopped"]);
 });
 
 test("the plan survives reload and a correction clears it", async () => {
