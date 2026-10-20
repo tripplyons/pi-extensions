@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import council, { TURN_BUDGET } from "./index.ts";
+import { TURN_BUDGET } from "./index.ts";
+import council from "./fixtures.ts";
 
 test.each([{ id: "council", count: 3 }, { id: "council-openai", count: 2 }])(
   "$id handles real SDK swarm wake-ups without consulting or spending work slots",

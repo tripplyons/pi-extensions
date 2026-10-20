@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Api, AssistantMessage, Message, Model, Usage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { priorityPayload } from "../fast-mode/index.ts";
 
 export const PROVIDER = "tripp";
-export const MODEL_ID = "council";
-export const OPENAI_MODEL_ID = "council-openai";
 export const TURN_BUDGET = 10;
 const STATE_KEY = "pi.virtual-model-state";
 const ADVISOR_TIMEOUT_MS = 120_000;
@@ -25,28 +25,74 @@ export interface CouncilState {
 	guidanceAfter?: { key: string; occurrence: number };
 }
 
-interface Preset {
-	id: string;
-	providers: readonly string[];
-	effort: "medium" | "high" | "low";
+const efforts = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+type Effort = typeof efforts[number];
+
+export interface Member {
+	model: string;
+	providers: string[];
+	effort: Effort;
+	/** Request OpenAI priority service. Other providers ignore it. */
+	fast: boolean;
 }
 
-const openaiProviders = ["openai", "openai-codex"] as const;
-const executor = { id: "gpt-6.1-sol", providers: openaiProviders, effort: "medium" } as const;
-const councils = [
-	{ id: MODEL_ID, name: "Council", executor, advisors: [
-		executor,
-		{ id: "gpt-6-astra", providers: openaiProviders, effort: "medium" },
-		{ id: "claude-opus-5-5", providers: ["anthropic"], effort: "low" },
-	] },
-	{ id: OPENAI_MODEL_ID, name: "Council OpenAI", executor, advisors: [
-		{ id: "gpt-6.1-sol", providers: openaiProviders, effort: "high" },
-		{ id: "gpt-6-astra", providers: openaiProviders, effort: "high" },
-	] },
-] as const;
+export interface CouncilConfig {
+	id: string;
+	name: string;
+	executor: Member;
+	advisors: Member[];
+}
+
+export const COUNCILS_FILE = "councils.json";
+// Pi loads extensions once, so the footer sees the same ids that were registered.
+const registered = new Set<string>();
+
+function member(value: unknown, where: string): Member {
+	const fail = (detail: string) => { throw new Error(`${where}: ${detail}`); };
+	if (!value || typeof value !== "object" || Array.isArray(value)) fail("must be an object");
+	const { model, providers, effort, fast = false } = value as Record<string, unknown>;
+	if (typeof model !== "string" || !model) fail("model must be a non-empty string");
+	if (!Array.isArray(providers) || !providers.length || providers.some(provider => typeof provider !== "string" || !provider)) {
+		fail("providers must be a non-empty array of strings");
+	}
+	if (!efforts.includes(effort as Effort)) fail(`effort must be one of ${efforts.join(", ")}`);
+	if (typeof fast !== "boolean") fail("fast must be a boolean");
+	return { model: model as string, providers: providers as string[], effort: effort as Effort, fast: fast as boolean };
+}
+
+/** Parses councils.json: an object keyed by virtual model id under the tripp provider. */
+export function parseCouncils(text: string, file = COUNCILS_FILE): CouncilConfig[] {
+	const value: unknown = JSON.parse(text);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${file} must contain a JSON object`);
+	return Object.entries(value).map(([id, entry]) => {
+		const where = `${file} ${id}`;
+		if (!/^[a-z0-9][a-z0-9.-]*$/.test(id)) throw new Error(`${where}: id must use lowercase letters, digits, dots, and hyphens`);
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`${where}: must be an object`);
+		const { name, executor, advisors } = entry as Record<string, unknown>;
+		if (typeof name !== "string" || !name) throw new Error(`${where}: name must be a non-empty string`);
+		if (!Array.isArray(advisors) || !advisors.length) throw new Error(`${where}: advisors must be a non-empty array`);
+		return {
+			id, name,
+			executor: member(executor, `${where} executor`),
+			advisors: advisors.map((advisor, index) => member(advisor, `${where} advisor ${index + 1}`)),
+		};
+	});
+}
+
+/** A missing file means no councils; an invalid file fails extension loading. */
+export function loadCouncils(file = join(getAgentDir(), COUNCILS_FILE)): CouncilConfig[] {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	return parseCouncils(text, file);
+}
 
 export function isCouncilModel(model: Pick<Model<Api>, "provider" | "id"> | undefined): boolean {
-	return model?.provider === PROVIDER && councils.some(council => council.id === model.id);
+	return model?.provider === PROVIDER && registered.has(model.id);
 }
 
 export function councilSelected(ctx: ExtensionContext): boolean {
@@ -94,12 +140,12 @@ function swarmNotificationOnly(ctx: ExtensionContext): boolean {
 	});
 }
 
-function findModel(ctx: ExtensionContext, preset: Preset): Model<Api> {
-	for (const provider of preset.providers) {
-		const model = ctx.modelRegistry.find(provider, preset.id);
+function findModel(ctx: ExtensionContext, member: Member): Model<Api> {
+	for (const provider of member.providers) {
+		const model = ctx.modelRegistry.find(provider, member.model);
 		if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return model;
 	}
-	throw new Error(`Council requires ${preset.id} with authentication on ${preset.providers.join(" or ")}. Use /login and check /model.`);
+	throw new Error(`Council requires ${member.model} with authentication on ${member.providers.join(" or ")}. Use /login and check /model.`);
 }
 
 export function advisorContext(messages: readonly Message[]): string {
@@ -122,11 +168,11 @@ async function consult(
 	ctx: ExtensionContext,
 	messages: readonly Message[],
 	signal: AbortSignal | undefined,
-	presets: readonly Preset[],
+	advisors: readonly Member[],
 	label: string,
 ): Promise<Advice[]> {
 	// Resolve every dependency before starting paid/subscription requests.
-	const models = presets.map(preset => findModel(ctx, preset));
+	const models = advisors.map(advisor => findModel(ctx, advisor));
 	const controller = new AbortController();
 	const timeout = AbortSignal.timeout(ADVISOR_TIMEOUT_MS);
 	const combined = AbortSignal.any([controller.signal, timeout, ...(signal ? [signal] : [])]);
@@ -144,11 +190,11 @@ async function consult(
 					timestamp: Date.now(),
 				}],
 			}, {
-				reasoning: presets[index].effort,
+				reasoning: advisors[index].effort,
 				maxTokens: 4096,
 				signal: combined,
 				cacheRetention: "none",
-				onPayload: (payload, physical) => priorityPayload(payload, physical.provider, true),
+				onPayload: (payload, physical) => priorityPayload(payload, physical.provider, advisors[index].fast),
 			});
 			const response: AssistantMessage = await stream.result();
 			combined.throwIfAborted();
@@ -229,40 +275,46 @@ export function adviceMessage(state: CouncilState): Message {
 	};
 }
 
-export default function council(pi: ExtensionAPI) {
-	for (const preset of councils) pi.registerVirtualModel<CouncilState>({
-		provider: PROVIDER,
-		id: preset.id,
-		name: preset.name,
-		thinkingLevels: ["medium"],
-		async route(request, ctx) {
-			const model = findModel(ctx, preset.executor);
-			if (request.reason === "direct") return { model, thinkingLevel: "medium" };
-			const currentTask = taskId(ctx);
-			const previous = request.state;
-			// After compaction or an upgrade, carry current advice at the new tail.
-			const state = previous && anchorIndex(request.messages.map(messageKey), previous.guidanceAfter) === -1
-				? { ...previous, guidanceAfter: guidanceAnchor(request.messages) } : previous;
-			// A retry reuses both advice and its reserved response slot.
-			if (request.reason === "retry" && state && state.taskId === currentTask) {
-				return { model, thinkingLevel: "medium", state };
-			}
-			// Informational swarm wake-ups are not a new work phase, even at the budget boundary.
-			if (swarmNotificationOnly(ctx)) {
-				return { model, thinkingLevel: "medium", state };
-			}
-			const refresh = !state || state.taskId !== currentTask || state.turns >= TURN_BUDGET;
-			const next: CouncilState = refresh ? {
-				taskId: currentTask,
-				round: (state?.round ?? 0) + 1,
-				turns: 1,
-				guidanceAfter: guidanceAnchor(request.messages),
-				advice: await consult(ctx, request.messages, request.signal, preset.advisors, preset.id),
-			} : { ...state, turns: state.turns + 1 };
-			ctx.ui.setStatus("council", `${preset.id}: round ${next.round}, Sol ${next.turns}/${TURN_BUDGET}`);
-			return { model, thinkingLevel: "medium", state: next };
-		},
-	});
+/** Registers each configured council as a tripp/<id> virtual model. */
+export function registerCouncils(pi: ExtensionAPI, councils: readonly CouncilConfig[]) {
+	const byId = new Map(councils.map(preset => [preset.id, preset]));
+	for (const preset of councils) {
+		const effort = preset.executor.effort;
+		registered.add(preset.id);
+		pi.registerVirtualModel<CouncilState>({
+			provider: PROVIDER,
+			id: preset.id,
+			name: preset.name,
+			thinkingLevels: [effort],
+			async route(request, ctx) {
+				const model = findModel(ctx, preset.executor);
+				if (request.reason === "direct") return { model, thinkingLevel: effort };
+				const currentTask = taskId(ctx);
+				const previous = request.state;
+				// After compaction or an upgrade, carry current advice at the new tail.
+				const state = previous && anchorIndex(request.messages.map(messageKey), previous.guidanceAfter) === -1
+					? { ...previous, guidanceAfter: guidanceAnchor(request.messages) } : previous;
+				// A retry reuses both advice and its reserved response slot.
+				if (request.reason === "retry" && state && state.taskId === currentTask) {
+					return { model, thinkingLevel: effort, state };
+				}
+				// Informational swarm wake-ups are not a new work phase, even at the budget boundary.
+				if (swarmNotificationOnly(ctx)) {
+					return { model, thinkingLevel: effort, state };
+				}
+				const refresh = !state || state.taskId !== currentTask || state.turns >= TURN_BUDGET;
+				const next: CouncilState = refresh ? {
+					taskId: currentTask,
+					round: (state?.round ?? 0) + 1,
+					turns: 1,
+					guidanceAfter: guidanceAnchor(request.messages),
+					advice: await consult(ctx, request.messages, request.signal, preset.advisors, preset.id),
+				} : { ...state, turns: state.turns + 1 };
+				ctx.ui.setStatus("council", `${preset.id}: round ${next.round}, ${model.name} ${next.turns}/${TURN_BUDGET}`);
+				return { model, thinkingLevel: effort, state: next };
+			},
+		});
+	}
 
 	// Routing runs before context transforms. Pi has already stored this round's state.
 	pi.on("context_with_system", (event, ctx) => {
@@ -279,12 +331,16 @@ export default function council(pi: ExtensionAPI) {
 	});
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!councilSelected(ctx)) return;
+		const executor = byId.get(ctx.model!.id)?.executor;
 		const payload = event.payload as { model?: string } | undefined;
-		if (payload?.model !== executor.id) return;
-		return priorityPayload(event.payload, "openai", true);
+		if (!executor || payload?.model !== executor.model) return;
+		return priorityPayload(event.payload, findModel(ctx, executor).provider, executor.fast);
 	});
 	for (const event of ["agent_end", "session_start", "session_tree", "model_select"] as const) {
 		pi.on(event, (_event, ctx) => ctx.ui.setStatus("council", undefined));
 	}
 }
 
+export default function council(pi: ExtensionAPI) {
+	registerCouncils(pi, loadCouncils());
+}

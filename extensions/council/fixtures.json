@@ -1,0 +1,19 @@
+{
+  "council": {
+    "name": "Council",
+    "executor": { "model": "gpt-6.1-sol", "providers": ["openai", "openai-codex"], "effort": "medium", "fast": true },
+    "advisors": [
+      { "model": "gpt-6.1-sol", "providers": ["openai", "openai-codex"], "effort": "medium", "fast": true },
+      { "model": "gpt-6-astra", "providers": ["openai", "openai-codex"], "effort": "medium", "fast": true },
+      { "model": "claude-opus-5-5", "providers": ["anthropic"], "effort": "low" }
+    ]
+  },
+  "council-openai": {
+    "name": "Council OpenAI",
+    "executor": { "model": "gpt-6.1-sol", "providers": ["openai", "openai-codex"], "effort": "medium", "fast": true },
+    "advisors": [
+      { "model": "gpt-6.1-sol", "providers": ["openai", "openai-codex"], "effort": "high", "fast": true },
+      { "model": "gpt-6-astra", "providers": ["openai", "openai-codex"], "effort": "high", "fast": true }
+    ]
+  }
+}

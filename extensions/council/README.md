@@ -1,42 +1,51 @@
 # Council
 
-Select `tripp/council` or `tripp/council-openai` through `/model`. Reload Pi after
-adding or updating this extension. It does not change the default model.
-Both variants execute through GPT 6.1 Sol at medium effort with OpenAI priority.
+Council registers virtual models from `~/.pi/agent/councils.json`, or
+`$PI_CODING_AGENT_DIR/councils.json` when that variable is set. Each key becomes
+`tripp/<key>`; select one through `/model`. Reload Pi after editing the file. A
+missing file registers no councils. An invalid file stops the extension from
+loading and names the bad field. The extension does not change the default model.
 
-## Council
+```json
+{
+  "council-openai": {
+    "name": "Council OpenAI",
+    "executor": { "model": "gpt-6.1-sol", "providers": ["openai", "openai-codex"], "effort": "medium", "fast": true },
+    "advisors": [
+      { "model": "gpt-6.1-sol", "providers": ["openai", "openai-codex"], "effort": "high", "fast": true },
+      { "model": "gpt-6-astra", "providers": ["openai", "openai-codex"], "effort": "high", "fast": true }
+    ]
+  }
+}
+```
 
-`tripp/council` asks three independent advisors in parallel:
+| Field | Meaning |
+| --- | --- |
+| key | Virtual model id: lowercase letters, digits, dots, and hyphens |
+| `name` | Display name in `/model` |
+| `executor` | The model that executes with the session's tools |
+| `advisors` | One or more models consulted in parallel each round |
+| `model` | Model id as Pi lists it under the provider |
+| `providers` | Providers to try in order; the first with authentication wins |
+| `effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
+| `fast` | Optional, default `false`; request OpenAI priority service |
 
-| Model | Effort | Service |
-| --- | --- | --- |
-| GPT 6.1 Sol (`gpt-6.1-sol`) | medium | OpenAI priority |
-| GPT 6 Astra (`gpt-6-astra`) | medium | OpenAI priority |
-| Claude Opus 5.5 (`claude-opus-5-5`) | low | Normal Anthropic service |
-
-## Council OpenAI
-
-`tripp/council-openai` asks two independent advisors in parallel. It requires no
-Anthropic model or login.
-
-| Role | Model | Effort | Service |
-| --- | --- | --- | --- |
-| Executor | GPT 6.1 Sol (`gpt-6.1-sol`) | medium | OpenAI priority |
-| Advisor | GPT 6.1 Sol (`gpt-6.1-sol`) | high | OpenAI priority |
-| Advisor | GPT 6 Astra (`gpt-6-astra`) | high | OpenAI priority |
+`fast` affects only `openai` and `openai-codex` requests. The global `/fast`
+toggle does not apply to council requests. The tests use
+[`fixtures.json`](fixtures.json), which holds the original two councils.
 
 ## Execution
 
-Sol receives every advisory answer, synthesizes them, and executes through the
-session's normal tools. Each round permits 10 Sol responses and their tool
-batches. Before the next response, the selected variant consults its advisors
+The executor receives every advisory answer, synthesizes them, and executes
+through the session's normal tools. Each round permits 10 executor responses and their tool
+batches. Before the next response, the selected council consults its advisors
 using the work so far. Each new user message, including user steering, starts a
 fresh round.
 A finished task stops normally. Council never forces another agent turn.
 
 Informational swarm messages, check-ins, review reminders, health alerts,
 handoffs, and error-resume notices are notification wake-ups. When they are the
-only new inputs, Council handles them with Sol without consulting advisors or
+only new inputs, Council handles them with the executor without consulting advisors or
 spending an execution slot, even at the 10-response boundary. Existing advice
 stays internal and the next normal work request can refresh it. This also works
 before the first consultation and after compaction. Real user inputs, parent
@@ -51,7 +60,7 @@ have no overall limit. Automatic retries reuse the round and response slot.
 Advisors cannot use tools or change files. They receive a text view of the
 conversation, including tool calls and results but excluding private thinking.
 The view keeps the last 120,000 characters when necessary and marks truncation.
-Images appear as placeholders; Sol still receives the original session images.
+Images appear as placeholders; the executor still receives the original session images.
 Each advisor has a 4,096-token output limit and a shared two-minute deadline.
 A missing model, missing authentication, failed request, empty answer, truncated
 answer, or attempted tool call stops execution. An advisor failure cancels its
@@ -60,7 +69,7 @@ siblings; Council never executes with partial advice.
 The footer reports consultation progress and the current execution slot.
 Advice, per-advisor usage, and the budget are saved in Pi's branch-local virtual
 model state, keyed by the selected virtual model. They survive reloads,
-compaction, and session navigation. Switching variants does not share advice
+compaction, and session navigation. Switching councils does not share advice
 or execution slots.
 Advisory usage is stored there separately; Pi's native session usage totals do
 not include these nested chat calls.
@@ -88,28 +97,25 @@ the new conversation tail without consulting again. Legacy state gets an
 insertion point on its next routed request.
 
 Compaction, model or variant changes, and other prompt changes can still reduce
-cache reuse. Provider cache hits are not guaranteed. Consultation adds three
-model requests per round for Council, or two for Council OpenAI, in addition to
-execution.
+cache reuse. Provider cache hits are not guaranteed. Consultation adds one
+model request per advisor each round, in addition to execution.
 
 ## Authentication and fast mode
 
-OpenAI models use the authenticated `openai` provider when available, or
-`openai-codex` when it carries the exact model. No gateway or different model is
-substituted. Only the original Council requires `anthropic` authentication for Opus.
+Each member uses the first provider in its `providers` list that has the exact
+model and authentication. No gateway or different model is substituted. Use
+`/login` and check `/model` if a required model is missing. The package's
+ChatGPT-only billing guard also covers advisory calls.
 
-Use `/login` and check `/model` if a required model is missing.
-The package's ChatGPT-only billing guard also covers advisory calls.
+Members with `"fast": true` request `service_tier: "priority"` on OpenAI,
+regardless of the global `/fast` toggle. Priority is a request to the provider,
+not a guarantee that priority service is granted.
 
-Both variants request `service_tier: "priority"` for their OpenAI advisors and Sol
-execution regardless of the global `/fast` toggle. It does not change that
-toggle or request fast service for Anthropic. Priority is a request to the
-provider, not a guarantee that priority service is granted.
-
-Compaction summaries and other direct requests route to Sol at medium effort
-without a consultation or a change to the execution budget. Background
-compaction uses the same direct route. Its waiting/preparing/ready state stays
-visible in the footer; both variants hide the separate reasoning-effort field.
+Compaction summaries and other direct requests route to the executor at its
+configured effort without a consultation or a change to the execution budget.
+Background compaction uses the same direct route. Its waiting/preparing/ready
+state stays visible in the footer; councils hide the separate reasoning-effort
+field.
 
 ## Tests
 

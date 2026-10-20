@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { type AssistantMessage, type Context, type Message, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { ExtensionVirtualModel } from "@earendil-works/pi-coding-agent";
-import council, { advisorContext, adviceMessage, MODEL_ID, OPENAI_MODEL_ID, PROVIDER, TURN_BUDGET, type CouncilState } from "./index.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { advisorContext, adviceMessage, isCouncilModel, loadCouncils, parseCouncils, PROVIDER, registerCouncils, TURN_BUDGET, type CouncilConfig, type CouncilState } from "./index.ts";
+import { fixtureCouncils } from "./fixtures.ts";
+
+const MODEL_ID = "council";
+const OPENAI_MODEL_ID = "council-openai";
 
 const usage = { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 14,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -13,14 +20,14 @@ function response(model: Model<any>, overrides: Partial<AssistantMessage> = {}):
 		stopReason: "stop", usage, timestamp: 1, ...overrides };
 }
 
-function harness(modelId = MODEL_ID) {
+function harness(modelId = MODEL_ID, councils: readonly CouncilConfig[] = fixtureCouncils) {
 	const definitions = new Map<string, ExtensionVirtualModel<CouncilState>>();
 	const handlers = new Map<string, Function>();
 	const calls: { model: Model<any>; context: Context; options: SimpleStreamOptions }[] = [];
 	const branch: any[] = [{ type: "message", id: "task-1", message: messages[0] }];
 	const statuses: (string | undefined)[] = [];
-	const models = ["gpt-6.1-sol", "gpt-6-astra", "claude-opus-5-5"].map(id => ({
-		id, provider: id.startsWith("claude") ? "anthropic" : "openai", api: "fixture",
+	const models = ["gpt-6.1-sol", "gpt-6-astra", "claude-opus-5-5", "deepseek/deepseek-v4.1-flash-1017"].map(id => ({
+		id, provider: id.startsWith("claude") ? "anthropic" : id.includes("/") ? "openrouter" : "openai", api: "fixture",
 		name: id, baseUrl: "https://fixture.invalid", reasoning: true, input: ["text"],
 		contextWindow: 200_000, maxTokens: 100_000, cost: usage.cost,
 	})) as Model<any>[];
@@ -40,8 +47,8 @@ function harness(modelId = MODEL_ID) {
 		ui: { setStatus(_key: string, value?: string) { statuses.push(value); } },
 		abort: () => { aborted = true; },
 	};
-	council({ registerVirtualModel: (model: ExtensionVirtualModel<CouncilState>) => { definitions.set(model.id, model); },
-		on: (event: string, handler: Function) => { handlers.set(event, handler); } } as any);
+	registerCouncils({ registerVirtualModel: (model: ExtensionVirtualModel<CouncilState>) => { definitions.set(model.id, model); },
+		on: (event: string, handler: Function) => { handlers.set(event, handler); } } as any, councils);
 	const states = new Map<string, CouncilState>();
 	async function route(reason: "user" | "continuation" | "retry" | "direct" = "user", signal?: AbortSignal, transcript: Message[] = messages) {
 		const id = ctx.model.id;
@@ -444,4 +451,53 @@ test("context restores advice from branch state without retaining another branch
 	h.branch.push({ type: "custom", customType: "pi.virtual-model-state",
 		data: { provider: PROVIDER, modelId: MODEL_ID, state: JSON.parse(JSON.stringify(state)) } });
 	expect(h.handlers.get("context_with_system")!({ messages }, h.ctx).messages.at(-1)).toEqual(adviceMessage(state));
+});
+
+const mixed = parseCouncils(JSON.stringify({ "council-mixed": {
+	name: "Council Mixed",
+	executor: { model: "gpt-6.1-sol", providers: ["openai"], effort: "medium" },
+	advisors: [
+		{ model: "gpt-6-astra", providers: ["openai"], effort: "high", fast: true },
+		{ model: "gpt-6.1-sol", providers: ["openai"], effort: "xhigh", fast: true },
+		{ model: "deepseek/deepseek-v4.1-flash-1017", providers: ["openrouter"], effort: "high" },
+	],
+} }));
+
+test("configured councils set efforts and priority per member", async () => {
+	const h = harness("council-mixed", mixed);
+	expect(h.definition.name).toBe("Council Mixed");
+	expect(isCouncilModel({ provider: PROVIDER, id: "council-mixed" })).toBe(true);
+	const result = await h.route();
+	expect(result.model.id).toBe("gpt-6.1-sol");
+	expect(h.calls.map(call => [call.model.provider, call.model.id, call.options.reasoning])).toEqual([
+		["openai", "gpt-6-astra", "high"],
+		["openai", "gpt-6.1-sol", "xhigh"],
+		["openrouter", "deepseek/deepseek-v4.1-flash-1017", "high"],
+	]);
+	const payloads = await Promise.all(h.calls.map(call => call.options.onPayload!({ model: call.model.id }, call.model)));
+	expect(payloads.map(payload => payload?.service_tier)).toEqual(["priority", "priority", undefined]);
+	// The executor did not opt into priority service.
+	expect(h.handlers.get("before_provider_request")!({ payload: { model: "gpt-6.1-sol" } }, h.ctx)).toBeUndefined();
+});
+
+test("loads councils.json and treats a missing file as no councils", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-councils-"));
+	expect(loadCouncils(join(dir, "councils.json"))).toEqual([]);
+	writeFileSync(join(dir, "councils.json"), JSON.stringify({ solo: { name: "Solo",
+		executor: { model: "gpt-6.1-sol", providers: ["openai"], effort: "low" },
+		advisors: [{ model: "gpt-6-astra", providers: ["openai"], effort: "high" }] } }));
+	expect(loadCouncils(join(dir, "councils.json"))).toEqual([{ id: "solo", name: "Solo",
+		executor: { model: "gpt-6.1-sol", providers: ["openai"], effort: "low", fast: false },
+		advisors: [{ model: "gpt-6-astra", providers: ["openai"], effort: "high", fast: false }] }]);
+});
+
+test.each([
+	[[], "must contain a JSON object"],
+	[{ Bad: {} }, "id must use lowercase"],
+	[{ c: { name: "C", executor: { model: "m", providers: ["p"], effort: "medium" }, advisors: [] } }, "advisors must be a non-empty array"],
+	[{ c: { name: "C", executor: { model: "m", providers: ["p"], effort: "huge" }, advisors: [{}] } }, "executor: effort must be one of"],
+	[{ c: { name: "C", executor: { model: "m", providers: ["p"], effort: "low" }, advisors: [{ model: "m", providers: [], effort: "low" }] } }, "advisor 1: providers must be"],
+	[{ c: { name: "C", executor: { model: "m", providers: ["p"], effort: "low", fast: "yes" }, advisors: [{}] } }, "fast must be a boolean"],
+])("rejects invalid councils.json %#", (value, message) => {
+	expect(() => parseCouncils(JSON.stringify(value))).toThrow(message);
 });
