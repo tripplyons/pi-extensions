@@ -1,6 +1,6 @@
 # Presentation
 
-Requires Pi 1.2.0 or newer. Hides the working indicator and shows one content
+Requires Pi 1.4.0 or newer. Hides the working indicator and shows one content
 row per collapsed tool call. Each group starts with one blank separator, with
 no blank lines between calls in the group. Visible user messages and assistant
 prose start a new group; empty messages and hidden thinking do not. The row

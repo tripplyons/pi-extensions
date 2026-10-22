@@ -2,7 +2,7 @@
 
 Pi extensions for coding tools, context management, background tasks, and session UI.
 
-Pi 1.2.0 or newer is required. Pi owns file/search tools, images, codemode, tool discovery, and compaction.
+Pi 1.4.0 or newer is required. Pi owns file/search tools, images, codemode, tool discovery, and compaction.
 Background tasks remain a focused extension. The compact UI keeps its
 look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.

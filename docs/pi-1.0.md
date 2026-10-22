@@ -1,6 +1,6 @@
 # Pi 1.0 migration
 
-The package requires Pi 1.2.0 or newer. Dotfiles owns settings, instructions, theme,
+The package requires Pi 1.4.0 or newer. Dotfiles owns settings, instructions, theme,
 keybindings, and custom model configuration. Credentials, caches, task output,
 and sessions stay outside both repositories.
 
@@ -45,6 +45,22 @@ background-compaction prototype patch is retired. Runs started with
 before the first request; Council ignores it when it checks for new input.
 Action Fusion wraps the native edit and write tools to add `then_run`.
 
+## Pi 1.4.0
+
+The SDK development dependencies are pinned together to 1.4.0. Pi 1.3 restores
+active tools on session resume and bounds cancelled codemode workers. Pi 1.4
+uses the model's output limit for compaction summaries; `reserveTokens` still
+sets the compaction admission threshold, not the summary output budget.
+The background-compaction extension uses this native summary behavior.
+
+Provider attribution headers now come from pi-ai's client identity. The
+subscription guard continues checking credentials and billing headers before
+provider dispatch; it does not depend on attribution headers.
+
+Existing personal settings and session files do not need rewriting for this
+package update. Update the Pi CLI separately, install this checkout's dependencies,
+and restart Pi to load the new code.
+
 ## ChatGPT-only OpenAI use
 
 The default changes to `openai/gpt-6.1-sol` after ChatGPT sign-in. Restart Pi,
@@ -70,6 +86,6 @@ dependency and provider changes.
 
 ## Dependencies
 
-The SDK test dependencies are pinned to Pi 1.2.0. `npm audit` reports no
+The SDK test dependencies are pinned to Pi 1.4.0. `npm audit` reports no
 vulnerabilities for this lockfile. The extension install uses
 `npm ci --omit=dev`; update the global Pi installation separately.

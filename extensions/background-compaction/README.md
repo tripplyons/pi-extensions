@@ -8,7 +8,9 @@ Pi's compaction threshold (`contextWindow - reserveTokens`), it summarizes the
 entries before Pi's usual cut point in the background. It uses Pi's own
 compaction prompt, the session model and thinking level, and the
 `compaction.reserveTokens` and `compaction.keepRecentTokens` settings,
-including per-model overrides. When about 8,000 more tokens can be summarized,
+including per-model overrides. On Pi 1.4, `reserveTokens` sets the compaction
+threshold; summary requests use the model's output limit, not that reserve.
+When about 8,000 more tokens can be summarized,
 it updates the stored summary with only the new entries.
 
 When Pi compacts, the extension returns the stored summary from
