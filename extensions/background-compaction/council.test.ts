@@ -84,7 +84,7 @@ test.each([
       notify(text: string) { notices.push(text); },
       setToolsExpanded() {}, setTitle() {}, setWorkingIndicator() {}, setWorkingVisible() {},
       setFooter(factory: any) {
-        footer = factory?.({}, { fg: (_color: string, text: string) => text }, { getExtensionStatuses: () => statuses });
+        footer = factory?.({ requestRender() {} }, { fg: (_color: string, text: string) => text }, { getExtensionStatuses: () => statuses });
       },
     } as any });
     await session.setModel(runtime.getModel("tripp", modelId)!);

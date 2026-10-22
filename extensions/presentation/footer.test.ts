@@ -1,7 +1,81 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import install, { footerLine } from "./index.ts";
 import { harness } from "../../lib/harness.ts";
+import { registerCouncils } from "../council/index.ts";
+import { fixtureCouncils } from "../council/fixtures.ts";
+
+test("spinner animates agent and branch-scoped background work and cleans up its lifecycle", async () => {
+  const h = harness();
+  let footer: any;
+  let renders = 0;
+  const ticks: Array<() => void> = [];
+  const timers = spyOn(globalThis, "setInterval").mockImplementation(((tick: () => void, ms: number) => {
+    expect(ms).toBe(150);
+    ticks.push(tick);
+    return { unref() {} };
+  }) as any);
+  const clear = spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+  const snapshot = (tasks: unknown[], sessionFile = "/test/session.jsonl", source = "tasks") =>
+    h.pi.events.emit("t3:background-tasks", { sessionFile, source, tasks });
+  Object.assign(h.ctx.ui, {
+    setToolsExpanded() {}, setTitle() {}, setWorkingVisible() {}, setWorkingIndicator() {},
+    setFooter(factory: any) {
+      footer?.dispose?.();
+      footer = factory?.({ requestRender() { renders++; } }, { fg: (_: string, text: string) => text }, {
+        getExtensionStatuses: () => new Map(),
+      });
+    },
+  });
+  install(h.pi);
+  try {
+    await h.emit("session_start");
+    const idle = footer.render(120)[0];
+    expect(ticks).toHaveLength(0);
+    snapshot([{}], "/other/session.jsonl");
+    expect(footer.render(120)[0]).toBe(idle);
+    await h.emit("agent_start");
+    expect(ticks).toHaveLength(1);
+    for (const frame of ["[/]", "[-]", "[\\]", "[|]", "[/]"]) {
+      expect(footer.render(120)[0]).toBe(`${frame} ${idle}`);
+      ticks[0]();
+    }
+    expect(renders).toBeGreaterThan(4);
+    for (const width of [0, 1, 3, 4, 10, 40, 120]) {
+      expect(visibleWidth(footer.render(width)[0])).toBeLessThanOrEqual(width);
+    }
+    snapshot([{}]);
+    await h.emit("agent_end");
+    expect(footer.render(120)[0]).toStartWith("[-] ");
+    snapshot([], "/other/session.jsonl");
+    expect(footer.render(120)[0]).toStartWith("[-] ");
+    snapshot([{}], "/test/session.jsonl", "other-source");
+    snapshot([]);
+    expect(footer.render(120)[0]).toStartWith("[-] ");
+    snapshot([], "/test/session.jsonl", "other-source");
+    expect(footer.render(120)[0]).toBe(idle);
+    expect(clear).toHaveBeenCalledTimes(1);
+    snapshot([{}]);
+    expect(ticks).toHaveLength(2);
+    await h.emit("session_tree");
+    expect(footer.render(120)[0]).toBe(idle);
+    // A producer answers snapshot requests, including after reload/session switch.
+    const detach = h.pi.events.on("t3:background-tasks-request", () => snapshot([{}]));
+    await h.emit("session_start");
+    expect(footer.render(120)[0]).toStartWith("[/] ");
+    detach();
+    await h.emit("session_shutdown");
+    const previousRenders = renders;
+    snapshot([{}]);
+    await h.emit("agent_start");
+    expect(renders).toBe(previousRenders);
+    expect(footer).toBeUndefined();
+  } finally {
+    await h.emit("session_shutdown");
+    timers.mockRestore();
+    clear.mockRestore();
+  }
+});
 
 test.each(["background: waiting", "background: preparing", "background: ready"].flatMap(background =>
   ["council", "council-openai"].map(modelId => ({ background, modelId })),
@@ -24,11 +98,12 @@ test("footer handles narrow terminals, ANSI colors, and wide characters", () => 
 
 test.each(["council", "council-openai"])("%s hides selected effort without hiding it for other models", async modelId => {
   const h = harness();
+  registerCouncils({ registerVirtualModel() {}, on() {} } as any, fixtureCouncils);
   let footer: any;
   Object.assign(h.ctx.ui, {
     setToolsExpanded() {}, setTitle() {}, setWorkingVisible() {}, setWorkingIndicator() {},
     setFooter(factory: any) {
-      footer = factory?.({}, { fg: (_color: string, text: string) => text }, {
+      footer = factory?.({ requestRender() {} }, { fg: (_color: string, text: string) => text }, {
         getExtensionStatuses: () => new Map([["background-compaction", "background: waiting"]]),
       });
     },

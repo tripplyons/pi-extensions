@@ -46,7 +46,14 @@ User messages retain prompt-zone markers and have no background-only rows above
 or below their content. Spacing within expanded output stays unchanged.
 
 The one-line footer shows folder, model, reasoning, native context-window use,
-branch-local estimated cost, and extension statuses. Both Council variants omit
+branch-local estimated cost, and extension statuses. While the agent runs or this
+session branch has managed background Bash/Python tasks, an ASCII spinner appears
+before the folder: `[/]`, `[-]`, `[\]`, `[|]`, advancing every 150 ms. It disappears
+when both are idle. Separate swarm-worker sessions do not keep it active. Task
+snapshots restore background activity after reload and branch changes; footer
+disposal stops the animation and removes its event listener.
+
+Both Council variants omit
 the reasoning field because their presets fix effort. The footer reserves room for the background
 compaction state before shortening the other fields. It uses
 `ctx.getContextUsage()`. For example, `25%/272k` means the current context uses

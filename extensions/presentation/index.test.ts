@@ -12,7 +12,7 @@ test("footer formats tokens and accounts only for the active branch", () => {
  h.entries.length = 0; expect(usage(h.ctx)).toEqual({ cost: 0, last: undefined });
 });
 
-test("hides the working indicator and keeps the footer unchanged while busy", async () => {
+test("hides the native working indicator and shows the footer spinner while busy", async () => {
   const h = harness();
   const indicators: unknown[] = [];
   const visibility: unknown[] = [];
@@ -22,7 +22,7 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   h.ctx.ui.setWorkingVisible = (message: unknown) => visibility.push(message);
   h.ctx.ui.setWorkingIndicator = (options: unknown) => indicators.push(options);
   h.ctx.ui.setFooter = (factory: any) => {
-    footer = factory?.({}, { fg: (_color: string, text: string) => text }, {
+    footer = factory?.({ requestRender() {} }, { fg: (_color: string, text: string) => text }, {
       getExtensionStatuses: () => new Map(),
     });
   };
@@ -32,9 +32,9 @@ test("hides the working indicator and keeps the footer unchanged while busy", as
   expect(visibility).toEqual([false]);
   const idle = footer.render(120);
   await h.emit("agent_start");
-  expect(footer.render(120)).toEqual(idle);
-  expect(footer.render(120).join("\n")).not.toContain("[*]");
+  expect(footer.render(120)[0]).toStartWith("[/] ");
   await h.emit("agent_end");
+  expect(footer.render(120)).toEqual(idle);
   await h.emit("session_start", { reason: "resume" });
   expect(indicators).toEqual([{ frames: [] }, { frames: [] }]);
   await h.emit("session_shutdown");
@@ -75,7 +75,7 @@ test("context footer uses Pi's native context window and handles unknown post-co
   Object.assign(h.ctx.ui, {
     setToolsExpanded() {}, setTitle() {}, setWorkingVisible() {}, setWorkingIndicator() {},
     setFooter(factory: any) {
-      footer = factory?.({}, { fg: (_color: string, text: string) => text }, {
+      footer = factory?.({ requestRender() {} }, { fg: (_color: string, text: string) => text }, {
         getExtensionStatuses: () => new Map(),
       });
     },
