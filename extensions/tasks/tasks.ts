@@ -125,7 +125,7 @@ export class Tasks {
         truncatedBy: limit as "lines" | "bytes", outputLines, outputBytes: preview.next_offset, lastLinePartial } },
     };
   }
-  async run(cwd: string, args: { command: string; timeout?: number; foreground_wait_seconds?: number; run_in_background?: boolean; pipefail?: boolean }, signal: AbortSignal | undefined, started: (id: string) => void, completed: (id: string) => void) {
+  async run(cwd: string, args: { command: string; timeout?: number; foreground_wait_seconds?: number; run_in_background?: boolean; pipefail?: boolean }, signal: AbortSignal | undefined, started: (id: string) => void, completed: (id: string) => void, steering?: AbortSignal) {
     signal?.throwIfAborted();
     if (args.foreground_wait_seconds !== undefined && (!Number.isSafeInteger(args.foreground_wait_seconds) || args.foreground_wait_seconds < 0 || args.foreground_wait_seconds > 300)) {
       throw new Error("foreground_wait_seconds must be an integer between 0 and 300");
@@ -187,9 +187,18 @@ export class Tasks {
     })();
     if (!task.background) {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let yieldWait: () => void = () => {};
       try {
-        await Promise.race([task.done, new Promise<void>(resolve => { timer = setTimeout(resolve, waitMs); })]);
-      } finally { clearTimeout(timer); }
+        await Promise.race([task.done, new Promise<void>(resolve => {
+          yieldWait = resolve;
+          timer = setTimeout(resolve, waitMs);
+          steering?.addEventListener("abort", yieldWait, { once: true });
+          if (steering?.aborted) yieldWait();
+        })]);
+      } finally {
+        clearTimeout(timer);
+        steering?.removeEventListener("abort", yieldWait);
+      }
       signal?.removeEventListener("abort", abort);
       if (terminal(record.status)) {
         if (task.error) throw task.error;
@@ -200,7 +209,7 @@ export class Tasks {
     }
     return result({ task_id: id, status: args.run_in_background ? "started" : "auto_promoted", message: "The command is running in the background. Do not rerun it. Use task_output to read output; unobserved completion will notify the owning conversation." });
   }
-  async output(id: string, offset: number | undefined, waitMs = 0, signal?: AbortSignal, sessionId = "") {
+  async output(id: string, offset: number | undefined, waitMs = 0, signal?: AbortSignal, sessionId = "", steering?: AbortSignal) {
     signal?.throwIfAborted();
     if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) throw new Error("offset must be a non-negative byte count");
     if (!Number.isSafeInteger(waitMs) || waitMs < 0) throw new Error("wait_ms must be a non-negative integer");
@@ -211,13 +220,14 @@ export class Tasks {
       const task = this.running.get(id);
       if (task && !terminal(task.record.status) && (await file.stat()).size <= start && waitMs > 0) {
         await new Promise<void>((resolve, reject) => {
-          const finish = () => { clearTimeout(timer); task.events.removeListener("change", finish); signal?.removeEventListener("abort", abort); resolve(); };
+          const finish = () => { clearTimeout(timer); task.events.removeListener("change", finish); signal?.removeEventListener("abort", abort); steering?.removeEventListener("abort", finish); resolve(); };
           const abort = () => { finish(); reject(signal?.reason ?? new Error("Aborted")); };
           const timer = setTimeout(finish, Math.min(waitMs, 300_000));
           task.events.once("change", finish);
           signal?.addEventListener("abort", abort, { once: true });
+          steering?.addEventListener("abort", finish, { once: true });
           if (signal?.aborted) abort();
-          else if (terminal(task.record.status)) finish();
+          else if (steering?.aborted || terminal(task.record.status)) finish();
           else void file.stat().then(stat => { if (stat.size > start) finish(); }, abort);
         });
       }
@@ -282,6 +292,17 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   let shuttingDown = false;
   let notificationTimer: ReturnType<typeof setTimeout> | undefined;
   const notifications = new Set<string>();
+  // Steering releases only the current waits. It must not cancel their processes
+  // or make later waits yield to a message Pi has already delivered.
+  let steering = new AbortController();
+  pi.on("input", event => {
+    if (event.streamingBehavior === "steer") {
+      const waiting = steering;
+      steering = new AbortController();
+      waiting.abort();
+    }
+    return { action: "continue" };
+  });
   let watchTimer: ReturnType<typeof setInterval> | undefined;
   let watching = false;
   const watches = new Map<string, { config: Watch; due: number }>();
@@ -375,12 +396,12 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   };
   pi.registerTool({
     name: "bash", label: "Bash", renderCall: renderCommandCall, renderResult,
-    description: "Execute Bash in the current working directory. Foreground defaults to 120 seconds (maximum 300); after 15 seconds by default the same process returns a background task ID, retaining its deadline. foreground_wait_seconds overrides the wait (0–300) without changing the deadline. run_in_background starts a managed task immediately. Do not rerun a returned task; use task_query, task_output, or task_stop. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
+    description: "Execute Bash in the current working directory. Foreground defaults to 120 seconds (maximum 300); after 15 seconds by default the same process returns a background task ID, retaining its deadline. foreground_wait_seconds overrides the wait (0–300) without changing the deadline. Steering input promotes a waiting command immediately without stopping it. run_in_background starts a managed task immediately. Do not rerun a returned task; use task_query, task_output, or task_stop. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
     parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Timeout in seconds; foreground defaults to 120, non-positive values use 120, maximum 300. Explicit background defaults to 1800 seconds; positive timeouts are capped at 2147483.647. Expiry kills the process tree." })), foreground_wait_seconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 300, description: "Wait before background promotion, in seconds (default 15). Does not change timeout or extend the execution deadline. Zero promotes immediately; ignored with run_in_background=true." })), run_in_background: Type.Optional(Type.Boolean()), pipefail: Type.Optional(Type.Boolean({ description: "Enable set -o pipefail: a pipeline returns the rightmost nonzero exit status, or zero if all commands succeed. Off by default; does not enable set -e or report each command's status." })) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
       try {
-        return await tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), () => {});
+        return await tasks.run(ctx.cwd, args, signal, id => pi.appendEntry(taskKey, id), () => {}, steering.signal);
       } finally { publishBackground(); }
     },
   });
@@ -401,8 +422,8 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   const definitions = [
     { name: "task_query", description: "Query background tasks on this session branch. Omit task_id to list tasks; pass task_id to get one. status filters the list.", parameters: Type.Object({ task_id: Type.Optional(Type.String()), status: Type.Optional(Type.Union(taskStatuses.map(status => Type.Literal(status)))) }),
       run: async (args: { task_id?: string; status?: Status }, _signal: AbortSignal | undefined, ctx: ExtensionContext) => args.task_id ? tasks.query(args.task_id) : ids(ctx).map(id => tasks.query(id)).filter(task => !args.status || task.status === args.status) },
-    { name: "task_output", description: "Read output from a background task. Unobserved completion automatically notifies and resumes the owning conversation; do not poll frequently. Returning terminal status acknowledges completion without discarding unread output. Omit offset consistently for an automatic cursor; explicit offsets do not advance it. wait_ms waits for new output or completion, not a minimum polling interval. Waiting does not stop the task.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })), wait_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Defaults to 0. Values above 300000 are accepted and capped at 300000 ms." })) }),
-      run: (args: { task_id: string; offset?: number; wait_ms?: number }, signal: AbortSignal | undefined, ctx: ExtensionContext) => tasks.output(args.task_id, args.offset, args.wait_ms, signal, ctx.sessionManager.getSessionId()) },
+    { name: "task_output", description: "Read output from a background task. Unobserved completion automatically notifies and resumes the owning conversation; do not poll frequently. Returning terminal status acknowledges completion without discarding unread output. Omit offset consistently for an automatic cursor; explicit offsets do not advance it. wait_ms waits for new output or completion, not a minimum polling interval. Waiting does not stop the task. Steering input returns the current output immediately; follow-up input does not interrupt waits.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })), wait_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Defaults to 0. Values above 300000 are accepted and capped at 300000 ms." })) }),
+      run: (args: { task_id: string; offset?: number; wait_ms?: number }, signal: AbortSignal | undefined, ctx: ExtensionContext) => tasks.output(args.task_id, args.offset, args.wait_ms, signal, ctx.sessionManager.getSessionId(), steering.signal) },
     { name: "task_stop", description: "Stop a background task by task_id, killing its local process tree. This does not guarantee that remote work stops; track remote IDs and verify remote cleanup separately. Finished tasks are unchanged.", parameters: Type.Object({ task_id: Type.String(), reason: Type.Optional(Type.String()) }),
       run: (args: { task_id: string; reason?: string }) => tasks.stop(args.task_id, args.reason) },
   ];
