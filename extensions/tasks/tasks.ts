@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
@@ -15,7 +15,7 @@ export type Watch = { task_id: string; enabled: boolean; interval_seconds: numbe
 type LogProgress = { path: string; bytes: number; modified_at: string; unchanged_seconds: number; recent_output: string; error?: never } | { path: string; error: string };
 export const taskStatuses = ["queued", "running", "stopping", "succeeded", "failed", "canceled", "lost"] as const;
 type Status = typeof taskStatuses[number];
-type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string; deadline_at?: string; last_output_at?: string };
+type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string; deadline_at?: string; last_output_at?: string; pipefail?: boolean };
 type Running = { record: Record; controller: AbortController; events: EventEmitter; done: Promise<void>; output?: Awaited<ReturnType<ReturnType<typeof createBashTool>["execute"]>>; background: boolean; error?: Error };
 export function foregroundTimeout(timeout?: number) {
   return timeout === undefined || !Number.isFinite(timeout) || timeout <= 0 ? 120 : Math.min(timeout, 300);
@@ -84,6 +84,17 @@ export class Tasks {
   }
   pending(ids: string[]) { return ids.filter(id => this.completion.get(id) === "pending"); }
   acknowledge(id: string, state: "observed" | "notified") { this.completion.set(id, state); }
+  /** Whether this session read the task's output through its automatic cursor, up to the end. */
+  fullyRead(id: string, sessionId: string) {
+    const cursor = this.cursors.get(JSON.stringify([sessionId, id]));
+    try { return cursor !== undefined && cursor >= statSync(this.path(id, "output")).size; } catch { return false; }
+  }
+  /** Final status with its exit code; a zero-exit pipeline may hide an earlier failure. */
+  completionNotice(id: string) {
+    const task = this.query(id);
+    const exit = typeof task.exit_code === "number" ? ` (exit ${task.exit_code}${task.exit_code === 0 && task.command.includes("|") && !task.pipefail ? "; without pipefail, a pipeline reports only its last command's exit code" : ""})` : "";
+    return `Background Bash task ${id} is ${task.status}${exit}.`;
+  }
   constructor(readonly root = join(getAgentDir(), "minimax", "tasks"), private operations: BashOperations = createLocalBashOperations(), private yieldMs = 15_000) {}
   private path(id: string, suffix: string) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid task ID");
@@ -135,7 +146,7 @@ export class Tasks {
     const id = randomUUID();
     const fd = openSync(this.path(id, "output"), "wx", 0o600);
     const timeout = args.run_in_background ? backgroundTimeout(args.timeout) : foregroundTimeout(args.timeout);
-    const record: Record = { task_id: id, command: args.command, cwd, status: "running", created_at: new Date().toISOString(), deadline_at: new Date(Date.now() + timeout * 1000).toISOString() };
+    const record: Record = { task_id: id, command: args.command, cwd, status: "running", created_at: new Date().toISOString(), deadline_at: new Date(Date.now() + timeout * 1000).toISOString(), ...(args.pipefail ? { pipefail: true } : {}) };
     try { this.save(record); started(id); } catch (error) { closeSync(fd); throw error; }
     const task: Running = { record, controller: new AbortController(), events: new EventEmitter(), done: Promise.resolve(), background: args.run_in_background === true };
     this.running.set(id, task);
@@ -357,7 +368,15 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     if (!current || shuttingDown) return;
     if (!notifications.size) return;
     const owned = new Set(ids(current));
-    const pending = [...notifications].filter(id => owned.has(id));
+    const owner = current.sessionManager.getSessionId();
+    const finished = [...notifications].filter(id => owned.has(id));
+    // A conversation that already read all output needs the final status, not a new turn.
+    const read = finished.filter(id => tasks.fullyRead(id, owner));
+    if (read.length) {
+      for (const id of read) { notifications.delete(id); tasks.acknowledge(id, "notified"); }
+      pi.sendMessage({ customType: "pi-task-completed", content: `${read.map(id => tasks.completionNotice(id)).join("\n")}\nIts output was already read with task_output.`, display: true }, { deliverAs: "nextTurn" });
+    }
+    const pending = finished.filter(id => !read.includes(id));
     if (!pending.length) return;
     // sendMessage(triggerTurn) can start a run during compaction. Wait for the
     // runtime to become idle instead of racing its history replacement.
@@ -366,7 +385,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
       notificationTimer.unref();
       return;
     }
-    const content = pending.map(id => `Background Bash task ${id} is ${tasks.query(id).status}.`).join("\n");
+    const content = pending.map(id => tasks.completionNotice(id)).join("\n");
     for (const id of pending) { notifications.delete(id); tasks.acknowledge(id, "notified"); }
     // One steering message wakes the conversation for the whole batch.
     pi.sendMessage({ customType: "pi-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "steer" });

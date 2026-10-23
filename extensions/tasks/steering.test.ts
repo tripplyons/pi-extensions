@@ -87,3 +87,33 @@ test("steering during output setup yields without acknowledging future completio
   expect(h.sentMessages[0].message.content).toContain(`${id} is succeeded`);
   expect((await h.call("task_output", { task_id: id })).details.output).toBe("finished");
 }));
+
+test("a task whose output was already read reports its exit quietly instead of waking the conversation", () => fixture(async (h, started) => {
+  const id = (await h.call("bash", { command: "swift build 2>&1 | tail -40", run_in_background: true })).details.task_id;
+  const process = await started;
+  process.emit("error: Build failed\n");
+  expect(await promptly(h.call("task_output", { task_id: id, wait_ms: 300_000 }))).toMatchObject({ details: { status: "running", output: "error: Build failed\n" } });
+  // The process exits after the last read, while Pi is still busy.
+  process.finish();
+  await sleep(30);
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.sentMessages[0].options).toEqual({ deliverAs: "nextTurn" });
+  expect(h.sentMessages[0].message.content).toBe(`Background Bash task ${id} is succeeded (exit 0; without pipefail, a pipeline reports only its last command's exit code).\nIts output was already read with task_output.`);
+  h.ctx.isIdle = () => true;
+  await h.emit("before_agent_start");
+  expect(h.sentMessages).toHaveLength(1);
+}));
+
+test("unread output still wakes the conversation, with the exit code", () => fixture(async (h, started) => {
+  const id = (await h.call("bash", { command: "make", run_in_background: true })).details.task_id;
+  const process = await started;
+  process.emit("seen\n");
+  await promptly(h.call("task_output", { task_id: id, wait_ms: 300_000 }));
+  process.emit("unseen\n"); process.finish();
+  await sleep(30);
+  expect(h.sentMessages).toHaveLength(0);
+  h.ctx.isIdle = () => true;
+  await h.emit("before_agent_start");
+  expect(h.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+  expect(h.sentMessages[0].message.content).toStartWith(`Background Bash task ${id} is succeeded (exit 0).`);
+}));

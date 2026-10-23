@@ -39,8 +39,12 @@ recovery does not consume the task's automatic output cursor.
 
 Tasks belong to their launching session branch. Completion notifications wait
 for idle and arrive in one steering message per batch. They never queue a
-separate follow-up turn. Observing terminal status acknowledges the
-notification without consuming unread output. Explicit byte offsets do not
+separate follow-up turn. If the session's automatic cursor already reached the
+end of the output when the task finishes, the notice does not start a turn. It
+joins the next turn instead. Each notice gives the exit code, and a zero-exit
+pipeline without `pipefail` carries a hint that earlier commands may have
+failed. Observing terminal status acknowledges the notification without
+consuming unread output. Explicit byte offsets do not
 advance the automatic output cursor. Each output read returns at most 2,000 lines
 or 50 KB and keeps UTF-8 characters intact. `next_offset` counts bytes actually
 returned, so the next read preserves unread output. Use `next_offset` for explicit
