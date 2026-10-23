@@ -1,4 +1,5 @@
 import { toolCall } from "../../lib/tool-preview.ts";
+import { askQuestion } from "./dialog.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { text } from "../../lib/common.ts";
@@ -33,11 +34,11 @@ export default function askUser(pi: ExtensionAPI) {
       try {
         const cancelled = () => new Error("Question cancelled or timed out; no answer received");
         if (args.choices.length) {
-          const picked = await ctx.ui.select(args.question, [...args.choices, other], { signal: controller.signal });
+          const picked = await askQuestion(ctx, args.question, [...args.choices, other], controller.signal);
           if (controller.signal.aborted || picked === undefined) throw cancelled();
           if (picked !== other) return { content: [{ type: "text", text: picked }], details: { answer: picked, choice: args.choices.indexOf(picked) + 1 } };
         }
-        const answer = await ctx.ui.input(args.question, "Free-text answer", { signal: controller.signal });
+        const answer = await askQuestion(ctx, args.question, [], controller.signal);
         if (controller.signal.aborted || answer === undefined) throw cancelled();
         return { content: [{ type: "text", text: answer }], details: { answer } };
       } finally {
