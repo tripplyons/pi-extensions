@@ -245,9 +245,14 @@ not replayed to the worker. An explicit restart task
 also clears the old resume signal. Historical handoffs remain separate from the
 current assignment and retain their review decisions.
 
-Current messages use steering, so a busy worker reads them at the next tool boundary.
-Steering does not cancel a running tool. Use `swarm_stop` or `/swarm:kill` for a
-hard stop. Durable state updates retry lock contention for up to five seconds;
+Current messages use steering, so a busy worker reads them at the next tool
+boundary. With the Tasks extension loaded, inbox delivery releases foreground
+Bash waits and active `task_output` reads immediately. Bash returns the same
+process as a background task; output reads return the current output. Processes,
+deadlines, and output cursors are preserved, and later waits work normally.
+Other running tools still finish before the message can be read. Steering does
+not cancel a running tool. Use `swarm_stop` or `/swarm:kill` for a hard stop.
+Durable state updates retry lock contention for up to five seconds;
 other filesystem errors propagate. A stale lock is not deleted automatically.
 An interrupted process may require manual inspection and lock removal.
 

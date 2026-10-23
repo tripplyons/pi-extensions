@@ -306,14 +306,18 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   // Steering releases only the current waits. It must not cancel their processes
   // or make later waits yield to a message Pi has already delivered.
   let steering = new AbortController();
+  const releaseWaits = () => {
+    const waiting = steering;
+    steering = new AbortController();
+    waiting.abort();
+  };
   pi.on("input", event => {
-    if (event.streamingBehavior === "steer") {
-      const waiting = steering;
-      steering = new AbortController();
-      waiting.abort();
-    }
+    if (event.streamingBehavior === "steer") releaseWaits();
     return { action: "continue" };
   });
+  // Swarm inbox messages use sendMessage, which bypasses Pi's user-input hook.
+  // Delivery is already queued as steering before this event is emitted.
+  const detachSwarm = pi.events.on("pi:swarm-activity", releaseWaits);
   let watchTimer: ReturnType<typeof setInterval> | undefined;
   let watching = false;
   const watches = new Map<string, { config: Watch; due: number }>();
@@ -401,7 +405,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   pi.on("session_tree", load);
   pi.on("before_agent_start", load);
   pi.on("session_shutdown", async event => {
-    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); clearInterval(watchTimer); detach(); detachBackground();
+    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); clearInterval(watchTimer); detach(); detachBackground(); detachSwarm();
     if (event.reason && event.reason !== "quit") return;
     await tasks.shutdown();
     const pool = pools[poolKey];
@@ -415,7 +419,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   };
   pi.registerTool({
     name: "bash", label: "Bash", renderCall: renderCommandCall, renderResult,
-    description: "Execute Bash in the current working directory. Foreground defaults to 120 seconds (maximum 300); after 15 seconds by default the same process returns a background task ID, retaining its deadline. foreground_wait_seconds overrides the wait (0–300) without changing the deadline. Steering input promotes a waiting command immediately without stopping it. run_in_background starts a managed task immediately. Do not rerun a returned task; use task_query, task_output, or task_stop. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
+    description: "Execute Bash in the current working directory. Foreground defaults to 120 seconds (maximum 300); after 15 seconds by default the same process returns a background task ID, retaining its deadline. foreground_wait_seconds overrides the wait (0–300) without changing the deadline. User steering or swarm inbox delivery promotes a waiting command immediately without stopping it. run_in_background starts a managed task immediately. Do not rerun a returned task; use task_query, task_output, or task_stop. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
     parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Timeout in seconds; foreground defaults to 120, non-positive values use 120, maximum 300. Explicit background defaults to 1800 seconds; positive timeouts are capped at 2147483.647. Expiry kills the process tree." })), foreground_wait_seconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 300, description: "Wait before background promotion, in seconds (default 15). Does not change timeout or extend the execution deadline. Zero promotes immediately; ignored with run_in_background=true." })), run_in_background: Type.Optional(Type.Boolean()), pipefail: Type.Optional(Type.Boolean({ description: "Enable set -o pipefail: a pipeline returns the rightmost nonzero exit status, or zero if all commands succeed. Off by default; does not enable set -e or report each command's status." })) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
@@ -441,7 +445,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   const definitions = [
     { name: "task_query", description: "Query background tasks on this session branch. Omit task_id to list tasks; pass task_id to get one. status filters the list.", parameters: Type.Object({ task_id: Type.Optional(Type.String()), status: Type.Optional(Type.Union(taskStatuses.map(status => Type.Literal(status)))) }),
       run: async (args: { task_id?: string; status?: Status }, _signal: AbortSignal | undefined, ctx: ExtensionContext) => args.task_id ? tasks.query(args.task_id) : ids(ctx).map(id => tasks.query(id)).filter(task => !args.status || task.status === args.status) },
-    { name: "task_output", description: "Read output from a background task. Unobserved completion automatically notifies and resumes the owning conversation; do not poll frequently. Returning terminal status acknowledges completion without discarding unread output. Omit offset consistently for an automatic cursor; explicit offsets do not advance it. wait_ms waits for new output or completion, not a minimum polling interval. Waiting does not stop the task. Steering input returns the current output immediately; follow-up input does not interrupt waits.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })), wait_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Defaults to 0. Values above 300000 are accepted and capped at 300000 ms." })) }),
+    { name: "task_output", description: "Read output from a background task. Unobserved completion automatically notifies and resumes the owning conversation; do not poll frequently. Returning terminal status acknowledges completion without discarding unread output. Omit offset consistently for an automatic cursor; explicit offsets do not advance it. wait_ms waits for new output or completion, not a minimum polling interval. Waiting does not stop the task. User steering or swarm inbox delivery returns the current output immediately; follow-up input does not interrupt waits.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })), wait_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Defaults to 0. Values above 300000 are accepted and capped at 300000 ms." })) }),
       run: (args: { task_id: string; offset?: number; wait_ms?: number }, signal: AbortSignal | undefined, ctx: ExtensionContext) => tasks.output(args.task_id, args.offset, args.wait_ms, signal, ctx.sessionManager.getSessionId(), steering.signal) },
     { name: "task_stop", description: "Stop a background task by task_id, killing its local process tree. This does not guarantee that remote work stops; track remote IDs and verify remote cleanup separately. Finished tasks are unchanged.", parameters: Type.Object({ task_id: Type.String(), reason: Type.Optional(Type.String()) }),
       run: (args: { task_id: string; reason?: string }) => tasks.stop(args.task_id, args.reason) },

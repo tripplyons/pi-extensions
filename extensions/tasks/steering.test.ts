@@ -42,6 +42,39 @@ test("steering promotes foreground Bash without canceling its process or changin
   expect((await h.call("task_output", { task_id: id })).details.output).toBe("same process\n");
 }));
 
+test.each(["message", "instruction"])("a swarm %s promotes foreground Bash without canceling its process or changing its deadline", kind => fixture(async (h, started) => {
+  const reply = h.call("bash", { command: "controlled", timeout: 240, foreground_wait_seconds: 300 });
+  const process = await started;
+  const id = h.entries.find(entry => entry.customType === taskKey)!.data;
+  const before = (await h.call("task_query", { task_id: id })).details;
+  h.pi.events.emit("pi:swarm-activity", { kind });
+  expect(await promptly(reply)).toMatchObject({ details: { task_id: id, status: "auto_promoted" } });
+  expect((await h.call("task_query", { task_id: id })).details).toMatchObject({ status: "running", deadline_at: before.deadline_at });
+  expect(process.signal?.aborted).toBe(false);
+  process.emit("same process\n"); process.finish();
+  expect((await h.call("task_output", { task_id: id })).details.output).toBe("same process\n");
+}));
+
+test("swarm delivery releases output waits without losing cursors or releasing later waits", () => fixture(async (h, started) => {
+  const id = (await h.call("bash", { command: "controlled", run_in_background: true })).details.task_id;
+  const process = await started;
+  process.emit("before");
+  expect((await h.call("task_output", { task_id: id })).details.next_offset).toBe(6);
+  const waits = [h.call("task_output", { task_id: id, wait_ms: 300_000 }), h.call("task_output", { task_id: id, offset: 6, wait_ms: 300_000 })];
+  await sleep(30);
+  h.pi.events.emit("pi:swarm-activity", { kind: "instruction" });
+  for (const wait of waits) expect(await promptly(wait)).toMatchObject({ details: { status: "running", output: "", next_offset: 6 } });
+  expect(process.signal?.aborted).toBe(false);
+  const next = h.call("task_output", { task_id: id, wait_ms: 300_000 });
+  expect(await Promise.race([next, sleep(30).then(() => "still waiting")])).toBe("still waiting");
+  process.emit("after");
+  expect(await promptly(next)).toMatchObject({ details: { status: "running", output: "after", next_offset: 11 } });
+  // A delivery during asynchronous read setup must also release that read.
+  const again = h.call("task_output", { task_id: id, wait_ms: 300_000 });
+  h.pi.events.emit("pi:swarm-activity", { kind: "message" });
+  expect(await promptly(again)).toMatchObject({ details: { status: "running", output: "", next_offset: 11 } });
+}));
+
 test("follow-up and idle input do not promote foreground Bash", () => fixture(async (h, started) => {
   const reply = h.call("bash", { command: "controlled", foreground_wait_seconds: 300 });
   const process = await started;

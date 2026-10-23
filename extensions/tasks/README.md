@@ -16,9 +16,10 @@ bash command="npm run build" timeout=300 foreground_wait_seconds=120
 If the command finishes before the wait expires, Bash returns its native result.
 Otherwise, it returns a task ID for the same process with the original deadline.
 A longer wait remains cancelable and cannot extend the execution deadline.
-Sending steering input during the foreground wait promotes the same command to
-a background task immediately, so Pi can handle your message without stopping
-the process. Queued follow-up messages do not interrupt the wait.
+User steering input or a delivered swarm inbox message during the foreground
+wait promotes the same command to a background task immediately. Pi can then
+handle the message without stopping the process or changing its deadline.
+Queued follow-up messages do not interrupt the wait.
 
 `run_in_background: true` starts a managed task immediately with a default
 30-minute deadline. Query, read, or stop it with `task_query`, `task_output`, and
@@ -55,8 +56,9 @@ when a live task has no unread bytes at the requested or automatic cursor.
 Unread output and terminal status return immediately. A silent live task can
 return empty output and an unchanged `next_offset` after the wait expires;
 that does not mean it skipped the wait. New output or completion wakes the read
-early. Steering input also releases active reads with the current output,
-status, and cursor so Pi can handle the message. It does not stop the task or
+early. User steering input and delivered swarm inbox messages also release
+active reads with the current output, status, and cursor so Pi can handle the
+message. It does not stop the task or
 acknowledge a completion that has not happened. Follow-up messages do not release
 reads. `wait_ms` is not a minimum polling interval and does not stop the task.
 Values above 300,000 ms are accepted and capped. For a deliberate long wait, use

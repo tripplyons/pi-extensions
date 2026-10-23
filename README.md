@@ -19,7 +19,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with reload-safe background tasks, steering-aware waits, T3 Code running-state reporting, pipeline failure detection, bounded output, and progress reports |
+| [tasks](extensions/tasks) | Native Bash with reload-safe background tasks, user- and swarm-steering-aware waits, T3 Code running-state reporting, pipeline failure detection, bounded output, and progress reports |
 | [python](extensions/python) | Inline Python with uv, script-defined dependencies and Python versions, and managed background tasks |
 | [action-fusion](extensions/action-fusion) | Optional `then_run` command on edit and write, run after the change lands |
 | [observation-pack](extensions/observation-pack) | Large tool results replaced by excerpts after two requests, with `obs_recall` paging |
