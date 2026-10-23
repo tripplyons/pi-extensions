@@ -10,7 +10,7 @@ registration or documentation. This list tracks deliverables, not completion.
 
 | Area | Required behavior | State |
 | --- | --- | --- |
-| Ask user | Suggestions, free text, timeout/cancel, worker restriction | Implemented; unit tested |
+| Ask user | Choice list, free text, timeout/cancel, worker restriction | Implemented; unit tested |
 | Autocomplete | Commands, skills, files, editor integration | Restored fuzzy provider; unit tested; interactive keyboard audit pending |
 | Complaints | Private records, session/cwd/model/effort, harness-only policy | Implemented; unit tested |
 | Context | Native Pi 1.0 output limits and context management; MiniMax projection retired | Native codemode integration tests |

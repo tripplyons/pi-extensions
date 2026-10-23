@@ -3,12 +3,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { text } from "../../lib/common.ts";
 
+export const other = "Other (type an answer)";
+
 export default function askUser(pi: ExtensionAPI) {
   let pending = false;
   pi.registerTool({
     renderCall: toolCall("ask_user"),
     name: "ask_user", label: "Ask user",
-    description: "Ask one question and wait for free text. Supply suggestions or []. Do not request secrets. Call alone, not in parallel. Workers must ask their parent. Times out after ten minutes; cancellation is not an answer.",
+    description: "Ask one question and wait for an answer. Supply choices or []; the user picks one or types free text, and a picked choice returns its text. Do not request secrets. Call alone, not in parallel. Workers must ask their parent. Times out after ten minutes; cancellation is not an answer.",
     parameters: Type.Object({
       question: Type.String({ minLength: 1, maxLength: 2000 }),
       choices: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 8 }),
@@ -19,6 +21,8 @@ export default function askUser(pi: ExtensionAPI) {
       if (pending) throw new Error("Another question is pending");
       text(args.question, "question", 2000);
       args.choices.forEach(choice => text(choice, "choice", 200));
+      // Select returns the label, so a matching choice would be indistinguishable.
+      if (args.choices.includes(other)) throw new Error(`Choices must not include "${other}"; it is added automatically`);
       signal?.throwIfAborted();
       pending = true;
       pi.events.emit("pi:prompt", true);
@@ -27,9 +31,14 @@ export default function askUser(pi: ExtensionAPI) {
       signal?.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(abort, 600_000);
       try {
-        const title = args.question + (args.choices.length ? `\n\nSuggestions:\n${args.choices.map((choice, index) => `${index + 1}. ${choice}`).join("\n")}` : "");
-        const answer = await ctx.ui.input(title, "Free-text answer", { signal: controller.signal });
-        if (controller.signal.aborted || answer === undefined) throw new Error("Question cancelled or timed out; no answer received");
+        const cancelled = () => new Error("Question cancelled or timed out; no answer received");
+        if (args.choices.length) {
+          const picked = await ctx.ui.select(args.question, [...args.choices, other], { signal: controller.signal });
+          if (controller.signal.aborted || picked === undefined) throw cancelled();
+          if (picked !== other) return { content: [{ type: "text", text: picked }], details: { answer: picked, choice: args.choices.indexOf(picked) + 1 } };
+        }
+        const answer = await ctx.ui.input(args.question, "Free-text answer", { signal: controller.signal });
+        if (controller.signal.aborted || answer === undefined) throw cancelled();
         return { content: [{ type: "text", text: answer }], details: { answer } };
       } finally {
         clearTimeout(timer);
