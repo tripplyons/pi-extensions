@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
 import { FOLD_EVENT } from "../context-folding/events.ts";
+import contextFolding from "../context-folding/index.ts";
 import { CACHE_WRITE_READ_RATIO, decideCompaction } from "./economics.ts";
-import onlineContextCompact, { COMPACTION_EVENT, COMPACTION_INSTRUCTIONS, STATE_KEY } from "./index.ts";
+import onlineContextCompact, { COMPACTION_EVENT, STATE_KEY } from "./index.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -20,7 +21,12 @@ function conversation() {
 }
 
 function setup(compactError?: Error) {
-  const h = harness();
+  const h = { ...harness(), boundaries: [] as Function[] };
+  const on = h.pi.on;
+  h.pi.on = (name: string, handler: Function) => {
+    if (name === "turn_end") h.boundaries.push(handler);
+    return on(name, handler);
+  };
   const compactions: any[] = [];
   let aborted = 0;
   h.ctx.getSystemPrompt = () => "";
@@ -34,7 +40,11 @@ function setup(compactError?: Error) {
   const phases: string[] = [];
   h.pi.events.on(COMPACTION_EVENT, ({ phase }: { phase: string }) => phases.push(phase));
   onlineContextCompact(h.pi);
-  const plan = (statuses: string[]) => h.call("update_plan", { steps: statuses.map((status, index) => ({ id: `s${index}`, goal: `step ${index}`, status })) });
+  let planResult: any;
+  const plan = async (statuses: string[]) => {
+    planResult = await h.call("update_plan", { steps: statuses.map((status, index) => ({ id: `s${index}`, goal: `step ${index}`, status })) });
+    return planResult;
+  };
   // Project the current branch and count provider requests as Pi would.
   const requests = async (count: number) => {
     const messages = h.entries.filter(entry => entry.type === "message").map(entry => entry.message);
@@ -44,38 +54,46 @@ function setup(compactError?: Error) {
     }
   };
   const finishTurn = async (callId = "test-call") => {
-    await h.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ toolCallId: callId, toolName: "update_plan", isError: false }] });
-    await h.emit("agent_settled", { aborted: true });
+    // Match Pi's boundary protocol: each handler sees earlier handlers' drafts.
+    let entries: any[] = [];
+    const event = { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [{ toolCallId: callId, toolName: "update_plan", isError: false, details: planResult?.details }] };
+    for (const handler of h.boundaries) {
+      const result = await handler({ ...event, entries }, h.ctx);
+      if (result?.entries) entries = result.entries;
+    }
+    await h.emit("agent_settled", { aborted: false });
+    return entries;
   };
   return { h, compactions, aborted: () => aborted, phases, plan, requests, finishTurn };
 }
 
-test("completing a step on a long task compacts and continues", async () => {
+test("completing a step requests folding without aborting or native compaction", async () => {
   const { h, compactions, aborted, phases, plan, requests, finishTurn } = setup();
   await h.emit("session_start", {});
   await plan(["in_progress", "pending", "pending"]);
   h.entries.push(...conversation());
   await requests(10);
   await plan(["completed", "in_progress", "pending"]);
-  await finishTurn();
-  expect(aborted()).toBe(1);
-  expect(compactions).toHaveLength(1);
-  expect(compactions[0].customInstructions).toBe(COMPACTION_INSTRUCTIONS);
-  expect(h.sentMessages).toHaveLength(1);
-  expect(h.sentMessages[0]!.message).toMatchObject({ customType: STATE_KEY, display: false });
-  expect(h.sentMessages[0]!.message.content).toContain("compaction finished");
-  expect(h.sentMessages[0]!.options).toEqual({ triggerTurn: true });
-  expect(phases).toEqual(["aborting", "continuing"]);
+  const entries = await finishTurn();
+  expect(aborted()).toBe(0);
+  expect(compactions).toHaveLength(0);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ type: "custom_message", customType: STATE_KEY, display: false });
+  expect(entries[0].content).toContain("use compress");
+  expect(h.sentMessages).toHaveLength(0);
+  expect(phases).toEqual([]);
+  expect(h.entries.findLast(entry => entry.customType === STATE_KEY).data).toMatchObject({ debt: 0, compactions: 0 });
+  expect(await finishTurn()).toEqual([]);
 });
 
-test("finishing the last step keeps the context", async () => {
+test("even the last step can request folding of substantial finished work", async () => {
   const { h, compactions, aborted, plan, requests, finishTurn } = setup();
   await h.emit("session_start", {});
   await plan(["in_progress"]);
   h.entries.push(...conversation());
   await requests(10);
   await plan(["completed"]);
-  await finishTurn();
+  expect(await finishTurn()).toHaveLength(1);
   expect(aborted()).toBe(0);
   expect(compactions).toHaveLength(0);
 });
@@ -90,28 +108,27 @@ test("only a step that was registered unfinished is a boundary", async () => {
   expect(compactions).toHaveLength(0);
 });
 
-test("a refused compaction still continues the task", async () => {
-  const { h, compactions, plan, requests, finishTurn } = setup(new Error("Nothing to compact (session too small)"));
+test("small sessions do not request folding", async () => {
+  const { h, compactions, plan, requests, finishTurn } = setup();
   await h.emit("session_start", {});
   await plan(["in_progress", "pending", "pending"]);
-  h.entries.push(...conversation());
   await requests(10);
   await plan(["completed", "in_progress", "pending"]);
-  await finishTurn();
-  expect(compactions).toHaveLength(1);
-  expect(h.sentMessages[0]!.message.content).toContain("compaction was skipped");
+  expect(await finishTurn()).toEqual([]);
+  expect(compactions).toHaveLength(0);
 });
 
-test("a cancelled compaction does not restart the task", async () => {
-  const { h, phases, plan, requests, finishTurn } = setup(new Error("Compaction cancelled"));
+test("an aborted turn does not request folding or restart the task", async () => {
+  const { h, phases, plan, requests, finishTurn } = setup();
   await h.emit("session_start", {});
   await plan(["in_progress", "pending", "pending"]);
   h.entries.push(...conversation());
   await requests(10);
   await plan(["completed", "in_progress", "pending"]);
-  await finishTurn();
+  h.ctx.signal = AbortSignal.abort();
+  expect(await finishTurn()).toEqual([]);
   expect(h.sentMessages).toHaveLength(0);
-  expect(phases).toEqual(["aborting", "stopped"]);
+  expect(phases).toEqual([]);
 });
 
 test("the plan survives reload and a correction clears it", async () => {
@@ -156,6 +173,36 @@ const base = {
   contextTokens: 80_000, archiveTokens: 60_000, summaryTokens: 1_000, requestsPerStep: [10], remainingSteps: 2,
   averageGrowth: null, contextWindow: null, priorCompactions: 0, requestsSinceCompaction: null, carriedDebt: 0, debtRepayment: 0,
 };
+
+test("both extensions preserve other drafts and send one managed boundary request", async () => {
+  const { h, plan, requests, finishTurn } = setup();
+  const marker = { type: "custom_message", customType: "other", content: "keep", display: false };
+  h.boundaries.unshift(() => ({ entries: [marker] }));
+  contextFolding(h.pi);
+  h.ctx.getContextUsage = () => ({ tokens: 120_000, contextWindow: 200_000, percent: 60 });
+  h.entries.push(...conversation());
+  await requests(1);
+  await plan(["in_progress", "pending"]);
+  await plan(["completed", "in_progress"]);
+  const entries = await finishTurn();
+  expect(entries).toHaveLength(2);
+  expect(entries[0]).toEqual(marker);
+  expect(entries[1].customType).toBe(STATE_KEY);
+});
+
+test("actual rewrite debt gates later requests until window protection is needed", async () => {
+  const { h, plan, requests, finishTurn } = setup();
+  h.ctx.getContextUsage = () => ({ tokens: 120_000, contextWindow: 200_000, percent: 60 });
+  h.entries.push(...conversation());
+  await requests(1);
+  await plan(["in_progress", "pending"]);
+  h.pi.events.emit(FOLD_EVENT, { phase: "restored", fold: "fold-1", savedTokens: 0, rewriteTokens: 120_000, ctx: h.ctx });
+  await plan(["completed", "in_progress"]);
+  expect(await finishTurn()).toEqual([]);
+  h.ctx.getContextUsage = () => ({ tokens: 120_000, contextWindow: 125_000, percent: 96 });
+  await plan(["completed", "completed"]);
+  expect(await finishTurn()).toHaveLength(1);
+});
 
 test("compaction economics", () => {
   expect(decideCompaction(base)).toMatchObject({ compact: true, reason: "economic" });

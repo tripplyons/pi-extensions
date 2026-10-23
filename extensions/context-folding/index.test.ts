@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { harness } from "../../lib/harness.ts";
-import { COMPACTION_EVENT } from "../online-context-compact/index.ts";
 import contextFolding, { RECORD_TYPE } from "./index.ts";
 import { FOLD_EVENT } from "./events.ts";
 
@@ -211,39 +210,38 @@ test("search finds folded originals and reports their state", async () => {
 });
 
 test("a finished plan step suggests folding its entries", async () => {
-  const { h, turn, finish, session } = setup();
+  const { turn, finish, session } = setup();
   const plan = (statuses: string[], completed: string[]) => ({ steps: statuses.map((status, index) => ({ id: `s${index}`, goal: `step ${index}`, status })), completed });
   // An earlier update_plan result marks where the finished step began.
   let message = turn([call("p0", "update_plan")]);
   await finish(message, [result("p0", "update_plan", "plan", plan(["in_progress", "pending"], []))]);
   const start = session.appendMessage(assistant([call("c3", "bash", { command: "make" })]) as any);
-  const end = session.appendMessage(result("c3", "bash", "z".repeat(40_000)) as any);
+  const end = session.appendMessage(result("c3", "bash", "z".repeat(20_000)) as any);
   message = turn([call("p1", "update_plan")]);
   const entries = await finish(message, [result("p1", "update_plan", "plan", plan(["completed", "in_progress"], ["s0"]))]);
   expect(entries).toHaveLength(1);
   expect(entries[0]).toMatchObject({ type: "custom_message", customType: RECORD_TYPE, display: false });
   expect(entries[0].content).toContain(`Plan step "s0" is complete. Entries ${start}..${end}`);
   expect(entries[0].content).toContain(`compress (from "${start}", to "${end}")`);
-  // While online compaction stops the run, the reminder is pointless.
-  h.pi.events.emit(COMPACTION_EVENT, { phase: "aborting", ctx: h.ctx });
+  // Online-context-compact owns managed boundaries, avoiding duplicate reminders.
   session.appendMessage(assistant([call("c4", "bash")]) as any);
   session.appendMessage(result("c4", "bash", "w".repeat(40_000)) as any);
   message = turn([call("p2", "update_plan")]);
-  expect(await finish(message, [result("p2", "update_plan", "plan", plan(["completed", "completed"], ["s1"]))])).toEqual([]);
+  expect(await finish(message, [result("p2", "update_plan", "plan", { ...plan(["completed", "completed"], ["s1"]), foldingManaged: true })])).toEqual([]);
 });
 
-test("usage reminders fire once per threshold crossing and wait for plans", async () => {
+test("usage reminders fire once per threshold crossing, including during plans", async () => {
   const { h, turn, finish } = setup();
-  let percent = 65;
+  let percent = 45;
   h.ctx.getContextUsage = () => ({ tokens: 1, contextWindow: 100, percent });
   const step = async () => {
     const message = turn([call(`b${percent}`, "bash")]);
     return finish(message, [result(`b${percent}`, "bash", "ok")]);
   };
-  expect((await step())[0].content).toBe("Context is 65% full. Call context_status and fold finished work with compress.");
+  expect((await step())[0].content).toBe("Context is 45% full. Call context_status and fold finished work with compress.");
   percent = 70;
   expect(await step()).toEqual([]);
-  percent = 40;
+  percent = 30;
   expect(await step()).toEqual([]);
   percent = 61;
   expect(await step()).toHaveLength(1);
@@ -253,9 +251,9 @@ test("usage reminders fire once per threshold crossing and wait for plans", asyn
   percent = 90;
   let message = turn([{ type: "text", text: "done" }]);
   expect(await finish(message, [])).toEqual([]);
-  // An unfinished plan gets step reminders instead.
+  // Long unfinished steps still receive usage reminders.
   message = turn([call("p1", "update_plan")]);
   const steps = [{ id: "s0", goal: "step", status: "in_progress" }];
-  expect(await finish(message, [result("p1", "update_plan", "plan", { steps, completed: [] })])).toEqual([]);
+  expect(await finish(message, [result("p1", "update_plan", "plan", { steps, completed: [] })])).toHaveLength(1);
   expect(await step()).toEqual([]);
 });

@@ -12,7 +12,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
-import { COMPACTION_EVENT } from "../online-context-compact/index.ts";
 import { FOLD_EVENT, type FoldEvent } from "./events.ts";
 
 type Message = Parameters<typeof estimateTokens>[0];
@@ -24,12 +23,12 @@ type UnfoldRecord = { action: "unfold"; fold: string };
 type Pending = { drafts: SessionBoundaryDraft[]; event: Omit<FoldEvent, "ctx"> };
 
 export const RECORD_TYPE = "context-folding";
-/** Usage that triggers a reminder when no plan is active. */
-export const NUDGE_PERCENT = 60;
+/** Usage that triggers a reminder, including during long plan steps. */
+export const NUDGE_PERCENT = 45;
 /** Usage below which the reminder is armed again. */
-export const REARM_PERCENT = 50;
+export const REARM_PERCENT = 35;
 /** Smallest finished plan step worth a fold reminder. */
-export const MIN_STEP_TOKENS = 8_000;
+export const MIN_STEP_TOKENS = 4_000;
 const PREVIEW_CHARS = 80;
 // Claude Code bridges (pi-claude-agent-sdk) keep their own copy of the conversation inside a
 // running query and rebuild it only when told that Pi rewrote the history.
@@ -193,15 +192,13 @@ export default function contextFolding(pi: ExtensionAPI) {
   // Fold events wait until Pi commits their records; it drops a whole boundary if any draft is invalid.
   let committing: { seen: Set<string>; events: Array<Pending["event"]> } | undefined;
   let armed = true;
-  let compacting = false;
-  let plan: Array<{ status: string }> = [];
 
   const pendingTargets = () => new Set([...pending.values()].flatMap(item => item.drafts.flatMap(draft => draft.type === "context_edit" ? [draft.targetId] : [])));
   const recordEntries = (ctx: ExtensionContext) => ctx.sessionManager.getBranch()
     .filter(entry => entry.type === "custom" && entry.customType === RECORD_TYPE);
   const foldCount = (ctx: ExtensionContext) => recordEntries(ctx)
     .filter(entry => (entry as { data: FoldRecord }).data.action === "fold").length;
-  const reset = () => { pending.clear(); committing = undefined; armed = true; compacting = false; plan = []; };
+  const reset = () => { pending.clear(); committing = undefined; armed = true; };
   const confirm = (ctx: ExtensionContext) => {
     if (!committing) return;
     const { seen, events } = committing;
@@ -215,22 +212,11 @@ export default function contextFolding(pi: ExtensionAPI) {
       pi.events.emit(FOLD_EVENT, { ...event, ctx } satisfies FoldEvent);
     }
   };
-  const loadPlan = (ctx: ExtensionContext) => {
-    reset();
-    for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-      if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "update_plan" && !entry.message.isError) {
-        plan = (entry.message.details as { steps?: typeof plan } | undefined)?.steps ?? [];
-        return;
-      }
-    }
-  };
-
-  pi.on("session_start", (_event, ctx) => loadPlan(ctx));
-  pi.on("session_tree", (_event, ctx) => loadPlan(ctx));
+  pi.on("session_start", reset);
+  pi.on("session_tree", reset);
   pi.on("session_compact", () => { pending.clear(); armed = true; });
   pi.on("turn_start", (_event, ctx) => confirm(ctx));
   pi.on("agent_settled", (_event, ctx) => confirm(ctx));
-  pi.events.on(COMPACTION_EVENT, (event: { phase: string }) => { if (event.phase === "aborting") compacting = true; });
 
   pi.registerTool({
     name: "context_status",
@@ -399,11 +385,13 @@ export default function contextFolding(pi: ExtensionAPI) {
     pending.clear();
     const folded = events.length > 0;
     if (folded) committing = { seen: new Set(recordEntries(ctx).map(entry => entry.id)), events };
-    const skip = folded || compacting;
-    compacting = false;
     const message = event.message;
-    if (skip || message.role !== "assistant" || message.stopReason !== "toolUse" || ctx.signal?.aborted) return folded ? { entries } : undefined;
-    const reminder = stepReminder(event.toolResults, ctx) ?? usageReminder(ctx);
+    if (folded || message.role !== "assistant" || message.stopReason !== "toolUse" || ctx.signal?.aborted) return folded ? { entries } : undefined;
+    // Managed boundaries get one request from online-context-compact, not two.
+    const managed = event.toolResults.some(result => result.toolName === "update_plan" && !result.isError
+      && (result.details as { foldingManaged?: boolean } | undefined)?.foldingManaged);
+    const step = stepReminder(event.toolResults, ctx);
+    const reminder = managed ? undefined : step ?? usageReminder(ctx);
     if (!reminder) return;
     return { entries: [...entries, { type: "custom_message", customType: RECORD_TYPE, content: reminder, display: false }] };
   });
@@ -412,9 +400,8 @@ export default function contextFolding(pi: ExtensionAPI) {
   function stepReminder(results: Array<{ toolName: string; isError: boolean; details?: unknown }>, ctx: ExtensionContext) {
     const update = results.findLast(result => result.toolName === "update_plan" && !result.isError);
     if (!update) return;
-    const details = update.details as { steps?: typeof plan; completed?: string[] } | undefined;
-    plan = details?.steps ?? plan;
-    if (!details?.completed?.length) return;
+    const details = update.details as { completed?: string[]; foldingManaged?: boolean } | undefined;
+    if (details?.foldingManaged || !details?.completed?.length) return;
     const { items, foldable } = visibleItems(ctx);
     const boundary = foldable.findLastIndex(item => item.message.role === "toolResult" && item.message.toolName === "update_plan");
     let start = boundary + 1;
@@ -427,12 +414,12 @@ export default function contextFolding(pi: ExtensionAPI) {
     return `Plan step ${steps} is complete. Entries ${range[0]!.entry.id}..${range.at(-1)!.entry.id} (~${number(tokens)} tokens) cover its work. If you no longer need them verbatim, fold them with compress (from "${range[0]!.entry.id}", to "${range.at(-1)!.entry.id}").`;
   }
 
-  // Without an active plan, remind once each time usage crosses the threshold.
+  // Also remind during long plan steps, before native window pressure builds.
   function usageReminder(ctx: ExtensionContext) {
     const percent = ctx.getContextUsage()?.percent;
     if (typeof percent !== "number") return;
     if (percent < REARM_PERCENT) armed = true;
-    if (!armed || percent < NUDGE_PERCENT || plan.some(step => step.status !== "completed")) return;
+    if (!armed || percent < NUDGE_PERCENT) return;
     armed = false;
     return `Context is ${Math.round(percent)}% full. Call context_status and fold finished work with compress.`;
   }

@@ -57,21 +57,27 @@ nothing happens.
 
 ## Reminders
 
-When `update_plan` completes a step whose entries hold at least 8,000 tokens,
-a hidden message suggests folding the range from the previous plan update to
-that turn. Without an unfinished plan, a hidden message suggests folding when
-usage reaches 60% of the context window. It fires again only after usage falls
-below 50%. No reminder is sent after a fold, at the end of a run, or while
-online context compaction is stopping the run.
+For unmanaged `update_plan` results, completing a step whose entries hold at
+least 4,000 tokens suggests folding the range from the previous plan update
+to that turn. When Online Context Compact manages the plan, it owns boundary
+requests instead, so the extensions do not send duplicate reminders.
 
-## Online context compaction
+During other tool turns, a hidden message suggests folding when usage reaches
+45% of the context window, including during unfinished plan steps. It fires
+again only after usage falls below 35%. No reminder is sent after a fold or
+at the end of a run. These earlier reminders favor folding before native
+compaction becomes necessary.
+
+## Online folding triggers
 
 Each fold or restore emits `pi:context-fold` on `pi.events` with the tokens it
 saves and the tokens the prompt cache must rewrite. The event waits for the
 next turn, or for the run to settle, and is sent only if Pi committed the fold.
 Pi drops every entry from a turn boundary when any of them is invalid. Online Context Compact adds
 that rewrite to its cache debt and resets its growth baseline, so its cost model
-does not treat a fold as free or as negative growth.
+does not treat a fold as free or as negative growth. Online Context Compact
+requests model-written folds rather than calling native compaction. Pi's
+built-in automatic compaction remains enabled as a separate safety net.
 
 Ideas adapted from
 [billion-context-pi](https://github.com/ranxianglei/billion-context-pi). See

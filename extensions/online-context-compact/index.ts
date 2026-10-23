@@ -16,19 +16,16 @@ import { Type, type Static } from "typebox";
 import { restore } from "../../lib/common.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 import { FOLD_EVENT, type FoldEvent } from "../context-folding/events.ts";
-import { CACHE_WRITE_READ_RATIO, decideCompaction, type CompactionDecision } from "./economics.ts";
+import { CACHE_WRITE_READ_RATIO, decideCompaction } from "./economics.ts";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 
 export const STATE_KEY = "online-context-compact";
-export const KEEP_RECENT_TOKENS = 20_000;
+export const KEEP_RECENT_TOKENS = 8_000;
 const SUMMARY_TOKENS = 1_000;
-/** Announces planned run stops so loops such as goals do not treat them as failures. */
+/** Legacy event name retained for consumers; folding requests do not stop runs or emit it. */
 export const COMPACTION_EVENT = "pi:online-compaction";
-export type CompactionPhase = "aborting" | "continuing" | "stopped";
-export const COMPACTION_INSTRUCTIONS = "Preserve completed work, verification results, important decisions, and remaining work.";
-const CONTINUE_AFTER_COMPACTION = "Online context compaction finished. The task is still active. Continue the remaining work from the current plan. Keep existing step IDs when updating it.";
-const CONTINUE_AFTER_SKIP = "Online context compaction was skipped. The existing context is still available. Continue the remaining work from the current plan.";
+const FOLD_INSTRUCTIONS = "Call context_status, then use compress to fold finished work before continuing the plan. Preserve file paths, decisions, verification results, and remaining work in the summary. Leave material still needed for editing or verification verbatim. Do not use native compaction.";
 
 const stepSchema = Type.Object({
   id: Type.String({ minLength: 1, maxLength: 200 }),
@@ -92,13 +89,13 @@ export function planAdvice(previous: Step[], next: Step[]) {
   return { completed, advice };
 }
 
-// Estimate what Pi's native compaction would summarize, priced as the provider last saw it.
+// Estimate older context that could be folded, priced as the provider last saw it.
 export function archiveTokens(entries: SessionEntry[], keepRecentTokens: number, projected: AgentMessage[]) {
   const seen = new Map<string, number>();
   for (const message of projected) seen.set(messageKey(message), (seen.get(messageKey(message)) ?? 0) + estimateTokens(message));
   const priced = (entry: SessionEntry) => sessionEntryToContextMessages(entry).reduce((total, message) => total + (seen.get(messageKey(message)) ?? 0), 0);
-  // The run is aborted before compaction, so price the cut as Pi will see it then.
-  const path = [...entries, abortedTurn(entries.at(-1)?.id ?? null)];
+  // Use the native retention cut only as a conservative estimate of old, foldable work.
+  const path = entries;
   let start = 0;
   let summary = 0;
   const last = path.findLastIndex(entry => entry.type === "compaction");
@@ -114,32 +111,21 @@ export function archiveTokens(entries: SessionEntry[], keepRecentTokens: number,
   return summary + archived.reduce((total, entry) => total + priced(entry), 0);
 }
 
-function abortedTurn(parentId: string | null): SessionEntry {
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-  return {
-    type: "message", id: "online-context-compact-abort", parentId, timestamp: new Date(0).toISOString(),
-    message: { role: "assistant", content: [], api: "none", provider: "none", model: "aborted", usage, stopReason: "aborted", timestamp: 0 },
-  } as SessionEntry;
-}
-
 export default function onlineContextCompact(pi: ExtensionAPI) {
   let state = initial();
   let restored = false;
   let projected: AgentMessage[] = [];
   let boundaryCallId: string | undefined;
-  let selected: CompactionDecision | undefined;
-  let pendingDebt: { debt: number; repayment: number } | undefined;
-  let compacting = false;
-  // After a refused compaction, wait for real tool work before trying again.
-  let refused = false;
+  // A request is advice, not a context rewrite. Charge debt only after an actual fold.
+  let requested = false;
 
   const load = (ctx: ExtensionContext) => {
     const saved = restore<State>(ctx, STATE_KEY);
     state = saved?.version === 1 && Array.isArray(saved.plan) ? saved : initial();
     restored = true;
     projected = [];
-    boundaryCallId = selected = pendingDebt = undefined;
-    compacting = refused = false;
+    boundaryCallId = undefined;
+    requested = false;
   };
   const ensure = (ctx: ExtensionContext) => { if (!restored) load(ctx); };
   const save = (next: State) => { state = next; pi.appendEntry(STATE_KEY, state); };
@@ -152,7 +138,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
   pi.registerTool({
     name: "update_plan",
     label: "Update plan",
-    description: "Replace the complete working plan. Completing a registered unfinished step marks a safe point where context may be compacted when that saves cost. Steps added as completed are recorded as history.",
+    description: "Replace the complete working plan. Completing a registered unfinished step marks a safe point to request folding finished context. Steps added as completed are recorded as history.",
     promptSnippet: "Keep the working plan current",
     promptGuidelines: [
       "Send the complete plan on every update_plan call.",
@@ -172,7 +158,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
       } else {
         save({ ...state, plan: steps });
       }
-      const details = { steps, completed: completed.map(step => step.id), advice };
+      const details = { steps, completed: completed.map(step => step.id), advice, foldingManaged: true };
       return { content: [{ type: "text", text: [`Plan: ${JSON.stringify(steps)}`, ...advice].join("\n") }], details };
     },
     renderCall: toolCall("update_plan"),
@@ -181,8 +167,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => load(ctx));
   pi.on("session_tree", (_event, ctx) => load(ctx));
-  pi.on("session_before_tree", () => compacting ? { cancel: true } : undefined);
-  pi.on("session_shutdown", () => { boundaryCallId = selected = pendingDebt = undefined; compacting = false; });
+  pi.on("session_shutdown", () => { boundaryCallId = undefined; requested = false; });
 
   pi.on("context", (event, ctx) => {
     ensure(ctx);
@@ -207,9 +192,9 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
 
   pi.on("input", (event, ctx) => {
     ensure(ctx);
-    refused = false;
+    requested = false;
     if (event.streamingBehavior === "steer" || event.text.startsWith("CORRECTION:")) {
-      boundaryCallId = selected = pendingDebt = undefined;
+      boundaryCallId = undefined;
       save({ ...resetTask(state), debt: 0, repayment: 0 });
     } else if (state.plan.length && state.plan.every(step => step.status === "completed")) {
       save(resetTask(state));
@@ -217,13 +202,14 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", (event, ctx) => {
-    if (event.toolResults.some(result => result.toolName !== "update_plan" && !result.isError)) refused = false;
+    if (event.toolResults.some(result => result.toolName !== "update_plan" && !result.isError)) requested = false;
     const callId = boundaryCallId;
     boundaryCallId = undefined;
-    if (!callId || selected || refused || ctx.signal?.aborted) return;
+    if (!callId || requested || ctx.signal?.aborted) return;
+    if (event.toolResults.some(result => !result.isError && (result.toolName === "compress" || result.toolName === "decompress"))) return;
     const result = event.toolResults.find(item => item.toolCallId === callId);
     const message = event.message;
-    if (!result || result.isError || message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") return;
+    if (!result || result.isError || message.role !== "assistant" || message.stopReason !== "toolUse") return;
 
     const usage = ctx.getContextUsage();
     const current = contextTokens(ctx);
@@ -242,40 +228,15 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
       carriedDebt: state.debt,
       debtRepayment: state.repayment,
     });
-    if (!decision.compact) return;
-    selected = decision;
-    pi.events.emit(COMPACTION_EVENT, { phase: "aborting" satisfies CompactionPhase, ctx });
-    ctx.abort();
-  });
-
-  // Compact between runs, then start a hidden turn so the task continues.
-  pi.on("agent_settled", async (_event, ctx) => {
-    const decision = selected;
-    if (!decision || !ctx.isIdle()) return;
-    selected = undefined;
-    pendingDebt = { debt: decision.debt, repayment: decision.saving };
-    compacting = true;
-    const error = await new Promise<Error | undefined>(done => ctx.compact({
-      customInstructions: COMPACTION_INSTRUCTIONS,
-      onComplete: () => done(undefined),
-      onError: done,
-    }));
-    compacting = false;
-    pendingDebt = undefined;
-    // Escape during compaction stops the task as well.
-    if (error && (error.name === "AbortError" || error.message === "Compaction cancelled")) {
-      pi.events.emit(COMPACTION_EVENT, { phase: "stopped" satisfies CompactionPhase, ctx });
-      return;
-    }
-    if (error) {
-      refused = true;
-      if (ctx.hasUI) ctx.ui.notify(`Online compaction skipped: ${error.message}`, "warning");
-    }
-    pi.events.emit(COMPACTION_EVENT, { phase: "continuing" satisfies CompactionPhase, ctx });
-    pi.sendMessage(
-      { customType: STATE_KEY, content: error ? CONTINUE_AFTER_SKIP : CONTINUE_AFTER_COMPACTION, display: false },
-      { triggerTurn: true },
-    );
+    // Prefer folding finished work even when a full native rewrite would not pay off.
+    // Outstanding rewrite debt still prevents repeated speculative requests.
+    const finishedWork = archive >= 4_000 && state.debt === 0;
+    if (!decision.compact && !finishedWork) return;
+    requested = true;
+    return { entries: [...(event.entries ?? []), {
+      type: "custom_message" as const, customType: STATE_KEY,
+      content: FOLD_INSTRUCTIONS, display: false,
+    }] };
   });
 
   // A fold rewrites the cached prompt from its first entry, like a smaller compaction.
@@ -284,26 +245,27 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
     save({
       ...state,
       lastContextTokens: null,
+      lastCompactionAt: state.requests,
+      compactions: state.compactions + 1,
       debt: state.debt + Math.max(0, rewriteTokens) * (CACHE_WRITE_READ_RATIO - 1),
       repayment: Math.max(0, state.repayment + savedTokens),
     });
   });
 
-  pi.on("session_compact", (event, ctx) => {
+  pi.on("session_compact", (_event, ctx) => {
     ensure(ctx);
-    // Only native summaries from this extension's own compaction carry its priced debt.
-    const paid = !event.fromExtension && pendingDebt ? pendingDebt : { debt: 0, repayment: 0 };
+    // Native compaction is external to this extension. Reset its context baseline.
     save({
       ...state,
       lastCompactionAt: state.requests,
       compactions: state.compactions + 1,
       // Context sizes are not comparable across the summary.
       lastContextTokens: null,
-      debt: state.debt + paid.debt,
-      repayment: state.repayment + paid.repayment,
+      debt: 0,
+      repayment: 0,
     });
-    boundaryCallId = selected = undefined;
-    refused = false;
+    boundaryCallId = undefined;
+    requested = false;
     projected = [];
   });
 }
