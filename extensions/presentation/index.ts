@@ -3,7 +3,7 @@ import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 import { installHiddenThinkingBlocks } from "./thinking-blocks.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
 import { isCouncilModel } from "../council/index.ts";
 
@@ -23,15 +23,8 @@ export function usage(ctx: ExtensionContext) {
   }
   return { cost, last };
 }
-// Reserve the background state before truncating the other footer fields.
 export function footerLine(parts: string[], statuses: ReadonlyMap<string, string>, separator: string, width: number) {
-  const background = statuses.get("background-compaction");
-  const otherStatuses = [...statuses].filter(([key]) => key !== "background-compaction").map(([, text]) => text);
-  const left = [...parts, ...otherStatuses].join(separator);
-  if (!background) return truncateToWidth(left, width);
-  const available = width - visibleWidth(background) - visibleWidth(separator);
-  if (available <= 0) return truncateToWidth(background, width);
-  return truncateToWidth(left, available) + separator + background;
+  return truncateToWidth([...parts, ...statuses.values()].join(separator), width);
 }
 export default function presentation(pi: ExtensionAPI) {
   registerCompactToolRenderers(pi);

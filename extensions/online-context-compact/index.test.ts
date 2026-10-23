@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
-import { decideCompaction } from "./economics.ts";
+import { FOLD_EVENT } from "../context-folding/events.ts";
+import { CACHE_WRITE_READ_RATIO, decideCompaction } from "./economics.ts";
 import onlineContextCompact, { COMPACTION_EVENT, COMPACTION_INSTRUCTIONS, STATE_KEY } from "./index.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -124,6 +125,22 @@ test("the plan survives reload and a correction clears it", async () => {
   expect(result.details.completed).toEqual(["s0"]);
   await reloaded.h.emit("input", { text: "CORRECTION: use the other API", source: "interactive" });
   expect((await reloaded.plan(["completed", "in_progress"])).details.completed).toEqual([]);
+});
+
+test("a context fold adds cache rewrite debt and resets the growth baseline", async () => {
+  const { h, requests } = setup();
+  await h.emit("session_start", {});
+  h.entries.push(...conversation());
+  await requests(2);
+  const saved = () => h.entries.findLast(entry => entry.customType === STATE_KEY)?.data;
+  expect(saved().lastContextTokens).toBeGreaterThan(0);
+  h.pi.events.emit(FOLD_EVENT, { phase: "folded", fold: "fold-1", savedTokens: 10_000, rewriteTokens: 40_000, ctx: h.ctx });
+  expect(saved()).toMatchObject({ lastContextTokens: null, debt: 40_000 * (CACHE_WRITE_READ_RATIO - 1), repayment: 10_000 });
+  // A request repays the saving, and the next one measures growth from a fresh baseline.
+  await requests(1);
+  expect(saved()).toMatchObject({ debt: 40_000 * (CACHE_WRITE_READ_RATIO - 1) - 10_000, growthCount: 0 });
+  h.pi.events.emit(FOLD_EVENT, { phase: "restored", fold: "fold-1", savedTokens: -12_000, rewriteTokens: 50_000, ctx: h.ctx });
+  expect(saved().repayment).toBe(0);
 });
 
 test("plan updates report advice and reject duplicate IDs", async () => {

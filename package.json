@@ -31,7 +31,6 @@
       "./extensions/stash/index.ts",
       "./extensions/auto-rename/index.ts",
       "./extensions/btw/index.ts",
-      "./extensions/background-compaction/index.ts",
       "./extensions/nvim-session-export/index.ts",
       "./extensions/tripp-autoresearch/index.ts",
       "./extensions/web/index.ts",
@@ -41,6 +40,7 @@
       "./extensions/observation-pack/index.ts",
       "./extensions/evidence-preserving-reducer/index.ts",
       "./extensions/online-context-compact/index.ts",
+      "./extensions/context-folding/index.ts",
       "./extensions/openai-subscription/index.ts",
       "./extensions/lm-studio/index.ts",
       "./extensions/extension-manager/index.ts"

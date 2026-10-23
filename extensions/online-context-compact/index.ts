@@ -15,7 +15,8 @@ import {
 import { Type, type Static } from "typebox";
 import { restore } from "../../lib/common.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
-import { decideCompaction, type CompactionDecision } from "./economics.ts";
+import { FOLD_EVENT, type FoldEvent } from "../context-folding/events.ts";
+import { CACHE_WRITE_READ_RATIO, decideCompaction, type CompactionDecision } from "./economics.ts";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 
@@ -275,6 +276,17 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
       { customType: STATE_KEY, content: error ? CONTINUE_AFTER_SKIP : CONTINUE_AFTER_COMPACTION, display: false },
       { triggerTurn: true },
     );
+  });
+
+  // A fold rewrites the cached prompt from its first entry, like a smaller compaction.
+  pi.events.on(FOLD_EVENT, ({ savedTokens, rewriteTokens, ctx }: FoldEvent) => {
+    ensure(ctx);
+    save({
+      ...state,
+      lastContextTokens: null,
+      debt: state.debt + Math.max(0, rewriteTokens) * (CACHE_WRITE_READ_RATIO - 1),
+      repayment: Math.max(0, state.repayment + savedTokens),
+    });
   });
 
   pi.on("session_compact", (event, ctx) => {

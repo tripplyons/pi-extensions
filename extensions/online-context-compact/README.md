@@ -35,5 +35,9 @@ phases so a planned stop does not pause an active goal.
 
 This extension replaces the todos extension and its `todo_write` tool.
 
+A fold or restore from [Context Folding](../context-folding) also rewrites
+the cached prompt. The extension adds that rewrite to its debt, credits the
+saved tokens as repayment, and measures context growth from a fresh baseline.
+
 Adapted from [SoL-Pi](https://github.com/NVlabs/SoL-Pi) Online Context Compact.
 See `licenses/sol-pi.txt` for the MIT license.

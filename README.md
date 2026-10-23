@@ -25,6 +25,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [observation-pack](extensions/observation-pack) | Large tool results replaced by excerpts after two requests, with `obs_recall` paging |
 | [evidence-preserving-reducer](extensions/evidence-preserving-reducer) | Long build and test logs reduced by GPT 6 Luna to receipts with verified quotes |
 | [online-context-compact](extensions/online-context-compact) | `update_plan` steps that compact context at step boundaries when it saves cost |
+| [context-folding](extensions/context-folding) | Model-written summaries that fold finished ranges, with restore, search, and step-boundary reminders |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; visible narration and a context footer with session and background activity |
@@ -41,7 +42,6 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [stash](extensions/stash) | Ctrl+S editor text stash |
 | [auto-rename](extensions/auto-rename) | Session names from the first user message using GPT 6 Luna with low reasoning and fast mode |
 | [btw](extensions/btw) | Side questions with optional tools |
-| [background-compaction](extensions/background-compaction) | Background summaries prepared at 80% of Pi's compaction threshold, with waiting/preparing/ready status |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |
 

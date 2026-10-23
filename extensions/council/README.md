@@ -122,7 +122,7 @@ field.
 Run the offline checks with:
 
 ```sh
-bun test extensions/council extensions/background-compaction/council.test.ts extensions/presentation/footer.test.ts tests/package.test.ts
+bun test extensions/council extensions/presentation/footer.test.ts tests/package.test.ts
 ```
 
 The opt-in live smoke test makes real model requests using your existing login:
