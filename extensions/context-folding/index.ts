@@ -17,7 +17,8 @@ import { FOLD_EVENT, type FoldEvent } from "./events.ts";
 
 type Message = Parameters<typeof estimateTokens>[0];
 type FoldableEntry = Extract<SessionEntry, { type: "message" | "custom_message" }>;
-type Item = { entry: FoldableEntry; message: Message; tokens: number };
+/** Editable entries can be folded; others, such as user shell commands, stay visible inside a fold. */
+type Item = { entry: FoldableEntry; message: Message; tokens: number; editable: boolean };
 type FoldRecord = { action: "fold"; fold: string; from: string; to: string; targets: string[]; originalTokens: number; summaryTokens: number };
 type UnfoldRecord = { action: "unfold"; fold: string };
 type Pending = { drafts: SessionBoundaryDraft[]; event: Omit<FoldEvent, "ctx"> };
@@ -39,6 +40,7 @@ const oneLine = (text: string, max: number) => {
 };
 
 function messageText(message: Message): string {
+  if (message.role === "bashExecution") return `$ ${message.command}\n${message.output}`;
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -59,13 +61,17 @@ const toolCalls = (message: Message): Array<{ id: string; name: string }> =>
   message.role === "assistant" ? message.content.filter(block => block.type === "toolCall") : [];
 const incomplete = (message: Message) => message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted");
 
-// Model-visible entries that a context edit can replace, in context order.
+// Pi accepts context edits only for these roles and for custom messages.
+const EDITABLE_ROLES = new Set(["user", "assistant", "toolResult", "custom"]);
+
+// Model-visible message entries, in context order.
 function visibleItems(ctx: ExtensionContext) {
   const projection = ctx.sessionManager.buildSessionProjection();
   const items: Item[] = [];
   for (const { sourceEntry, messages } of projection.entries) {
     if ((sourceEntry.type !== "message" && sourceEntry.type !== "custom_message") || messages.length !== 1) continue;
-    items.push({ entry: sourceEntry, message: messages[0]!, tokens: estimateTokens(messages[0]!) });
+    const message = messages[0]!;
+    items.push({ entry: sourceEntry, message, tokens: estimateTokens(message), editable: EDITABLE_ROLES.has(message.role) });
   }
   const total = projection.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
   // The latest assistant message is the current turn; its tool results are still in use.
@@ -125,7 +131,9 @@ export function checkRange(items: Item[], start: number, end: number): string | 
       return `Tool result ${item.entry.id} answers a call inside the range; end the range at or after it.`;
     }
   }
-  if (incomplete(range.at(-1)!.message)) return `Entry ${range.at(-1)!.entry.id} is an interrupted assistant turn; end the range at a completed entry.`;
+  const carrier = range.findLast(item => item.editable);
+  if (!carrier) return "The range has no entries that can be folded.";
+  if (incomplete(carrier.message)) return `Entry ${carrier.entry.id} is an interrupted assistant turn; end the range at a completed entry.`;
 }
 
 // The last entry carries the summary; a tool result also keeps the single call it answers.
@@ -164,7 +172,8 @@ function outline(foldable: Item[], owners: Map<string, string | undefined>) {
     const names = toolCalls(item.message).map(call => call.name);
     const preview = oneLine(messageText({ ...item.message, content: item.message.role === "assistant" ? item.message.content.filter(block => block.type === "text") : (item.message as any).content } as Message), PREVIEW_CHARS);
     const fold = unit.map(part => owners.get(part.entry.id)).find(Boolean);
-    lines.push(`- ${ref} ${role(item.message)}${results} ~${number(tokens)}${names.length ? ` [${names.join(", ")}]` : ""}${preview ? `: ${preview}` : ""}${fold ? ` (${fold})` : ""}`);
+    const note = !item.editable ? " (stays visible)" : fold ? ` (${fold})` : "";
+    lines.push(`- ${ref} ${role(item.message)}${results} ~${number(tokens)}${names.length ? ` [${names.join(", ")}]` : ""}${preview ? `: ${preview}` : ""}${note}`);
     index = end + 1;
   }
   return lines;
@@ -225,7 +234,7 @@ export default function contextFolding(pi: ExtensionAPI) {
   pi.registerTool({
     name: "compress",
     label: "Compress",
-    description: "Fold a contiguous range of earlier entries into your own summary. The last entry carries the summary and the rest leave model context; the session keeps the originals, and decompress restores them. The fold applies after the current turn's tool calls finish.",
+    description: "Fold a contiguous range of earlier entries into your own summary. The last foldable entry carries the summary and the other foldable entries leave model context; entries marked \"stays visible\" remain. The session keeps the originals, and decompress restores them. The fold applies after the current turn's tool calls finish.",
     promptSnippet: "Fold finished context into a summary",
     promptGuidelines: [
       "When earlier work is finished and you no longer need it verbatim, call context_status for refs, then fold that range with compress.",
@@ -249,7 +258,8 @@ export default function contextFolding(pi: ExtensionAPI) {
       if (start > end) throw new Error(`Ref ${from} comes after ${to}.`);
       const error = checkRange(items, items.indexOf(foldable[start]!), items.indexOf(foldable[end]!));
       if (error) throw new Error(error);
-      const range = foldable.slice(start, end + 1);
+      const range = foldable.slice(start, end + 1).filter(item => item.editable);
+      const kept = end + 1 - start - range.length;
       const queued = pendingTargets();
       if (range.some(item => queued.has(item.entry.id))) throw new Error("The range overlaps a fold queued in this turn.");
       const fold = `fold-${foldCount(ctx) + pending.size + 1}`;
@@ -263,7 +273,8 @@ export default function contextFolding(pi: ExtensionAPI) {
         drafts: [{ type: "custom", customType: RECORD_TYPE, data: record }, ...drafts],
         event: { phase: "folded", fold, savedTokens, rewriteTokens: after - savedTokens },
       });
-      const text = `${fold} folds ${range.length} entries (~${number(originalTokens)} -> ~${number(summaryTokens)} tokens) after this turn's tool calls finish.`;
+      const visible = kept ? ` ${kept} ${kept === 1 ? "entry" : "entries"} that cannot be edited, such as user shell commands, stay visible.` : "";
+      const text = `${fold} folds ${range.length} entries (~${number(originalTokens)} -> ~${number(summaryTokens)} tokens) after this turn's tool calls finish.${visible}`;
       return { content: [{ type: "text", text }], details: { ...record, savedTokens } };
     },
     renderCall: toolCall("compress"),
@@ -380,7 +391,7 @@ export default function contextFolding(pi: ExtensionAPI) {
     while (foldable[start]?.message.role === "toolResult") start++;
     const range = foldable.slice(start);
     if (!range.length || checkRange(items, items.indexOf(range[0]!), items.indexOf(range.at(-1)!))) return;
-    const tokens = range.reduce((sum, item) => sum + item.tokens, 0);
+    const tokens = range.reduce((sum, item) => sum + (item.editable ? item.tokens : 0), 0);
     if (tokens < MIN_STEP_TOKENS) return;
     const steps = details.completed.map(id => JSON.stringify(id)).join(", ");
     return `Plan step ${steps} is complete. Entries ${range[0]!.entry.id}..${range.at(-1)!.entry.id} (~${number(tokens)} tokens) cover its work. If you no longer need them verbatim, fold them with compress (from "${range[0]!.entry.id}", to "${range.at(-1)!.entry.id}").`;

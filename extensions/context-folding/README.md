@@ -21,6 +21,11 @@ sees a complete pair. A range must not split a tool call from its result,
 reach the current turn, or end at an interrupted turn, and the summary must be
 shorter than the range.
 
+Pi edits only user, assistant, tool result, and custom messages. Other entries
+in a range, such as user `!` shell commands and stored system messages, stay
+visible in place. `context_status` marks them `(stays visible)`, and `compress`
+reports how many it kept.
+
 `decompress` takes a fold ID such as `fold-1` and restores the entries as they
 were before the fold. A fold can cover the carrier of an earlier fold; restore
 the outer fold first.

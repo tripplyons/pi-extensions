@@ -84,6 +84,27 @@ test("compress folds a range after the turn and keeps tool pairs valid", async (
   expect(folds[0].rewriteTokens).toBeGreaterThan(0);
 });
 
+test("entries Pi cannot edit stay visible inside a fold", async () => {
+  const { session, ids, turn, run, finish, visible } = setup();
+  const shell = session.appendMessage({ role: "bashExecution", command: "ls /tmp", output: "k3an", exitCode: 0, cancelled: false, truncated: false, timestamp: 0 } as any);
+  const system = session.appendMessage({ role: "system", content: "Run started.", timestamp: 0 } as any);
+  const ask = session.appendMessage(user(`profile the kernel ${"z".repeat(4_000)}`) as any);
+  let message = turn([call("s1", "context_status")]);
+  const status = (await run("context_status", "s1", {})).content[0].text;
+  expect(status).toContain(`- ${shell} bashExecution ~`);
+  expect(status).toContain("$ ls /tmp k3an (stays visible)");
+  await finish(message, [result("s1", "context_status", "ok")]);
+  message = turn([call("k1", "compress")]);
+  const reply = await run("compress", "k1", { from: ids.ask, to: ask, summary: "Parser fixed; kernel profiling requested." });
+  expect(reply.content[0].text).toContain("2 entries that cannot be edited, such as user shell commands, stay visible.");
+  await finish(message, [result("k1", "compress", reply.content[0].text)]);
+  expect(visible().map(item => item.role).slice(0, 3)).toEqual(["bashExecution", "system", "user"]);
+  expect(JSON.stringify(visible()[2])).toContain("kernel profiling requested");
+  // A range with only uneditable entries has nothing to fold.
+  message = turn([call("k2", "compress")]);
+  await expect(run("compress", "k2", { from: shell, to: system, summary: "x" })).rejects.toThrow("no entries that can be folded");
+});
+
 test("compress rejects ranges that split tool pairs, reach the current turn, or do not shrink", async () => {
   const { ids, turn, run } = setup();
   turn([call("k1", "compress")]);
