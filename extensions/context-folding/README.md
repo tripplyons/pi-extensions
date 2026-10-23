@@ -43,6 +43,18 @@ original message, and fold state follows `/tree`, forks, and reloads. Pi's
 native compaction still runs at its usual threshold and summarizes the folded
 context.
 
+## Claude Code bridge
+
+[pi-claude-agent-sdk](https://www.npmjs.com/package/pi-claude-agent-sdk) runs
+each Pi turn as one Claude Code query that keeps its own copy of the
+conversation, so a fold alone does not change what Claude sees. After Pi commits
+a fold or restore, the extension calls the bridge's process-wide rebuild hooks
+(`Symbol.for("claude-bridge:markRebuildHooks")`) for the current session, as
+`/compact` does. The bridge then discards the running query and rebuilds its
+session from the folded history. That rebuild rewrites the prompt cache for
+the remaining context. Without the bridge, the hook registry is absent and
+nothing happens.
+
 ## Reminders
 
 When `update_plan` completes a step whose entries hold at least 8,000 tokens,

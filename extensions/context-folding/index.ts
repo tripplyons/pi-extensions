@@ -31,6 +31,15 @@ export const REARM_PERCENT = 50;
 /** Smallest finished plan step worth a fold reminder. */
 export const MIN_STEP_TOKENS = 8_000;
 const PREVIEW_CHARS = 80;
+// Claude Code bridges (pi-claude-agent-sdk) keep their own copy of the conversation inside a
+// running query and rebuild it only when told that Pi rewrote the history.
+const BRIDGE_REBUILD_HOOKS = Symbol.for("claude-bridge:markRebuildHooks");
+type RebuildHook = (piSession: string | null, event: string) => void;
+
+function announceRewrite(ctx: ExtensionContext, fold: string) {
+  const hooks = (globalThis as Record<symbol, unknown>)[BRIDGE_REBUILD_HOOKS] as Set<RebuildHook> | undefined;
+  for (const hook of hooks ?? []) hook(ctx.sessionManager.getSessionId(), `context-folding:${fold}`);
+}
 const SNIPPET_CHARS = 300;
 
 const number = (value: number) => Math.round(value).toLocaleString("en-US");
@@ -201,7 +210,9 @@ export default function contextFolding(pi: ExtensionAPI) {
       .map(entry => (entry as { data: FoldRecord | UnfoldRecord }).data);
     for (const event of events) {
       const action = event.phase === "folded" ? "fold" : "unfold";
-      if (fresh.some(record => record.action === action && record.fold === event.fold)) pi.events.emit(FOLD_EVENT, { ...event, ctx } satisfies FoldEvent);
+      if (!fresh.some(record => record.action === action && record.fold === event.fold)) continue;
+      announceRewrite(ctx, event.fold);
+      pi.events.emit(FOLD_EVENT, { ...event, ctx } satisfies FoldEvent);
     }
   };
   const loadPlan = (ctx: ExtensionContext) => {

@@ -168,6 +168,26 @@ test("fold events wait until Pi commits the fold", async () => {
   expect(folds).toHaveLength(1);
 });
 
+test("a committed fold tells Claude Code bridges to rebuild their conversation", async () => {
+  const key = Symbol.for("claude-bridge:markRebuildHooks");
+  const calls: Array<[string | null, string]> = [];
+  const hooks = new Set([(session: string | null, event: string) => { calls.push([session, event]); }]);
+  (globalThis as any)[key] = hooks;
+  try {
+    const { ids, turn, run, finish, session } = setup();
+    let message = turn([call("k1", "compress")]);
+    await run("compress", "k1", { from: ids.ask, to: ids.testResult, summary: "Parser fixed." });
+    await finish(message, [result("k1", "compress", "ok")], { rejected: true });
+    expect(calls).toEqual([]);
+    message = turn([call("k2", "compress")]);
+    await run("compress", "k2", { from: ids.ask, to: ids.testResult, summary: "Parser fixed." });
+    await finish(message, [result("k2", "compress", "ok")]);
+    expect(calls).toEqual([[session.getSessionId(), "context-folding:fold-1"]]);
+  } finally {
+    delete (globalThis as any)[key];
+  }
+});
+
 test("a failed compress call queues nothing", async () => {
   const { ids, turn, run, finish, visible } = setup();
   const message = turn([call("k1", "compress")]);
