@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import install, { footerLine } from "./index.ts";
+import install, { footerLine, modelFamily } from "./index.ts";
 import { harness } from "../../lib/harness.ts";
 import { registerCouncils } from "../council/index.ts";
 import { fixtureCouncils } from "../council/fixtures.ts";
@@ -116,4 +116,35 @@ test.each(["council", "council-openai"])("%s hides selected effort without hidin
   expect(footer.render(200)[0]).toContain("medium");
   h.ctx.model = { provider: "other", id: "council" };
   expect(footer.render(200)[0]).toContain("medium");
+});
+
+test.each([
+  ["claude-opus-5-5", "opus"], ["claude-haiku-4-5-20251001", "haiku"], ["claude-fable-5-1", "fable"],
+  ["gpt-6.1-sol", "sol"], ["deepseek/deepseek-v4.1-flash-1017", "deepseek-flash"],
+  ["council-openai", "council-openai"], ["kimi-k3", "kimi"], ["o3", "o3"],
+])("model family of %s is %s", (id, family) => expect(modelFamily(id)).toBe(family));
+
+test("footer shows effort and fast mode in parentheses after the model family", async () => {
+  const h = harness();
+  registerCouncils({ registerVirtualModel() {}, on() {} } as any, fixtureCouncils);
+  let footer: any;
+  const statuses = new Map([["fast", "fast"], ["goal", "goal: active"]]);
+  Object.assign(h.ctx.ui, {
+    setToolsExpanded() {}, setTitle() {}, setWorkingVisible() {}, setWorkingIndicator() {},
+    setFooter(factory: any) { footer = factory?.({ requestRender() {} }, { fg: (_color: string, text: string) => text }, { getExtensionStatuses: () => statuses }); },
+  });
+  install(h.pi);
+  h.ctx.model = { provider: "claude-bridge", id: "claude-opus-5-5" };
+  h.pi.getThinkingLevel = () => "medium";
+  await h.emit("session_start");
+  const fields = () => footer.render(200)[0].split(" | ");
+  expect(fields()[1]).toBe("opus (medium, fast)");
+  expect(fields().at(-1)).toBe("goal: active");
+  expect(fields()).not.toContain("fast");
+  statuses.delete("fast");
+  expect(fields()[1]).toBe("opus (medium)");
+  h.ctx.model = { provider: "tripp", id: "council" };
+  expect(fields()[1]).toBe("council");
+  statuses.set("fast", "fast");
+  expect(fields()[1]).toBe("council (fast)");
 });

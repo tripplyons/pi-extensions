@@ -23,6 +23,12 @@ export function usage(ctx: ExtensionContext) {
   }
   return { cost, last };
 }
+/** Model family without vendor prefix or versions: claude-opus-5-5 is "opus", gpt-6.1-sol is "sol". */
+export function modelFamily(id: string) {
+  const words = id.split("/").pop()!.split("-").filter(word => !/\d/.test(word));
+  const named = words.length > 1 && ["claude", "gpt"].includes(words[0]) ? words.slice(1) : words;
+  return named.length ? named.join("-") : id;
+}
 export function footerLine(parts: string[], statuses: ReadonlyMap<string, string>, separator: string, width: number) {
   return truncateToWidth([...parts, ...statuses.values()].join(separator), width);
 }
@@ -99,13 +105,17 @@ export default function presentation(pi: ExtensionAPI) {
         render(width: number) {
           const { cost } = usage(ctx);
           const project = `${active() ? frames[frame] + " " : ""}${basename(ctx.cwd)}`;
-          const parts = [theme.fg("accent", project), ctx.model?.id ?? "?"];
-          if (!isCouncilModel(ctx.model)) parts.push(pi.getThinkingLevel());
+          // Effort and fast mode qualify the model instead of taking their own fields.
+          const statuses = new Map(data.getExtensionStatuses());
+          const settings = [isCouncilModel(ctx.model) ? undefined : pi.getThinkingLevel(), statuses.get("fast")].filter(Boolean);
+          statuses.delete("fast");
+          const model = ctx.model?.id ? modelFamily(ctx.model.id) : "?";
+          const parts = [theme.fg("accent", project), settings.length ? `${model} (${settings.join(", ")})` : model];
           const context = ctx.getContextUsage();
           const window = context?.contextWindow ?? ctx.model?.contextWindow;
           parts.push(`${context?.percent === null || context?.percent === undefined ? "?" : Math.round(context.percent)}%/${window ? tokens(window) : "?"}`);
           parts.push(`$${cost.toFixed(2)}`);
-          return [footerLine(parts, data.getExtensionStatuses(), theme.fg("dim", " | "), width)];
+          return [footerLine(parts, statuses, theme.fg("dim", " | "), width)];
         },
       };
     });

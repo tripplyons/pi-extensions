@@ -53,8 +53,11 @@ in session history and model context.
 User messages retain prompt-zone markers and have no background-only rows above
 or below their content. Spacing within expanded output stays unchanged.
 
-The one-line footer shows folder, model, reasoning, native context-window use,
-branch-local estimated cost, and extension statuses. While the agent runs or this
+The one-line footer shows folder, model, native context-window use, branch-local
+estimated cost, and extension statuses. The model appears as its family name with
+reasoning effort and fast mode in parentheses, for example `opus (medium, fast)`
+for `claude-opus-5-5`. The family name drops versions, dates, and the `claude` or
+`gpt` prefix, so `gpt-6.1-sol` shows as `sol`. While the agent runs or this
 session branch has managed background Bash/Python tasks, an ASCII spinner appears
 before the folder: `[/]`, `[-]`, `[\]`, `[|]`, advancing every 150 ms. It disappears
 when both are idle. Separate swarm-worker sessions do not keep it active. Task
@@ -62,8 +65,7 @@ snapshots restore background activity after reload and branch changes; footer
 disposal stops the animation and removes its event listener.
 
 Both Council variants omit
-the reasoning field because their presets fix effort. The footer reserves room for the background
-compaction state before shortening the other fields. It uses
+reasoning effort because their presets fix it. Context use comes from
 `ctx.getContextUsage()`. For example, `25%/272k` means the current context uses
 25% of a 272,000-token model window, not the old `/threshold` budget. Pi may not
 know usage just after compaction; that shows `?%/272k` until usage becomes
