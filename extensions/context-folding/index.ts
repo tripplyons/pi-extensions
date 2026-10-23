@@ -181,14 +181,29 @@ function outline(foldable: Item[], owners: Map<string, string | undefined>) {
 
 export default function contextFolding(pi: ExtensionAPI) {
   const pending = new Map<string, Pending>();
+  // Fold events wait until Pi commits their records; it drops a whole boundary if any draft is invalid.
+  let committing: { seen: Set<string>; events: Array<Pending["event"]> } | undefined;
   let armed = true;
   let compacting = false;
   let plan: Array<{ status: string }> = [];
 
   const pendingTargets = () => new Set([...pending.values()].flatMap(item => item.drafts.flatMap(draft => draft.type === "context_edit" ? [draft.targetId] : [])));
-  const foldCount = (ctx: ExtensionContext) => ctx.sessionManager.getBranch()
-    .filter(entry => entry.type === "custom" && entry.customType === RECORD_TYPE && (entry.data as FoldRecord).action === "fold").length;
-  const reset = () => { pending.clear(); armed = true; compacting = false; plan = []; };
+  const recordEntries = (ctx: ExtensionContext) => ctx.sessionManager.getBranch()
+    .filter(entry => entry.type === "custom" && entry.customType === RECORD_TYPE);
+  const foldCount = (ctx: ExtensionContext) => recordEntries(ctx)
+    .filter(entry => (entry as { data: FoldRecord }).data.action === "fold").length;
+  const reset = () => { pending.clear(); committing = undefined; armed = true; compacting = false; plan = []; };
+  const confirm = (ctx: ExtensionContext) => {
+    if (!committing) return;
+    const { seen, events } = committing;
+    committing = undefined;
+    const fresh = recordEntries(ctx).filter(entry => !seen.has(entry.id))
+      .map(entry => (entry as { data: FoldRecord | UnfoldRecord }).data);
+    for (const event of events) {
+      const action = event.phase === "folded" ? "fold" : "unfold";
+      if (fresh.some(record => record.action === action && record.fold === event.fold)) pi.events.emit(FOLD_EVENT, { ...event, ctx } satisfies FoldEvent);
+    }
+  };
   const loadPlan = (ctx: ExtensionContext) => {
     reset();
     for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
@@ -202,6 +217,8 @@ export default function contextFolding(pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => loadPlan(ctx));
   pi.on("session_tree", (_event, ctx) => loadPlan(ctx));
   pi.on("session_compact", () => { pending.clear(); armed = true; });
+  pi.on("turn_start", (_event, ctx) => confirm(ctx));
+  pi.on("agent_settled", (_event, ctx) => confirm(ctx));
   pi.events.on(COMPACTION_EVENT, (event: { phase: string }) => { if (event.phase === "aborting") compacting = true; });
 
   pi.registerTool({
@@ -359,16 +376,18 @@ export default function contextFolding(pi: ExtensionAPI) {
 
   // Apply queued folds at the turn boundary, after their tool results are saved.
   pi.on("turn_end", (event, ctx) => {
+    confirm(ctx);
     const entries = [...(event.entries ?? [])];
-    let folded = false;
+    const events: Array<Pending["event"]> = [];
     for (const result of event.toolResults) {
       const queued = pending.get(result.toolCallId);
       if (!queued || result.isError) continue;
       entries.push(...queued.drafts);
-      pi.events.emit(FOLD_EVENT, { ...queued.event, ctx } satisfies FoldEvent);
-      folded = true;
+      events.push(queued.event);
     }
     pending.clear();
+    const folded = events.length > 0;
+    if (folded) committing = { seen: new Set(recordEntries(ctx).map(entry => entry.id)), events };
     const skip = folded || compacting;
     compacting = false;
     const message = event.message;

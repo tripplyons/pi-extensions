@@ -55,7 +55,9 @@ online context compaction is stopping the run.
 ## Online context compaction
 
 Each fold or restore emits `pi:context-fold` on `pi.events` with the tokens it
-saves and the tokens the prompt cache must rewrite. Online Context Compact adds
+saves and the tokens the prompt cache must rewrite. The event waits for the
+next turn, or for the run to settle, and is sent only if Pi committed the fold.
+Pi drops every entry from a turn boundary when any of them is invalid. Online Context Compact adds
 that rewrite to its cache debt and resets its growth baseline, so its cost model
 does not treat a fold as free or as negative growth.
 

@@ -38,15 +38,18 @@ function setup() {
     return message;
   };
   const run = (name: string, toolCallId: string, args: object) => h.tools.get(name).execute(toolCallId, args, undefined, undefined, h.ctx);
-  // Finish the turn as Pi does: save results, then commit the boundary drafts.
-  const finish = async (message: any, results: any[]) => {
+  // Finish the turn as Pi does: save results, commit the boundary drafts, then start the next turn.
+  // Pi drops every draft when one is invalid, which `rejected` simulates.
+  const finish = async (message: any, results: any[], { rejected = false } = {}) => {
     for (const item of results) append(item);
     const [returned] = await h.emit("turn_end", { entries: [], message, toolResults: results });
+    if (rejected) { await h.emit("turn_start", {}); return returned?.entries ?? []; }
     for (const draft of returned?.entries ?? []) {
       if (draft.type === "custom") session.appendCustomEntry(draft.customType, draft.data);
       else if (draft.type === "context_edit") session.appendContextEdit(draft.targetId, draft.replacement);
       else session.appendCustomMessageEntry(draft.customType, draft.content, draft.display, draft.details);
     }
+    await h.emit("turn_start", {});
     return returned?.entries ?? [];
   };
   const visible = () => session.buildSessionProjection().messages;
@@ -142,6 +145,27 @@ test("decompress restores nested folds from the outside in", async () => {
   expect(folds.map(event => [event.phase, event.fold])).toEqual([["folded", "fold-1"], ["folded", "fold-2"], ["restored", "fold-2"], ["restored", "fold-1"]]);
   expect(folds[2].savedTokens).toBeLessThan(0);
   await expect(run("decompress", "d3", { fold: "fold-1" })).rejects.toThrow("already restored");
+});
+
+test("fold events wait until Pi commits the fold", async () => {
+  const { h, ids, turn, run, finish, folds } = setup();
+  let message = turn([call("k1", "compress")]);
+  await run("compress", "k1", { from: ids.ask, to: ids.testResult, summary: "Parser fixed." });
+  await finish(message, [result("k1", "compress", "ok")], { rejected: true });
+  expect(folds).toEqual([]);
+  // The ID is free again, and a committed fold at the end of a run reports at settlement.
+  message = turn([call("k2", "compress")]);
+  await run("compress", "k2", { from: ids.ask, to: ids.testResult, summary: "Parser fixed." });
+  const [returned] = await h.emit("turn_end", { entries: [], message, toolResults: [result("k2", "compress", "ok")] });
+  expect(folds).toEqual([]);
+  for (const draft of returned.entries) {
+    if (draft.type === "custom") h.ctx.sessionManager.appendCustomEntry(draft.customType, draft.data);
+    else h.ctx.sessionManager.appendContextEdit(draft.targetId, draft.replacement);
+  }
+  await h.emit("agent_settled", { aborted: false });
+  expect(folds.map(event => [event.phase, event.fold])).toEqual([["folded", "fold-1"]]);
+  await h.emit("turn_start", {});
+  expect(folds).toHaveLength(1);
 });
 
 test("a failed compress call queues nothing", async () => {
