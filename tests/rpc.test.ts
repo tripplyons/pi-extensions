@@ -56,7 +56,7 @@ test("real Pi RPC loads without local host dependencies and activates native too
   }
   try {
     const { commands } = await request("get_commands");
-    for (const name of ["swarm:start", "goal", "codex-usage", "api-cost", "btw", "btw:tools", "nvim", "autoresearch"])
+    for (const name of ["swarm:start", "goal", "usage", "api-cost", "btw", "btw:tools", "nvim", "autoresearch"])
       expect(commands.some((command: any) => command.name === name)).toBe(true);
     for (const name of ["minimax", "pruner", "prune", "jev", "codex-compact", "threshold"])
       expect(commands.some((command: any) => command.name === name)).toBe(false);

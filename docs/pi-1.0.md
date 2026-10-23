@@ -67,8 +67,8 @@ and restart Pi to load the new code.
 
 The default changes to `openai/gpt-6.1-sol` after ChatGPT sign-in. Restart Pi,
 run `/login openai`, and select "Sign in with ChatGPT". No tokens are copied
-between providers. The existing Codex login remains available; `/codex-usage`
-continues using its separate quota endpoint.
+between providers. The existing Codex login remains available; `/usage`
+continues using its separate quota endpoint for it.
 
 The [subscription guard](../extensions/openai-subscription/README.md) blocks
 OpenAI API keys and paid gateways before provider dispatch. It checks auxiliary

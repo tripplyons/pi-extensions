@@ -1,14 +1,22 @@
 # Usage
 
-`/codex-usage` uses the selected model's provider:
+`/usage` uses the selected model's provider:
 
+- **Claude bridge (`claude-bridge`):** Displays the 5-hour and 7-day plan
+  windows, with percent remaining and reset times, from the latest rate-limit
+  event Claude Code sent with a bridge response. The output says how old that
+  event is. Before the first Claude response in this Pi process, it links to
+  https://claude.ai/settings/usage instead. The command reads
+  `globalThis[Symbol.for("claude-bridge:rateLimits")]`, which the dotfiles bridge
+  patch fills. It resolves no credentials and makes no request: the bridge's
+  Pi OAuth token lacks the profile scope that the Claude usage endpoint needs.
 - **OpenAI (`openai`):** Shows https://chatgpt.com/settings/usage for the new
   `/login openai` method, Sign in with ChatGPT. In-terminal quota is unavailable
   for this login. The command does not resolve credentials, make a network request,
   or fall back to a legacy Codex account. The link also works when an API key is
   configured, but shows ChatGPT plan usage, not API billing.
-- **Legacy Codex (`openai-codex`):** Displays weekly quota and reset time for the
-  current Codex account. Five-hour quota is not displayed. The command uses Pi's
+- **Legacy Codex (`openai-codex`):** Displays the weekly quota and, when the
+  account has one, the 5-hour quota, with reset times. The command uses Pi's
   credential resolver, including refresh handling, then requests the legacy Codex
   usage endpoint. No token is written to disk, passed to a shell, included in
   notifications, or sent through redirects.

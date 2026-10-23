@@ -31,7 +31,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; visible narration and a context footer with session and background activity |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
-| [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |
+| [usage](extensions/usage) | `/usage` plan windows for Claude bridge and legacy Codex, a ChatGPT usage link, and API cost |
 | [models](extensions/models) | Model listing and selection |
 | [lm-studio](extensions/lm-studio) | Local LM Studio provider with model discovery, catalog-based thinking levels, and catalog refresh |
 | [council](extensions/council) | Councils from `councils.json` with append-only round guidance, 10-response execution rounds, and advisor-free swarm notification handling |

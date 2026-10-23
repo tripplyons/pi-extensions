@@ -1,18 +1,18 @@
 import { expect, mock, spyOn, test } from 'bun:test';
 import { harness } from '../../lib/harness.ts';
-import install, { parseUsage, formatUsage, fetchUsage } from './index.ts';
+import install, { parseUsage, formatUsage, formatClaudeUsage, fetchUsage } from './index.ts';
 const payload = { rate_limit: { primary_window: { limit_window_seconds: 18000, used_percent: 25, reset_after_seconds: 120 } }, additional_rate_limits: [{ rate_limit: { secondary_window: { limit_window_seconds: 604800, used_percent: 110, reset_at: 200 } } }] };
 test('usage windows, clamping, relative resets and Prime fallback', () => {
   expect(parseUsage(payload, 100)).toEqual({ fiveHour: { remaining: 75, reset: 220 }, weekly: { remaining: 0, reset: 200 } });
   expect(parseUsage({ rate_limit: { primary_window: { used_percent: -1 } } }).weekly?.remaining).toBe(100);
-  expect(formatUsage(parseUsage(payload, 100), 100)).toBe('Codex usage\n1w  0% remaining · resets in 0d 0h 2m');
+  expect(formatUsage(parseUsage(payload, 100), 100)).toBe('Codex usage\n5h  75% remaining · resets in 0d 0h 2m\n1w  0% remaining · resets in 0d 0h 2m');
   expect(() => parseUsage({})).toThrow('no supported');
 });
-test('five-hour quota is not displayed or used as a weekly fallback', () => {
+test('five-hour quota is displayed but not used as a weekly fallback', () => {
   const usage = parseUsage({ rate_limit: payload.rate_limit }, 100);
   expect(usage.fiveHour?.remaining).toBe(75);
   expect(usage.weekly).toBeUndefined();
-  expect(formatUsage(usage, 100)).toBe('Codex usage\n1w  unavailable');
+  expect(formatUsage(usage, 100)).toBe('Codex usage\n5h  75% remaining · resets in 0d 0h 2m\n1w  unavailable');
   expect(formatUsage({ weekly: { remaining: 60 } }, 100)).toBe('Codex usage\n1w  60% remaining · reset time unavailable');
 });
 test('request uses fixed HTTPS endpoint, private headers and blocks redirects', async () => {
@@ -36,7 +36,7 @@ test('new OpenAI login shows ChatGPT usage without resolving or sending credenti
   const notify = spyOn(h.ctx.ui, 'notify');
   const request = spyOn(globalThis, 'fetch');
   try {
-    await h.command('codex-usage');
+    await h.command('usage');
     expect(notify).toHaveBeenCalledWith('ChatGPT usage\nIn-terminal quota is unavailable for Sign in with ChatGPT.\nManage usage: https://chatgpt.com/settings/usage', 'info');
     expect(getProviderAuth).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
@@ -56,10 +56,10 @@ test('legacy Codex login still resolves credentials and displays weekly quota', 
     return Response.json(payload);
   });
   try {
-    await h.command('codex-usage');
+    await h.command('usage');
     expect(getProviderAuth).toHaveBeenCalledWith('openai-codex');
     expect(request).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith('Codex usage\n1w  0% remaining · resets now', 'info');
+    expect(notify).toHaveBeenCalledWith('Codex usage\n5h  75% remaining · resets in 0d 0h 2m\n1w  0% remaining · resets now', 'info');
   } finally { request.mockRestore(); notify.mockRestore(); }
 });
 
@@ -70,10 +70,10 @@ test('new login cancels a pending legacy quota lookup without showing stale resu
   const auth = new Promise<undefined>(resolve => { resolveAuth = resolve; });
   h.ctx.modelRegistry = { getProviderAuth: () => auth };
   const notify = spyOn(h.ctx.ui, 'notify');
-  const legacy = h.command('codex-usage');
+  const legacy = h.command('usage');
   try {
     h.ctx.model = { provider: 'openai' };
-    await h.command('codex-usage');
+    await h.command('usage');
   } finally { resolveAuth(undefined); await legacy; }
   expect(notify).toHaveBeenCalledTimes(1);
   expect(notify.mock.calls[0][0]).toContain('https://chatgpt.com/settings/usage');
@@ -83,11 +83,44 @@ test('new login cancels a pending legacy quota lookup without showing stale resu
 test('usage command rejects arguments and unrelated providers', async () => {
   const h = harness(); install(h.pi);
   h.ctx.model = { provider: 'openai' };
-  await expect(h.command('codex-usage', 'extra')).rejects.toThrow('Usage: /codex-usage');
+  await expect(h.command('usage', 'extra')).rejects.toThrow('Usage: /usage');
   for (const model of [undefined, { provider: 'anthropic' }]) {
     h.ctx.model = model;
-    await expect(h.command('codex-usage')).rejects.toThrow('Select an OpenAI or OpenAI Codex model first');
+    await expect(h.command('usage')).rejects.toThrow('Select a Claude bridge, OpenAI, or OpenAI Codex model first');
   }
+});
+
+// The event shape Claude Code sent for a Max subscription during development.
+const claudeEvent = { status: 'allowed', resetsAt: 1_000_000 + 7_800, rateLimitType: 'five_hour', overageStatus: 'rejected',
+  unifiedWindows: { five_hour: { utilization: 0.23, resetsAt: 1_000_000 + 7_800 }, seven_day: { utilization: 0.38, resetsAt: 1_000_000 + 90_000 } } };
+test('Claude usage formats both plan windows from the latest bridge event', () => {
+  const now = 1_000_000_000;
+  expect(formatClaudeUsage({ info: claudeEvent, observedAt: now - 180_000 }, now)).toBe('Claude usage (as of 3m ago)\n5h  77% remaining · resets in 0d 2h 10m\n1w  62% remaining · resets in 1d 1h 0m');
+  // Events without unified windows still report the window that set their status.
+  expect(formatClaudeUsage({ info: { status: 'rejected', rateLimitType: 'seven_day', utilization: 1, resetsAt: 1_000_060 }, observedAt: now }, now))
+    .toBe('Claude usage (as of now)\n1w  0% remaining · resets in 0d 0h 1m\nLimited by the seven-day window');
+  for (const shared of [undefined, {}, { info: {}, observedAt: now }]) expect(formatClaudeUsage(shared, now)).toContain('No Claude response in this Pi process yet');
+});
+
+test('Claude bridge models read the shared event without credentials or network', async () => {
+  const h = harness(); install(h.pi);
+  h.ctx.model = { provider: 'claude-bridge', id: 'claude-opus-5-5' };
+  h.ctx.modelRegistry = { getProviderAuth: mock(async () => { throw new Error('Must not resolve credentials'); }) };
+  const key = Symbol.for('claude-bridge:rateLimits');
+  const globals = globalThis as Record<symbol, unknown>;
+  const previous = globals[key];
+  const notify = spyOn(h.ctx.ui, 'notify');
+  const request = spyOn(globalThis, 'fetch');
+  try {
+    delete globals[key];
+    await h.command('usage');
+    expect(notify.mock.calls[0][0]).toContain('https://claude.ai/settings/usage');
+    globals[key] = { info: claudeEvent, observedAt: Date.now() };
+    await h.command('usage');
+    expect(notify.mock.calls[1][0]).toStartWith('Claude usage (as of now)\n5h  77% remaining');
+    expect(request).not.toHaveBeenCalled();
+    expect(h.ctx.modelRegistry.getProviderAuth).not.toHaveBeenCalled();
+  } finally { globals[key] = previous; request.mockRestore(); notify.mockRestore(); }
 });
 
 test("API cost uses only active-branch assistant usage, including failed responses", async () => {
