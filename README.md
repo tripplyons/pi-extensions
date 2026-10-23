@@ -27,7 +27,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [online-context-compact](extensions/online-context-compact) | `update_plan` steps that compact context at step boundaries when it saves cost |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
-| [presentation](extensions/presentation) | One-row tool previews with group separators only, streaming arguments and progress, expanded output, and context footer with an active-session ASCII spinner and reserved background status; no native working indicator or hidden-thinking placeholders |
+| [presentation](extensions/presentation) | One-row tool previews with group separators only, streaming arguments and progress, expanded output, and context footer with an active-session ASCII spinner and reserved background status; visible narration but no native working indicator or hidden-thinking placeholders |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | ChatGPT usage link, legacy Codex weekly quota, and API cost |

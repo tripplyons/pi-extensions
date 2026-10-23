@@ -40,8 +40,14 @@ hook. Small tested component adapters suppress collapsed images, remove vertical
 padding from default tool shells and separators between adjacent tool calls,
 keep mouse targets aligned, and restore the original renderers on shutdown.
 Hidden thinking blocks omit the `Thinking...` placeholder and its spacing.
-Visible thinking remains unchanged; Pi's `hideThinkingBlock` setting controls
-visibility. Messages and thinking content stay unchanged in session history.
+Blocks explicitly tagged as `narration` in a supported binary signature render
+as normal assistant Markdown, including replies between tool calls and replayed
+sessions. Only the observed format-4 signature envelope is supported.
+During streaming, narration becomes visible once its complete marker arrives.
+Unrecognized, malformed, or incomplete signatures remain ordinary thinking.
+Pi's `hideThinkingBlock` setting still controls genuine thinking visibility.
+These are display-only changes; original messages and signatures stay unchanged
+in session history and model context.
 User messages retain prompt-zone markers and have no background-only rows above
 or below their content. Spacing within expanded output stays unchanged.
 
