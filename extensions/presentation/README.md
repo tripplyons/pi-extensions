@@ -33,8 +33,9 @@ appear only when expanded and Pi's image setting allows them.
 Tool names use the theme's accent color. Bash uses an accent-colored `$` prefix.
 Arguments use the normal foreground color, and summaries use muted text. A single
 space separates the argument preview from its summary, with no decorative dot.
-The selected Pi theme controls colors. Multiline commands collapse to one row and
-retain their lines when expanded.
+Result truncation dots use the same color as the result, including the error
+color for failures. The selected Pi theme controls colors. Multiline commands
+collapse to one row and retain their lines when expanded.
 
 Pi appends images outside tool renderers and has no public user-message spacing
 hook. Small tested component adapters suppress collapsed images, remove vertical

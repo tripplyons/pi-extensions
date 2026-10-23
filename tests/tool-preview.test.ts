@@ -65,6 +65,20 @@ test("collapsed previews bound wrapped output; expanded previews show all lines"
   for (const line of collapsed) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
 });
 
+test("collapsed result truncation dots retain normal and error foreground colors", () => {
+  const ansiTheme = { fg: (color: string, text: string) => `\x1b[${color === "error" ? 31 : 90}m${text}\x1b[39m` } as any;
+  const value = { content: [{ type: "text" as const, text: "long result ".repeat(20) }] };
+  for (const [isError, isPartial] of [[false, false], [false, true], [true, false]]) {
+    const view = renderResult(value, { expanded: false, isPartial }, ansiTheme, { ...context, isError });
+    for (const width of [1, 2, 3, 12, 40]) {
+      const row = view.render(width)[0];
+      const dots = ".".repeat(Math.min(3, width));
+      expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+      expect(row).toContain(`\x1b[${isError ? 31 : 90}m${dots}`);
+    }
+  }
+});
+
 test("tool names use accent, without coloring Bash commands", () => {
   const h = harness();
   for (const install of [goals, tasks, onlineContextCompact, observationPack, complain, swarm]) install(h.pi);
@@ -90,7 +104,7 @@ test("read preview keeps streamed path and line arguments in foreground", () => 
     const theme = { bold: (text: string) => text, fg(color: string, text: string) { colors.push([color, text]); return text; } };
     tool.renderCall(args, theme, {}).render(100);
     expect(colors[0]).toEqual(["accent", "read"]);
-    expect(colors[1]).toEqual(["text", "limit" in args ? " /tmp/file.ts (offset: 1, limit: 2000)" : "path" in args ? " /tmp/file.ts" : " ..."]);
+    expect(colors.find(([color]) => color === "text")).toEqual(["text", "limit" in args ? " /tmp/file.ts (offset: 1, limit: 2000)" : "path" in args ? " /tmp/file.ts" : " ..."]);
   }
 });
 

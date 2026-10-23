@@ -33,10 +33,11 @@ export function compactToolRenderers(name: string, next?: ToolRenderers, streame
 function compactLines(title: Component, summary: string, width: number, theme: Theme, isError: boolean): string[] {
   // Reserve the outcome before laying out arguments, so a streaming tail stays visible.
   const suffixWidth = Math.min(visibleWidth(summary) + 1, Math.floor(width * 0.45));
-  const text = truncateToWidth(` ${summary}`, suffixWidth);
+  const color = isError ? "error" : "muted";
+  const text = truncateToWidth(` ${summary}`, suffixWidth, theme.fg(color, "..."));
   const available = Math.max(0, width - visibleWidth(text));
   const lines = title.render(available);
-  const suffix = theme.fg(isError ? "error" : "muted", text);
+  const suffix = theme.fg(color, text);
   return lines.map(line => truncateToWidth(line, available) + suffix);
 }
 

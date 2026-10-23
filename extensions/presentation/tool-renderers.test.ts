@@ -74,6 +74,30 @@ test("literal dots in tool arguments and output stay unchanged", () => {
   expect(plain(component)).toEqual(["", "read dir.../part·one.ts done · unchanged."]);
 });
 
+test("result truncation dots keep the result color in normal, partial, and error rows", () => {
+  const ansiTheme = {
+    bold: (text: string) => text,
+    fg: (color: string, text: string) => `\x1b[${color === "muted" ? 90 : color === "error" ? 31 : color === "accent" ? 36 : 97}m${text}\x1b[39m`,
+  } as any;
+  for (const [isError, isPartial] of [[false, false], [false, true], [true, false]]) {
+    const renderer = compactToolRenderers("read");
+    const context = { state: {}, expanded: false, argsComplete: true, executionStarted: true, isError } as any;
+    const value = { content: [{ type: "text" as const, text: "long output ".repeat(20) }] };
+    renderer.renderResult!(value, { expanded: false, isPartial }, ansiTheme, context);
+    const view = renderer.renderCall!({ path: "file.ts" }, ansiTheme, context);
+    for (const width of [1, 4, 7, 20, 40]) {
+      const row = view.render(width)[0];
+      const dots = ".".repeat(Math.min(3, Math.floor(width * 0.45)));
+      expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+      if (dots) {
+        expect(stripTerminalSequences(row).endsWith(dots)).toBe(true);
+        expect(row).toContain(`\x1b[${isError ? 31 : 90}m${dots}`);
+      }
+      if (width === 40) expect(row).toContain("\x1b[97m file.ts");
+    }
+  }
+});
+
 test("expanded views delegate specialized renderers and preserve their state", () => {
   const component = tool("special", {}, {
     renderCall(_args, _theme, context) { context.state.owner = "special"; return new Text("special call", 0, 0); },

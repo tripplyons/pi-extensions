@@ -20,7 +20,11 @@ export function previewText(value: unknown): string {
 export const renderResult: NonNullable<ToolDefinition["renderResult"]> = (result, { expanded, isPartial }, theme, context) => {
   if (!expanded) return {
     invalidate() {},
-    render(width) { return [truncateToWidth(theme.fg(context.isError ? "error" : "muted", resultSummary(result, context.isError, isPartial)), width)]; },
+    render(width) {
+      const color = context.isError ? "error" : "muted";
+      const text = theme.fg(color, resultSummary(result, context.isError, isPartial));
+      return [truncateToWidth(text, width, theme.fg(color, "..."))];
+    },
   };
   const content = context.isError || result.details === undefined
     ? result.content.filter(block => block.type === "text").map(block => block.text).join("\n")
