@@ -97,7 +97,7 @@ export default function install(pi: ExtensionAPI) {
     return run.nodes[id];
   }
   async function active(ctx: ExtensionContext) {
-    if (!identity) throw new Error("Swarm is inactive. Only the user can activate /swarm:start <objective>");
+    if (!identity) throw new Error("Swarm is inactive. Only the user can activate /swarm:start [objective]");
     const run = await store.read(identity.run), node = run.nodes[identity.node];
     if (!node) throw new Error("Unknown swarm identity");
     if (node.parent && process.env.PI_SWARM_NODE === node.id && node.generation && process.env.PI_SWARM_GENERATION !== node.generation) throw new Error("Worker launch generation is stale");
@@ -303,10 +303,10 @@ export default function install(pi: ExtensionAPI) {
     if (node.parent && (node.resume?.status === "delivered" || !event.toolName.startsWith("swarm_"))) await store.observeTool(run.id, node.id, event.toolName);
   });
   pi.on("session_shutdown", async () => { currentContext = undefined; detachBackground(); cancelResume(); if (timer) clearInterval(timer); if (view?.timer) clearInterval(view.timer); });
-  pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: <objective>", async handler(objective, ctx) {
+  pi.registerCommand("swarm:start", { description: "Activate a swarm for this session: [objective]", async handler(objective, ctx) {
     if (process.env.PI_SWARM_NODE) throw new Error("Workers cannot activate swarms");
     if (identity) throw new Error("A swarm is already associated with this session");
-    const run = await store.create(ctx.sessionManager.getSessionId(), ctx.cwd, objective);
+    const run = await store.create(ctx.sessionManager.getSessionId(), ctx.cwd, objective.trim() || "Follow the user's instructions in this session.");
     identity = { run: run.id, node: run.root }; pi.appendEntry(key, identity);
     pi.events.emit("pi:swarm-attached", ctx);
     await load({}, ctx); ctx.ui.notify("Swarm activated. Workers start only when spawned.", "info");

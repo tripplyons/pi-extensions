@@ -1,8 +1,21 @@
 # Background tasks
 
 Adds managed background execution to Pi's native Bash implementation. Foreground
-commands default to 120 seconds and allow up to 300 seconds. After 15 seconds,
-a foreground command returns a task ID without restarting its process or deadline.
+commands default to a 120-second execution deadline and allow up to 300 seconds.
+By default, after 15 seconds a foreground command returns a task ID without
+restarting its process or deadline. Set `foreground_wait_seconds` (an integer
+from 0 to 300) to override that wait for a call. Zero promotes immediately.
+This option does not change `timeout`, and `run_in_background: true` ignores it.
+
+For example, wait up to two minutes for a build with a five-minute deadline:
+
+```text
+bash command="npm run build" timeout=300 foreground_wait_seconds=120
+```
+
+If the command finishes before the wait expires, Bash returns its native result.
+Otherwise, it returns a task ID for the same process with the original deadline.
+A longer wait remains cancelable and cannot extend the execution deadline.
 
 `run_in_background: true` starts a managed task immediately with a default
 30-minute deadline. Query, read, or stop it with `task_query`, `task_output`, and
@@ -30,12 +43,15 @@ or 50 KB and keeps UTF-8 characters intact. `next_offset` counts bytes actually
 returned, so the next read preserves unread output. Use `next_offset` for explicit
 reads instead of guessing a byte offset within a character.
 
-`task_output` accepts `wait_ms` (default 0, capped at 30,000 ms). It waits only
+`task_output` accepts `wait_ms` (default 0, capped at 300,000 ms). It waits only
 when a live task has no unread bytes at the requested or automatic cursor.
 Unread output and terminal status return immediately. A silent live task can
 return empty output and an unchanged `next_offset` after the wait expires;
 that does not mean it skipped the wait. New output or completion wakes the read
 early. `wait_ms` is not a minimum polling interval and does not stop the task.
+Values above 300,000 ms are accepted and capped. For a deliberate long wait, use
+`task_output task_id=<id> wait_ms=300000`. Otherwise, let completion notifications
+resume the conversation instead of repeatedly polling a silent task.
 
 When run through T3 Code's Pi provider, live background tasks keep the thread
 marked as running after Pi's foreground turn ends. This includes explicit

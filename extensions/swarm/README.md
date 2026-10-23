@@ -1,7 +1,10 @@
 # Swarm
 
-`/swarm:start <objective>` activates twenty-one swarm tools. Activation belongs to
-the root session branch. Workers run in attachable tmux sessions with dedicated
+`/swarm:start [objective]` activates twenty-one swarm tools. The objective is
+optional. Without one, it uses "Follow the user's instructions in this session."
+Activation only enables the tools; it does not infer a task from old messages or
+launch workers. An explicit objective still sets the run's shared objective.
+Activation belongs to the root session branch. Workers run in attachable tmux sessions with dedicated
 Pi session files. They load the user's configured extensions and inherit the
 model, thinking level, and fast-mode preference at spawn. A replacement inherits
 the spawning parent's current fast-mode preference. This requests priority service

@@ -7,6 +7,33 @@ import { SwarmStore } from "./state.ts";
 import { Workers, type Launch } from "./worker.ts";
 import { git } from "./git.ts";
 import { harness } from "../../lib/harness.ts";
+for (const objective of [undefined, " \t ", "  Build the feature  "]) {
+  test(`/swarm:start accepts ${objective === undefined ? "no objective" : JSON.stringify(objective)} without spawning workers`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-swarm-activation-"));
+    const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+    const h = harness(); install(h.pi);
+    try {
+      await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
+      await h.command("swarm:start", objective);
+      const expected = objective?.trim() || "Follow the user's instructions in this session.";
+      const identity = h.entries.at(-1).data;
+      const store = new SwarmStore(join(root, "swarm"));
+      const run = await store.read(identity.run);
+      expect(run.objective).toBe(expected);
+      expect(Object.keys(run.nodes)).toEqual([run.root]);
+      expect(run.nodes[run.root].task).toBe(expected);
+      expect((await h.call("swarm_task", {})).details.objective).toBe(expected);
+      await h.emit("session_start");
+      expect((await h.call("swarm_task", {})).details.objective).toBe(expected);
+      await expect(h.command("swarm:start")).rejects.toThrow("already");
+    } finally {
+      await h.emit("session_shutdown");
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("publishes active swarm descendants including reviews, not the root or terminal workers", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-background-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;

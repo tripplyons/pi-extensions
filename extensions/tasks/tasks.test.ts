@@ -78,6 +78,67 @@ test("completion publishes an empty roster while Pi is busy and foreground work 
   expect(h.sentMessages).toEqual([]);
 });
 
+test("foreground wait override returns native output instead of promoting at the default wait", async () => {
+  const { h, tasks } = await taskHarness({ exec: async (_command, _cwd, { onData }) => {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    onData(Buffer.from("finished in foreground"));
+    return { exitCode: 0 };
+  } });
+  const reply = await h.call("bash", { command: "controlled", timeout: 2, foreground_wait_seconds: 300 });
+  expect(reply.content[0].text).toBe("finished in foreground");
+  const id = h.entries.find(entry => entry.customType === taskKey).data;
+  const record = tasks.query(id);
+  expect(record.status).toBe("succeeded");
+  const deadlineMs = Date.parse(record.deadline_at) - Date.parse(record.created_at);
+  expect(deadlineMs).toBeGreaterThanOrEqual(2000);
+  expect(deadlineMs).toBeLessThan(2100);
+  expect(h.sentMessages).toEqual([]);
+});
+
+test("zero foreground wait promotes without restarting or changing the deadline", async () => {
+  const { h, tasks } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { exitCode: 0 };
+  } });
+  const reply = await h.call("bash", { command: "controlled", timeout: 2, foreground_wait_seconds: 0 });
+  expect(reply.details.status).toBe("auto_promoted");
+  const record = tasks.query(reply.details.task_id);
+  const deadlineMs = Date.parse(record.deadline_at) - Date.parse(record.created_at);
+  expect(deadlineMs).toBeGreaterThanOrEqual(2000);
+  expect(deadlineMs).toBeLessThan(2100);
+});
+
+test("explicit background work ignores the foreground wait override", async () => {
+  const { h } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { exitCode: 0 };
+  } });
+  const reply = await h.call("bash", { command: "controlled", run_in_background: true, foreground_wait_seconds: 300 });
+  expect(reply.details.status).toBe("started");
+});
+
+test("long foreground waits do not extend the execution deadline", async () => {
+  const { h } = await taskHarness();
+  await expect(h.call("bash", { command: "sleep 10", timeout: 0.05, foreground_wait_seconds: 300 })).rejects.toThrow("timed out");
+});
+
+test("long foreground waits remain cancelable", async () => {
+  const { h } = await taskHarness();
+  const controller = new AbortController();
+  const reply = h.call("bash", { command: "sleep 10", foreground_wait_seconds: 300 }, controller.signal);
+  reply.catch(() => {});
+  controller.abort();
+  await expect(reply).rejects.toThrow();
+});
+
+test("invalid foreground waits are rejected before starting a task", async () => {
+  const { h } = await taskHarness();
+  for (const foreground_wait_seconds of [-1, 0.5, 301, NaN, Infinity]) {
+    await expect(h.call("bash", { command: "unused", foreground_wait_seconds })).rejects.toThrow("foreground_wait_seconds");
+  }
+  expect(h.entries.filter(entry => entry.customType === taskKey)).toEqual([]);
+});
+
 test("foreground promotion keeps one process, deadline, output and completion notification", async () => {
   const { root, tasks } = await setup();
   let id = ""; const completed: string[] = [];
