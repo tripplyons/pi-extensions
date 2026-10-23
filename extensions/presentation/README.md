@@ -31,8 +31,9 @@ specialized output. Other expanded results use readable text. Inline images
 appear only when expanded and Pi's image setting allows them.
 
 Tool names use the theme's accent color. Bash uses an accent-colored `$` prefix.
-Arguments use the normal foreground color, and summaries use muted text. The
-selected Pi theme controls colors. Multiline commands collapse to one row and
+Arguments use the normal foreground color, and summaries use muted text. A single
+space separates the argument preview from its summary, with no decorative dot.
+The selected Pi theme controls colors. Multiline commands collapse to one row and
 retain their lines when expanded.
 
 Pi appends images outside tool renderers and has no public user-message spacing

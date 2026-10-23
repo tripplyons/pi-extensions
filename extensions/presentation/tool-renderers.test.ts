@@ -45,6 +45,35 @@ test("every collapsed tool has one content row through streaming, completion, er
   }
 });
 
+test("compact rows separate every execution state with one space and no decorative dot", () => {
+  const component = tool("read", { path: "file.ts" });
+  const check = (summary: string) => expect(plain(component)).toEqual(["", `read file.ts ${summary}`]);
+  check("writing 7 chars");
+  component.setArgsComplete();
+  check("pending");
+  component.markExecutionStarted();
+  check("running");
+  component.updateResult({ content: [{ type: "text", text: "started\nlatest" }], isError: false }, true);
+  check("latest");
+  component.updateResult({ content: [{ type: "text", text: "finished\ndetails" }], isError: false });
+  check("finished");
+  component.updateResult({ content: [{ type: "text", text: "denied" }], isError: true });
+  check("error: denied");
+});
+
+test("removing the separator dot makes its columns available to the argument preview", () => {
+  const component = tool("read", { path: "long-filename.ts" });
+  component.setArgsComplete();
+  expect(plain(component, 29)).toEqual(["", "read long-filename.ts pending"]);
+});
+
+test("literal dots in tool arguments and output stay unchanged", () => {
+  const component = tool("read", { path: "dir.../part·one.ts" });
+  component.setArgsComplete();
+  component.updateResult({ content: [{ type: "text", text: "done · unchanged." }], isError: false });
+  expect(plain(component)).toEqual(["", "read dir.../part·one.ts done · unchanged."]);
+});
+
 test("expanded views delegate specialized renderers and preserve their state", () => {
   const component = tool("special", {}, {
     renderCall(_args, _theme, context) { context.state.owner = "special"; return new Text("special call", 0, 0); },
