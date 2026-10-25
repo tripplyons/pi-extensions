@@ -5,17 +5,33 @@ import { pathToFileURL } from "node:url";
 import { afterEach, expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
 import actionFusion, { assertUnchanged, resolveToolPath } from "./index.ts";
+import { registerTaskTools, Tasks, taskKey } from "../tasks/tasks.ts";
+import { ownedJobs } from "../swarm/job-snapshot.ts";
+import { Jobs } from "../swarm/jobs.ts";
 
 const dirs: string[] = [];
-afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+const runners: Tasks[] = [];
+afterEach(async () => {
+  await Promise.all(runners.splice(0).map(tasks => tasks.shutdown()));
+  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+});
 
-async function setup() {
+async function setup(yieldMs = 15_000) {
   const dir = await mkdtemp(join(tmpdir(), "action-fusion-"));
   dirs.push(dir);
   const h = harness();
   h.ctx.cwd = dir;
+  h.ctx.isIdle = () => true;
+  const tasks = new Tasks(join(dir, "minimax", "tasks"), undefined, yieldMs);
+  runners.push(tasks);
+  registerTaskTools(h.pi, tasks);
+  Object.defineProperty(h.ctx, "tools", { get: () => [...h.tools.values()] });
+  h.ctx.executeTool = async (name: string, args: unknown, options: any) => {
+    const result = await h.call(name, args, options?.signal);
+    return { result, isError: result.isError === true };
+  };
   actionFusion(h.pi);
-  return { dir, h };
+  return { dir, h, tasks };
 }
 
 const output = (result: any) => result.content.map((block: any) => block.text).join("\n");
@@ -89,6 +105,39 @@ test("the timeout reaches Bash", async () => {
   const result = await h.call("write", { path: "a.txt", content: "x", then_run: { command: "sleep 5", timeout: 0.1 } });
   expect(result.isError).toBe(true);
   expect(output(result)).toMatch(/\[then_run:failed\][\s\S]*timed out/i);
+});
+
+for (const action of ["edit", "write"] as const) {
+  test(`${action} then_run is tracked, promotes, and releases the file lock`, async () => {
+    const { dir, h, tasks } = await setup(20);
+    await writeFile(join(dir, "a.txt"), "before\n");
+    const mutation = action === "write" ? { content: "after\n" } : { edits: [{ oldText: "before", newText: "after" }] };
+    const result = await h.call(action, { path: "a.txt", ...mutation, then_run: { command: "sleep 30", timeout: 60 } });
+    expect(output(result)).toContain("[then_run:running]");
+    expect(output(result)).not.toContain("[then_run:succeeded]");
+    expect(output(result)).toContain("auto_promoted");
+    const id = h.entries.find(entry => entry.customType === taskKey)!.data;
+    expect(output(result)).toContain(id);
+    expect(tasks.query(id).status).toBe("running");
+    const session = join(dir, "session.jsonl");
+    await writeFile(session, [{ type: "session", id: "test-session" }, ...h.entries].map(entry => JSON.stringify(entry)).join("\n"));
+    expect(await ownedJobs(dir, new Jobs(join(dir, "jobs")), { session } as any))
+      .toEqual([{ id, status: "running", source: "bash" }]);
+    // Promotion releases the fused lock without waiting for the process.
+    await h.call("write", { path: "a.txt", content: "next\n" });
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("next\n");
+    expect(tasks.query(id).status).toBe("running");
+    await h.call("task_stop", { task_id: id });
+    expect(tasks.query(id).status).toBe("canceled");
+  });
+}
+
+test("then_run requires managed Bash before changing the file", async () => {
+  const { dir, h } = await setup();
+  h.tools.delete("bash");
+  await expect(h.call("write", { path: "a.txt", content: "x", then_run: { command: "echo no" } }))
+    .rejects.toThrow("requires the tasks extension's managed Bash");
+  await expect(readFile(join(dir, "a.txt"))).rejects.toThrow();
 });
 
 test("a change after the mutation skips the command", async () => {

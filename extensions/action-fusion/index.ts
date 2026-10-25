@@ -10,7 +10,6 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  createBashToolDefinition,
   createEditToolDefinition,
   createWriteToolDefinition,
   type AgentToolResult,
@@ -21,6 +20,7 @@ import { Type } from "typebox";
 
 // The evidence-preserving reducer reads these markers in fused results.
 export const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
+export const THEN_RUN_RUNNING = "[then_run:running]";
 export const THEN_RUN_FAILED = "[then_run:failed]";
 export const THEN_RUN_SKIPPED = "[then_run:skipped]";
 
@@ -32,9 +32,9 @@ const queueTails = new Map<string, Promise<void>>();
 function thenRunSchema(action: "edit" | "write") {
   return Type.Optional(Type.Object({
     command: Type.String({ description: "Bash command to run" }),
-    timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+    timeout: Type.Optional(Type.Number({ description: "Command deadline in seconds (default 120, maximum 300)" })),
   }, {
-    description: `Command to run next on this file after the ${action} succeeds, such as run, build, start, restart, install, or check; optional timeout in seconds. Skipped if the ${action} fails. A non-zero exit is reported but keeps the ${action}.`,
+    description: `Managed Bash command to run after the ${action} succeeds. Default deadline 120 seconds (maximum 300). Returns a task ID after 15 seconds; use task_output to follow it, do not rerun. Skipped if the ${action} fails. A non-zero exit keeps the ${action}. The file lock releases when this call returns, even if the command continues. Requires the tasks extension.`,
   }));
 }
 
@@ -117,7 +117,8 @@ async function mutateThenRun<T>(
     } catch (error) {
       ran = { content: [{ type: "text", text: message(error) }], details: undefined, isError: true };
     }
-    const marker = ran.isError ? THEN_RUN_FAILED : THEN_RUN_SUCCEEDED;
+    const background = (ran.details as { task_id?: string } | undefined)?.task_id;
+    const marker = ran.isError ? THEN_RUN_FAILED : background ? THEN_RUN_RUNNING : THEN_RUN_SUCCEEDED;
     const output = outputText(ran);
     return {
       ...result,
@@ -138,18 +139,25 @@ function perCwd(create: (cwd: string) => BaseTool) {
 }
 
 function registerFused(pi: ExtensionAPI, action: "edit" | "write", base: (cwd: string) => BaseTool) {
-  const bash = perCwd(cwd => createBashToolDefinition(cwd));
   const template = base(process.cwd());
   pi.registerTool<any, any>({
     ...template,
     parameters: Type.Object({ ...template.parameters.properties, then_run: thenRunSchema(action) }),
-    execute(toolCallId, input, signal, onUpdate, ctx) {
+    async execute(toolCallId, input, signal, onUpdate, ctx) {
       const { then_run, ...args } = input as Record<string, unknown> & { path: string; then_run?: ThenRun };
+      if (then_run && !ctx.tools.find(tool => tool.name === "bash")?.parameters.properties?.run_in_background) {
+        throw new Error(`${THEN_RUN_SKIPPED} then_run requires the tasks extension's managed Bash tool. Enable extensions/tasks and reload Pi. The file was not changed.`);
+      }
       return mutateThenRun(
         resolveToolPath(ctx.cwd, args.path),
         then_run,
         () => base(ctx.cwd).execute(toolCallId, args, signal, onUpdate, ctx),
-        command => bash(ctx.cwd).execute(`${toolCallId}:then_run`, command, signal, undefined, ctx),
+        async command => {
+          const outcome = await ctx.executeTool("bash", command, { signal });
+          // Nested tool usage is already accounted for by Pi.
+          const { usage: _usage, ...result } = outcome.result;
+          return { ...result, isError: outcome.isError };
+        },
       );
     },
     renderCall: (args, theme, context) => base(context.cwd).renderCall!(args, theme, context),

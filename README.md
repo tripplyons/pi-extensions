@@ -21,7 +21,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
 | [tasks](extensions/tasks) | Native Bash with reload-safe background tasks, user- and swarm-steering-aware waits, T3 Code running-state reporting, pipeline failure detection, bounded output, and progress reports |
 | [python](extensions/python) | Inline Python with uv, script-defined dependencies and Python versions, and managed background tasks |
-| [action-fusion](extensions/action-fusion) | Optional `then_run` command on edit and write, run after the change lands |
+| [action-fusion](extensions/action-fusion) | Managed `then_run` commands after edit and write, with background tracking |
 | [observation-pack](extensions/observation-pack) | Large tool results replaced by excerpts after two requests, with `obs_recall` paging |
 | [evidence-preserving-reducer](extensions/evidence-preserving-reducer) | Long build and test logs reduced by GPT 6 Luna to receipts with verified quotes |
 | [online-context-compact](extensions/online-context-compact) | `update_plan` steps that trigger model-written folding at safe boundaries |
