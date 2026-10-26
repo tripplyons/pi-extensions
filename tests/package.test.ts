@@ -25,10 +25,10 @@ test("Pi loads every manifest entry without extension errors or duplicate tools"
   for (const name of ["read", "grep", "find", "ls"]) expect(names).not.toContain(name);
   const presentation = loaded.extensions.find(extension => extension.path.endsWith("/presentation/index.ts"));
   expect(presentation?.toolRenderers).toHaveLength(1);
-  for (const name of ["web_search", "web_extract", "bash", "python", "edit", "write", "obs_recall", "update_plan", "compress", "decompress", "search_context", "context_status", "complain", "create_goal", "swarm_task", "swarm_inspect", "session_search", "session_read"])
+  for (const name of ["web_search", "web_extract", "bash", "python", "edit", "write", "obs_recall", "update_plan", "complain", "create_goal", "swarm_task", "swarm_inspect", "session_search", "session_read"])
     expect(names).toContain(name);
-  for (const name of ["shell", "bg_process", "sleep", "list", "search", "view_image", "pruned_read"])
+  for (const name of ["shell", "bg_process", "sleep", "list", "search", "view_image", "pruned_read", "compress", "decompress", "search_context", "context_status"])
     expect(names).not.toContain(name);
-  for (const name of ["btw", "goal", "presentation", "complain", "swarm", "session-search", "council", "python", "lm-studio", "action-fusion", "observation-pack", "evidence-preserving-reducer", "online-context-compact", "context-folding"])
+  for (const name of ["btw", "goal", "presentation", "complain", "swarm", "session-search", "council", "python", "lm-studio", "action-fusion", "observation-pack", "evidence-preserving-reducer", "online-context-compact"])
     expect(manifest.pi.extensions).toContain(`./extensions/${name}/index.ts`);
 });

@@ -15,17 +15,15 @@ import {
 import { Type, type Static } from "typebox";
 import { restore } from "../../lib/common.ts";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
-import { FOLD_EVENT, type FoldEvent } from "../context-folding/events.ts";
-import { CACHE_WRITE_READ_RATIO, decideCompaction } from "./economics.ts";
+import { decideCompaction } from "./economics.ts";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 
 export const STATE_KEY = "online-context-compact";
 export const KEEP_RECENT_TOKENS = 8_000;
 const SUMMARY_TOKENS = 1_000;
-/** Legacy event name retained for consumers; folding requests do not stop runs or emit it. */
+/** Legacy event name retained for consumers; native compaction does not stop runs or emit it. */
 export const COMPACTION_EVENT = "pi:online-compaction";
-const FOLD_INSTRUCTIONS = "Call context_status, then use compress to fold finished work before continuing the plan. Preserve file paths, decisions, verification results, and remaining work in the summary. Leave material still needed for editing or verification verbatim. Do not use native compaction.";
 
 const stepSchema = Type.Object({
   id: Type.String({ minLength: 1, maxLength: 200 }),
@@ -89,12 +87,12 @@ export function planAdvice(previous: Step[], next: Step[]) {
   return { completed, advice };
 }
 
-// Estimate older context that could be folded, priced as the provider last saw it.
+// Estimate older context that could be compacted, priced as the provider last saw it.
 export function archiveTokens(entries: SessionEntry[], keepRecentTokens: number, projected: AgentMessage[]) {
   const seen = new Map<string, number>();
   for (const message of projected) seen.set(messageKey(message), (seen.get(messageKey(message)) ?? 0) + estimateTokens(message));
   const priced = (entry: SessionEntry) => sessionEntryToContextMessages(entry).reduce((total, message) => total + (seen.get(messageKey(message)) ?? 0), 0);
-  // Use the native retention cut only as a conservative estimate of old, foldable work.
+  // Use the native retention cut only as a conservative estimate of old context.
   const path = entries;
   let start = 0;
   let summary = 0;
@@ -116,7 +114,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
   let restored = false;
   let projected: AgentMessage[] = [];
   let boundaryCallId: string | undefined;
-  // A request is advice, not a context rewrite. Charge debt only after an actual fold.
+  // Prevent duplicate requests while native compaction is pending.
   let requested = false;
 
   const load = (ctx: ExtensionContext) => {
@@ -138,7 +136,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
   pi.registerTool({
     name: "update_plan",
     label: "Update plan",
-    description: "Replace the complete working plan. Completing a registered unfinished step marks a safe point to request folding finished context. Steps added as completed are recorded as history.",
+    description: "Replace the complete working plan. Completing a registered unfinished step marks a safe point to request native compaction. Steps added as completed are recorded as history.",
     promptSnippet: "Keep the working plan current",
     promptGuidelines: [
       "Send the complete plan on every update_plan call.",
@@ -158,7 +156,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
       } else {
         save({ ...state, plan: steps });
       }
-      const details = { steps, completed: completed.map(step => step.id), advice, foldingManaged: true };
+      const details = { steps, completed: completed.map(step => step.id), advice, compactionManaged: true };
       return { content: [{ type: "text", text: [`Plan: ${JSON.stringify(steps)}`, ...advice].join("\n") }], details };
     },
     renderCall: toolCall("update_plan"),
@@ -206,7 +204,6 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
     const callId = boundaryCallId;
     boundaryCallId = undefined;
     if (!callId || requested || ctx.signal?.aborted) return;
-    if (event.toolResults.some(result => !result.isError && (result.toolName === "compress" || result.toolName === "decompress"))) return;
     const result = event.toolResults.find(item => item.toolCallId === callId);
     const message = event.message;
     if (!result || result.isError || message.role !== "assistant" || message.stopReason !== "toolUse") return;
@@ -228,33 +225,26 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
       carriedDebt: state.debt,
       debtRepayment: state.repayment,
     });
-    // Prefer folding finished work even when a full native rewrite would not pay off.
-    // Outstanding rewrite debt still prevents repeated speculative requests.
-    const finishedWork = archive >= 4_000 && state.debt === 0;
-    if (!decision.compact && !finishedWork) return;
+    if (!decision.compact) return;
     requested = true;
-    return { entries: [...(event.entries ?? []), {
-      type: "custom_message" as const, customType: STATE_KEY,
-      content: FOLD_INSTRUCTIONS, display: false,
-    }] };
-  });
-
-  // A fold rewrites the cached prompt from its first entry, like a smaller compaction.
-  pi.events.on(FOLD_EVENT, ({ savedTokens, rewriteTokens, ctx }: FoldEvent) => {
-    ensure(ctx);
-    save({
-      ...state,
-      lastContextTokens: null,
-      lastCompactionAt: state.requests,
-      compactions: state.compactions + 1,
-      debt: state.debt + Math.max(0, rewriteTokens) * (CACHE_WRITE_READ_RATIO - 1),
-      repayment: Math.max(0, state.repayment + savedTokens),
+    ctx.compact({
+      customInstructions: "Preserve the current plan, file paths, decisions, verification results, and remaining work.",
+      onComplete: () => {
+        save({
+          ...state,
+          lastContextTokens: null,
+          debt: state.debt + decision.debt,
+          repayment: state.repayment + decision.saving,
+        });
+        requested = false;
+      },
+      onError: () => { requested = false; },
     });
   });
 
   pi.on("session_compact", (_event, ctx) => {
     ensure(ctx);
-    // Native compaction is external to this extension. Reset its context baseline.
+    // Reset the baseline for both automatic and requested native compaction.
     save({
       ...state,
       lastCompactionAt: state.requests,
