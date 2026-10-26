@@ -1,7 +1,9 @@
 # Online Context Compact
 
 Adds `update_plan` and requests Pi's native compaction at finished plan steps.
-It does not abort the run or start a continuation turn.
+Native compaction interrupts the active run. After requested compaction finishes,
+the extension starts a hidden continuation turn to resume the task. New user input,
+pending messages, or a session change suppress that continuation.
 
 The agent sends the complete plan on each call. Each step has an `id`, a
 `goal`, and a status of `pending`, `in_progress`, or `completed`. When a step

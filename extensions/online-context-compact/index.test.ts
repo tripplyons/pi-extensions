@@ -65,7 +65,7 @@ function setup(compactError?: Error) {
   return { h, compactions, aborted: () => aborted, phases, plan, requests, finishTurn };
 }
 
-test("completing a step requests native compaction without aborting", async () => {
+test("completing a step requests native compaction and resumes the interrupted run", async () => {
   const { h, compactions, aborted, phases, plan, requests, finishTurn } = setup();
   await h.emit("session_start", {});
   await plan(["in_progress", "pending", "pending"]);
@@ -76,11 +76,33 @@ test("completing a step requests native compaction without aborting", async () =
   expect(aborted()).toBe(0);
   expect(compactions).toHaveLength(1);
   expect(compactions[0].customInstructions).toContain("current plan");
-  expect(h.sentMessages).toHaveLength(0);
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.sentMessages[0]).toMatchObject({
+    message: { customType: "online-context-compact-resume", display: false },
+    options: { triggerTurn: true, deliverAs: "followUp" },
+  });
   expect(phases).toEqual([]);
   expect(h.entries.findLast(entry => entry.customType === STATE_KEY).data.debt).toBeGreaterThan(0);
   await finishTurn();
   expect(compactions).toHaveLength(1);
+});
+
+test("new input or session changes suppress a delayed compaction continuation", async () => {
+  for (const event of ["input", "session_switch", "session_shutdown"]) {
+    const { h, plan, requests, finishTurn } = setup();
+    let pending: any;
+    h.ctx.compact = (options: any) => { pending = options; };
+    await h.emit("session_start", {});
+    await plan(["in_progress", "pending", "pending"]);
+    h.entries.push(...conversation());
+    await requests(10);
+    await plan(["completed", "in_progress", "pending"]);
+    await finishTurn();
+    expect(pending).toBeDefined();
+    await h.emit(event, { source: "interactive" });
+    pending.onComplete({ summary: "summary" });
+    expect(h.sentMessages).toHaveLength(0);
+  }
 });
 
 test("the last step does not force an uneconomic compaction", async () => {

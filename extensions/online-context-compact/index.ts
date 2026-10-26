@@ -116,8 +116,10 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
   let boundaryCallId: string | undefined;
   // Prevent duplicate requests while native compaction is pending.
   let requested = false;
+  let continuationVersion = 0;
 
   const load = (ctx: ExtensionContext) => {
+    continuationVersion++;
     const saved = restore<State>(ctx, STATE_KEY);
     state = saved?.version === 1 && Array.isArray(saved.plan) ? saved : initial();
     restored = true;
@@ -165,7 +167,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => load(ctx));
   pi.on("session_tree", (_event, ctx) => load(ctx));
-  pi.on("session_shutdown", () => { boundaryCallId = undefined; requested = false; });
+  pi.on("session_shutdown", () => { continuationVersion++; boundaryCallId = undefined; requested = false; });
 
   pi.on("context", (event, ctx) => {
     ensure(ctx);
@@ -190,6 +192,7 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
 
   pi.on("input", (event, ctx) => {
     ensure(ctx);
+    continuationVersion++;
     requested = false;
     if (event.streamingBehavior === "steer" || event.text.startsWith("CORRECTION:")) {
       boundaryCallId = undefined;
@@ -227,6 +230,16 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
     });
     if (!decision.compact) return;
     requested = true;
+    const version = continuationVersion;
+    const resume = () => {
+      if (version !== continuationVersion || ctx.hasPendingMessages()) return;
+      pi.sendMessage({
+        customType: "online-context-compact-resume",
+        content: "Continue the interrupted task from the current plan. Complete the remaining work, or provide the final response if the work is done.",
+        display: false,
+      }, { triggerTurn: true, deliverAs: "followUp" });
+    };
+    // Native manual compaction aborts the active run, even at a tool boundary.
     ctx.compact({
       customInstructions: "Preserve the current plan, file paths, decisions, verification results, and remaining work.",
       onComplete: () => {
@@ -237,8 +250,9 @@ export default function onlineContextCompact(pi: ExtensionAPI) {
           repayment: state.repayment + decision.saving,
         });
         requested = false;
+        resume();
       },
-      onError: () => { requested = false; },
+      onError: () => { requested = false; resume(); },
     });
   });
 

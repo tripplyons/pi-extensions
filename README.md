@@ -24,7 +24,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [action-fusion](extensions/action-fusion) | Managed `then_run` commands after edit and write, with background tracking |
 | [observation-pack](extensions/observation-pack) | Large tool results replaced by excerpts after two requests, with `obs_recall` paging |
 | [evidence-preserving-reducer](extensions/evidence-preserving-reducer) | Long build and test logs reduced by GPT 6 Luna to receipts with verified quotes |
-| [online-context-compact](extensions/online-context-compact) | `update_plan` steps that request cost-aware native compaction at safe boundaries |
+| [online-context-compact](extensions/online-context-compact) | `update_plan` steps that request cost-aware native compaction and resume interrupted work |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; visible narration and a context footer with session and background activity |
