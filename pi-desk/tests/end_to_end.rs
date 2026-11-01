@@ -199,11 +199,27 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     let id = h.desk.state.agents[0].id.clone();
     h.run(effects);
 
-    // The agent asks; the card carries the choices and the recommendation.
+    // The fake aborts for native compaction, resumes, and asks a question.
     h.until(&id, |desk| {
-        desk.state.agent(&id).unwrap().status == Status::Question
+        matches!(
+            desk.state.agent(&id).unwrap().status,
+            Status::Question | Status::Review | Status::Failed { .. }
+        )
     })
     .await;
+    assert_eq!(h.desk.state.agent(&id).unwrap().status, Status::Question);
+    let notes: Vec<_> = h.desk.transcripts[&id]
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            if let pi_desk::transcript::Entry::Note { text } = entry {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(notes, ["Compacting context", "Context compacted"]);
     let question = h.desk.state.agent(&id).unwrap().question.clone().unwrap();
     assert_eq!(question.choices, ["Hello", "Hi"]);
     assert_eq!(question.recommended, Some(1));

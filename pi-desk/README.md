@@ -92,7 +92,10 @@ the app does not reset them.
    files. Thinking blocks in live and saved transcripts default to a single
    collapsed row labeled "Thinking" with a truncated preview. Click a row to
    show or hide its full text; streaming updates do not expand it automatically.
-   Use the command palette to open the worktree in a terminal or editor.
+   Context compaction adds transcript notes and keeps the task Working through
+   the interruption and continuation. Pi-desk confirms Pi is idle before moving
+   a task to review or reporting an abort. Use the command palette to open the
+   worktree in a terminal or editor.
 6. Approve a review to commit remaining changes, squash-merge locally into the
    base branch, and remove the worktree and branch. Nothing is pushed. Merge
    conflicts return the task to Pi with instructions to rebase and resolve them.
@@ -190,9 +193,10 @@ cargo test --manifest-path pi-desk/Cargo.toml
 npm test
 ```
 
-Tests use temporary repositories and a fake Pi process for question, restart,
-reply, review, merge, conflict, and cleanup behavior. UI tests use iced's
-supported `iced_test::Simulator` to inspect widgets, click choices, and render
+Tests use temporary repositories and a fake Pi process for compaction and
+continuation, question, restart, reply, review, merge, conflict, and cleanup
+behavior. UI tests use iced's supported `iced_test::Simulator` to inspect widgets,
+click choices, and render
 headless screenshots. No macOS screen-recording permission is needed. Fresh
 screenshots are written under `pi-desk/target/tmp/ui/`; these are review artifacts,
 not pixel-regression baselines.

@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # A stand-in for `pi --mode rpc` used by pi-desk's tests and for trying the
-# app without model calls. Each prompt asks one ask_user question; the answer
-# writes answer.txt in the working directory and finishes with a summary.
+# app without model calls. Each prompt compacts, continues, and asks one
+# ask_user question. The answer writes answer.txt and finishes with a summary.
 set -u
 session_file="$PWD/.fake-pi-session.jsonl"
 session_name=""
+streaming=false
 while IFS= read -r line; do
   case "$line" in
     *'"type":"get_state"'*)
       request_id=${line#*\"id\":\"}
       request_id=${request_id%%\"*}
-      printf '{"id":"%s","type":"response","command":"get_state","success":true,"data":{"sessionFile":"%s","sessionId":"fake","sessionName":"%s"}}\n' "$request_id" "$session_file" "$session_name"
+      printf '{"id":"%s","type":"response","command":"get_state","success":true,"data":{"sessionFile":"%s","sessionId":"fake","sessionName":"%s","isStreaming":%s,"isCompacting":false,"pendingMessageCount":0}}\n' "$request_id" "$session_file" "$session_name" "$streaming"
       ;;
     *'"type":"get_messages"'*)
       printf '{"id":"messages","type":"response","command":"get_messages","success":true,"data":{"messages":[{"role":"user","content":"earlier prompt"}]}}\n'
       ;;
     *'"type":"prompt"'*)
       printf '{"type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}\n'
+      streaming=true
+      printf '{"type":"agent_start"}\n'
+      printf '{"type":"agent_settled","aborted":true}\n'
+      printf '{"type":"compaction_start","reason":"manual"}\n'
+      printf '{"type":"compaction_end","reason":"manual","aborted":false,"willRetry":false,"result":{}}\n'
       printf '{"type":"agent_start"}\n'
       printf '{"type":"message_start","message":{"role":"user","content":"prompt"}}\n'
       printf '{"type":"message_start","message":{"role":"assistant","content":[]}}\n'
@@ -38,6 +44,7 @@ while IFS= read -r line; do
       printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Wrote the greeting.\\nDid: Wrote %s to answer.txt.\\nNeeds: Review and merge"}],"stopReason":"stop"}}\n' "$answer"
       printf '{"type":"agent_end","messages":[],"willRetry":false}\n'
       session_name="Write a greeting file"
+      streaming=false
       printf '{"type":"agent_settled","aborted":false}\n'
       ;;
   esac

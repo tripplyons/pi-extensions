@@ -73,6 +73,9 @@ struct Runtime {
     /// Stdin was closed or the process was killed on purpose.
     closing: bool,
     streaming: bool,
+    compacting: bool,
+    /// A round-trip idle check, invalidated when more work starts.
+    settling: Option<(String, Option<String>)>,
     ask: Option<Ask>,
     /// Free text to send when the `input` after "Other" arrives.
     other_text: Option<String>,
@@ -498,7 +501,14 @@ impl Desk {
                 error,
                 ..
             } => {
-                if (request == "state" || request == "settled-state") && success {
+                if (request == "state"
+                    || self
+                        .rt(id)
+                        .settling
+                        .as_ref()
+                        .is_some_and(|(pending, _)| pending == &request))
+                    && success
+                {
                     if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
                         let file = PathBuf::from(file);
                         if self
@@ -522,21 +532,63 @@ impl Desk {
                         self.edit(id, |agent| agent.title = name.to_string());
                     }
                 }
-                if request == "settled-state" {
-                    // Even a failed refresh must let the run finish.
-                    return self.settle(id);
-                } else if request == "messages" {
+                if request == "messages" {
                     if let Some(messages) = data.get("messages").and_then(Value::as_array) {
                         self.transcripts
                             .insert(id.to_string(), Transcript::from_messages(messages.iter()));
                     }
                     return self.send_outbox(id);
+                } else if request.starts_with("settle") {
+                    let Some((pending, fallback_error)) = self.rt(id).settling.clone() else {
+                        return Vec::new();
+                    };
+                    if pending != request {
+                        return Vec::new();
+                    }
+                    self.rt(id).settling = None;
+                    if !self
+                        .state
+                        .agent(id)
+                        .is_some_and(|agent| agent.status == Status::Working)
+                    {
+                        return Vec::new();
+                    }
+                    if !success {
+                        return self.fail(
+                            id,
+                            error.unwrap_or_else(|| "Could not confirm Pi is idle".into()),
+                        );
+                    }
+                    if self.rt(id).compacting
+                        || data.get("isStreaming") == Some(&Value::Bool(true))
+                        || data.get("isCompacting") == Some(&Value::Bool(true))
+                        || data
+                            .get("pendingMessageCount")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                            > 0
+                    {
+                        return Vec::new();
+                    }
+                    return self.settle(id, fallback_error);
                 } else if request.starts_with("prompt") && !success {
                     let error = error.unwrap_or_else(|| "Pi rejected the prompt".into());
                     return self.fail(id, error);
                 }
             }
-            Incoming::AgentStart => self.rt(id).streaming = true,
+            Incoming::AgentStart => {
+                self.rt(id).streaming = true;
+                self.rt(id).settling = None;
+            }
+            Incoming::CompactionStart => {
+                self.rt(id).compacting = true;
+                self.rt(id).settling = None;
+            }
+            Incoming::CompactionEnd { aborted, error } => {
+                self.rt(id).compacting = false;
+                let error = error.or_else(|| aborted.then(|| "Compaction was cancelled".into()));
+                return self.check_idle(id, error);
+            }
             Incoming::ToolStart { name, args, .. } if name == "ask_user" => {
                 let strings = |key: &str| -> Vec<String> {
                     args.get(key)
@@ -584,13 +636,9 @@ impl Desk {
                 }
             }
             Incoming::Ui(request) => return self.on_ui(id, request),
-            Incoming::AgentSettled { .. } => {
-                // Auto-rename runs in agent_end. Read its name before settle
-                // closes stdin and Pi exits.
-                return vec![Effect::Send {
-                    agent: id.to_string(),
-                    line: rpc::command("settled-state", "get_state"),
-                }];
+            Incoming::AgentSettled { aborted } => {
+                self.rt(id).streaming = false;
+                return self.check_idle(id, aborted.then(|| "Pi run was aborted".into()));
             }
             _ => {}
         }
@@ -676,7 +724,28 @@ impl Desk {
         Vec::new()
     }
 
-    fn settle(&mut self, id: &str) -> Vec<Effect> {
+    /// Native manual compaction aborts a run before it emits compaction_start.
+    /// A get_state round trip lets Pi finish that transition (and compaction's
+    /// onComplete continuation) before we decide whether to close its stdin.
+    /// Open questions only refresh session metadata; they remain answerable.
+    fn check_idle(&mut self, id: &str, error: Option<String>) -> Vec<Effect> {
+        if self.rt(id).compacting
+            || !self
+                .state
+                .agent(id)
+                .is_some_and(|agent| matches!(agent.status, Status::Working | Status::Question))
+        {
+            return Vec::new();
+        }
+        let request = self.request_id("settle");
+        self.rt(id).settling = Some((request.clone(), error));
+        vec![Effect::Send {
+            agent: id.to_string(),
+            line: rpc::command(&request, "get_state"),
+        }]
+    }
+
+    fn settle(&mut self, id: &str, fallback_error: Option<String>) -> Vec<Effect> {
         self.rt(id).streaming = false;
         let Some(agent) = self.state.agent(id) else {
             return Vec::new();
@@ -689,7 +758,8 @@ impl Desk {
             return self.send_outbox(id);
         }
         let transcript = self.transcripts.get(id);
-        let error = transcript.and_then(|transcript| transcript.last_error.clone());
+        let error = fallback_error
+            .or_else(|| transcript.and_then(|transcript| transcript.last_error.clone()));
         let parsed = transcript.and_then(|transcript| summary::parse(&transcript.last_text));
         self.rt(id).closing = true;
         let mut effects = vec![Effect::Close {
@@ -1237,6 +1307,21 @@ mod tests {
         f.desk.on_lines(&f.id.clone(), generation, &lines)
     }
 
+    fn confirm_idle(f: &mut Fixture, generation: u64, effects: &[Effect]) -> Vec<Effect> {
+        let commands = sent(effects);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["type"], "get_state");
+        feed(
+            f,
+            generation,
+            &[json!({
+                "type":"response", "command":"get_state", "id":commands[0]["id"],
+                "success":true,
+                "data":{"isStreaming":false,"isCompacting":false,"pendingMessageCount":0}
+            })],
+        )
+    }
+
     fn ask(f: &mut Fixture, generation: u64) -> Vec<Effect> {
         feed(
             f,
@@ -1397,29 +1482,15 @@ mod tests {
                 json!({"type":"agent_settled","aborted":false}),
             ],
         );
-        assert_eq!(
-            sent(&effects),
-            [json!({"id":"settled-state","type":"get_state"})]
-        );
-        assert!(
-            !effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::Close { .. }))
-        );
         assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
-        let effects = feed(
-            &mut f,
-            generation,
-            &[
-                json!({"type":"response","id":"settled-state","command":"get_state","success":true,"data":{"sessionName":"Fix login crash"}}),
-            ],
-        );
+        let effects = confirm_idle(&mut f, generation, &effects);
         assert!(effects.contains(&Effect::Close {
             agent: f.id.clone()
         }));
         let agent = f.desk.state.agent(&f.id).unwrap();
         assert_eq!(agent.status, Status::Review);
-        assert_eq!(agent.title, "Fix login crash");
+        // An idle response without sessionName preserves the existing title.
+        assert_eq!(agent.title, "Fix");
         assert_eq!(
             agent.summary,
             Some(Summary {
@@ -1435,52 +1506,298 @@ mod tests {
     }
 
     #[test]
-    fn missing_names_and_failed_refreshes_do_not_block_settlement() {
-        for success in [true, false] {
-            let (mut f, generation) = started();
+    fn compaction_keeps_working_through_abort_and_continuation() {
+        let (mut f, generation) = started();
+        // Native compact() aborts first. The events may arrive in separate reads.
+        let effects = feed(
+            &mut f,
+            generation,
+            &[json!({"type":"agent_settled","aborted":true})],
+        );
+        let stale_check = sent(&effects)[0]["id"].clone();
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        assert!(
             feed(
                 &mut f,
                 generation,
-                &[json!({"type":"agent_settled","aborted":false})],
+                &[
+                    json!({"type":"compaction_start","reason":"manual"}),
+                    json!({"type":"response","id":stale_check,"command":"get_state","success":true,
+                "data":{"isStreaming":false,"isCompacting":false,"pendingMessageCount":0}}),
+                ]
+            )
+            .is_empty()
+        );
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        let effects = feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"compaction_end","reason":"manual","aborted":false,"willRetry":false,"result":{}}),
+            ],
+        );
+        let stale_check = sent(&effects)[0]["id"].clone();
+        assert!(
+            feed(
+                &mut f,
+                generation,
+                &[
+                    json!({"type":"agent_start"}),
+                    json!({"type":"response","id":stale_check,"command":"get_state","success":true,
+                "data":{"isStreaming":false,"isCompacting":false,"pendingMessageCount":0}}),
+                ]
+            )
+            .is_empty()
+        );
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        let notes: Vec<_> = f.desk.transcripts[&f.id]
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                if let crate::transcript::Entry::Note { text } = entry {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes, ["Compacting context", "Context compacted"]);
+        let effects = feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+                json!({"type":"message_end","message":{"role":"assistant","content":"Did: Finished after compaction.\nNeeds: Review and merge","stopReason":"stop"}}),
+                json!({"type":"agent_settled","aborted":false}),
+            ],
+        );
+        let effects = confirm_idle(&mut f, generation, &effects);
+        assert!(effects.contains(&Effect::Close {
+            agent: f.id.clone()
+        }));
+        let agent = f.desk.state.agent(&f.id).unwrap();
+        assert_eq!(agent.status, Status::Review);
+        assert_eq!(
+            agent.summary.as_ref().unwrap().did,
+            "Finished after compaction."
+        );
+    }
+
+    #[test]
+    fn busy_state_snapshots_do_not_finish_the_task() {
+        for data in [
+            json!({"isStreaming":false,"isCompacting":true,"pendingMessageCount":0}),
+            json!({"isStreaming":true,"isCompacting":false,"pendingMessageCount":0}),
+            json!({"isStreaming":false,"isCompacting":false,"pendingMessageCount":1}),
+        ] {
+            let (mut f, generation) = started();
+            let effects = feed(
+                &mut f,
+                generation,
+                &[json!({"type":"agent_settled","aborted":true})],
+            );
+            let request = sent(&effects)[0]["id"].clone();
+            assert!(feed(&mut f, generation, &[
+                json!({"type":"response","id":request,"command":"get_state","success":true,"data":data}),
+            ]).is_empty());
+            assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        }
+    }
+
+    #[test]
+    fn automatic_compaction_and_repeated_compaction_do_not_close_the_process() {
+        let (mut f, generation) = started();
+        for reason in ["threshold", "overflow"] {
+            assert!(
+                feed(
+                    &mut f,
+                    generation,
+                    &[
+                        json!({"type":"compaction_start","reason":reason}),
+                        json!({"type":"agent_settled","aborted":false}),
+                    ]
+                )
+                .is_empty()
             );
             let effects = feed(
                 &mut f,
                 generation,
                 &[
-                    json!({"type":"response","id":"settled-state","command":"get_state","success":success,"error":"Unavailable"}),
+                    json!({"type":"compaction_end","reason":reason,"aborted":false,"willRetry":true,"result":{}}),
                 ],
+            );
+            let request = sent(&effects)[0]["id"].clone();
+            assert!(
+                feed(
+                    &mut f,
+                    generation,
+                    &[
+                        json!({"type":"response","id":request,"command":"get_state","success":true,
+                    "data":{"isStreaming":true,"isCompacting":false,"pendingMessageCount":0}}),
+                    ]
+                )
+                .is_empty()
+            );
+            assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        }
+        let effects = feed(
+            &mut f,
+            generation,
+            &[json!({"type":"agent_settled","aborted":false})],
+        );
+        confirm_idle(&mut f, generation, &effects);
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn compaction_without_a_continuation_finishes_only_after_confirming_idle() {
+        let (mut f, generation) = started();
+        feed(
+            &mut f,
+            generation,
+            &[json!({"type":"compaction_start","reason":"manual"})],
+        );
+        let effects = feed(
+            &mut f,
+            generation,
+            &[json!({"type":"compaction_end","aborted":false,"willRetry":false,"result":{}})],
+        );
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        confirm_idle(&mut f, generation, &effects);
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn a_continuation_can_recover_from_failed_compaction() {
+        let (mut f, generation) = started();
+        let effects = feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"compaction_start","reason":"manual"}),
+                json!({"type":"compaction_end","aborted":false,"willRetry":false,"errorMessage":"Compaction failed: unavailable"}),
+            ],
+        );
+        feed(&mut f, generation, &[json!({"type":"agent_start"})]);
+        assert!(confirm_idle(&mut f, generation, &effects).is_empty());
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        let effects = feed(
+            &mut f,
+            generation,
+            &[json!({"type":"agent_settled","aborted":false})],
+        );
+        confirm_idle(&mut f, generation, &effects);
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn failed_idle_checks_report_an_error_instead_of_hanging() {
+        let (mut f, generation) = started();
+        let effects = feed(
+            &mut f,
+            generation,
+            &[json!({"type":"agent_settled","aborted":false})],
+        );
+        let request = sent(&effects)[0]["id"].clone();
+        feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"response","id":request,"command":"get_state","success":false,"error":"State unavailable"}),
+            ],
+        );
+        assert_eq!(
+            f.desk.state.agent(&f.id).unwrap().status,
+            Status::Failed {
+                error: "State unavailable".into()
+            }
+        );
+    }
+
+    #[test]
+    fn real_cancellations_compaction_failures_and_model_errors_still_fail() {
+        for records in [
+            vec![json!({"type":"agent_settled","aborted":true})],
+            vec![
+                json!({"type":"compaction_start","reason":"manual"}),
+                json!({"type":"compaction_end","aborted":true,"willRetry":false}),
+            ],
+            vec![
+                json!({"type":"compaction_start","reason":"manual"}),
+                json!({"type":"compaction_end","aborted":false,"willRetry":false,"errorMessage":"Compaction failed: unavailable"}),
+            ],
+            vec![
+                json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+                json!({"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Model unavailable"}}),
+                json!({"type":"agent_settled","aborted":false}),
+            ],
+        ] {
+            let (mut f, generation) = started();
+            let effects = feed(&mut f, generation, &records);
+            let effects = confirm_idle(&mut f, generation, &effects);
+            assert!(effects.contains(&Effect::Close {
+                agent: f.id.clone()
+            }));
+            assert!(matches!(
+                f.desk.state.agent(&f.id).unwrap().status,
+                Status::Failed { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn settlement_syncs_the_name_without_requiring_one() {
+        for name in [None, Some("Fix login crash")] {
+            let (mut f, generation) = started();
+            let effects = feed(
+                &mut f,
+                generation,
+                &[json!({"type":"agent_settled","aborted":false})],
+            );
+            let request = sent(&effects)[0]["id"].clone();
+            let effects = feed(
+                &mut f,
+                generation,
+                &[json!({
+                    "type":"response", "id":request, "command":"get_state", "success":true,
+                    "data":{"sessionName":name,"isStreaming":false,"isCompacting":false,"pendingMessageCount":0}
+                })],
             );
             assert!(effects.contains(&Effect::Close {
                 agent: f.id.clone()
             }));
             let agent = f.desk.state.agent(&f.id).unwrap();
             assert_eq!(agent.status, Status::Review);
-            assert_eq!(agent.title, "Fix");
+            assert_eq!(agent.title, name.unwrap_or("Fix"));
         }
     }
 
     #[test]
     fn a_settled_question_keeps_its_card_while_syncing_the_name() {
-        let (mut f, generation) = started();
-        ask(&mut f, generation);
-        let question = f.desk.state.agent(&f.id).unwrap().question.clone();
-        feed(
-            &mut f,
-            generation,
-            &[json!({"type":"agent_settled","aborted":false})],
-        );
-        let effects = feed(
-            &mut f,
-            generation,
-            &[
-                json!({"type":"response","id":"settled-state","command":"get_state","success":true,"data":{"sessionName":"Fix login crash"}}),
-            ],
-        );
-        assert!(effects.is_empty());
-        let agent = f.desk.state.agent(&f.id).unwrap();
-        assert_eq!(agent.title, "Fix login crash");
-        assert_eq!(agent.status, Status::Question);
-        assert_eq!(agent.question, question);
+        for success in [true, false] {
+            let (mut f, generation) = started();
+            ask(&mut f, generation);
+            let question = f.desk.state.agent(&f.id).unwrap().question.clone();
+            let effects = feed(
+                &mut f,
+                generation,
+                &[json!({"type":"agent_settled","aborted":false})],
+            );
+            let request = sent(&effects)[0]["id"].clone();
+            let effects = feed(
+                &mut f,
+                generation,
+                &[json!({
+                    "type":"response", "id":request, "command":"get_state", "success":success,
+                    "error":"Unavailable", "data":{"sessionName":"Fix login crash"}
+                })],
+            );
+            assert!(effects.is_empty());
+            let agent = f.desk.state.agent(&f.id).unwrap();
+            assert_eq!(agent.title, if success { "Fix login crash" } else { "Fix" });
+            assert_eq!(agent.status, Status::Question);
+            assert_eq!(agent.question, question);
+        }
     }
 
     #[test]

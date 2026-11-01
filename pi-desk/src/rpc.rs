@@ -26,6 +26,11 @@ pub enum Incoming {
     AgentSettled {
         aborted: bool,
     },
+    CompactionStart,
+    CompactionEnd {
+        aborted: bool,
+        error: Option<String>,
+    },
     MessageStart {
         message: Value,
     },
@@ -109,6 +114,17 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
                 .get("aborted")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+        },
+        "compaction_start" => Incoming::CompactionStart,
+        "compaction_end" => Incoming::CompactionEnd {
+            aborted: record
+                .get("aborted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            error: record
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         },
         "message_start" => Incoming::MessageStart {
             message: record.get("message").cloned().unwrap_or(Value::Null),
@@ -270,6 +286,31 @@ mod tests {
             Incoming::AgentSettled { aborted: false }
         );
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn parses_native_compaction_events() {
+        for reason in ["manual", "threshold", "overflow"] {
+            assert_eq!(
+                parse(&json!({"type":"compaction_start","reason":reason}).to_string()).unwrap(),
+                Incoming::CompactionStart
+            );
+            assert_eq!(
+                parse(&json!({"type":"compaction_end","reason":reason,"result":{},"aborted":false,"willRetry":true}).to_string()).unwrap(),
+                Incoming::CompactionEnd { aborted: false, error: None }
+            );
+        }
+        assert_eq!(
+            parse(r#"{"type":"compaction_end","aborted":true,"willRetry":false}"#).unwrap(),
+            Incoming::CompactionEnd {
+                aborted: true,
+                error: None
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"compaction_end","aborted":false,"errorMessage":"Compaction failed: unavailable","willRetry":false}"#).unwrap(),
+            Incoming::CompactionEnd { aborted: false, error: Some("Compaction failed: unavailable".into()) }
+        );
     }
 
     #[test]

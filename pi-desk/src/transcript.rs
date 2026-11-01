@@ -271,6 +271,16 @@ impl Transcript {
                 is_error,
                 ..
             } => self.finish_tool(id, result, *is_error),
+            Incoming::CompactionStart => self.note("Compacting context"),
+            Incoming::CompactionEnd { aborted, error } => {
+                if let Some(error) = error {
+                    self.note(error.clone());
+                } else if *aborted {
+                    self.note("Compaction cancelled");
+                } else {
+                    self.note("Context compacted");
+                }
+            }
             Incoming::ExtensionError { error } => self.note(format!("Extension error: {error}")),
             Incoming::RetryFailed { error } => self.note(format!("Retries failed: {error}")),
             _ => return false,
