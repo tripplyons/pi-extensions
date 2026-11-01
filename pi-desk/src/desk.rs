@@ -40,6 +40,14 @@ pub enum Effect {
         branch: String,
         base: String,
     },
+    GenerateCommitMessage {
+        agent: Id,
+        program: String,
+        worktree: PathBuf,
+        base: String,
+        title: String,
+        summary: String,
+    },
     Merge {
         agent: Id,
         repo: PathBuf,
@@ -923,6 +931,9 @@ impl Desk {
 
     /// E: the card's recommended action.
     pub fn approve(&mut self, id: &str) -> Vec<Effect> {
+        if self.busy(id).is_some() {
+            return Vec::new();
+        }
         let Some(agent) = self.state.agent(id).cloned() else {
             return Vec::new();
         };
@@ -937,30 +948,59 @@ impl Desk {
             }
             Status::Failed { .. } => self.retry(id),
             Status::Review => {
-                let Some(project) = self.state.project(&agent.project_id).cloned() else {
+                self.rt(id).busy = Some("Writing commit message");
+                self.edit(id, |agent| agent.note = None);
+                vec![Effect::GenerateCommitMessage {
+                    agent: id.to_string(),
+                    program: self.pi_program.clone(),
+                    worktree: agent.worktree,
+                    base: agent.base_branch,
+                    title: agent.title,
+                    summary: agent.summary.map(|summary| summary.did).unwrap_or_default(),
+                }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn on_commit_message(
+        &mut self,
+        id: &str,
+        result: Result<Option<String>, String>,
+    ) -> Vec<Effect> {
+        if self.busy(id) != Some("Writing commit message") {
+            return Vec::new();
+        }
+        self.rt(id).busy = None;
+        let Some(agent) = self.state.agent(id).cloned() else {
+            return Vec::new();
+        };
+        if agent.status != Status::Review {
+            return Vec::new();
+        }
+        match result {
+            Ok(None) => self.on_merged(id, Ok(Merge::NoChanges)),
+            Ok(Some(message)) => {
+                let Some(project) = self.state.project(&agent.project_id) else {
                     return Vec::new();
                 };
+                let repo = project.path.clone();
                 self.rt(id).busy = Some("Merging");
-                let did = agent
-                    .summary
-                    .as_ref()
-                    .map(|summary| summary.did.clone())
-                    .unwrap_or_default();
-                let message = if did.is_empty() {
-                    agent.title.clone()
-                } else {
-                    format!("{}\n\n{did}", agent.title)
-                };
                 vec![Effect::Merge {
                     agent: id.to_string(),
-                    repo: project.path,
+                    repo,
                     worktree: agent.worktree,
                     branch: agent.branch,
                     base: agent.base_branch,
                     message,
                 }]
             }
-            _ => Vec::new(),
+            Err(error) => {
+                self.edit(id, |agent| {
+                    agent.note = Some(format!("Could not write commit message: {error}"));
+                });
+                Vec::new()
+            }
         }
     }
 
@@ -1049,6 +1089,9 @@ impl Desk {
 
     /// X: stop the agent and delete its worktree and branch.
     pub fn discard(&mut self, id: &str) -> Vec<Effect> {
+        if self.busy(id).is_some() {
+            return Vec::new();
+        }
         if self
             .state
             .agent(id)
@@ -1061,6 +1104,9 @@ impl Desk {
 
     /// Close without merging. The branch stays for later use.
     pub fn mark_done(&mut self, id: &str) -> Vec<Effect> {
+        if self.busy(id).is_some() {
+            return Vec::new();
+        }
         if self
             .state
             .agent(id)
@@ -1072,6 +1118,9 @@ impl Desk {
     }
 
     pub fn retry(&mut self, id: &str) -> Vec<Effect> {
+        if self.busy(id).is_some() {
+            return Vec::new();
+        }
         self.edit(id, |agent| {
             if agent.outbox.is_none() {
                 agent.outbox = Some(if agent.started {
@@ -1096,6 +1145,9 @@ impl Desk {
     /// R: your own words. Answers a question, sends a finished agent back,
     /// or steers a working one.
     pub fn reply(&mut self, id: &str, text: &str) -> Vec<Effect> {
+        if self.busy(id).is_some() {
+            return Vec::new();
+        }
         let text = text.trim();
         let Some(agent) = self.state.agent(id).cloned() else {
             return Vec::new();
@@ -1837,9 +1889,24 @@ mod tests {
         f.desk.rt(&id).live = false;
         let effects = f.desk.approve(&id);
         assert!(
-            matches!(&effects[0], Effect::Merge { message, base, .. } if message == "Fix\n\nFixed it." && base == "main")
+            matches!(&effects[0], Effect::GenerateCommitMessage { title, summary, base, .. }
+                if title == "Fix" && summary == "Fixed it." && base == "main")
+        );
+        assert_eq!(f.desk.busy(&id), Some("Writing commit message"));
+        assert!(f.desk.approve(&id).is_empty());
+        assert!(f.desk.reply(&id, "Change the task").is_empty());
+        assert!(f.desk.retry(&id).is_empty());
+        assert!(f.desk.discard(&id).is_empty());
+        assert!(f.desk.mark_done(&id).is_empty());
+        assert_eq!(f.desk.state.agent(&id).unwrap().status, Status::Review);
+        let effects = f
+            .desk
+            .on_commit_message(&id, Ok(Some("Fix the actual bug".into())));
+        assert!(
+            matches!(&effects[0], Effect::Merge { message, .. } if message == "Fix the actual bug")
         );
         assert_eq!(f.desk.busy(&id), Some("Merging"));
+        assert!(f.desk.approve(&id).is_empty());
         f.desk.on_merged(
             &id,
             Ok(Merge::Conflict {
@@ -1849,6 +1916,64 @@ mod tests {
         let agent = f.desk.state.agent(&id).unwrap();
         assert!(agent.note.as_deref().unwrap().contains("src/a.rs"));
         assert!(matches!(agent.status, Status::Working | Status::Queued));
+    }
+
+    #[test]
+    fn failed_commit_messages_stay_in_review_and_can_be_retried() {
+        let (mut f, _) = started();
+        let id = f.id.clone();
+        f.desk.state.agent_mut(&id).unwrap().status = Status::Review;
+        f.desk.rt(&id).live = false;
+        f.desk.approve(&id);
+        assert!(
+            f.desk
+                .on_commit_message(&id, Err("offline".into()))
+                .is_empty()
+        );
+        assert_eq!(f.desk.busy(&id), None);
+        let agent = f.desk.state.agent(&id).unwrap();
+        assert_eq!(agent.status, Status::Review);
+        assert!(agent.note.as_deref().unwrap().contains("offline"));
+        let effects = f.desk.approve(&id);
+        assert!(matches!(&effects[0], Effect::GenerateCommitMessage { .. }));
+        assert!(f.desk.state.agent(&id).unwrap().note.is_none());
+    }
+
+    #[test]
+    fn stale_commit_message_results_do_not_merge() {
+        let (mut f, _) = started();
+        let id = f.id.clone();
+        assert!(
+            f.desk
+                .on_commit_message(&id, Ok(Some("Stale".into())))
+                .is_empty()
+        );
+        f.desk.state.agent_mut(&id).unwrap().status = Status::Review;
+        f.desk.approve(&id);
+        f.desk.state.agent_mut(&id).unwrap().status = Status::Queued;
+        assert!(
+            f.desk
+                .on_commit_message(&id, Ok(Some("Stale".into())))
+                .is_empty()
+        );
+        assert_eq!(f.desk.busy(&id), None);
+    }
+
+    #[test]
+    fn empty_changes_need_no_commit_message_or_merge() {
+        let (mut f, _) = started();
+        let id = f.id.clone();
+        f.desk.state.agent_mut(&id).unwrap().status = Status::Review;
+        f.desk.rt(&id).live = false;
+        f.desk.approve(&id);
+        let effects = f.desk.on_commit_message(&id, Ok(None));
+        assert!(matches!(
+            &effects[0],
+            Effect::Remove {
+                outcome: Outcome::Merged,
+                ..
+            }
+        ));
     }
 
     #[test]

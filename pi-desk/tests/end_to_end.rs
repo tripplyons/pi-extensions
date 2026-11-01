@@ -20,7 +20,7 @@ struct Harness {
 
 impl Harness {
     /// Runs effects the way the app does; git jobs run inline.
-    fn run(&mut self, effects: Vec<Effect>) {
+    async fn run(&mut self, effects: Vec<Effect>) {
         let mut queue = effects;
         while !queue.is_empty() {
             for effect in std::mem::take(&mut queue) {
@@ -38,6 +38,20 @@ impl Harness {
                     } => {
                         let result = pi_desk::git::add_worktree(&repo, &path, &branch, &base);
                         queue.extend(self.desk.on_worktree(&agent, result));
+                    }
+                    Effect::GenerateCommitMessage {
+                        agent,
+                        program,
+                        worktree,
+                        base,
+                        title,
+                        summary,
+                    } => {
+                        let result = pi_desk::commit_message::generate(
+                            &program, &worktree, &base, &title, &summary,
+                        )
+                        .await;
+                        queue.extend(self.desk.on_commit_message(&agent, result));
                     }
                     Effect::Merge {
                         agent,
@@ -99,7 +113,7 @@ impl Harness {
                 } => self.desk.on_spawn_failed(&agent, generation, error),
                 Event::Ready(_) => Vec::new(),
             };
-            self.run(effects);
+            self.run(effects).await;
         }
     }
 }
@@ -134,7 +148,7 @@ async fn real_pi_smoke() {
         prompt: "This is an authorized integration smoke test in a disposable repository. First call ask_user with question 'Which greeting?', choices ['Hello', 'Hi'], and recommended 2. Wait for the answer. Then write the chosen greeting followed by a newline to greeting.txt. Do not commit. Finish with Did: Wrote greeting.txt and Needs: Review and merge. Do not do any other work.".into(),
     }]);
     let id = h.desk.state.agents[0].id.clone();
-    h.run(effects);
+    h.run(effects).await;
     h.until(&id, |desk| {
         matches!(
             desk.state.agent(&id).unwrap().status,
@@ -155,7 +169,7 @@ async fn real_pi_smoke() {
         Some(1)
     );
     let effects = h.desk.approve(&id);
-    h.run(effects);
+    h.run(effects).await;
     h.until(&id, |desk| {
         matches!(
             desk.state.agent(&id).unwrap().status,
@@ -170,7 +184,7 @@ async fn real_pi_smoke() {
         "Hi\n"
     );
     let effects = h.desk.approve(&id);
-    h.run(effects);
+    h.run(effects).await;
     assert_eq!(
         h.desk.state.agent(&id).unwrap().status,
         Status::Done {
@@ -197,7 +211,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
         }],
     );
     let id = h.desk.state.agents[0].id.clone();
-    h.run(effects);
+    h.run(effects).await;
 
     // The fake aborts for native compaction, resumes, and asks a question.
     h.until(&id, |desk| {
@@ -228,7 +242,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
 
     // E takes the recommendation through the live dialog.
     let effects = h.desk.approve(&id);
-    h.run(effects);
+    h.run(effects).await;
     h.until(&id, |desk| {
         desk.state.agent(&id).unwrap().status == Status::Review
     })
@@ -257,7 +271,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
 
     // Approving squash-merges into main and removes the worktree and branch.
     let effects = h.desk.approve(&id);
-    h.run(effects);
+    h.run(effects).await;
     let agent = h.desk.state.agent(&id).unwrap().clone();
     assert_eq!(
         agent.status,
@@ -268,7 +282,11 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     assert_eq!(git(&repo, &["show", "main:answer.txt"]), "Hi");
     assert_eq!(
         git(&repo, &["log", "-1", "--format=%s", "main"]),
-        "Write a greeting file"
+        "Write the selected greeting to answer.txt"
+    );
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%b", "main"]),
+        "Use the user's selected greeting in the generated file."
     );
     assert!(!agent.worktree.exists());
 }
@@ -289,7 +307,7 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
         }],
     );
     let id = h.desk.state.agents[0].id.clone();
-    h.run(effects);
+    h.run(effects).await;
     h.until(&id, |desk| {
         desk.state.agent(&id).unwrap().status == Status::Question
     })
@@ -311,7 +329,7 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
     // A typed reply now goes out as a prompt in the resumed session, and the
     // agent asks again (the fake always does), live this time.
     let effects = h.desk.reply(&id, "Howdy");
-    h.run(effects);
+    h.run(effects).await;
     h.until(&id, |desk| {
         desk.state
             .agent(&id)
@@ -328,7 +346,7 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
 
     // Free text on a live choice question goes through "Other" and the input.
     let effects = h.desk.reply(&id, "Howdy");
-    h.run(effects);
+    h.run(effects).await;
     h.until(&id, |desk| {
         desk.state.agent(&id).unwrap().status == Status::Review
     })

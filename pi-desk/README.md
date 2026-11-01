@@ -96,9 +96,23 @@ the app does not reset them.
    the interruption and continuation. Pi-desk confirms Pi is idle before moving
    a task to review or reporting an abort. Use the command palette to open the
    worktree in a terminal or editor.
-6. Approve a review to commit remaining changes, squash-merge locally into the
-   base branch, and remove the worktree and branch. Nothing is pushed. Merge
-   conflicts return the task to Pi with instructions to rebase and resolve them.
+6. Approve a review to ask Pi for a specific commit message, then commit remaining
+   changes, squash-merge locally into the base branch, and remove the worktree and
+   branch. Nothing is pushed. Merge conflicts return the task to Pi with
+   instructions to rebase and resolve them.
+
+Before merging, pi-desk makes a separate `pi --print --no-session` request with
+no tools or MCP access. It sends the task title, completed-work summary, and final
+diff, including committed, uncommitted, and untracked changes. For large diffs,
+it sends the first 120,000 bytes plus the full changed-file list and marks the
+truncation. Pi uses its configured default model and credentials; installed
+extensions remain loaded for provider and authentication behavior. Context files,
+skills, and prompt templates are disabled for this request. The task's session
+is not resumed or changed. The returned subject and optional body become both
+the remaining-work commit message and the final squash commit message. If the
+request fails, times out after two minutes, or returns an empty or invalid message,
+the task stays in Review with an error. No Git changes are made by that request;
+approve again to retry. Tasks with no changes need no model request or merge.
 
 The main window has a sidebar, task list, and detail pane. All tasks shows every
 project and status, including Later and Done. Board mode groups work by status.

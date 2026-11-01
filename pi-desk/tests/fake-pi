@@ -3,6 +3,16 @@
 # app without model calls. Each prompt compacts, continues, and asks one
 # ask_user question. The answer writes answer.txt and finishes with a summary.
 set -u
+# A separate print request writes the final commit message, not task files.
+if [[ " ${*} " == *" --print "* ]]; then
+  input=$(cat)
+  for flag in --no-session --no-tools --no-mcp --no-context-files; do
+    [[ " ${*} " == *" ${flag} "* ]] || exit 2
+  done
+  [[ "$input" == *'Task summary:'* && "$input" == *'Final diff'* ]] || exit 2
+  printf 'Write the selected greeting to answer.txt\n\nUse the user\x27s selected greeting in the generated file.\n'
+  exit 0
+fi
 session_file="$PWD/.fake-pi-session.jsonl"
 session_name=""
 streaming=false

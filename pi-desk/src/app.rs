@@ -2,7 +2,6 @@
 //! logic lives in [`Desk`]; this module turns its effects into processes and
 //! git jobs, and turns input into desk actions.
 
-use crate::compose;
 use crate::desk::{Desk, Effect};
 use crate::git::{self, FileDiff, Merge};
 use crate::later;
@@ -10,6 +9,7 @@ use crate::model::*;
 use crate::order;
 use crate::store::Store;
 use crate::supervisor::{self, Request};
+use crate::{commit_message, compose};
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::{operation, text_editor};
 use iced::{Element, Subscription, Task, event, time};
@@ -165,6 +165,7 @@ pub enum Message {
     ToggleTool(String),
     ToggleThinking(String, usize, usize),
     WorktreeCreated(Id, Result<(), String>),
+    CommitMessageGenerated(Id, Result<Option<String>, String>),
     Merged(Id, Result<Merge, String>),
     Removed(Id, Outcome, Result<(), String>),
     OpenSettings,
@@ -438,6 +439,19 @@ impl App {
                 } => tasks.push(Task::perform(
                     blocking(move || git::add_worktree(&repo, &path, &branch, &base)),
                     move |result| Message::WorktreeCreated(agent.clone(), result),
+                )),
+                Effect::GenerateCommitMessage {
+                    agent,
+                    program,
+                    worktree,
+                    base,
+                    title,
+                    summary,
+                } => tasks.push(Task::perform(
+                    async move {
+                        commit_message::generate(&program, &worktree, &base, &title, &summary).await
+                    },
+                    move |result| Message::CommitMessageGenerated(agent.clone(), result),
                 )),
                 Effect::Merge {
                     agent,
@@ -1150,6 +1164,10 @@ impl App {
             }
             Message::WorktreeCreated(id, result) => {
                 let effects = self.desk.on_worktree(&id, result);
+                self.run(effects)
+            }
+            Message::CommitMessageGenerated(id, result) => {
+                let effects = self.desk.on_commit_message(&id, result);
                 self.run(effects)
             }
             Message::Merged(id, result) => {

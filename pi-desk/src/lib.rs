@@ -1,6 +1,7 @@
 //! pi-desk: a desktop inbox for parallel Pi agents.
 
 pub mod app;
+pub mod commit_message;
 pub mod compose;
 pub mod desk;
 pub mod git;
