@@ -81,7 +81,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 column![
                     container(super::counted_heading(name, agents.len(), 13.0))
                         .id(format!("board-heading-{name}")),
-                    scrollable(cards).height(Fill),
+                    scrollable(cards).style(theme::scrollbar).height(Fill),
                 ]
                 .spacing(10),
             )

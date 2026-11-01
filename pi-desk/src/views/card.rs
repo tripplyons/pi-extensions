@@ -165,6 +165,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 body = body.push(
                     container(
                         scrollable(text(question.text.as_str()).size(15))
+                            .style(theme::scrollbar)
                             .height(iced::Length::Shrink),
                     )
                     .max_height(220),
@@ -178,9 +179,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
         }
         Status::Failed { error } => {
             body = body.push(
-                container(scrollable(
-                    text(error.as_str()).size(12).font(MONO).color(RED),
-                ))
+                container(
+                    scrollable(text(error.as_str()).size(12).font(MONO).color(RED))
+                        .style(theme::scrollbar),
+                )
                 .padding(10)
                 .max_height(160)
                 .style(theme::panel),

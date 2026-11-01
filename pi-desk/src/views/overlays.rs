@@ -130,7 +130,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     ]
                     .align_y(Alignment::Center),
                     editor,
-                    scrollable(preview).height(iced::Length::Shrink),
+                    scrollable(preview)
+                        .style(theme::scrollbar)
+                        .height(iced::Length::Shrink),
                     error(&composer.error),
                     row![
                         faint(base),
@@ -195,7 +197,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .padding(10)
                         .size(14)
                         .style(theme::input),
-                    scrollable(list).height(iced::Length::Shrink),
+                    scrollable(list)
+                        .style(theme::scrollbar)
+                        .height(iced::Length::Shrink),
                     row![
                         row![key("↑ / ↓"), faint("navigate")].spacing(5),
                         row![key("Enter"), faint("run")].spacing(5),

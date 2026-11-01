@@ -2,7 +2,7 @@
 //! dots, errors, and changed code.
 
 use crate::model::{Priority, Status};
-use iced::widget::{button, container, text_editor, text_input};
+use iced::widget::{button, container, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Font, Shadow, Theme, color};
 
 pub const WINDOW: Color = color!(0x111111);
@@ -74,6 +74,14 @@ pub fn window(_: &Theme) -> container::Style {
         text_color: Some(TEXT),
         ..container::Style::default()
     }
+}
+
+/// Keep the panel visible behind each scrollbar, coloring only its thumb.
+pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let mut style = scrollable::default(theme, status);
+    style.vertical_rail.background = None;
+    style.horizontal_rail.background = None;
+    style
 }
 
 pub fn sidebar(_: &Theme) -> container::Style {

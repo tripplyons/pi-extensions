@@ -213,7 +213,11 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         };
         entries = entries.push(element);
     }
-    scrollable(entries).anchor_bottom().height(Fill).into()
+    scrollable(entries)
+        .style(theme::scrollbar)
+        .anchor_bottom()
+        .height(Fill)
+        .into()
 }
 
 fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
@@ -301,9 +305,13 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         );
     }
     row![
-        scrollable(list).width(240).height(Fill),
+        scrollable(list)
+            .style(theme::scrollbar)
+            .width(240)
+            .height(Fill),
         rule::vertical(1).style(super::divider),
         scrollable(lines.padding([8, 0]))
+            .style(theme::scrollbar)
             .direction(scrollable::Direction::Both {
                 vertical: Default::default(),
                 horizontal: Default::default()

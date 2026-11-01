@@ -186,7 +186,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
             }
             list = list.push(row_button(app, agent));
         }
-        scrollable(list.padding([0, 8])).height(Fill).into()
+        scrollable(list.padding([0, 8]))
+            .style(theme::scrollbar)
+            .height(Fill)
+            .into()
     };
 
     container(column![container(header).padding([16, 20]), body].spacing(4))

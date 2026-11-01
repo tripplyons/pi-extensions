@@ -135,7 +135,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             nav,
             Space::new().height(14),
             header,
-            scrollable(projects).height(Fill),
+            scrollable(projects).style(theme::scrollbar).height(Fill),
             footer,
         ]
         .spacing(8),

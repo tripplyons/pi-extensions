@@ -4,7 +4,9 @@ A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in its
 own git worktree. Questions and completed work enter your Inbox; answer, review
 the diff, and merge without switching terminals. Panels, controls, selections,
 and priority badges use neutral grays, including dark primary buttons. Muted status dots, errors, red/green diffs,
-and subdued syntax colors keep semantic cues visible.
+and subdued syntax colors keep semantic cues visible. Scrollbar tracks are
+transparent so panel backgrounds stay unchanged; only the thumb is colored,
+with the usual hover and drag feedback.
 
 Inspired by [Agentbox](https://github.com/savannahfeder/agentbox). No Agentbox
 code or assets are included.

@@ -1,4 +1,4 @@
-use iced::widget::{button, text_input};
+use iced::widget::{button, container, scrollable, text_input};
 use iced::{Background, Color};
 use pi_desk::model::Priority;
 use pi_desk::theme;
@@ -74,6 +74,51 @@ fn controls_and_priorities_are_neutral() {
     let input = theme::input(&theme, text_input::Status::Focused { is_hovered: false });
     neutral(input.border.color);
     neutral(input.selection);
+}
+
+#[test]
+fn scrollbar_tracks_stay_transparent_and_preserve_thumb_feedback() {
+    let theme = theme::theme();
+    let flags = [(false, false), (true, false), (false, true), (true, true)];
+    for (horizontal_disabled, vertical_disabled) in flags {
+        for (horizontal_interacted, vertical_interacted) in flags {
+            for status in [
+                scrollable::Status::Active {
+                    is_horizontal_scrollbar_disabled: horizontal_disabled,
+                    is_vertical_scrollbar_disabled: vertical_disabled,
+                },
+                scrollable::Status::Hovered {
+                    is_horizontal_scrollbar_hovered: horizontal_interacted,
+                    is_vertical_scrollbar_hovered: vertical_interacted,
+                    is_horizontal_scrollbar_disabled: horizontal_disabled,
+                    is_vertical_scrollbar_disabled: vertical_disabled,
+                },
+                scrollable::Status::Dragged {
+                    is_horizontal_scrollbar_dragged: horizontal_interacted,
+                    is_vertical_scrollbar_dragged: vertical_interacted,
+                    is_horizontal_scrollbar_disabled: horizontal_disabled,
+                    is_vertical_scrollbar_disabled: vertical_disabled,
+                },
+            ] {
+                let style = theme::scrollbar(&theme, status);
+                let default = scrollable::default(&theme, status);
+                assert_eq!(style.container, container::Style::default());
+                assert_eq!(style.gap, None);
+                for (rail, default_rail) in [
+                    (style.horizontal_rail, default.horizontal_rail),
+                    (style.vertical_rail, default.vertical_rail),
+                ] {
+                    assert_eq!(rail.background, None, "painted track for {status:?}");
+                    assert_eq!(rail.border, default_rail.border);
+                    assert_eq!(rail.scroller, default_rail.scroller);
+                    let Background::Color(color) = rail.scroller.background else {
+                        panic!("thumb must have a solid color")
+                    };
+                    assert!(color.a > 0.0, "thumb must remain visible");
+                }
+            }
+        }
+    }
 }
 
 #[test]
