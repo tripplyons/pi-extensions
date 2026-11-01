@@ -6,6 +6,13 @@ By default, after 15 seconds a foreground command returns a task ID without
 restarting its process or deadline. Set `foreground_wait_seconds` (an integer
 from 0 to 300) to override that wait for a call. Zero promotes immediately.
 This option does not change `timeout`, and `run_in_background: true` ignores it.
+Foreground `timeout` values above 300 are capped at 300 seconds, even if the
+command later auto-promotes. For a longer deadline, start with
+`run_in_background: true`, for example:
+
+```text
+bash command="npm run build" run_in_background=true timeout=1800
+```
 
 For example, wait up to two minutes for a build with a five-minute deadline:
 
@@ -62,8 +69,22 @@ message. It does not stop the task or
 acknowledge a completion that has not happened. Follow-up messages do not release
 reads. `wait_ms` is not a minimum polling interval and does not stop the task.
 Values above 300,000 ms are accepted and capped. For a deliberate long wait, use
-`task_output task_id=<id> wait_ms=300000`. Otherwise, let completion notifications
-resume the conversation instead of repeatedly polling a silent task.
+`task_output task_id=<id> wait_ms=300000`.
+
+For a chatty task, add `wait_until_terminal=true` to wait through output chunks:
+
+```text
+task_output task_id=<id> wait_ms=300000 wait_until_terminal=true
+```
+
+This opt-in mode returns on completion, the `wait_ms` limit, or steering; cancellation
+aborts the read without stopping the task. It waits even if unread output already
+exists. The wait limit starts once and is not reset by output. Output is not
+consumed until the call returns, and normal size limits and cursor rules still
+apply. Read again to retrieve any remaining output. `wait_ms` still defaults to 0,
+so the flag alone does not wait. Waiting never extends the task deadline.
+Otherwise, let completion notifications resume the conversation instead of
+repeatedly polling a task.
 
 When run through T3 Code's Pi provider, live background tasks keep the thread
 marked as running after Pi's foreground turn ends. This includes explicit
