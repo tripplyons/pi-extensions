@@ -1,18 +1,15 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import manifest from "../package.json";
 import { SwarmStore } from "../extensions/swarm/state.ts";
 
-// npm test prepends the pinned development CLI, which may predate codemode.
-const installedPath = process.env.PATH?.split(delimiter).filter(entry => !entry.endsWith("node_modules/.bin")).join(delimiter);
-const version = spawnSync("pi", ["--version"], { encoding: "utf8", env: { ...process.env, PATH: installedPath } });
-const parts = version.stdout?.trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
-const supportsCodemode = version.status === 0 && parts && (Number(parts[1]) > 0 || Number(parts[2]) >= 99);
+// Invoke the pinned CLI directly: a global package-manager shim may resolve a
+// different program when HOME points at the isolated test directory.
+const cli = resolve(import.meta.dir, "../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
 
-(supportsCodemode ? test : test.skip).each(["nested tools", "python task", "malformed image", "waiting-approval", "waiting-dependency", "checkpoint-hold"])("installed Pi codemode safely handles %s without model requests", async (scenario) => {
+test.each(["nested tools", "python task", "malformed image", "waiting-approval", "waiting-dependency", "checkpoint-hold"])("pinned Pi codemode safely handles %s without model requests", async (scenario) => {
   if (scenario === "python task" && !Bun.which("uv")) return;
   const home = await mkdtemp(join(tmpdir(), "pi-codemode-"));
   const held = ["waiting-approval", "waiting-dependency", "checkpoint-hold"].includes(scenario);
@@ -126,8 +123,8 @@ export default function (pi) {
       "--provider", "codemode-test", "--model", "probe"];
     for (const entry of manifest.pi.extensions) args.push("--extension", resolve(import.meta.dir, "..", entry));
     args.push("--extension", probe, "Verify codemode-only nested tool execution.");
-    const child = Bun.spawn(["pi", ...args], { cwd: home, env: {
-      PATH: installedPath, HOME: home, TERM: "dumb", PI_CODING_AGENT_DIR: agentDir,
+    const child = Bun.spawn(["node", cli, ...args], { cwd: home, env: {
+      PATH: process.env.PATH, HOME: home, TERM: "dumb", PI_CODING_AGENT_DIR: agentDir,
       XDG_CONFIG_HOME: join(home, "config"), XDG_STATE_HOME: join(home, "state"),
       ...(identity ? { PI_SWARM_RUN: identity.run, PI_SWARM_NODE: identity.node } : {}),
     }, stdout: "pipe", stderr: "pipe" });

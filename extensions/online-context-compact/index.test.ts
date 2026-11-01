@@ -88,7 +88,7 @@ test("completing a step requests native compaction and resumes the interrupted r
 });
 
 test("new input or session changes suppress a delayed compaction continuation", async () => {
-  for (const event of ["input", "session_switch", "session_shutdown"]) {
+  for (const event of ["input", "session_start", "session_tree", "session_shutdown"]) {
     const { h, plan, requests, finishTurn } = setup();
     let pending: any;
     h.ctx.compact = (options: any) => { pending = options; };
@@ -99,7 +99,11 @@ test("new input or session changes suppress a delayed compaction continuation", 
     await plan(["completed", "in_progress", "pending"]);
     await finishTurn();
     expect(pending).toBeDefined();
-    await h.emit(event, { source: "interactive" });
+    await h.emit(event, event === "input"
+      ? { source: "interactive", text: "Continue with the next task" }
+      : event === "session_tree"
+        ? { newLeafId: "next-leaf", oldLeafId: "previous-leaf" }
+        : { reason: "resume" });
     pending.onComplete({ summary: "summary" });
     expect(h.sentMessages).toHaveLength(0);
   }

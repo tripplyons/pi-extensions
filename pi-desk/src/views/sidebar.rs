@@ -1,0 +1,148 @@
+use super::{faint, key};
+use crate::app::{App, Message, View};
+use crate::model::Status;
+use crate::theme::{self, ACCENT, BOLD, FAINT, MUTED};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
+use iced::{Alignment, Element, Fill, mouse};
+
+fn item<'a>(app: &App, label: &'a str, count: Option<usize>, view: View) -> Element<'a, Message> {
+    let selected = app.view == view;
+    let count: Element<'a, Message> = match count {
+        Some(count) if count > 0 => text(count.to_string())
+            .size(12)
+            .color(if selected { ACCENT } else { MUTED })
+            .into(),
+        _ => Space::new().into(),
+    };
+    button(row![text(label).size(13).width(Fill), count].align_y(Alignment::Center))
+        .width(Fill)
+        .padding([6, 10])
+        .style(theme::row(selected))
+        .on_press(Message::Show(view))
+        .into()
+}
+
+pub fn view(app: &App) -> Element<'_, Message> {
+    let state = &app.desk.state;
+    let at = app.now;
+    let working = state
+        .agents
+        .iter()
+        .filter(|agent| {
+            matches!(agent.status, Status::Working | Status::Queued) && !agent.snoozed(at)
+        })
+        .count();
+    let later = state
+        .agents
+        .iter()
+        .filter(|agent| agent.snoozed(at) && !agent.status.is_done())
+        .count();
+
+    let mut projects = column![].spacing(1);
+    let target = app.dragging.as_ref().and_then(|(_, target)| *target);
+    for (index, project) in state.projects.iter().enumerate() {
+        let active = state
+            .agents
+            .iter()
+            .filter(|agent| agent.project_id == project.id && !agent.status.is_done())
+            .count();
+        let selected = app.view == View::Project(project.id.clone());
+        let handle = mouse_area(container(text("⠿").size(12).color(FAINT)).padding([6, 4]))
+            .interaction(mouse::Interaction::Grab)
+            .on_press(Message::DragProject(project.id.clone()));
+        let label = button(
+            row![
+                text(project.name.as_str()).size(13).width(Fill),
+                if active > 0 {
+                    text(active.to_string()).size(12).color(MUTED)
+                } else {
+                    text("")
+                },
+            ]
+            .align_y(Alignment::Center),
+        )
+        .width(Fill)
+        .padding([6, 8])
+        .style(theme::row(selected))
+        .on_press(Message::Show(View::Project(project.id.clone())));
+        let marker = container(Space::new())
+            .width(Fill)
+            .height(2)
+            .style(theme::fill(if target == Some(index) {
+                ACCENT
+            } else {
+                iced::Color::TRANSPARENT
+            }));
+        projects = projects.push(column![
+            marker,
+            mouse_area(row![handle, label].align_y(Alignment::Center))
+                .on_enter(Message::HoverProject(index))
+        ]);
+    }
+    if state.projects.is_empty() {
+        projects = projects.push(
+            container(faint("Add a git repository to file work in it.").size(12)).padding([4, 10]),
+        );
+    }
+
+    let nav = column![
+        item(app, "All tasks", None, View::All),
+        item(app, "Inbox", Some(app.inbox_count()), View::Inbox),
+        item(app, "Working", Some(working), View::Working),
+        item(app, "Later", Some(later), View::Later),
+        item(app, "Done", None, View::Done),
+    ]
+    .spacing(1);
+
+    let header = row![
+        faint("PROJECTS").width(Fill),
+        button(text("+").size(14).color(MUTED))
+            .padding([0, 8])
+            .style(theme::row(false))
+            .on_press(Message::AddProject),
+    ]
+    .align_y(Alignment::Center)
+    .padding([0, 4]);
+
+    let footer = column![
+        button(row![text("New task").size(13).width(Fill), key("N")].align_y(Alignment::Center))
+            .width(Fill)
+            .padding([8, 10])
+            .style(theme::ghost)
+            .on_press(Message::NewTask),
+        row![
+            button(text("Settings").size(12))
+                .style(theme::row(false))
+                .padding([4, 8])
+                .on_press(Message::OpenSettings),
+            Space::new().width(Fill),
+            button(
+                row![key("⌘K"), text("Commands").size(12).color(MUTED)]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+            )
+            .style(theme::row(false))
+            .padding([4, 6])
+            .on_press(Message::OpenPalette),
+        ]
+        .align_y(Alignment::Center),
+    ]
+    .spacing(8);
+
+    container(
+        column![
+            container(text("pi-desk").font(BOLD).size(15)).padding([2, 10]),
+            nav,
+            Space::new().height(14),
+            header,
+            scrollable(projects).height(Fill),
+            footer,
+        ]
+        .spacing(8),
+    )
+    .width(220)
+    .height(Fill)
+    .padding([16, 10])
+    .style(theme::sidebar)
+    .into()
+}

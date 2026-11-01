@@ -15,7 +15,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
 | [swarm](extensions/swarm) | Optional-objective activation, isolated workers, messaging, reviews, reload barriers, health checks, saved-conversation inspection, and T3 Code running-state reporting |
 | [session-search](extensions/session-search) | Local project-history search with original-message retrieval, summary expansion and a read-only inspector |
-| [ask-user](extensions/ask-user) | Scrollable questions with a choice list or free text, and plain-text answers |
+| [ask-user](extensions/ask-user) | Scrollable questions, recommended choices, configurable timeout, and plain-text answers |
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
@@ -57,7 +57,11 @@ extensions. Existing sessions and archive files are not deleted.
 
 Implementation and runtime audits are ongoing.
 
-Run `npm install` and `npm test` (requires Bun). Install with
+[pi-desk](pi-desk) is a separate Rust/iced desktop inbox for Pi agents in git
+worktrees, with an All tasks view, a collapsible sidebar (S), and session-only UI
+zoom. It uses these extensions through Pi RPC and is not a Pi extension.
+
+Run `npm install` and `npm test` (requires Bun and the Rust toolchain). Install with
 `pi install /absolute/path/to/pi-extensions`. Reload Pi after installation or
 updates. The manifest discovers entry points only, not adjacent tests.
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
-import install, { other } from "./index.ts";
+import install, { other, timeoutMs } from "./index.ts";
 
 test("questions without choices ask for free text, cancellation is not an answer", async () => {
   const h = harness(); install(h.pi);
@@ -49,4 +49,22 @@ test("Other opens free text, and Escape at either step is not an answer", async 
 test("choices cannot impersonate the Other entry", async () => {
   const h = harness(); install(h.pi);
   await expect(h.call("ask_user", { question: "Q?", choices: [other] })).rejects.toThrow("added automatically");
+});
+
+test("PI_ASK_USER_TIMEOUT sets the wait in seconds, and 0 waits until answered", () => {
+  expect(timeoutMs(undefined)).toBe(600_000);
+  expect(timeoutMs("")).toBe(600_000);
+  expect(timeoutMs("30")).toBe(30_000);
+  expect(timeoutMs("0")).toBeUndefined();
+  expect(timeoutMs("-1")).toBe(600_000);
+  expect(timeoutMs("soon")).toBe(600_000);
+});
+
+test("recommended must name a choice and does not change RPC labels", async () => {
+  const h = harness(); install(h.pi);
+  let options: string[] | undefined;
+  h.ctx.ui.select = async (_title: string, shown: string[]) => { options = shown; return "B"; };
+  expect((await h.call("ask_user", { question: "Q?", choices: ["A", "B"], recommended: 2 })).details).toEqual({ answer: "B", choice: 2 });
+  expect(options).toEqual(["A", "B", other]);
+  await expect(h.call("ask_user", { question: "Q?", choices: ["A"], recommended: 2 })).rejects.toThrow("recommended");
 });

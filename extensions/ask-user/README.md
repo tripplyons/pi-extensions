@@ -3,7 +3,16 @@
 `ask_user({question, choices})` asks one question. With choices, the user picks
 from a select list whose last entry, "Other (type an answer)", opens free-text
 input. Without choices, free-text input opens directly. Escape at either step,
-cancellation, and the ten-minute timeout fail without inventing an answer.
+cancellation, and the timeout fail without inventing an answer.
+
+The optional `recommended` field is the 1-based number of the choice the agent
+recommends. The terminal dialog selects it first and marks it "(recommended)".
+RPC labels stay unchanged, so clients such as [pi-desk](../../pi-desk) read the
+field from the tool call arguments.
+
+The timeout is ten minutes. `PI_ASK_USER_TIMEOUT` sets it in seconds, and `0`
+waits until the question is answered or cancelled. pi-desk sets `0`.
+
 Requires interactive Pi (or a compatible RPC UI). Swarm workers ask their parent
 instead. Questions must not request secrets.
 

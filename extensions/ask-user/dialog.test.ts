@@ -207,3 +207,14 @@ test("RPC keeps native select/input requests and never attempts a custom TUI", a
   };
   expect((await h.call("ask_user", { question, choices: ["A"] })).details).toEqual({ answer: "RPC answer" });
 });
+
+test("the recommended choice starts selected and is marked", async () => {
+  const view = ui(12, 60);
+  const pending = view.h.call("ask_user", { question: "Pick one", choices: ["A", "B", "C"], recommended: 3 });
+  expect(view.lines()).toContain("→ C (recommended)");
+  expect(view.lines()).toContain("  A");
+  view.current().handleInput(up);
+  expect(view.lines()).toContain("  C (recommended)");
+  view.current().handleInput("\r");
+  expect((await pending).details).toEqual({ answer: "B", choice: 2 });
+});

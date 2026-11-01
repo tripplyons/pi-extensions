@@ -4,7 +4,7 @@ import { Input, ScrollView, Text, truncateToWidth, type Component, type Focusabl
 class QuestionDialog implements Component, Focusable {
   private readonly input = new Input();
   private readonly question: ScrollView;
-  private selected = 0;
+  private selected: number;
   private answerTop = 0;
   private questionHeight = 0;
 
@@ -16,7 +16,9 @@ class QuestionDialog implements Component, Focusable {
     private readonly keys: KeybindingsManager,
     private readonly done: (answer: string | undefined) => void,
     readonly dispose: () => void,
+    private readonly recommended?: number,
   ) {
+    this.selected = recommended ?? 0;
     this.question = new ScrollView(new Text(theme.fg("accent", question), 0, 0), { scrollbar: "hidden", overscroll: "contain" });
   }
 
@@ -41,7 +43,9 @@ class QuestionDialog implements Component, Focusable {
       this.choices.forEach((choice, index) => {
         const selected = index === this.selected;
         if (selected) selectedStart = answers.length;
-        answers.push(...new Text(this.theme.fg(selected ? "accent" : "text", `${selected ? "→ " : "  "}${choice}`), 0, 0).render(width));
+        const label = this.theme.fg(selected ? "accent" : "text", `${selected ? "→ " : "  "}${choice}`);
+        const mark = index === this.recommended ? this.theme.fg("dim", " (recommended)") : "";
+        answers.push(...new Text(label + mark, 0, 0).render(width));
         if (selected) selectedEnd = answers.length;
       });
     } else {
@@ -93,7 +97,9 @@ class QuestionDialog implements Component, Focusable {
 }
 
 // RPC clients retain the native request/response dialogs; custom UI is TUI-only.
-export async function askQuestion(ctx: ExtensionContext, question: string, choices: string[], signal: AbortSignal): Promise<string | undefined> {
+// `recommended` is a 0-based index. The TUI preselects and marks it; RPC labels
+// stay unchanged because select returns the label text.
+export async function askQuestion(ctx: ExtensionContext, question: string, choices: string[], signal: AbortSignal, recommended?: number): Promise<string | undefined> {
   if (ctx.mode !== "tui") return choices.length
     ? ctx.ui.select(question, choices, { signal })
     : ctx.ui.input(question, "Free-text answer", { signal });
@@ -109,7 +115,7 @@ export async function askQuestion(ctx: ExtensionContext, question: string, choic
       };
       const abort = () => finish(undefined);
       cleanup = () => signal.removeEventListener("abort", abort);
-      const dialog = new QuestionDialog(question, choices, tui, theme, keys, finish, cleanup);
+      const dialog = new QuestionDialog(question, choices, tui, theme, keys, finish, cleanup, recommended);
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
       return dialog;

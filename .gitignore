@@ -4,3 +4,4 @@ __pycache__/
 *.py[cod]
 .auto/
 .pi/openai-codex-images/
+pi-desk/target/

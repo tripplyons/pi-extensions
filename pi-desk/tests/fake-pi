@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# A stand-in for `pi --mode rpc` used by pi-desk's tests and for trying the
+# app without model calls. Each prompt asks one ask_user question; the answer
+# writes answer.txt in the working directory and finishes with a summary.
+set -u
+session_file="$PWD/.fake-pi-session.jsonl"
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"get_state"'*)
+      printf '{"id":"state","type":"response","command":"get_state","success":true,"data":{"sessionFile":"%s","sessionId":"fake"}}\n' "$session_file"
+      ;;
+    *'"type":"get_messages"'*)
+      printf '{"id":"messages","type":"response","command":"get_messages","success":true,"data":{"messages":[{"role":"user","content":"earlier prompt"}]}}\n'
+      ;;
+    *'"type":"prompt"'*)
+      printf '{"type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}\n'
+      printf '{"type":"agent_start"}\n'
+      printf '{"type":"message_start","message":{"role":"user","content":"prompt"}}\n'
+      printf '{"type":"message_start","message":{"role":"assistant","content":[]}}\n'
+      printf '{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"I need a decision."}}\n'
+      printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"I need a decision."}],"stopReason":"toolUse"}}\n'
+      printf '{"type":"tool_execution_start","toolCallId":"ask1","toolName":"ask_user","args":{"question":"Which greeting should the file use?","choices":["Hello","Hi"],"recommended":2}}\n'
+      printf '{"type":"extension_ui_request","id":"q1","method":"select","title":"Which greeting should the file use?","options":["Hello","Hi","Other (type an answer)"]}\n'
+      ;;
+    *'"type":"extension_ui_response"'*'"value":"Other (type an answer)"'*|*'"value":"Other (type an answer)"'*'"type":"extension_ui_response"'*)
+      printf '{"type":"extension_ui_request","id":"q2","method":"input","title":"Which greeting should the file use?"}\n'
+      ;;
+    *'"type":"extension_ui_response"'*)
+      answer=$(printf '%s' "$line" | sed -E 's/.*"value":"([^"]*)".*/\1/')
+      printf '%s\n' "$answer" > answer.txt
+      printf '{"type":"tool_execution_end","toolCallId":"ask1","toolName":"ask_user","result":{"content":[{"type":"text","text":"%s"}]},"isError":false}\n' "$answer"
+      printf '{"type":"tool_execution_start","toolCallId":"w1","toolName":"write","args":{"path":"answer.txt"}}\n'
+      printf '{"type":"tool_execution_end","toolCallId":"w1","toolName":"write","result":{"content":[{"type":"text","text":"Wrote answer.txt"}]},"isError":false}\n'
+      printf '{"type":"message_start","message":{"role":"assistant","content":[]}}\n'
+      printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Wrote the greeting.\\nDid: Wrote %s to answer.txt.\\nNeeds: Review and merge"}],"stopReason":"stop"}}\n' "$answer"
+      printf '{"type":"agent_end","messages":[],"willRetry":false}\n'
+      printf '{"type":"agent_settled","aborted":false}\n'
+      ;;
+  esac
+done
