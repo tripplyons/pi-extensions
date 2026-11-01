@@ -4,10 +4,34 @@
 use crate::rpc::{self, Incoming};
 use iced::widget::markdown;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 const OUTPUT_LIMIT: usize = 6000;
+
+#[derive(Debug)]
+pub enum AssistantBlock {
+    Text {
+        text: String,
+        markdown: markdown::Content,
+    },
+    Thinking {
+        text: String,
+    },
+}
+
+impl AssistantBlock {
+    fn new(thinking: bool, text: String) -> Self {
+        if thinking {
+            Self::Thinking { text }
+        } else {
+            Self::Text {
+                markdown: markdown::Content::parse(&text),
+                text,
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Entry {
@@ -15,8 +39,9 @@ pub enum Entry {
         text: String,
     },
     Assistant {
+        id: usize,
         text: String,
-        markdown: markdown::Content,
+        blocks: BTreeMap<usize, AssistantBlock>,
         error: Option<String>,
     },
     Tool {
@@ -36,6 +61,8 @@ pub enum Entry {
 pub struct Transcript {
     pub entries: Vec<Entry>,
     tools: HashMap<String, usize>,
+    active_assistant: Option<usize>,
+    next_assistant_id: usize,
     /// Text of the most recent assistant message, with its error if it failed.
     pub last_text: String,
     pub last_error: Option<String>,
@@ -127,6 +154,49 @@ impl Transcript {
         }
     }
 
+    fn start_assistant(&mut self) {
+        self.active_assistant = Some(self.entries.len());
+        self.entries.push(Entry::Assistant {
+            id: self.next_assistant_id,
+            text: String::new(),
+            blocks: BTreeMap::new(),
+            error: None,
+        });
+        self.next_assistant_id += 1;
+    }
+
+    fn update_block(&mut self, index: usize, thinking: bool, value: &str, replace: bool) -> bool {
+        let Some(Entry::Assistant { text, blocks, .. }) = self
+            .active_assistant
+            .and_then(|index| self.entries.get_mut(index))
+        else {
+            return false;
+        };
+        let block = blocks
+            .entry(index)
+            .or_insert_with(|| AssistantBlock::new(thinking, String::new()));
+        if replace {
+            *block = AssistantBlock::new(thinking, value.to_string());
+        } else {
+            match block {
+                AssistantBlock::Text { text, markdown } => {
+                    text.push_str(value);
+                    markdown.push_str(value);
+                }
+                AssistantBlock::Thinking { text } => text.push_str(value),
+            }
+        }
+        *text = blocks
+            .values()
+            .filter_map(|block| match block {
+                AssistantBlock::Text { text, .. } => Some(text.as_str()),
+                AssistantBlock::Thinking { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        true
+    }
+
     fn finish_assistant(&mut self, message: &Value) {
         let text = rpc::text_of(message);
         let error =
@@ -139,18 +209,30 @@ impl Transcript {
             });
         if let Some(Entry::Assistant {
             text: current,
-            markdown: content,
+            blocks,
             error: current_error,
+            ..
         }) = self
-            .entries
-            .iter_mut()
-            .rev()
-            .find(|entry| matches!(entry, Entry::Assistant { .. }))
+            .active_assistant
+            .take()
+            .and_then(|index| self.entries.get_mut(index))
         {
-            if *current != text {
-                *content = markdown::Content::parse(&text);
-                *current = text.clone();
+            blocks.clear();
+            if let Some(content) = message.get("content").and_then(Value::as_array) {
+                for (index, block) in content.iter().enumerate() {
+                    let (thinking, value) = match block.get("type").and_then(Value::as_str) {
+                        Some("text") => (false, block.get("text")),
+                        Some("thinking") => (true, block.get("thinking")),
+                        _ => continue,
+                    };
+                    if let Some(value) = value.and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                        blocks.insert(index, AssistantBlock::new(thinking, value.to_string()));
+                    }
+                }
+            } else if !text.is_empty() {
+                blocks.insert(0, AssistantBlock::new(false, text.clone()));
             }
+            *current = text.clone();
             *current_error = error.clone();
         }
         self.last_text = text;
@@ -164,20 +246,21 @@ impl Transcript {
                 "user" => self.entries.push(Entry::User {
                     text: rpc::text_of(message),
                 }),
-                "assistant" => self.entries.push(Entry::Assistant {
-                    text: String::new(),
-                    markdown: markdown::Content::new(),
-                    error: None,
-                }),
+                "assistant" => self.start_assistant(),
                 _ => return false,
             },
-            Incoming::TextDelta { delta } => match self.entries.last_mut() {
-                Some(Entry::Assistant { text, markdown, .. }) => {
-                    text.push_str(delta);
-                    markdown.push_str(delta);
-                }
-                _ => return false,
-            },
+            Incoming::TextDelta { index, delta } => {
+                return self.update_block(*index, false, delta, false);
+            }
+            Incoming::ThinkingDelta { index, delta } => {
+                return self.update_block(*index, true, delta, false);
+            }
+            Incoming::TextEnd { index, content } => {
+                return self.update_block(*index, false, content, true);
+            }
+            Incoming::ThinkingEnd { index, content } => {
+                return self.update_block(*index, true, content, true);
+            }
             Incoming::MessageEnd { message } if rpc::role(message) == "assistant" => {
                 self.finish_assistant(message)
             }
@@ -203,17 +286,12 @@ impl Transcript {
                     text: rpc::text_of(message),
                 }),
                 "assistant" => {
-                    let text = rpc::text_of(message);
-                    if !text.trim().is_empty() {
-                        transcript.entries.push(Entry::Assistant {
-                            text: String::new(),
-                            markdown: markdown::Content::new(),
-                            error: None,
-                        });
-                        transcript.finish_assistant(message);
-                    } else {
-                        transcript.last_text.clear();
-                        transcript.last_error = None;
+                    transcript.start_assistant();
+                    transcript.finish_assistant(message);
+                    // Tool-only messages do not need an empty assistant row.
+                    if matches!(transcript.entries.last(), Some(Entry::Assistant { blocks, error: None, .. }) if blocks.is_empty())
+                    {
+                        transcript.entries.pop();
                     }
                     for block in message
                         .get("content")
@@ -345,9 +423,11 @@ mod tests {
                 message: json!({"role":"assistant","content":[]}),
             },
             Incoming::TextDelta {
+                index: 0,
                 delta: "Look".into(),
             },
             Incoming::TextDelta {
+                index: 0,
                 delta: "ing".into(),
             },
             Incoming::ToolStart {

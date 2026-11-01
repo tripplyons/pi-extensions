@@ -4,7 +4,7 @@ use crate::git::LineKind;
 use crate::theme::{
     self, ACCENT, ADDED_BG, FAINT, GREEN, MONO, MUTED, RAISED, RED, REMOVED_BG, TEXT,
 };
-use crate::transcript::Entry;
+use crate::transcript::{AssistantBlock, Entry};
 use iced::widget::{
     Space, button, column, container, markdown, rich_text, row, rule, scrollable, span, text,
 };
@@ -142,17 +142,62 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                     .into()
             }
             Entry::Assistant {
-                markdown: content,
+                id: message_id,
+                blocks,
                 error,
                 ..
             } => {
-                let mut block =
-                    column![markdown::view(content.items(), settings).map(Message::Link)]
-                        .spacing(6);
-                if let Some(error) = error {
-                    block = block.push(text(error.as_str()).size(13).color(RED));
+                let mut content = column![].spacing(6);
+                for (block_index, block) in blocks {
+                    match block {
+                        AssistantBlock::Text { markdown, .. } => {
+                            content = content.push(
+                                markdown::view(markdown.items(), settings).map(Message::Link),
+                            );
+                        }
+                        AssistantBlock::Thinking { text: thinking } => {
+                            let open = app.expanded_thinking.contains(&(
+                                id.to_string(),
+                                *message_id,
+                                *block_index,
+                            ));
+                            let head = button(
+                                row![
+                                    text(if open { "▾" } else { "▸" }).size(11).color(FAINT),
+                                    text("Thinking").size(12).color(MUTED),
+                                    text(super::line(thinking, 110))
+                                        .size(12)
+                                        .color(FAINT)
+                                        .wrapping(text::Wrapping::None)
+                                        .width(Fill),
+                                ]
+                                .spacing(8)
+                                .align_y(Alignment::Center),
+                            )
+                            .width(Fill)
+                            .padding([3, 6])
+                            .style(theme::row(false))
+                            .on_press(Message::ToggleThinking(
+                                id.to_string(),
+                                *message_id,
+                                *block_index,
+                            ));
+                            content = content.push(head);
+                            if open && !thinking.is_empty() {
+                                content = content.push(
+                                    container(text(thinking.as_str()).size(13).color(MUTED))
+                                        .padding(10)
+                                        .width(Fill)
+                                        .style(theme::panel),
+                                );
+                            }
+                        }
+                    }
                 }
-                block.into()
+                if let Some(error) = error {
+                    content = content.push(text(error.as_str()).size(13).color(RED));
+                }
+                content.into()
             }
             Entry::Tool {
                 id,

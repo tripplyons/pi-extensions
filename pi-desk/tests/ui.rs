@@ -760,6 +760,104 @@ fn corrupt_saved_state_stays_untouched_after_user_actions() {
 }
 
 #[test]
+fn thinking_is_one_line_by_default_and_expands_independently() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.selected = Some("agent-4".into());
+    let thinking = format!(
+        "Check the caller.\n\n{}",
+        "Inspect the remaining details. ".repeat(12)
+    );
+    let flat = thinking.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview = format!("{}…", flat.chars().take(109).collect::<String>().trim_end());
+    let messages = [serde_json::json!({"role":"assistant","content":[
+        {"type":"thinking","thinking":thinking},
+        {"type":"text","text":"The visible reply"},
+        {"type":"thinking","thinking":"An independent second block"}
+    ]})];
+    app.desk.transcripts.insert(
+        "agent-4".into(),
+        pi_desk::transcript::Transcript::from_messages(messages.iter()),
+    );
+    assert!(app.expanded_thinking.is_empty());
+    for width in [760.0, 1440.0] {
+        let mut rendered =
+            Simulator::with_size(iced::Settings::default(), (width, 900.0), app.view());
+        let bounds = rendered
+            .find(preview.as_str())
+            .unwrap()
+            .visible_bounds()
+            .unwrap();
+        assert!(
+            bounds.height <= 18.0,
+            "thinking preview must not wrap: {bounds:?}"
+        );
+        assert!(rendered.find(thinking.as_str()).is_err());
+    }
+    snapshot_size(&app, "thinking-collapsed-narrow", (760.0, 900.0));
+    click(&mut app, &preview);
+    ui(&app).find(thinking.as_str()).unwrap();
+    assert_eq!(app.expanded_thinking.len(), 1);
+    click(&mut app, "An independent second block");
+    assert_eq!(app.expanded_thinking.len(), 2);
+    click(&mut app, &preview);
+    assert!(ui(&app).find(thinking.as_str()).is_err());
+    assert_eq!(app.expanded_thinking.len(), 1);
+
+    // Identical entry/block indices in another task must still start collapsed.
+    app.selected = Some("agent-1".into());
+    app.desk.transcripts.insert(
+        "agent-1".into(),
+        pi_desk::transcript::Transcript::from_messages(messages.iter()),
+    );
+    assert!(ui(&app).find(thinking.as_str()).is_err());
+    assert!(!app.expanded_thinking.contains(&("agent-1".into(), 0, 2)));
+}
+
+#[test]
+fn thinking_stays_collapsed_during_streaming_and_keeps_explicit_expansion() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.selected = Some("agent-4".into());
+    let thinking = format!("A streaming thought.\n{}", "More detail. ".repeat(15));
+    let mut transcript = pi_desk::transcript::Transcript::default();
+    for record in [
+        json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+        json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":thinking}}),
+    ] {
+        transcript.apply(&pi_desk::rpc::parse(&record.to_string()).unwrap());
+    }
+    app.desk.transcripts.insert("agent-4".into(), transcript);
+    assert!(ui(&app).find(thinking.as_str()).is_err());
+    click(&mut app, "Thinking");
+    ui(&app).find(thinking.as_str()).unwrap();
+    let completed = format!("{thinking}Final detail.");
+    let final_message =
+        json!({"role":"assistant","content":[{"type":"thinking","thinking":completed}]});
+    for record in [
+        json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Final detail."}}),
+        json!({"type":"message_end","message":final_message}),
+    ] {
+        app.desk
+            .transcripts
+            .get_mut("agent-4")
+            .unwrap()
+            .apply(&pi_desk::rpc::parse(&record.to_string()).unwrap());
+        ui(&app).find(completed.as_str()).unwrap();
+        assert_eq!(app.expanded_thinking.len(), 1);
+    }
+    click(&mut app, "Thinking");
+    assert!(ui(&app).find(completed.as_str()).is_err());
+    assert!(app.expanded_thinking.is_empty());
+    app.desk.transcripts.insert(
+        "agent-4".into(),
+        pi_desk::transcript::Transcript::from_messages([&final_message]),
+    );
+    assert!(ui(&app).find(completed.as_str()).is_err());
+}
+
+#[test]
 fn diff_and_transcript_tabs_render_content() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());

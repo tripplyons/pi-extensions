@@ -163,6 +163,7 @@ pub enum Message {
     DiffLoaded(Id, Result<String, String>),
     SelectFile(usize),
     ToggleTool(String),
+    ToggleThinking(String, usize, usize),
     WorktreeCreated(Id, Result<(), String>),
     Merged(Id, Result<Merge, String>),
     Removed(Id, Outcome, Result<(), String>),
@@ -195,6 +196,8 @@ pub struct App {
     pub pending: Vec<Pending>,
     pub diffs: HashMap<Id, DiffState>,
     pub expanded: HashSet<String>,
+    /// Task ID, assistant-message ID, and content-block index. UI state only.
+    pub expanded_thinking: HashSet<(String, usize, usize)>,
     pub toast: Option<(String, Instant)>,
     pub error: Option<String>,
     pub dragging: Option<(Id, Option<usize>)>,
@@ -256,6 +259,7 @@ impl App {
             pending: Vec::new(),
             diffs: HashMap::new(),
             expanded: HashSet::new(),
+            expanded_thinking: HashSet::new(),
             toast: None,
             error,
             dragging: None,
@@ -1128,6 +1132,13 @@ impl App {
             Message::SelectFile(index) => {
                 if let Some(state) = self.selected.as_ref().and_then(|id| self.diffs.get_mut(id)) {
                     state.selected = index;
+                }
+                Task::none()
+            }
+            Message::ToggleThinking(agent, message, block) => {
+                let key = (agent, message, block);
+                if !self.expanded_thinking.remove(&key) {
+                    self.expanded_thinking.insert(key);
                 }
                 Task::none()
             }

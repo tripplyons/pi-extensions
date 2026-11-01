@@ -89,7 +89,10 @@ the app does not reset them.
 4. Questions enter Inbox with choices, an optional recommendation, and a typed
    reply. Agents are asked to end with `Did:` and `Needs:` lines for review cards.
 5. Inspect the live Transcript or the highlighted Diff, including untracked
-   files. Use the command palette to open the worktree in a terminal or editor.
+   files. Thinking blocks in live and saved transcripts default to a single
+   collapsed row labeled "Thinking" with a truncated preview. Click a row to
+   show or hide its full text; streaming updates do not expand it automatically.
+   Use the command palette to open the worktree in a terminal or editor.
 6. Approve a review to commit remaining changes, squash-merge locally into the
    base branch, and remove the worktree and branch. Nothing is pushed. Merge
    conflicts return the task to Pi with instructions to rebase and resolve them.

@@ -33,10 +33,20 @@ pub enum Incoming {
         message: Value,
     },
     TextDelta {
+        index: usize,
         delta: String,
     },
     ThinkingDelta {
+        index: usize,
         delta: String,
+    },
+    TextEnd {
+        index: usize,
+        content: String,
+    },
+    ThinkingEnd {
+        index: usize,
+        content: String,
     },
     ToolStart {
         id: String,
@@ -111,12 +121,27 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
                 .get("assistantMessageEvent")
                 .cloned()
                 .unwrap_or(Value::Null);
+            let index = event
+                .get("contentIndex")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
             match event.get("type").and_then(Value::as_str) {
-                Some("text_delta") => Incoming::TextDelta {
+                // Starts create empty blocks so the row appears before the first delta.
+                Some("text_start" | "text_delta") => Incoming::TextDelta {
+                    index,
                     delta: string(&event, "delta"),
                 },
-                Some("thinking_delta") => Incoming::ThinkingDelta {
+                Some("thinking_start" | "thinking_delta") => Incoming::ThinkingDelta {
+                    index,
                     delta: string(&event, "delta"),
+                },
+                Some("text_end") => Incoming::TextEnd {
+                    index,
+                    content: string(&event, "content"),
+                },
+                Some("thinking_end") => Incoming::ThinkingEnd {
+                    index,
+                    content: string(&event, "content"),
                 },
                 _ => Incoming::Other,
             }
@@ -230,7 +255,7 @@ mod tests {
     fn parses_stream_tool_and_ui_records() {
         assert_eq!(
             parse(r#"{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi\u2028there"}}"#).unwrap(),
-            Incoming::TextDelta { delta: "Hi\u{2028}there".into() }
+            Incoming::TextDelta { index: 0, delta: "Hi\u{2028}there".into() }
         );
         assert_eq!(
             parse(r#"{"type":"tool_execution_start","toolCallId":"c1","toolName":"ask_user","args":{"question":"Q?","choices":["A"],"recommended":1}}"#).unwrap(),
