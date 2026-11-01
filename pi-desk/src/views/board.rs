@@ -1,4 +1,4 @@
-use super::{dot, faint, line, list::preview};
+use super::{dot, faint, line, list::preview, stable_column::StableColumn};
 use crate::app::{App, Message, View};
 use crate::model::Agent;
 use crate::order;
@@ -38,7 +38,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     let mut board = row![].spacing(12);
     for (name, agents) in columns {
-        let mut cards = column![].spacing(8);
+        let mut cards = StableColumn::new(8.0);
         for agent in agents.iter() {
             let selected = app.selected.as_deref() == Some(agent.id.as_str());
             let project = state
@@ -46,6 +46,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .map(|project| project.name.as_str())
                 .unwrap_or("");
             cards = cards.push(
+                agent.id.clone(),
                 button(
                     column![
                         row![

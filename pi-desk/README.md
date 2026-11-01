@@ -101,7 +101,11 @@ Done. Within each group, the most recent activity comes first, regardless of
 project or priority. Row ages use that same activity time. Creation time (newest
 first) and then task ID break ties. Each view keeps its existing filters; project
 lists omit Done tasks. Priority badges remain visible. Heading labels and counts
-share one text baseline in both layouts.
+share one text baseline in both layouts. List and board previews slide upward over
+180 ms when their text changes, with smooth height changes for wrapped text and
+the review's Needs line. Rapid streaming updates are combined into the latest
+pending preview rather than queued. The full Transcript and detail card do not
+animate.
 Use Hide sidebar / Show sidebar in the list or board header to toggle navigation
 without hiding the task list. These actions are also in the command palette.
 Focus mode hides the sidebar and list. Task summaries are always shown when available. Review previews put the outcome

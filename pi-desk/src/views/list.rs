@@ -1,4 +1,4 @@
-use super::{ago, chip, dot, empty, faint, line, muted};
+use super::{ago, chip, dot, empty, faint, line, preview::Preview, stable_column::StableColumn};
 use crate::app::{App, Message, View};
 use crate::model::{Agent, Priority, Status};
 use crate::theme::{self, BOLD};
@@ -67,15 +67,15 @@ pub fn subtitle(app: &App, agent: &Agent) -> String {
 /// Review previews separate the outcome from the next action instead of joining
 /// unrelated fields with punctuation. Shared by the list and board cards.
 pub fn preview(app: &App, agent: &Agent, max: usize) -> Element<'static, Message> {
-    let mut lines = column![muted(line(&subtitle(app, agent), max))].spacing(3);
+    let mut lines = vec![line(&subtitle(app, agent), max)];
     if matches!(agent.status, Status::Review) {
         if let Some(summary) = &agent.summary {
             if !summary.needs.is_empty() {
-                lines = lines.push(muted(format!("Needs: {}", line(&summary.needs, max))));
+                lines.push(format!("Needs: {}", line(&summary.needs, max)));
             }
         }
     }
-    lines.into()
+    Preview::new(lines).into()
 }
 
 pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
@@ -172,19 +172,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if rows.is_empty() {
         empty(hint, "")
     } else {
-        let mut list = column![].spacing(2);
+        let mut list = StableColumn::new(2.0);
         let mut previous_group = None;
         for agent in &rows {
             let group = crate::order::display_group(agent, app.now);
             if previous_group != Some(group) {
                 list = list.push(
+                    format!("group-{}", group.label()),
                     container(faint(group.label().to_uppercase()))
                         .id(format!("task-group-{}", group.label()))
                         .padding([6, 12]),
                 );
                 previous_group = Some(group);
             }
-            list = list.push(row_button(app, agent));
+            list = list.push(format!("task-{}", agent.id), row_button(app, agent));
         }
         scrollable(list.padding([0, 8]))
             .style(theme::scrollbar)

@@ -6,7 +6,9 @@ mod card;
 mod detail;
 mod list;
 mod overlays;
+mod preview;
 mod sidebar;
+mod stable_column;
 
 use crate::app::{App, Message};
 use crate::model::Timestamp;
