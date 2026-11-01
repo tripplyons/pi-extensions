@@ -60,6 +60,8 @@ Implementation and runtime audits are ongoing.
 [pi-desk](pi-desk) is a separate Rust/iced desktop inbox for Pi agents in git
 worktrees, with an All tasks view, a collapsible sidebar (S), and session-only UI
 zoom. It uses these extensions through Pi RPC and is not a Pi extension.
+On macOS, `./pi-desk/scripts/build-macos-app.sh --install` builds and installs
+`/Applications/pi-desk.app`; see its README for requirements and update behavior.
 
 Run `npm install` and `npm test` (requires Bun and the Rust toolchain). Install with
 `pi install /absolute/path/to/pi-extensions`. Reload Pi after installation or

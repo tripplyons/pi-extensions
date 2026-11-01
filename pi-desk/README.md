@@ -31,6 +31,39 @@ git changes, not processes, secrets, networking, or files outside the worktree.
 Only run tasks and extensions you trust. Run one pi-desk instance per state
 directory; concurrent writers are not supported.
 
+## Build and install a macOS app
+
+On macOS, run from the repository root:
+
+```sh
+./pi-desk/scripts/build-macos-app.sh --install
+```
+
+This builds a native release binary for the current Mac, packages and verifies
+`pi-desk/target/macos/pi-desk.app`, and installs it as
+`/Applications/pi-desk.app`. Open it from Finder or Spotlight. Quit any other
+pi-desk instance first, since concurrent writers to the same state directory are
+not supported. Pi, Git, credentials, and this repo's extensions are still required;
+they are not bundled. Finder launches use the usual local tool directories on PATH.
+
+The script requires Rust and Apple's command-line tools. It uses built-in macOS
+packaging tools, with no extra Cargo packaging dependency. To build without
+installing, omit `--install`. To install without access to `/Applications`, use
+`--install-dir "$HOME/Applications"`, or copy the built app with Finder.
+The script does not run `sudo`, launch the app, or stop running processes.
+
+Run the same command to update. Before replacement, the script checks that the
+destination has pi-desk's bundle identifier and is not a symlink. It refuses to
+replace unrelated files or apps, and asks you to quit pi-desk before replacing
+an existing installation. It verifies the new bundle before replacement and
+keeps the old bundle until the replacement is in place.
+
+The app uses an ad-hoc signature for local use, not a Developer ID signature or
+Apple notarization. It has the standard macOS application icon and is built for
+this Mac's architecture, not as a universal binary. Application state and
+worktrees remain outside the bundle in the existing state directory; updating
+the app does not reset them.
+
 ## Flow
 
 1. Click **+** beside Projects and choose a git repository. Check out the branch

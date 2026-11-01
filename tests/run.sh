@@ -7,4 +7,5 @@ while IFS= read -r file; do files+=("$file"); done < <(rg --files extensions tes
 bun test "${files[@]}"
 bun test --preload ./extensions/tripp-autoresearch/tests/preload.mjs ./extensions/tripp-autoresearch/tests
 bash extensions/tripp-autoresearch/tests/finalize_test.sh
+bash pi-desk/tests/macos-app.sh
 cargo test --manifest-path pi-desk/Cargo.toml
