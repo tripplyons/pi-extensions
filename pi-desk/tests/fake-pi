@@ -4,10 +4,13 @@
 # writes answer.txt in the working directory and finishes with a summary.
 set -u
 session_file="$PWD/.fake-pi-session.jsonl"
+session_name=""
 while IFS= read -r line; do
   case "$line" in
     *'"type":"get_state"'*)
-      printf '{"id":"state","type":"response","command":"get_state","success":true,"data":{"sessionFile":"%s","sessionId":"fake"}}\n' "$session_file"
+      request_id=${line#*\"id\":\"}
+      request_id=${request_id%%\"*}
+      printf '{"id":"%s","type":"response","command":"get_state","success":true,"data":{"sessionFile":"%s","sessionId":"fake","sessionName":"%s"}}\n' "$request_id" "$session_file" "$session_name"
       ;;
     *'"type":"get_messages"'*)
       printf '{"id":"messages","type":"response","command":"get_messages","success":true,"data":{"messages":[{"role":"user","content":"earlier prompt"}]}}\n'
@@ -34,6 +37,7 @@ while IFS= read -r line; do
       printf '{"type":"message_start","message":{"role":"assistant","content":[]}}\n'
       printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Wrote the greeting.\\nDid: Wrote %s to answer.txt.\\nNeeds: Review and merge"}],"stopReason":"stop"}}\n' "$answer"
       printf '{"type":"agent_end","messages":[],"willRetry":false}\n'
+      session_name="Write a greeting file"
       printf '{"type":"agent_settled","aborted":false}\n'
       ;;
   esac

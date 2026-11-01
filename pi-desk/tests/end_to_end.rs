@@ -208,6 +208,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     assert_eq!(question.choices, ["Hello", "Hi"]);
     assert_eq!(question.recommended, Some(1));
     assert!(h.desk.state.agent(&id).unwrap().session_file.is_some());
+    assert_eq!(h.desk.state.agent(&id).unwrap().title, "Write a greeting");
 
     // E takes the recommendation through the live dialog.
     let effects = h.desk.approve(&id);
@@ -226,6 +227,18 @@ async fn a_task_runs_asks_is_answered_and_merges() {
         "Hi\n"
     );
 
+    assert_eq!(agent.title, "Write a greeting file");
+    // The generated title is part of saved state, not just the live process.
+    let store = pi_desk::store::Store::new(dir.path().join("desk-state"));
+    assert!(h.desk.take_dirty());
+    store.save(&h.desk.state).unwrap();
+    let restarted = Desk::new(
+        store.load().unwrap(),
+        fake_pi(),
+        dir.path().join("worktrees"),
+    );
+    assert_eq!(restarted.state.agent(&id).unwrap().title, agent.title);
+
     // Approving squash-merges into main and removes the worktree and branch.
     let effects = h.desk.approve(&id);
     h.run(effects);
@@ -239,7 +252,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     assert_eq!(git(&repo, &["show", "main:answer.txt"]), "Hi");
     assert_eq!(
         git(&repo, &["log", "-1", "--format=%s", "main"]),
-        "Write a greeting"
+        "Write a greeting file"
     );
     assert!(!agent.worktree.exists());
 }

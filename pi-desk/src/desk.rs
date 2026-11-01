@@ -498,7 +498,7 @@ impl Desk {
                 error,
                 ..
             } => {
-                if request == "state" {
+                if (request == "state" || request == "settled-state") && success {
                     if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
                         let file = PathBuf::from(file);
                         if self
@@ -509,6 +509,22 @@ impl Desk {
                             self.edit(id, |agent| agent.session_file = Some(file));
                         }
                     }
+                    if let Some(name) = data
+                        .get("sessionName")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        && self
+                            .state
+                            .agent(id)
+                            .is_some_and(|agent| agent.title != name)
+                    {
+                        self.edit(id, |agent| agent.title = name.to_string());
+                    }
+                }
+                if request == "settled-state" {
+                    // Even a failed refresh must let the run finish.
+                    return self.settle(id);
                 } else if request == "messages" {
                     if let Some(messages) = data.get("messages").and_then(Value::as_array) {
                         self.transcripts
@@ -568,7 +584,14 @@ impl Desk {
                 }
             }
             Incoming::Ui(request) => return self.on_ui(id, request),
-            Incoming::AgentSettled { .. } => return self.settle(id),
+            Incoming::AgentSettled { .. } => {
+                // Auto-rename runs in agent_end. Read its name before settle
+                // closes stdin and Pi exits.
+                return vec![Effect::Send {
+                    agent: id.to_string(),
+                    line: rpc::command("settled-state", "get_state"),
+                }];
+            }
             _ => {}
         }
         Vec::new()
@@ -1314,6 +1337,54 @@ mod tests {
     }
 
     #[test]
+    fn session_state_syncs_the_title_and_marks_it_for_saving() {
+        let (mut f, generation) = started();
+        f.desk.take_dirty();
+        let state = json!({"type":"response","id":"state","command":"get_state","success":true,"data":{"sessionName":"  Fix login crash  "}});
+        assert!(feed(&mut f, generation, &[state.clone()]).is_empty());
+        let agent = f.desk.state.agent(&f.id).unwrap();
+        assert_eq!(agent.title, "Fix login crash");
+        assert_eq!(agent.prompt, "Fix the bug");
+        assert!(f.desk.take_dirty());
+
+        // An unchanged name must not count as task activity.
+        feed(&mut f, generation, &[state]);
+        assert!(!f.desk.take_dirty());
+    }
+
+    #[test]
+    fn session_state_without_a_valid_name_preserves_the_title() {
+        let (mut f, generation) = started();
+        f.desk.take_dirty();
+        for data in [
+            json!({}),
+            json!({"sessionName":null}),
+            json!({"sessionName":""}),
+            json!({"sessionName":" \n "}),
+            json!({"sessionName":42}),
+        ] {
+            feed(
+                &mut f,
+                generation,
+                &[
+                    json!({"type":"response","id":"state","command":"get_state","success":true,"data":data}),
+                ],
+            );
+            assert_eq!(f.desk.state.agent(&f.id).unwrap().title, "Fix");
+            assert!(!f.desk.take_dirty());
+        }
+        feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"response","id":"state","command":"get_state","success":false,"data":{"sessionName":"Ignored"},"error":"Unavailable"}),
+            ],
+        );
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().title, "Fix");
+        assert!(!f.desk.take_dirty());
+    }
+
+    #[test]
     fn a_settled_run_becomes_a_review_card_with_its_summary_and_closes_the_process() {
         let (mut f, generation) = started();
         let effects = feed(
@@ -1326,11 +1397,29 @@ mod tests {
                 json!({"type":"agent_settled","aborted":false}),
             ],
         );
+        assert_eq!(
+            sent(&effects),
+            [json!({"id":"settled-state","type":"get_state"})]
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Close { .. }))
+        );
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        let effects = feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"response","id":"settled-state","command":"get_state","success":true,"data":{"sessionName":"Fix login crash"}}),
+            ],
+        );
         assert!(effects.contains(&Effect::Close {
             agent: f.id.clone()
         }));
         let agent = f.desk.state.agent(&f.id).unwrap();
         assert_eq!(agent.status, Status::Review);
+        assert_eq!(agent.title, "Fix login crash");
         assert_eq!(
             agent.summary,
             Some(Summary {
@@ -1343,6 +1432,55 @@ mod tests {
         let id = f.id.clone();
         f.desk.on_exit(&id, generation, Some(0), "");
         assert_eq!(f.desk.state.agent(&id).unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn missing_names_and_failed_refreshes_do_not_block_settlement() {
+        for success in [true, false] {
+            let (mut f, generation) = started();
+            feed(
+                &mut f,
+                generation,
+                &[json!({"type":"agent_settled","aborted":false})],
+            );
+            let effects = feed(
+                &mut f,
+                generation,
+                &[
+                    json!({"type":"response","id":"settled-state","command":"get_state","success":success,"error":"Unavailable"}),
+                ],
+            );
+            assert!(effects.contains(&Effect::Close {
+                agent: f.id.clone()
+            }));
+            let agent = f.desk.state.agent(&f.id).unwrap();
+            assert_eq!(agent.status, Status::Review);
+            assert_eq!(agent.title, "Fix");
+        }
+    }
+
+    #[test]
+    fn a_settled_question_keeps_its_card_while_syncing_the_name() {
+        let (mut f, generation) = started();
+        ask(&mut f, generation);
+        let question = f.desk.state.agent(&f.id).unwrap().question.clone();
+        feed(
+            &mut f,
+            generation,
+            &[json!({"type":"agent_settled","aborted":false})],
+        );
+        let effects = feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"response","id":"settled-state","command":"get_state","success":true,"data":{"sessionName":"Fix login crash"}}),
+            ],
+        );
+        assert!(effects.is_empty());
+        let agent = f.desk.state.agent(&f.id).unwrap();
+        assert_eq!(agent.title, "Fix login crash");
+        assert_eq!(agent.status, Status::Question);
+        assert_eq!(agent.question, question);
     }
 
     #[test]

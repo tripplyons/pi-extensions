@@ -26,6 +26,14 @@ agent is a `pi --mode rpc --session-id <id>` child process. The app sets
 `PI_ASK_USER_TIMEOUT=0` so its questions have no deadline. The ask-user extension
 must include this repo's timeout and recommendation changes.
 
+Task titles start with the first line of the submitted task. pi-desk reads the
+Pi session name at agent startup and after each completed run, and saves it as
+the task title when available. This repo's auto-rename extension generates a
+short name after the first turn, using GPT 6 Luna with OpenAI authentication.
+It does not replace an existing Pi session name. If naming is unavailable or
+fails, pi-desk keeps the current task title. No separate naming call is made by
+pi-desk; branch names and task prompts do not change.
+
 Agents have the same local permissions as Pi in your terminal. Worktrees isolate
 git changes, not processes, secrets, networking, or files outside the worktree.
 Only run tasks and extensions you trust. Run one pi-desk instance per state
