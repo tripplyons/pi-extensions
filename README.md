@@ -38,7 +38,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [fast-mode](extensions/fast-mode) | Opt-in priority service; Ctrl+F toggle; inherited by new swarm workers |
 | [goal](extensions/goal) | Persistent objectives and steering continuation; text result previews |
 | [stash](extensions/stash) | Ctrl+S editor text stash |
-| [auto-rename](extensions/auto-rename) | Session names from the first user message using GPT 6 Luna with low reasoning and fast mode |
+| [auto-rename](extensions/auto-rename) | Background session names triggered by the first prompt using GPT 6 Luna |
 | [btw](extensions/btw) | Side questions with optional tools |
 | [nvim-session-export](extensions/nvim-session-export) | Markdown session export to Neovim |
 | [tripp-autoresearch](extensions/tripp-autoresearch) | Benchmark loops with steering continuation and keep/revert decisions |
@@ -59,7 +59,7 @@ Implementation and runtime audits are ongoing.
 [pi-desk](pi-desk) is a separate Rust/iced desktop inbox for Pi agents in git
 worktrees, with an All tasks view, a collapsible sidebar (S), and session-only UI
 zoom. Per-task model and effort selectors support live changes. Task titles
-follow Pi session names, including auto-generated names.
+follow Pi session names, including auto-generated names that arrive while the agent is working.
 Before merging, it asks Pi for a commit message from the final diff and summary.
 It uses these extensions through Pi RPC and is not a Pi extension.
 On macOS, `./pi-desk/scripts/build-macos-app.sh --install` builds and installs

@@ -22,6 +22,7 @@ pub enum Incoming {
         data: Value,
         error: Option<String>,
     },
+    NamingFinished,
     AgentStart,
     AgentSettled {
         aborted: bool,
@@ -180,6 +181,13 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         },
+        "extension_ui_request"
+            if string(&record, "method") == "setStatus"
+                && string(&record, "statusKey") == "auto-rename"
+                && record.get("statusText").is_none_or(Value::is_null) =>
+        {
+            Incoming::NamingFinished
+        }
         "extension_ui_request" => Incoming::Ui(UiRequest {
             id: string(&record, "id"),
             method: string(&record, "method"),

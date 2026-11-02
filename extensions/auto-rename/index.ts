@@ -5,7 +5,7 @@ const MAX_MESSAGE_CHARS = 60_000;
 const SYSTEM_PROMPT = `Name coding-agent sessions.
 Return only a short, specific name of 3 to 8 words. Do not use quotes or punctuation-only decoration.`;
 
-function firstUserMessageText(ctx: ExtensionContext): string {
+function firstUserMessageText(ctx: ExtensionContext): string | undefined {
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;
 
@@ -16,16 +16,16 @@ function firstUserMessageText(ctx: ExtensionContext): string {
 		).trim().slice(0, MAX_MESSAGE_CHARS);
 	}
 
-	return "";
+	return undefined;
 }
 
-async function generateName(ctx: ExtensionContext): Promise<string> {
+async function generateName(ctx: ExtensionContext, promptText: string): Promise<string> {
 	if (!lunaModel(ctx)) throw new Error("Title generation requires gpt-6-luna with OpenAI authentication. Use /login and check /model.");
 	const response = await completeLuna(ctx, {
 		systemPrompt: SYSTEM_PROMPT,
 		messages: [{
 			role: "user",
-			content: [{ type: "text", text: `Name this session from the first user message below. Do not answer the task.\n\n${firstUserMessageText(ctx)}` }],
+			content: [{ type: "text", text: `Name this session from the first user message below. Do not answer the task.\n\n${promptText}` }],
 			timestamp: Date.now(),
 		}],
 	}, { maxTokens: 64 });
@@ -40,21 +40,39 @@ async function generateName(ctx: ExtensionContext): Promise<string> {
 }
 
 export default function (pi: ExtensionAPI) {
+	let generation = 0;
 	let naming = false;
 
-	pi.on("agent_end", async (_event, ctx) => {
-		if (naming || pi.getSessionName()) return;
+	const reset = (_event: unknown, ctx: ExtensionContext) => {
+		generation++;
+		naming = false;
+		ctx.ui.setStatus("auto-rename", undefined);
+	};
+	pi.on("session_start", reset);
+	pi.on("session_shutdown", reset);
 
+	pi.on("before_agent_start", (event, ctx) => {
+		if (naming || pi.getSessionName()) return;
+		const text = firstUserMessageText(ctx) ?? event.prompt.trim().slice(0, MAX_MESSAGE_CHARS);
+		const current = generation;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const active = () => current === generation && sessionId === ctx.sessionManager.getSessionId();
 		naming = true;
 		ctx.ui.setStatus("auto-rename", "naming…");
-		try {
-			pi.setSessionName(await generateName(ctx));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Auto-rename failed: ${message}`, "warning");
-		} finally {
-			ctx.ui.setStatus("auto-rename", undefined);
-			naming = false;
-		}
+		void (async () => {
+			try {
+				const name = await generateName(ctx, text);
+				if (active() && !pi.getSessionName()) pi.setSessionName(name);
+			} catch (error) {
+				if (!active()) return;
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Auto-rename failed: ${message}`, "warning");
+			} finally {
+				if (active()) {
+					ctx.ui.setStatus("auto-rename", undefined);
+					naming = false;
+				}
+			}
+		})();
 	});
 }

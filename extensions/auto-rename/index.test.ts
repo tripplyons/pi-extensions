@@ -65,6 +65,9 @@ interface RenameHarness {
 	notices: string[];
 	statuses: Array<{ key: string; value: string | undefined }>;
 	runAgentEnd(): Promise<void>;
+	start(): unknown;
+	setName(name: string): void;
+	reset(): void;
 	getName(): string | undefined;
 }
 
@@ -122,7 +125,7 @@ function renameHarness(options: {
 	const ctx = {
 		model: selectedModel,
 		modelRegistry: registry,
-		sessionManager: { getBranch: () => options.entries ?? [] },
+		sessionManager: { getBranch: () => options.entries ?? [], getSessionId: () => "fixture" },
 		ui: {
 			setStatus: (key: string, value: string | undefined) => statuses.push({ key, value }),
 			notify: (message: string) => notices.push(message),
@@ -134,8 +137,13 @@ function renameHarness(options: {
 		authCalls,
 		notices,
 		statuses,
+		start: () => handlers.get("before_agent_start")![0]({ prompt: "Fix the parser" }, ctx),
+		setName: name => { sessionName = name; },
+		reset: () => handlers.get("session_start")![0]({}, ctx),
+		// Existing provider assertions wait for the detached request to settle.
 		runAgentEnd: async () => {
-			for (const handler of handlers.get("agent_end") ?? []) await handler({}, ctx);
+			for (const handler of handlers.get("before_agent_start") ?? []) handler({ prompt: "Fix the parser" }, ctx);
+			await new Promise(resolve => setTimeout(resolve, 0));
 		},
 		getName: () => sessionName,
 	};
@@ -339,6 +347,34 @@ test("does not start a second naming request while the first is in flight", asyn
 
 	resolveAuth({ ok: true, apiKey: "secret" });
 	await first;
+	await new Promise(resolve => setTimeout(resolve, 0));
 	expect(harness.getName()).toBe("Repair parser");
 	expect(harness.statuses.at(-1)).toEqual({ key: "auto-rename", value: undefined });
+});
+
+test("starts immediately without returning a promise and preserves manual names", async () => {
+	let release!: (result: AuthResult) => void;
+	const gate = new Promise<AuthResult>(resolve => { release = resolve; });
+	const harness = renameHarness({ authResolver: () => gate });
+	expect(harness.start()).toBeUndefined();
+	await Promise.resolve();
+	expect(harness.authCalls).toHaveLength(1);
+	expect(harness.getName()).toBeUndefined();
+	harness.setName("Manual title");
+	release({ ok: true, apiKey: "secret" });
+	await new Promise(resolve => setTimeout(resolve, 0));
+	expect(harness.getName()).toBe("Manual title");
+});
+
+test("ignores naming results after a session reset", async () => {
+	let release!: (result: AuthResult) => void;
+	const gate = new Promise<AuthResult>(resolve => { release = resolve; });
+	const harness = renameHarness({ authResolver: () => gate });
+	harness.start();
+	harness.reset();
+	const statuses = harness.statuses.length;
+	release({ ok: true, apiKey: "secret" });
+	await new Promise(resolve => setTimeout(resolve, 0));
+	expect(harness.getName()).toBeUndefined();
+	expect(harness.statuses).toHaveLength(statuses);
 });
