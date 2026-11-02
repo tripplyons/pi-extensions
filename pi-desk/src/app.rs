@@ -548,6 +548,17 @@ impl App {
         let before = self.row_ids();
         let effects = action(&mut self.desk);
         let run = self.run(effects);
+        // Replying or answering resumes this thread. Let update follow it
+        // to Working instead of advancing to an unrelated Inbox row.
+        if self.view == View::Inbox
+            && self.selected.as_deref() == Some(id)
+            && self.current().is_some_and(|agent| {
+                matches!(agent.status, Status::Working | Status::Queued)
+                    && !agent.snoozed(self.now)
+            })
+        {
+            return run;
+        }
         Task::batch([run, self.advance_from(id, &before)])
     }
 
@@ -787,7 +798,25 @@ impl App {
     // Update
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let previous_view = self.view.clone();
+        let previous = self.current().map(|agent| (agent.id.clone(), agent.status.clone()));
         let task = self.handle(message);
+        // Follow status changes, not unrelated rows or explicit navigation/actions.
+        if self.view == previous_view
+            && let Some((id, status)) = previous
+            && self.selected.as_ref() == Some(&id)
+            && let Some(agent) = self.current()
+            && agent.status != status
+            && !agent.snoozed(self.now)
+        {
+            match self.view {
+                View::Working if agent.in_inbox(self.now) => self.view = View::Inbox,
+                View::Inbox if matches!(agent.status, Status::Working | Status::Queued) => {
+                    self.view = View::Working;
+                }
+                _ => {}
+            }
+        }
         // Readback is authoritative. In particular, don't leave a rejected or
         // clamped selection displayed as though Pi accepted it.
         let mut reload = Vec::new();

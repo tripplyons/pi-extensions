@@ -140,7 +140,10 @@ Lists and board columns group tasks as Needs you, Working, Queued, Later, and
 Done. Within each group, the most recent activity comes first, regardless of
 project. Row ages use that same activity time. Creation time (newest
 first) and then task ID break ties. Each view keeps its existing filters; project
-lists omit Done tasks. Heading labels and counts
+lists omit Done tasks. When the selected task changes status between Working
+and Inbox, the sidebar follows it and keeps that task selected. Status changes
+to other tasks do not change the view or selection. Explicit navigation and
+actions that advance to another task still take precedence. Heading labels and counts
 share one text baseline in both layouts. List and board previews slide upward over
 180 ms when their text changes, with smooth height changes for wrapped text and
 the review's Needs line. Rapid streaming updates are combined into the latest

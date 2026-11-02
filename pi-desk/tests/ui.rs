@@ -164,6 +164,39 @@ fn seeded(dir: &std::path::Path) -> App {
     App::new(store, common::fake_pi())
 }
 
+#[test]
+fn selected_thread_follows_status_to_inbox_without_following_other_threads() {
+    use pi_desk::{desk::Effect, supervisor::Event};
+
+    for selected in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = seeded(dir.path());
+        let effects = app.desk.schedule(now());
+        let generation = effects.iter().find_map(|effect| match effect {
+            Effect::Spawn(spawn) if spawn.agent == "agent-5" => Some(spawn.generation),
+            _ => None,
+        }).unwrap();
+        let _ = app.update(Message::Show(View::Working));
+        if !selected {
+            let _ = app.update(Message::Show(View::Inbox));
+        }
+        let original = app.selected.clone();
+        let event = |record: &str| Message::Supervisor(Event::Lines {
+            agent: "agent-5".into(),
+            generation,
+            lines: vec![record.into()],
+        });
+        let _ = app.update(event(r#"{"type":"extension_ui_request","id":"q1","method":"select","title":"Which?","options":["A","B"]}"#));
+        assert_eq!(app.view, View::Inbox);
+        assert_eq!(app.selected, original);
+        if selected {
+            let _ = app.update(Message::Choose(0));
+            assert_eq!(app.view, View::Working);
+            assert_eq!(app.selected, original);
+        }
+    }
+}
+
 fn ui(app: &App) -> Simulator<'_, Message> {
     // iced applies application scale by reducing the logical window viewport.
     let size = (SIZE.0 / app.scale_factor(), SIZE.1 / app.scale_factor());
