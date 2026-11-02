@@ -69,9 +69,19 @@ pub struct Composer {
     pub project: Option<Id>,
     /// The branch new tasks merge into: the project's current branch.
     pub base: Result<String, String>,
-    pub priority: Priority,
+    pub session: SessionPicker,
     pub content: text_editor::Content,
     pub error: Option<String>,
+}
+
+#[derive(Default)]
+pub struct SessionPicker {
+    pub settings: SessionSettings,
+    pub options: Option<crate::models::Options>,
+    pub loading: bool,
+    pub error: Option<String>,
+    request: u64,
+    requested: Option<SessionSettings>,
 }
 
 pub struct Palette {
@@ -135,7 +145,15 @@ pub enum Message {
     CancelReply,
     NewTask,
     ComposerProject(Id),
-    ComposerPriority(Priority),
+    SessionModel(Option<Id>, ModelChoice),
+    SessionEffort(Option<Id>, String),
+    RefreshSession(Option<Id>),
+    SessionLoaded(
+        Option<Id>,
+        u64,
+        bool,
+        Result<crate::models::Options, String>,
+    ),
     ComposerEdit(text_editor::Action),
     ComposerSubmit,
     CloseOverlay,
@@ -147,7 +165,6 @@ pub enum Message {
     LaterCustom(String),
     LaterSubmit,
     WakeNow,
-    SetPriority(Priority),
     Discard,
     ConfirmDiscard,
     MarkDone,
@@ -196,6 +213,8 @@ pub struct App {
     pub overlay: Option<Overlay>,
     pub pending: Vec<Pending>,
     pub diffs: HashMap<Id, DiffState>,
+    pub sessions: HashMap<Id, SessionPicker>,
+    next_session_request: u64,
     pub expanded: HashSet<String>,
     /// Task ID, assistant-message ID, and content-block index. UI state only.
     pub expanded_thinking: HashSet<(String, usize, usize)>,
@@ -259,6 +278,8 @@ impl App {
             overlay: None,
             pending: Vec::new(),
             diffs: HashMap::new(),
+            sessions: HashMap::new(),
+            next_session_request: 0,
             expanded: HashSet::new(),
             expanded_thinking: HashSet::new(),
             toast: None,
@@ -374,7 +395,8 @@ impl App {
         self.replying = false;
         let Some(id) = id else { return Task::none() };
         self.desk.load_transcript(&id);
-        self.load_diff(&id)
+        let models = self.load_session(Some(id.clone()), None);
+        Task::batch([self.load_diff(&id), models])
     }
 
     /// After acting on a row, show the row that took its place.
@@ -681,15 +703,6 @@ impl App {
             });
         }
         if let Some(agent) = self.current() {
-            for priority in Priority::ALL {
-                if priority != agent.priority {
-                    commands.push(PaletteCommand {
-                        label: format!("Priority: {priority}"),
-                        keys: "",
-                        message: Message::SetPriority(priority),
-                    });
-                }
-            }
             if !agent.status.is_done() {
                 commands.push(PaletteCommand {
                     label: "Later…".into(),
@@ -775,6 +788,29 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
+        // Readback is authoritative. In particular, don't leave a rejected or
+        // clamped selection displayed as though Pi accepted it.
+        let mut reload = Vec::new();
+        for (id, picker) in &mut self.sessions {
+            if !picker.loading
+                && !self.desk.configuring(id)
+                && let Some(agent) = self.desk.state.agent(id)
+                && agent.session_settings.model.is_some()
+                && picker.settings != agent.session_settings
+            {
+                if picker.settings.model != agent.session_settings.model {
+                    picker.options = None;
+                    reload.push(id.clone());
+                }
+                picker.settings = agent.session_settings.clone();
+            }
+        }
+        let refresh = Task::batch(
+            reload
+                .into_iter()
+                .map(|id| self.load_session(Some(id), None)),
+        );
+        let task = Task::batch([task, refresh]);
         if self.desk.take_dirty() && self.save_enabled {
             if let Err(error) = self.store.save(&self.desk.state) {
                 self.error = Some(format!("Could not save: {error}"));
@@ -943,23 +979,130 @@ impl App {
                 self.overlay = Some(Overlay::Composer(Composer {
                     project,
                     base,
-                    priority: Priority::Medium,
+                    session: SessionPicker::default(),
                     content: text_editor::Content::new(),
                     error: None,
                 }));
-                operation::focus(COMPOSER_ID)
+                Task::batch([operation::focus(COMPOSER_ID), self.load_session(None, None)])
             }
             Message::ComposerProject(id) => {
                 let base = self.base_branch(Some(&id));
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     composer.project = Some(id);
                     composer.base = base;
+                    composer.session = SessionPicker::default();
                 }
-                Task::none()
+                self.load_session(None, None)
             }
-            Message::ComposerPriority(priority) => {
-                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
-                    composer.priority = priority;
+            Message::RefreshSession(target) => self.load_session(target, None),
+            Message::SessionModel(target, model) => {
+                let Some(picker) = self.session_picker(&target) else {
+                    return Task::none();
+                };
+                if picker.loading
+                    || !picker
+                        .options
+                        .as_ref()
+                        .is_some_and(|options| options.models.contains(&model))
+                {
+                    return Task::none();
+                }
+                let mut settings = picker.settings.clone();
+                settings.model = Some(model);
+                self.load_session(target, Some(settings))
+            }
+            Message::SessionEffort(target, effort) => {
+                let Some(picker) = self.session_picker(&target) else {
+                    return Task::none();
+                };
+                if picker.loading
+                    || !picker
+                        .options
+                        .as_ref()
+                        .is_some_and(|options| options.levels.contains(&effort))
+                {
+                    return Task::none();
+                }
+                let mut settings = picker.settings.clone();
+                settings.effort = Some(effort);
+                if let Some(id) = target {
+                    if self.desk.configuring(&id) {
+                        return Task::none();
+                    }
+                    self.sessions.get_mut(&id).unwrap().settings = settings.clone();
+                    let effects = self.desk.configure(&id, settings);
+                    self.run(effects)
+                } else {
+                    if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                        composer.session.settings = settings;
+                    }
+                    Task::none()
+                }
+            }
+            Message::SessionLoaded(target, request, apply, result) => {
+                let current = target
+                    .as_ref()
+                    .and_then(|id| self.desk.state.agent(id))
+                    .map(|agent| agent.session_settings.clone());
+                let picker = match &target {
+                    Some(id) => self.sessions.get_mut(id),
+                    None => match &mut self.overlay {
+                        Some(Overlay::Composer(composer)) => Some(&mut composer.session),
+                        _ => None,
+                    },
+                };
+                let Some(picker) = picker.filter(|picker| picker.request == request) else {
+                    return Task::none();
+                };
+                picker.loading = false;
+                match result {
+                    Ok(mut options) => {
+                        if !apply
+                            && current.as_ref().is_some_and(|settings| {
+                                settings.model.is_some()
+                                    && picker.requested.as_ref() != Some(settings)
+                            })
+                        {
+                            // The task's state changed while discovery was in
+                            // flight. Query its new model instead of showing
+                            // levels for the stale one.
+                            return self.load_session(target, None);
+                        }
+                        if apply
+                            && picker
+                                .requested
+                                .as_ref()
+                                .and_then(|settings| settings.model.as_ref())
+                                .is_some_and(|model| options.settings.model.as_ref() != Some(model))
+                        {
+                            picker.error = Some("Pi could not select the requested model. Check its availability and authentication.".into());
+                            return Task::none();
+                        }
+                        picker.settings = options.settings.clone();
+                        picker.error = None;
+                        if !apply
+                            && let Some(current) =
+                                current.filter(|settings| settings.model.is_some())
+                        {
+                            if current.model != options.settings.model {
+                                // An unavailable saved model must not be silently
+                                // replaced. Still offer the available models so
+                                // the user can recover without editing state.
+                                options.levels.clear();
+                                picker.error = Some("This task's model is unavailable. Select an available model or check Pi's authentication.".into());
+                            }
+                            picker.settings = current;
+                        }
+                        picker.options = Some(options);
+                        if let Some(id) = target
+                            && apply
+                        {
+                            let settings = self.sessions[&id].settings.clone();
+                            let effects = self.desk.configure(&id, settings);
+                            return self.run(effects);
+                        }
+                    }
+                    Err(error) => picker.error = Some(error),
                 }
                 Task::none()
             }
@@ -1037,14 +1180,6 @@ impl App {
                 self.overlay = None;
                 self.desk.snooze(&id, None);
                 let effects = self.desk.schedule(now());
-                self.run(effects)
-            }
-            Message::SetPriority(priority) => {
-                let Some(id) = self.selected.clone() else {
-                    return Task::none();
-                };
-                let effects = self.desk.set_priority(&id, priority);
-                self.notify(format!("Priority set to {priority}"));
                 self.run(effects)
             }
             Message::Discard => {
@@ -1276,10 +1411,86 @@ impl App {
         self.advance_from(&picker.agent, &before)
     }
 
+    pub fn session_picker(&self, target: &Option<Id>) -> Option<&SessionPicker> {
+        match target {
+            Some(id) => self.sessions.get(id),
+            None => match &self.overlay {
+                Some(Overlay::Composer(composer)) => Some(&composer.session),
+                _ => None,
+            },
+        }
+    }
+
+    fn load_session(
+        &mut self,
+        target: Option<Id>,
+        change: Option<SessionSettings>,
+    ) -> Task<Message> {
+        let (cwd, settings) = match &target {
+            Some(id) => {
+                let Some(agent) = self.desk.state.agent(id) else {
+                    return Task::none();
+                };
+                if agent.status.is_done() || self.desk.configuring(id) {
+                    return Task::none();
+                }
+                let Some(project) = self.desk.state.project(&agent.project_id) else {
+                    return Task::none();
+                };
+                (
+                    if agent.worktree.exists() {
+                        agent.worktree.clone()
+                    } else {
+                        project.path.clone()
+                    },
+                    agent.session_settings.clone(),
+                )
+            }
+            None => {
+                let Some(Overlay::Composer(composer)) = &self.overlay else {
+                    return Task::none();
+                };
+                let Some(project) = composer
+                    .project
+                    .as_ref()
+                    .and_then(|id| self.desk.state.project(id))
+                else {
+                    return Task::none();
+                };
+                (project.path.clone(), composer.session.settings.clone())
+            }
+        };
+        self.next_session_request += 1;
+        let request = self.next_session_request;
+        let picker = match &target {
+            Some(id) => self.sessions.entry(id.clone()).or_default(),
+            None => match &mut self.overlay {
+                Some(Overlay::Composer(composer)) => &mut composer.session,
+                _ => return Task::none(),
+            },
+        };
+        if change.is_none() {
+            picker.settings = settings.clone();
+        }
+        picker.requested = Some(change.clone().unwrap_or_else(|| settings.clone()));
+        picker.request = request;
+        picker.loading = true;
+        picker.error = None;
+        let apply = change.is_some();
+        let program = self.desk.pi_program().to_string();
+        Task::perform(
+            crate::models::discover(program, cwd, change.unwrap_or(settings)),
+            move |result| Message::SessionLoaded(target.clone(), request, apply, result),
+        )
+    }
+
     fn submit_composer(&mut self) -> Task<Message> {
         let Some(Overlay::Composer(composer)) = &mut self.overlay else {
             return Task::none();
         };
+        if composer.session.loading {
+            return Task::none();
+        }
         let drafts = compose::split(&composer.content.text());
         if drafts.is_empty() {
             composer.error = Some("Describe the work first".into());
@@ -1301,10 +1512,10 @@ impl App {
                 return Task::none();
             }
         };
-        let priority = composer.priority;
+        let settings = composer.session.settings.clone();
         let count = drafts.len();
         self.overlay = None;
-        let effects = self.desk.file(&project.id, &base, priority, drafts);
+        let effects = self.desk.file(&project.id, &base, settings, drafts);
         self.notify(if count == 1 {
             "Filed 1 task".to_string()
         } else {
@@ -1321,7 +1532,12 @@ impl App {
                 }
                 self.supervisor = Some(handle);
                 let effects = self.desk.schedule(now());
-                self.run(effects)
+                let models = self
+                    .selected
+                    .clone()
+                    .map(|id| self.load_session(Some(id), None))
+                    .unwrap_or_else(Task::none);
+                Task::batch([self.run(effects), models])
             }
             supervisor::Event::Lines {
                 agent,

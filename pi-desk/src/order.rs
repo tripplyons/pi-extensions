@@ -1,17 +1,8 @@
 //! Display order is status, then most recent activity. Scheduling is separate:
-//! Urgent first, then project rank and priority. Answers beat new work on a tie,
-//! then older queued tasks start first.
+//! Project order, then replies before new work, then oldest queued task.
 
-use crate::model::{Agent, OutboxKind, Priority, State, Status, Timestamp};
+use crate::model::{Agent, OutboxKind, State, Status, Timestamp};
 use std::cmp::Ordering;
-
-fn rank(state: &State, agent: &Agent) -> (bool, usize, Priority) {
-    (
-        agent.priority != Priority::Urgent,
-        state.project_rank(&agent.project_id),
-        agent.priority,
-    )
-}
 
 /// Shared list groups and board columns, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,8 +59,9 @@ pub fn compare_queue(state: &State, a: &Agent, b: &Agent) -> Ordering {
             Some(OutboxKind::Initial) | None
         )
     };
-    rank(state, a)
-        .cmp(&rank(state, b))
+    state
+        .project_rank(&a.project_id)
+        .cmp(&state.project_rank(&b.project_id))
         .then(new_work(a).cmp(&new_work(b)))
         .then(a.created_at.cmp(&b.created_at))
 }
@@ -104,21 +96,15 @@ pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::model::{Outbox, Project, Settings};
+    use crate::model::{Outbox, Project, SessionSettings, Settings};
 
-    pub fn agent(
-        id: &str,
-        project: &str,
-        priority: Priority,
-        status: Status,
-        created: Timestamp,
-    ) -> Agent {
+    pub fn agent(id: &str, project: &str, status: Status, created: Timestamp) -> Agent {
         Agent {
             id: id.into(),
             project_id: project.into(),
             title: id.into(),
             prompt: id.into(),
-            priority,
+            session_settings: SessionSettings::default(),
             status,
             created_at: created,
             updated_at: created,
@@ -160,19 +146,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn inbox_recency_outweighs_priority_and_project_rank() {
+    fn inbox_recency_outweighs_project_rank() {
         let s = state(vec![
-            agent("side-high", "second", Priority::High, Status::Review, 1),
-            agent("main-low", "first", Priority::Low, Status::Review, 2),
-            agent(
-                "side-urgent",
-                "second",
-                Priority::Urgent,
-                Status::Question,
-                3,
-            ),
-            agent("main-low-older", "first", Priority::Low, Status::Review, 0),
-            agent("working", "first", Priority::Urgent, Status::Working, 0),
+            agent("side-older", "second", Status::Review, 1),
+            agent("main-recent", "first", Status::Review, 2),
+            agent("side-newest", "second", Status::Question, 3),
+            agent("main-oldest", "first", Status::Review, 0),
+            agent("working", "first", Status::Working, 0),
         ]);
         let ids: Vec<&str> = inbox(&s, 10)
             .iter()
@@ -180,14 +160,14 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(
             ids,
-            ["side-urgent", "main-low", "side-high", "main-low-older"]
+            ["side-newest", "main-recent", "side-older", "main-oldest"]
         );
     }
 
     #[test]
     fn display_order_uses_activity_then_creation_then_id() {
-        let mut a = agent("a", "second", Priority::Low, Status::Review, 1);
-        let mut b = agent("b", "first", Priority::Urgent, Status::Question, 2);
+        let mut a = agent("a", "second", Status::Review, 1);
+        let mut b = agent("b", "first", Status::Question, 2);
         a.updated_at = 10;
         a.inbox_at = Some(0);
         b.updated_at = 5;
@@ -202,7 +182,7 @@ pub(crate) mod tests {
 
     #[test]
     fn snoozed_tasks_form_the_later_group_but_done_stays_done() {
-        let mut row = agent("later", "first", Priority::Urgent, Status::Question, 0);
+        let mut row = agent("later", "first", Status::Question, 0);
         row.snooze_until = Some(100);
         assert_eq!(display_group(&row, 99), DisplayGroup::Later);
         assert_eq!(display_group(&row, 100), DisplayGroup::NeedsYou);
@@ -214,7 +194,7 @@ pub(crate) mod tests {
 
     #[test]
     fn snoozed_rows_leave_the_inbox_until_due() {
-        let mut row = agent("later", "first", Priority::Medium, Status::Review, 0);
+        let mut row = agent("later", "first", Status::Review, 0);
         row.snooze_until = Some(100);
         let s = state(vec![row]);
         assert!(inbox(&s, 99).is_empty());
@@ -222,25 +202,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn slots_start_the_most_important_and_answers_win_ties() {
-        let mut answered = agent("answered", "first", Priority::Medium, Status::Queued, 5);
+    fn slots_follow_project_order_then_replies_then_age() {
+        let mut answered = agent("answered", "first", Status::Queued, 5);
         answered.outbox = Some(Outbox {
             text: "yes".into(),
             kind: OutboxKind::Answer,
         });
-        let mut new = agent("new", "first", Priority::Medium, Status::Queued, 1);
+        let mut new = agent("new", "first", Status::Queued, 1);
         new.outbox = Some(Outbox {
             text: "task".into(),
             kind: OutboxKind::Initial,
         });
         let s = state(vec![
-            agent("low", "first", Priority::Low, Status::Queued, 0),
+            agent("oldest", "first", Status::Queued, 0),
             new,
             answered,
-            agent("other", "second", Priority::Urgent, Status::Queued, 0),
+            agent("other", "second", Status::Queued, 0),
         ]);
-        assert_eq!(to_start(&s, 0, 0), ["other", "answered"]);
-        assert_eq!(to_start(&s, 1, 0), ["other"]);
+        assert_eq!(to_start(&s, 0, 0), ["answered", "oldest"]);
+        assert_eq!(to_start(&s, 1, 0), ["answered"]);
         assert!(to_start(&s, 2, 0).is_empty());
     }
 }

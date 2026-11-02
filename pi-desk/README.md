@@ -3,7 +3,7 @@
 A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in its
 own git worktree. Questions and completed work enter your Inbox; answer, review
 the diff, and merge without switching terminals. Panels, controls, selections,
-and priority badges use neutral grays, including dark primary buttons. Muted status dots, errors, red/green diffs,
+and dark primary buttons use neutral grays. Muted status dots, errors, red/green diffs,
 and subdued syntax colors keep semantic cues visible. Scrollbar tracks are
 transparent so panel backgrounds stay unchanged; only the thumb is colored,
 with the usual hover and drag feedback.
@@ -22,9 +22,27 @@ pi install /absolute/path/to/pi-extensions
 cargo run --manifest-path pi-desk/Cargo.toml --release
 ```
 
-Pi uses its configured default model, credentials, settings, and installed
-extensions. There is no model selector or separate agent daemon. Each active
-agent is a `pi --mode rpc --session-id <id>` child process. The app sets
+New tasks start with Pi's configured default model and effort. Model and Effort
+selectors in New task and the task detail card let you override them per task.
+Model choices come from Pi's configured/authenticated models. Effort lists only
+the thinking levels Pi supports for that model, including "off" for models
+without reasoning and "xhigh" or "max" where supported. Switching models lets Pi
+normalize an unsupported effort level.
+
+Each task saves its own model and effort and restores them when resumed. New
+tasks do not inherit the last task's selection. Changes during a run apply to
+the next model request, including after tools, without aborting, restarting,
+or discarding progress. An in-flight model request continues with its original
+settings. Selection errors appear on the card and do not fail the task. Refresh
+models reloads Pi's configuration; an unavailable saved model stays selected
+until you choose an available replacement. Before sending a startup or resume
+prompt, pi-desk checks that Pi selected the saved model. A fallback stops the
+task with a retryable error instead of running on a different model.
+
+Pi-desk uses Pi's credentials, settings, and installed extensions. It loads
+selector options with a short-lived `pi --mode rpc --no-session` process that
+makes no model requests. There is no separate agent daemon. Each active agent
+is a `pi --mode rpc --session-id <id>` child process. The app sets
 `PI_ASK_USER_TIMEOUT=0` so its questions have no deadline. The ask-user extension
 must include this repo's timeout and recommendation changes.
 
@@ -81,10 +99,12 @@ the app does not reset them.
 2. Open **New task** with the regular outlined sidebar button or N. Plain text
    creates one task; a list creates one task per
    item, with a preview before filing. Submit with Cmd+Enter. Tasks use the
-   project's current branch as their base.
+   project's current branch as their base. Model and effort apply to every task
+   in the submitted list; each task can be changed independently afterward.
 3. Four agents run at once by default. Settings lets you change the slot limit.
-   Scheduling starts urgent work first, then uses project order and priority.
-   Answers win ties over new work. Display order does not change scheduling.
+   Scheduling uses project order, then replies before new work, then oldest
+   queued task first. Display order does not change scheduling. Priority is not
+   used; older saved tasks still load, but their old priority values are ignored.
    Reorder projects by dragging or with Alt+Up/Down in a project view.
 4. Questions enter Inbox with choices, an optional recommendation, and a typed
    reply. Agents are asked to end with `Did:` and `Needs:` lines for review cards.
@@ -118,9 +138,9 @@ The main window has a sidebar, task list, and detail pane. All tasks shows every
 project and status, including Later and Done. Board mode groups work by status.
 Lists and board columns group tasks as Needs you, Working, Queued, Later, and
 Done. Within each group, the most recent activity comes first, regardless of
-project or priority. Row ages use that same activity time. Creation time (newest
+project. Row ages use that same activity time. Creation time (newest
 first) and then task ID break ties. Each view keeps its existing filters; project
-lists omit Done tasks. Priority badges remain visible. Heading labels and counts
+lists omit Done tasks. Heading labels and counts
 share one text baseline in both layouts. List and board previews slide upward over
 180 ms when their text changes, with smooth height changes for wrapped text and
 the review's Needs line. Rapid streaming updates are combined into the latest
@@ -130,7 +150,7 @@ Use Hide sidebar / Show sidebar in the list or board header to toggle navigation
 without hiding the task list. These actions are also in the command palette.
 Focus mode hides the sidebar and list. Task summaries are always shown when available. Review previews put the outcome
 and next action on separate lines rather than using dot separators. Task metadata
-uses separate rows so long branch names wrap without crowding priority or status. Later snoozes a row until
+uses separate rows so long branch names wrap without crowding status. Later snoozes a row until
 its due time; the Inbox count is the only attention indicator. There are no
 system notifications or dock badges.
 

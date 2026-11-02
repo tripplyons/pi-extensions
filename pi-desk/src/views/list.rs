@@ -1,6 +1,6 @@
-use super::{ago, chip, dot, empty, faint, line, preview::Preview, stable_column::StableColumn};
+use super::{ago, dot, empty, faint, line, preview::Preview, stable_column::StableColumn};
 use crate::app::{App, Message, View};
-use crate::model::{Agent, Priority, Status};
+use crate::model::{Agent, Status};
 use crate::theme::{self, BOLD};
 use crate::transcript::Entry;
 use iced::widget::{Space, button, column, container, row, scrollable, text};
@@ -88,12 +88,6 @@ pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
         .unwrap_or("");
     let needs_user = agent.status.needs_user();
     let mut meta = row![faint(project)].spacing(6).align_y(Alignment::Center);
-    if matches!(agent.priority, Priority::Urgent | Priority::High) {
-        meta = meta.push(chip(
-            agent.priority.label(),
-            theme::priority_color(agent.priority),
-        ));
-    }
     if let Some(until) = agent.snooze_until.filter(|until| *until > app.now) {
         let when = chrono::DateTime::from_timestamp(until, 0)
             .map(|time| {

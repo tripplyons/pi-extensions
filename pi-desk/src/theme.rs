@@ -1,7 +1,7 @@
 //! Neutral panels and controls, with restrained semantic color for status
 //! dots, errors, and changed code.
 
-use crate::model::{Priority, Status};
+use crate::model::Status;
 use iced::widget::{button, container, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Font, Shadow, Theme, color};
 
@@ -49,15 +49,6 @@ pub fn status_color(status: &Status) -> Color {
         Status::Review => GREEN,
         Status::Failed { .. } => RED,
         Status::Done { .. } => FAINT,
-    }
-}
-
-pub fn priority_color(priority: Priority) -> Color {
-    match priority {
-        Priority::Urgent => TEXT,
-        Priority::High => ACCENT,
-        Priority::Medium => MUTED,
-        Priority::Low => FAINT,
     }
 }
 
@@ -147,15 +138,6 @@ pub fn panel(_: &Theme) -> container::Style {
 pub fn fill(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(color.into()),
-        ..container::Style::default()
-    }
-}
-
-pub fn chip(color: Color) -> impl Fn(&Theme) -> container::Style {
-    move |_| container::Style {
-        background: Some(Color { a: 0.14, ..color }.into()),
-        text_color: Some(color),
-        border: radius(5.0),
         ..container::Style::default()
     }
 }

@@ -17,36 +17,53 @@ pub fn new_id() -> Id {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// Declaration order is importance order: `Urgent < High < Medium < Low`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Priority {
-    Urgent,
-    High,
-    Medium,
-    Low,
+/// Pi model identity. Provider is required because model IDs are not unique.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub provider: String,
+    pub id: String,
 }
 
-impl Priority {
-    pub const ALL: [Priority; 4] = [
-        Priority::Urgent,
-        Priority::High,
-        Priority::Medium,
-        Priority::Low,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Priority::Urgent => "Urgent",
-            Priority::High => "High",
-            Priority::Medium => "Medium",
-            Priority::Low => "Low",
-        }
+impl std::fmt::Display for ModelChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.provider, self.id)
     }
 }
 
-impl std::fmt::Display for Priority {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
+/// None means use Pi's defaults. Concrete values belong to this task only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSettings {
+    pub model: Option<ModelChoice>,
+    pub effort: Option<String>,
+}
+
+impl SessionSettings {
+    pub fn from_state(data: &serde_json::Value) -> Self {
+        Self {
+            model: data
+                .get("model")
+                .and_then(|model| serde_json::from_value(model.clone()).ok()),
+            effort: data
+                .get("thinkingLevel")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        }
+    }
+
+    pub fn args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(model) = &self.model {
+            args.extend([
+                "--provider".into(),
+                model.provider.clone(),
+                "--model".into(),
+                model.id.clone(),
+            ]);
+        }
+        if let Some(effort) = &self.effort {
+            args.extend(["--thinking".into(), effort.clone()]);
+        }
+        args
     }
 }
 
@@ -169,7 +186,8 @@ pub struct Agent {
     pub project_id: Id,
     pub title: String,
     pub prompt: String,
-    pub priority: Priority,
+    #[serde(default)]
+    pub session_settings: SessionSettings,
     pub status: Status,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

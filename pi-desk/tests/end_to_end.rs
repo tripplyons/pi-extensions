@@ -8,7 +8,7 @@ use common::{fake_pi, git, repo};
 use iced::futures::StreamExt;
 use pi_desk::compose::Draft;
 use pi_desk::desk::{Desk, Effect};
-use pi_desk::model::{Outcome, Priority, State, Status};
+use pi_desk::model::{ModelChoice, Outcome, SessionSettings, State, Status};
 use pi_desk::supervisor::{self, Event, Handle, Request};
 use std::time::Duration;
 
@@ -143,7 +143,7 @@ async fn real_pi_smoke() {
     let repo = repo(dir.path());
     let mut h = start_with(State::default(), dir.path().join("worktrees"), "pi".into()).await;
     let project = h.desk.add_project(&repo).unwrap();
-    let effects = h.desk.file(&project, "main", Priority::Medium, vec![Draft {
+    let effects = h.desk.file(&project, "main", SessionSettings::default(), vec![Draft {
         title: "Write smoke greeting".into(),
         prompt: "This is an authorized integration smoke test in a disposable repository. First call ask_user with question 'Which greeting?', choices ['Hello', 'Hi'], and recommended 2. Wait for the answer. Then write the chosen greeting followed by a newline to greeting.txt. Do not commit. Finish with Did: Wrote greeting.txt and Needs: Review and merge. Do not do any other work.".into(),
     }]);
@@ -204,7 +204,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     let effects = h.desk.file(
         &project,
         "main",
-        Priority::High,
+        SessionSettings::default(),
         vec![Draft {
             title: "Write a greeting".into(),
             prompt: "Write a greeting".into(),
@@ -240,6 +240,22 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     assert!(h.desk.state.agent(&id).unwrap().session_file.is_some());
     assert_eq!(h.desk.state.agent(&id).unwrap().title, "Write a greeting");
 
+    // Change settings while a tool is waiting. The same live dialog and
+    // transcript must remain usable, with no process restart.
+    let chosen = SessionSettings {
+        model: Some(ModelChoice {
+            provider: "fake".into(),
+            id: "plain".into(),
+        }),
+        effort: Some("off".into()),
+    };
+    let effects = h.desk.configure(&id, chosen.clone());
+    h.run(effects).await;
+    h.until(&id, |desk| !desk.configuring(&id)).await;
+    assert_eq!(h.desk.state.agent(&id).unwrap().session_settings, chosen);
+    assert_eq!(h.desk.state.agent(&id).unwrap().status, Status::Question);
+    assert_eq!(h.desk.state.agent(&id).unwrap().question, Some(question));
+
     // E takes the recommendation through the live dialog.
     let effects = h.desk.approve(&id);
     h.run(effects).await;
@@ -268,6 +284,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
         dir.path().join("worktrees"),
     );
     assert_eq!(restarted.state.agent(&id).unwrap().title, agent.title);
+    assert_eq!(restarted.state.agent(&id).unwrap().session_settings, chosen);
 
     // Approving squash-merges into main and removes the worktree and branch.
     let effects = h.desk.approve(&id);
@@ -292,6 +309,73 @@ async fn a_task_runs_asks_is_answered_and_merges() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_unavailable_saved_model_does_not_run_a_prompt_on_the_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let mut h = start(State::default(), dir.path().join("worktrees")).await;
+    let project = h.desk.add_project(&repo).unwrap();
+    let requested = SessionSettings {
+        model: Some(ModelChoice {
+            provider: "missing".into(),
+            id: "old-model".into(),
+        }),
+        effort: Some("high".into()),
+    };
+    let effects = h.desk.file(
+        &project,
+        "main",
+        requested.clone(),
+        vec![Draft {
+            title: "Write a greeting".into(),
+            prompt: "Write a greeting".into(),
+        }],
+    );
+    let id = h.desk.state.agents[0].id.clone();
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        matches!(desk.state.agent(&id).unwrap().status, Status::Failed { .. }) && !desk.is_live(&id)
+    })
+    .await;
+    let agent = h.desk.state.agent(&id).unwrap();
+    assert_eq!(agent.session_settings, requested);
+    assert!(
+        agent.outbox.is_some(),
+        "The original prompt must remain unsent"
+    );
+    assert!(agent.question.is_none());
+
+    let effects = h.desk.configure(
+        &id,
+        SessionSettings {
+            model: Some(ModelChoice {
+                provider: "fake".into(),
+                id: "reasoning".into(),
+            }),
+            effort: Some("max".into()),
+        },
+    );
+    h.run(effects).await;
+    let effects = h.desk.retry(&id);
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        desk.state.agent(&id).unwrap().status == Status::Question
+    })
+    .await;
+    assert_eq!(
+        h.desk
+            .state
+            .agent(&id)
+            .unwrap()
+            .session_settings
+            .effort
+            .as_deref(),
+        Some("max")
+    );
+    h.handle.send(Request::Kill { agent: id.clone() });
+    h.until(&id, |desk| !desk.is_live(&id)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn free_text_replies_and_restarts_keep_questions_answerable() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());
@@ -300,7 +384,7 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
     let effects = h.desk.file(
         &project,
         "main",
-        Priority::Medium,
+        SessionSettings::default(),
         vec![Draft {
             title: "Greet".into(),
             prompt: "Greet".into(),

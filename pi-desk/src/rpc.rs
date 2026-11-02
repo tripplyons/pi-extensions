@@ -229,6 +229,14 @@ pub fn command(id: &str, kind: &str) -> String {
     line(json!({ "id": id, "type": kind }))
 }
 
+pub fn set_model(id: &str, provider: &str, model: &str) -> String {
+    line(json!({"id":id, "type":"set_model", "provider":provider, "modelId":model}))
+}
+
+pub fn set_effort(id: &str, level: &str) -> String {
+    line(json!({"id":id, "type":"set_thinking_level", "level":level}))
+}
+
 pub fn ui_value(id: &str, value: &str) -> String {
     line(json!({ "type": "extension_ui_response", "id": id, "value": value }))
 }
@@ -326,6 +334,14 @@ mod tests {
         assert_eq!(
             record(prompt("p2", "Also", Some("steer")))["streamingBehavior"],
             "steer"
+        );
+        assert_eq!(
+            record(set_model("m1", "provider", "model")),
+            json!({"id":"m1","type":"set_model","provider":"provider","modelId":"model"})
+        );
+        assert_eq!(
+            record(set_effort("e1", "max")),
+            json!({"id":"e1","type":"set_thinking_level","level":"max"})
         );
         assert_eq!(
             record(ui_cancel("u1")),

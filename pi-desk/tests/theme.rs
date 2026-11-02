@@ -1,6 +1,5 @@
 use iced::widget::{button, container, scrollable, text_input};
 use iced::{Background, Color};
-use pi_desk::model::Priority;
 use pi_desk::theme;
 
 fn neutral(color: Color) {
@@ -27,7 +26,7 @@ fn readable(foreground: Color, background: Color) {
 }
 
 #[test]
-fn controls_and_priorities_are_neutral() {
+fn controls_are_neutral() {
     let theme = theme::theme();
     for color in [
         theme::WINDOW,
@@ -42,14 +41,6 @@ fn controls_and_priorities_are_neutral() {
         theme::ACCENT_SOFT,
     ] {
         neutral(color);
-    }
-    for priority in [
-        Priority::Urgent,
-        Priority::High,
-        Priority::Medium,
-        Priority::Low,
-    ] {
-        neutral(theme::priority_color(priority));
     }
     for status in [
         button::Status::Active,

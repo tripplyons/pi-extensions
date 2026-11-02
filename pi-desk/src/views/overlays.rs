@@ -2,7 +2,6 @@ use super::{faint, key, line, muted};
 use crate::app::{App, COMPOSER_ID, LATER_ID, Message, Overlay, PALETTE_ID};
 use crate::compose;
 use crate::later::Preset;
-use crate::model::Priority;
 use crate::theme::{self, BOLD, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{
@@ -59,15 +58,6 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 .iter()
                 .find(|option| Some(&option.id) == composer.project.as_ref())
                 .cloned();
-            let mut priorities = row![].spacing(4);
-            for priority in Priority::ALL {
-                priorities = priorities.push(
-                    button(text(priority.label()).size(12))
-                        .padding([4, 10])
-                        .style(theme::row(composer.priority == priority))
-                        .on_press(Message::ComposerPriority(priority)),
-                );
-            }
             let drafts = compose::split(&composer.content.text());
             let mut preview = column![].spacing(4);
             if drafts.len() > 1 {
@@ -126,9 +116,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .text_size(13)
                         .padding([5, 10]),
                         Space::new().width(Fill),
-                        priorities,
                     ]
                     .align_y(Alignment::Center),
+                    super::session::controls(app, None),
                     editor,
                     scrollable(preview)
                         .style(theme::scrollbar)
@@ -160,7 +150,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         )
                         .style(theme::primary)
                         .padding([6, 12])
-                        .on_press(Message::ComposerSubmit),
+                        .on_press_maybe(
+                            (!composer.session.loading).then_some(Message::ComposerSubmit)
+                        ),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),

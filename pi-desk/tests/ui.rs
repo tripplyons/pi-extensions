@@ -13,12 +13,28 @@ use std::path::PathBuf;
 
 const SIZE: (f32, f32) = (1440.0, 900.0);
 
+/// Execute iced tasks through its runtime interface, with fake Pi as the only
+/// external model boundary. Focus operations don't need a window in these tests.
+async fn finish_task(app: &mut App, task: iced::Task<Message>) {
+    use iced::futures::StreamExt;
+    let mut tasks = vec![task];
+    while let Some(task) = tasks.pop() {
+        if let Some(mut stream) = iced_test::runtime::task::into_stream(task) {
+            while let Some(action) = stream.next().await {
+                if let iced_test::runtime::Action::Output(message) = action {
+                    tasks.push(app.update(message));
+                }
+            }
+        }
+    }
+}
+
 fn agent(
     n: u32,
     project: &str,
     title: &str,
     status: Status,
-    priority: Priority,
+    session_settings: SessionSettings,
     age: i64,
 ) -> Agent {
     let at = now() - age;
@@ -27,7 +43,7 @@ fn agent(
         project_id: project.into(),
         title: title.into(),
         prompt: title.into(),
-        priority,
+        session_settings,
         status,
         created_at: at,
         updated_at: at,
@@ -54,7 +70,7 @@ fn seeded(dir: &std::path::Path) -> App {
         "p1",
         "Pick a cache size",
         Status::Question,
-        Priority::High,
+        SessionSettings::default(),
         600,
     );
     question.question = Some(Question {
@@ -70,7 +86,7 @@ fn seeded(dir: &std::path::Path) -> App {
         "p1",
         "Retry flaky network test",
         Status::Review,
-        Priority::Medium,
+        SessionSettings::default(),
         3600,
     );
     review.summary = Some(Summary {
@@ -84,18 +100,18 @@ fn seeded(dir: &std::path::Path) -> App {
         Status::Failed {
             error: "Pi exited with 1:\nNo API key for provider".into(),
         },
-        Priority::Medium,
+        SessionSettings::default(),
         86400,
     );
-    let mut urgent = agent(
+    let mut recent = agent(
         4,
         "p2",
         "Fix the login crash",
         Status::Review,
-        Priority::Urgent,
+        SessionSettings::default(),
         60,
     );
-    urgent.summary = Some(Summary {
+    recent.summary = Some(Summary {
         did: "Guarded the nil session.".into(),
         needs: "Review and merge".into(),
     });
@@ -104,7 +120,7 @@ fn seeded(dir: &std::path::Path) -> App {
         "p1",
         "Write release notes",
         Status::Queued,
-        Priority::Low,
+        SessionSettings::default(),
         30,
     );
     queued.started = false;
@@ -119,10 +135,10 @@ fn seeded(dir: &std::path::Path) -> App {
         Status::Done {
             outcome: Outcome::Merged,
         },
-        Priority::Medium,
+        SessionSettings::default(),
         200000,
     );
-    let mut agents = vec![question, review, failed, urgent, queued, done];
+    let mut agents = vec![question, review, failed, recent, queued, done];
     for agent in &mut agents {
         agent.worktree = dir.join("worktrees").join(&agent.id);
         std::fs::create_dir_all(&agent.worktree).unwrap();
@@ -210,7 +226,7 @@ fn click(app: &mut App, label: &str) {
 }
 
 #[test]
-fn task_metadata_wraps_below_priority_in_a_narrow_pane() {
+fn long_task_branches_wrap_in_a_narrow_pane() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     app.show_sidebar = false;
@@ -221,22 +237,16 @@ fn task_metadata_wraps_below_priority_in_a_narrow_pane() {
         .iter_mut()
         .find(|agent| agent.id == "agent-4")
         .unwrap();
-    agent.priority = Priority::Medium;
     agent.branch =
         "pi-desk/hello-world-with-a-long-task-name-and-a-unique-identifier-5efb6b".into();
     let branch = agent.branch.clone();
     let size = (760.0, 900.0);
     let mut rendered = Simulator::with_size(iced::Settings::default(), size, app.view());
-    let priority = rendered.find("Medium").unwrap().visible_bounds().unwrap();
     let branch = rendered
         .find(branch.as_str())
         .unwrap()
         .visible_bounds()
         .unwrap();
-    assert!(
-        branch.y >= priority.y + priority.height,
-        "branch must be below metadata"
-    );
     assert!(
         branch.height > 20.0,
         "long branches must wrap rather than clip"
@@ -610,7 +620,7 @@ fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
             "p1",
             &format!("Task agent-{id}"),
             status,
-            Priority::Low,
+            SessionSettings::default(),
             0,
         ));
     }
@@ -621,10 +631,6 @@ fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
         agent.created_at = at - 10000;
         agent.inbox_at = Some(at - 9999);
         agent.updated_at = at - age;
-        // Make the oldest attention row urgent to prove priority no longer leads.
-        if agent.id == "agent-3" {
-            agent.priority = Priority::Urgent;
-        }
         if agent.id == "agent-8" {
             agent.snooze_until = Some(at + 100);
         }
@@ -700,7 +706,7 @@ fn all_tasks_includes_every_project_status_and_snoozed_task() {
         "p2",
         "Run the benchmark",
         Status::Working,
-        Priority::Medium,
+        SessionSettings::default(),
         20,
     ));
     let mut snoozed = agent(
@@ -708,7 +714,7 @@ fn all_tasks_includes_every_project_status_and_snoozed_task() {
         "p1",
         "Review tomorrow",
         Status::Review,
-        Priority::Low,
+        SessionSettings::default(),
         20,
     );
     snoozed.snooze_until = Some(now() + 86400);
@@ -984,11 +990,199 @@ fn merge_and_discard_wait_out_an_undo_window() {
     );
 }
 
-#[test]
-fn the_composer_previews_a_list_and_files_one_task_per_item() {
+#[tokio::test]
+async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    click(&mut app, "New task");
+    let target = Some("agent-4".to_string());
+    let task = app.update(Message::RefreshSession(target.clone()));
+    finish_task(&mut app, task).await;
+    {
+        let mut rendered = ui(&app);
+        assert!(rendered.find("Model").is_ok());
+        assert!(rendered.find("Effort").is_ok());
+        assert!(rendered.find("Urgent").is_err());
+    }
+    assert!(
+        app.commands()
+            .iter()
+            .all(|command| !command.label.contains("Priority"))
+    );
+    let plain = ModelChoice {
+        provider: "fake".into(),
+        id: "plain".into(),
+    };
+    let task = app.update(Message::SessionModel(target.clone(), plain.clone()));
+    finish_task(&mut app, task).await;
+    let picker = app.session_picker(&target).unwrap();
+    assert_eq!(picker.options.as_ref().unwrap().levels, ["off"]);
+    assert_eq!(picker.settings.effort.as_deref(), Some("off"));
+    assert_eq!(
+        app.desk
+            .state
+            .agent("agent-4")
+            .unwrap()
+            .session_settings
+            .model,
+        Some(plain)
+    );
+    let _ = app.update(Message::SessionEffort(target.clone(), "max".into()));
+    assert_eq!(
+        app.desk
+            .state
+            .agent("agent-4")
+            .unwrap()
+            .session_settings
+            .effort
+            .as_deref(),
+        Some("off")
+    );
+    assert_eq!(
+        app.desk.state.agent("agent-2").unwrap().session_settings,
+        SessionSettings::default()
+    );
+
+    let reasoning = ModelChoice {
+        provider: "fake".into(),
+        id: "reasoning".into(),
+    };
+    let task = app.update(Message::SessionModel(target.clone(), reasoning.clone()));
+    finish_task(&mut app, task).await;
+    let _ = app.update(Message::SessionEffort(target.clone(), "max".into()));
+    assert_eq!(
+        app.desk
+            .state
+            .agent("agent-4")
+            .unwrap()
+            .session_settings
+            .effort
+            .as_deref(),
+        Some("max")
+    );
+    let saved = Store::new(dir.path().join("state")).load().unwrap();
+    assert_eq!(
+        saved.agent("agent-4").unwrap().session_settings,
+        app.desk.state.agent("agent-4").unwrap().session_settings
+    );
+    snapshot(&app, "session-selectors");
+
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
+    let picker = app.session_picker(&None).unwrap();
+    assert_eq!(picker.settings.model, Some(reasoning));
+    assert_eq!(picker.settings.effort.as_deref(), Some("medium"));
+    let _ = app.update(Message::SessionEffort(None, "high".into()));
+    let Some(Overlay::Composer(composer)) = &mut app.overlay else {
+        panic!();
+    };
+    composer.content = iced::widget::text_editor::Content::with_text("- First task\n- Second task");
+    let before = app.desk.state.agents.len();
+    let _ = app.update(Message::ComposerSubmit);
+    for agent in &app.desk.state.agents[before..] {
+        assert_eq!(agent.session_settings.effort.as_deref(), Some("high"));
+    }
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
+    assert_eq!(
+        app.session_picker(&None)
+            .unwrap()
+            .settings
+            .effort
+            .as_deref(),
+        Some("medium")
+    );
+}
+
+#[tokio::test]
+async fn an_unavailable_saved_model_can_be_replaced_using_the_available_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let target = Some("agent-4".to_string());
+    let saved = SessionSettings {
+        model: Some(ModelChoice {
+            provider: "missing".into(),
+            id: "old-model".into(),
+        }),
+        effort: Some("high".into()),
+    };
+    app.desk
+        .state
+        .agent_mut("agent-4")
+        .unwrap()
+        .session_settings = saved.clone();
+    let task = app.update(Message::RefreshSession(target.clone()));
+    finish_task(&mut app, task).await;
+    let picker = app.session_picker(&target).unwrap();
+    assert_eq!(picker.settings, saved);
+    assert!(picker.error.as_ref().unwrap().contains("unavailable"));
+    assert!(picker.options.as_ref().unwrap().levels.is_empty());
+    assert!(!picker.options.as_ref().unwrap().models.is_empty());
+    let replacement = ModelChoice {
+        provider: "fake".into(),
+        id: "plain".into(),
+    };
+    let task = app.update(Message::SessionModel(target.clone(), replacement.clone()));
+    finish_task(&mut app, task).await;
+    assert!(app.session_picker(&target).unwrap().error.is_none());
+    assert_eq!(
+        app.desk
+            .state
+            .agent("agent-4")
+            .unwrap()
+            .session_settings
+            .model,
+        Some(replacement)
+    );
+    assert_eq!(
+        app.desk
+            .state
+            .agent("agent-4")
+            .unwrap()
+            .session_settings
+            .effort
+            .as_deref(),
+        Some("off")
+    );
+}
+
+#[tokio::test]
+async fn stale_discovery_does_not_overwrite_a_new_composer_or_its_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let stale = app.update(Message::NewTask);
+    let current = app.update(Message::NewTask);
+    finish_task(&mut app, current).await;
+    let model = ModelChoice {
+        provider: "fake".into(),
+        id: "plain".into(),
+    };
+    let task = app.update(Message::SessionModel(None, model.clone()));
+    finish_task(&mut app, task).await;
+    finish_task(&mut app, stale).await;
+    assert_eq!(
+        app.session_picker(&None).unwrap().settings.model,
+        Some(model)
+    );
+    assert_eq!(
+        app.session_picker(&None)
+            .unwrap()
+            .settings
+            .effort
+            .as_deref(),
+        Some("off")
+    );
+    let task = app.update(Message::RefreshSession(None));
+    let _ = app.update(Message::CloseOverlay);
+    finish_task(&mut app, task).await;
+    assert!(app.overlay.is_none());
+}
+
+#[tokio::test]
+async fn the_composer_previews_a_list_and_files_one_task_per_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
     let Some(Overlay::Composer(composer)) = &mut app.overlay else {
         panic!("composer should open")
     };
@@ -1048,13 +1242,13 @@ fn board_focus_palette_and_project_views_render() {
         modifiers: Modifiers::COMMAND,
         captured: false,
     });
-    let _ = app.update(Message::PaletteQuery("prior hi".into()));
+    let _ = app.update(Message::PaletteQuery("transcript".into()));
     let labels: Vec<String> = app
         .palette_matches()
         .into_iter()
         .map(|command| command.label)
         .collect();
-    assert_eq!(labels, ["Priority: High"]);
+    assert_eq!(labels, ["Show transcript"]);
     snapshot(&app, "palette");
     key(&mut app, "escape");
 

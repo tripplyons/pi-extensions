@@ -82,6 +82,8 @@ struct Runtime {
     closing: bool,
     streaming: bool,
     compacting: bool,
+    /// Awaiting startup state before sending any prompt; true means resume.
+    starting: Option<bool>,
     /// A round-trip idle check, invalidated when more work starts.
     settling: Option<(String, Option<String>)>,
     ask: Option<Ask>,
@@ -89,11 +91,14 @@ struct Runtime {
     other_text: Option<String>,
     preparing: bool,
     busy: Option<&'static str>,
+    /// The outstanding settings command and the last confirmed selection.
+    configuring: Option<(String, SessionSettings)>,
+    deferred_idle: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
 enum Undo {
-    Agent(Box<Agent>),
+    Snooze { agent: Id, until: Option<Timestamp> },
     Projects(Vec<Project>),
 }
 
@@ -198,25 +203,14 @@ impl Desk {
         true
     }
 
-    fn remember(&mut self, id: &str) {
-        if let Some(agent) = self.state.agent(id) {
-            self.undo.push(Undo::Agent(Box::new(agent.clone())));
-            if self.undo.len() > 50 {
-                self.undo.remove(0);
-            }
-        }
-    }
-
-    /// Reverts the latest local change (priority, snooze, project order).
+    /// Reverts the latest local change (snooze, project order).
     pub fn undo(&mut self) -> bool {
         let Some(undo) = self.undo.pop() else {
             return false;
         };
         match undo {
-            Undo::Agent(previous) => {
-                if let Some(agent) = self.state.agent_mut(&previous.id) {
-                    *agent = *previous;
-                }
+            Undo::Snooze { agent, until } => {
+                self.edit(&agent, |agent| agent.snooze_until = until);
             }
             Undo::Projects(projects) => self.state.projects = projects,
         }
@@ -296,7 +290,7 @@ impl Desk {
         &mut self,
         project_id: &str,
         base: &str,
-        priority: Priority,
+        session_settings: SessionSettings,
         drafts: Vec<Draft>,
     ) -> Vec<Effect> {
         let Some(project) = self.state.project(project_id).cloned() else {
@@ -313,7 +307,7 @@ impl Desk {
                 project_id: project.id.clone(),
                 title: draft.title,
                 prompt: draft.prompt.clone(),
-                priority,
+                session_settings: session_settings.clone(),
                 status: Status::Queued,
                 created_at: at,
                 updated_at: at,
@@ -422,6 +416,7 @@ impl Desk {
         *self.rt(id) = Runtime {
             generation,
             live: true,
+            starting: Some(agent.started),
             ..Runtime::default()
         };
         let resumed = agent.started;
@@ -437,14 +432,17 @@ impl Desk {
             agent: id.to_string(),
             generation,
             program: self.pi_program.clone(),
-            args: vec![
+            args: [
                 "--mode".into(),
                 "rpc".into(),
                 "--session-id".into(),
                 agent.session_id.clone(),
                 "--append-system-prompt".into(),
                 summary::SYSTEM_PROMPT.into(),
-            ],
+            ]
+            .into_iter()
+            .chain(agent.session_settings.args())
+            .collect(),
             cwd: agent.worktree.clone(),
             env: vec![
                 ("PI_ASK_USER_TIMEOUT".into(), "0".into()),
@@ -453,18 +451,8 @@ impl Desk {
         })];
         effects.push(Effect::Send {
             agent: id.to_string(),
-            line: rpc::command("state", "get_state"),
+            line: rpc::command("startup", "get_state"),
         });
-        if resumed {
-            // The outbox prompt goes out once the history is loaded, so live
-            // events always append after it.
-            effects.push(Effect::Send {
-                agent: id.to_string(),
-                line: rpc::command("messages", "get_messages"),
-            });
-        } else {
-            effects.extend(self.send_outbox(id));
-        }
         effects
     }
 
@@ -509,7 +497,73 @@ impl Desk {
                 error,
                 ..
             } => {
+                let starting = if request == "startup" {
+                    let Some(resumed) = self.rt(id).starting.take() else {
+                        return Vec::new();
+                    };
+                    if !success {
+                        return self.fail(
+                            id,
+                            error.unwrap_or_else(|| "Could not read Pi's startup settings".into()),
+                        );
+                    }
+                    let actual = SessionSettings::from_state(&data);
+                    let requested = self
+                        .state
+                        .agent(id)
+                        .and_then(|agent| agent.session_settings.model.as_ref());
+                    if actual.model.is_none()
+                        || requested.is_some_and(|model| actual.model.as_ref() != Some(model))
+                    {
+                        return self.fail(id, "Pi could not restore this task's model. Select an available model and retry.".into());
+                    }
+                    Some(resumed)
+                } else {
+                    None
+                };
+                if self
+                    .rt(id)
+                    .configuring
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending == &request)
+                {
+                    let (_, previous) = self.rt(id).configuring.take().unwrap();
+                    if !success {
+                        self.edit(id, |agent| {
+                            agent.session_settings = previous;
+                            agent.note = Some(
+                                error.unwrap_or_else(|| "Pi rejected the settings change".into()),
+                            );
+                        });
+                        let mut effects = vec![Effect::Send {
+                            agent: id.into(),
+                            line: rpc::command("state", "get_state"),
+                        }];
+                        effects.extend(self.finish_configuration(id));
+                        return effects;
+                    }
+                    if request.starts_with("model-") {
+                        return self.send_effort(id, previous);
+                    }
+                    if request.starts_with("effort-") {
+                        let request = self.request_id("settings");
+                        self.rt(id).configuring = Some((request.clone(), previous));
+                        return vec![Effect::Send {
+                            agent: id.into(),
+                            line: rpc::command(&request, "get_state"),
+                        }];
+                    }
+                    self.capture_settings(id, &data);
+                    return self.finish_configuration(id);
+                }
+                if (request == "state" || request == "startup")
+                    && success
+                    && self.rt(id).configuring.is_none()
+                {
+                    self.capture_settings(id, &data);
+                }
                 if (request == "state"
+                    || request == "startup"
                     || self
                         .rt(id)
                         .settling
@@ -540,6 +594,16 @@ impl Desk {
                         self.edit(id, |agent| agent.title = name.to_string());
                     }
                 }
+                if let Some(resumed) = starting {
+                    return if resumed {
+                        vec![Effect::Send {
+                            agent: id.into(),
+                            line: rpc::command("messages", "get_messages"),
+                        }]
+                    } else {
+                        self.send_outbox(id)
+                    };
+                }
                 if request == "messages" {
                     if let Some(messages) = data.get("messages").and_then(Value::as_array) {
                         self.transcripts
@@ -554,6 +618,10 @@ impl Desk {
                         return Vec::new();
                     }
                     self.rt(id).settling = None;
+                    if self.rt(id).configuring.is_some() {
+                        self.rt(id).deferred_idle = Some(fallback_error);
+                        return Vec::new();
+                    }
                     if !self
                         .state
                         .agent(id)
@@ -737,6 +805,10 @@ impl Desk {
     /// onComplete continuation) before we decide whether to close its stdin.
     /// Open questions only refresh session metadata; they remain answerable.
     fn check_idle(&mut self, id: &str, error: Option<String>) -> Vec<Effect> {
+        if self.configuring(id) {
+            self.rt(id).deferred_idle = Some(error);
+            return Vec::new();
+        }
         if self.rt(id).compacting
             || !self
                 .state
@@ -822,6 +894,9 @@ impl Desk {
         };
         runtime.live = false;
         runtime.streaming = false;
+        runtime.starting = None;
+        runtime.configuring = None;
+        runtime.deferred_idle = None;
         let expected = runtime.closing;
         let status = self.state.agent(id).map(|agent| agent.status.clone());
         match status {
@@ -1234,21 +1309,101 @@ impl Desk {
         }
     }
 
-    pub fn set_priority(&mut self, id: &str, priority: Priority) -> Vec<Effect> {
-        if self
+    /// The program used by task processes and model discovery.
+    pub fn pi_program(&self) -> &str {
+        &self.pi_program
+    }
+
+    pub fn configuring(&self, id: &str) -> bool {
+        self.runtime
+            .get(id)
+            .is_some_and(|runtime| runtime.configuring.is_some() || runtime.starting.is_some())
+    }
+
+    /// Change only the session configuration. Never abort, restart, or send a
+    /// prompt: Pi applies it to the next model request, including after tools.
+    pub fn configure(&mut self, id: &str, settings: SessionSettings) -> Vec<Effect> {
+        let Some(agent) = self.state.agent(id) else {
+            return Vec::new();
+        };
+        if agent.status.is_done() || self.configuring(id) || agent.session_settings == settings {
+            return Vec::new();
+        }
+        let previous = agent.session_settings.clone();
+        self.edit(id, |agent| {
+            agent.session_settings = settings.clone();
+            agent.note = None;
+        });
+        if !self.rt(id).live || self.rt(id).closing {
+            return Vec::new();
+        }
+        if let Some(model) = settings
+            .model
+            .filter(|model| Some(model) != previous.model.as_ref())
+        {
+            let request = self.request_id("model");
+            self.rt(id).configuring = Some((request.clone(), previous));
+            vec![Effect::Send {
+                agent: id.into(),
+                line: rpc::set_model(&request, &model.provider, &model.id),
+            }]
+        } else {
+            self.send_effort(id, previous)
+        }
+    }
+
+    fn send_effort(&mut self, id: &str, previous: SessionSettings) -> Vec<Effect> {
+        let level = self
             .state
             .agent(id)
-            .is_some_and(|agent| agent.priority != priority)
-        {
-            self.remember(id);
-            self.edit(id, |agent| agent.priority = priority);
+            .and_then(|agent| agent.session_settings.effort.clone());
+        let request = self.request_id(if level.is_some() {
+            "effort"
+        } else {
+            "settings"
+        });
+        self.rt(id).configuring = Some((request.clone(), previous));
+        let line = match level {
+            Some(level) => rpc::set_effort(&request, &level),
+            None => rpc::command(&request, "get_state"),
+        };
+        vec![Effect::Send {
+            agent: id.into(),
+            line,
+        }]
+    }
+
+    fn finish_configuration(&mut self, id: &str) -> Vec<Effect> {
+        match self.rt(id).deferred_idle.take() {
+            Some(error) => self.check_idle(id, error),
+            None => Vec::new(),
         }
-        self.schedule(now())
+    }
+
+    fn capture_settings(&mut self, id: &str, data: &Value) {
+        let settings = SessionSettings::from_state(data);
+        // Older Pi versions and test fixtures may not report these fields.
+        if settings.model.is_some()
+            && self
+                .state
+                .agent(id)
+                .is_some_and(|agent| agent.session_settings != settings)
+        {
+            self.edit(id, |agent| agent.session_settings = settings);
+        }
     }
 
     pub fn snooze(&mut self, id: &str, until: Option<Timestamp>) {
-        self.remember(id);
-        self.edit(id, |agent| agent.snooze_until = until);
+        if let Some(agent) = self.state.agent(id) {
+            self.undo.push(Undo::Snooze {
+                agent: id.into(),
+                until: agent.snooze_until,
+            });
+            if self.undo.len() > 50 {
+                self.undo.remove(0);
+            }
+            self.edit(id, |agent| agent.snooze_until = until);
+        }
     }
 
     /// Loads a transcript for a row without a live process.
@@ -1316,7 +1471,7 @@ mod tests {
         let effects = desk.file(
             "p",
             "main",
-            Priority::Medium,
+            SessionSettings::default(),
             vec![Draft {
                 title: "Fix".into(),
                 prompt: "Fix the bug".into(),
@@ -1342,7 +1497,17 @@ mod tests {
         assert!(spawn.args.windows(2).any(|pair| pair[0] == "--session-id"));
         let commands = sent(&effects);
         assert_eq!(commands[0]["type"], "get_state");
-        assert_eq!(commands[1]["message"], "Fix the bug");
+        assert_eq!(commands.len(), 1);
+        let effects = desk.on_lines(
+            &id,
+            generation,
+            &[json!({
+                "type":"response", "id":"startup", "command":"get_state", "success":true,
+                "data":{"model":{"provider":"fake","id":"reasoning"}, "thinkingLevel":"medium"}
+            })
+            .to_string()],
+        );
+        assert_eq!(sent(&effects)[0]["message"], "Fix the bug");
         assert_eq!(desk.state.agent(&id).unwrap().status, Status::Working);
         (
             Fixture {
@@ -1457,9 +1622,18 @@ mod tests {
                 .iter()
                 .map(|c| c["type"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["get_state", "get_messages"]
+            ["get_state"]
         );
         let new_generation = spawned_generation(&effects);
+        let effects = feed(
+            &mut f,
+            new_generation,
+            &[json!({
+                "type":"response", "id":"startup", "command":"get_state", "success":true,
+                "data":{"model":{"provider":"fake","id":"reasoning"}, "thinkingLevel":"medium"}
+            })],
+        );
+        assert_eq!(sent(&effects)[0]["type"], "get_messages");
         let effects = feed(
             &mut f,
             new_generation,
@@ -1866,7 +2040,8 @@ mod tests {
                 .iter()
                 .any(|effect| matches!(effect, Effect::Spawn(_)))
         );
-        assert_eq!(sent(&effects)[1]["type"], "get_messages");
+        assert_eq!(sent(&effects).len(), 1);
+        assert_eq!(sent(&effects)[0]["type"], "get_state");
     }
 
     #[test]
@@ -2004,18 +2179,194 @@ mod tests {
         );
     }
 
+    fn selection(model: &str, effort: &str) -> SessionSettings {
+        SessionSettings {
+            model: Some(ModelChoice {
+                provider: "fake".into(),
+                id: model.into(),
+            }),
+            effort: Some(effort.into()),
+        }
+    }
+
+    fn acknowledge(
+        f: &mut Fixture,
+        generation: u64,
+        effects: &[Effect],
+        data: Value,
+    ) -> Vec<Effect> {
+        let commands = sent(effects);
+        assert_eq!(commands.len(), 1);
+        feed(
+            f,
+            generation,
+            &[json!({
+                "type":"response", "command":commands[0]["type"],
+                "id":commands[0]["id"], "success":true, "data":data
+            })],
+        )
+    }
+
     #[test]
-    fn working_agents_resume_after_a_restart_and_priority_changes_undo() {
+    fn live_settings_are_sequenced_without_interrupting_work_or_losing_settlement() {
+        let (mut f, generation) = started();
+        feed(
+            &mut f,
+            generation,
+            &[json!({
+                "type":"response", "id":"state", "command":"get_state", "success":true,
+                "data":{"model":{"provider":"fake","id":"plain"},"thinkingLevel":"off"}
+            })],
+        );
+        let chosen = selection("reasoning", "max");
+        let transcript_len = f.desk.transcripts[&f.id].entries.len();
+        let effects = f.desk.configure(&f.id, chosen.clone());
+        assert_eq!(effects.len(), 1);
+        assert_eq!(sent(&effects)[0]["type"], "set_model");
+        assert!(f.desk.configuring(&f.id));
+        assert!(
+            f.desk
+                .configure(&f.id, selection("plain", "off"))
+                .is_empty()
+        );
+        // The run ends during the settings exchange. Don't close it until its
+        // new settings have been confirmed.
+        assert!(
+            feed(
+                &mut f,
+                generation,
+                &[json!({"type":"agent_settled","aborted":false})]
+            )
+            .is_empty()
+        );
+        let effects = acknowledge(&mut f, generation, &effects, json!({}));
+        assert_eq!(sent(&effects)[0]["type"], "set_thinking_level");
+        assert_eq!(sent(&effects)[0]["level"], "max");
+        let effects = acknowledge(&mut f, generation, &effects, json!({}));
+        assert_eq!(sent(&effects)[0]["type"], "get_state");
+        let effects = acknowledge(
+            &mut f,
+            generation,
+            &effects,
+            json!({
+                "model":{"provider":"fake","id":"reasoning"}, "thinkingLevel":"max"
+            }),
+        );
+        assert!(!f.desk.configuring(&f.id));
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().session_settings, chosen);
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().status, Status::Working);
+        assert_eq!(f.desk.transcripts[&f.id].entries.len(), transcript_len);
+        // Now the deferred idle confirmation can run. No prompt, abort, kill,
+        // or spawn was used to change the settings.
+        assert_eq!(effects.len(), 1);
+        assert_eq!(sent(&effects)[0]["type"], "get_state");
+    }
+
+    #[test]
+    fn snooze_undo_preserves_new_session_settings() {
+        let (mut f, _) = started();
+        f.desk.snooze(&f.id, Some(now() + 60));
+        let chosen = selection("reasoning", "max");
+        f.desk.configure(&f.id, chosen.clone());
+        assert!(f.desk.undo());
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().session_settings, chosen);
+        assert_eq!(f.desk.state.agent(&f.id).unwrap().snooze_until, None);
+    }
+
+    #[test]
+    fn rejected_settings_restore_the_confirmed_selection_without_failing_the_task() {
+        let (mut f, generation) = started();
+        let previous = selection("reasoning", "medium");
+        f.desk.state.agent_mut(&f.id).unwrap().session_settings = previous.clone();
+        let effects = f.desk.configure(&f.id, selection("missing", "high"));
+        let request = sent(&effects)[0]["id"].clone();
+        assert!(feed(&mut f, generation + 1, &[json!({
+            "type":"response","id":request,"command":"set_model","success":false,"error":"Unavailable"
+        })]).is_empty());
+        assert!(f.desk.configuring(&f.id));
+        let effects = feed(
+            &mut f,
+            generation,
+            &[json!({
+                "type":"response","id":request,"command":"set_model","success":false,"error":"Unavailable"
+            })],
+        );
+        assert!(!f.desk.configuring(&f.id));
+        let agent = f.desk.state.agent(&f.id).unwrap();
+        assert_eq!(agent.session_settings, previous);
+        assert_eq!(agent.status, Status::Working);
+        assert_eq!(agent.note.as_deref(), Some("Unavailable"));
+        assert_eq!(sent(&effects)[0]["type"], "get_state");
+        // Same-model effort changes need only the thinking command.
+        let effects = f.desk.configure(&f.id, selection("reasoning", "high"));
+        assert_eq!(sent(&effects)[0]["type"], "set_thinking_level");
+    }
+
+    #[test]
+    fn task_settings_survive_save_and_resume_and_legacy_priority_is_ignored() {
+        let (f, _) = started();
+        let mut agent = serde_json::to_value(f.desk.state.agent(&f.id).unwrap()).unwrap();
+        agent.as_object_mut().unwrap().remove("session_settings");
+        agent["priority"] = json!("urgent");
+        let legacy: Agent = serde_json::from_value(agent).unwrap();
+        assert_eq!(legacy.session_settings, SessionSettings::default());
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("priority")
+                .is_none()
+        );
+
+        let mut state = f.desk.state.clone();
+        let agent = state.agent_mut(&f.id).unwrap();
+        agent.session_settings = selection("reasoning", "max");
+        agent.outbox = Some(Outbox {
+            text: "Continue".into(),
+            kind: OutboxKind::Reply,
+        });
+        let store = crate::store::Store::new(f._dir.path().join("settings-state"));
+        store.save(&state).unwrap();
+        let mut restarted = Desk::new(store.load().unwrap(), "pi", f._dir.path().join("worktrees"));
+        let effects = restarted.schedule(now());
+        let spawn = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Spawn(spawn) => Some(spawn),
+                _ => None,
+            })
+            .unwrap();
+        for pair in [
+            ["--provider", "fake"],
+            ["--model", "reasoning"],
+            ["--thinking", "max"],
+        ] {
+            assert!(spawn.args.windows(2).any(|args| args == pair));
+        }
+        let generation = spawn.generation;
+        let effects = restarted.on_lines(
+            &f.id,
+            generation,
+            &[json!({
+                "type":"response", "id":"startup", "command":"get_state", "success":true,
+                "data":{"model":{"provider":"fake","id":"reasoning"}, "thinkingLevel":"max"}
+            })
+            .to_string()],
+        );
+        assert_eq!(sent(&effects)[0]["type"], "get_messages");
+        assert_eq!(
+            restarted.state.agent(&f.id).unwrap().session_settings,
+            selection("reasoning", "max")
+        );
+    }
+
+    #[test]
+    fn working_agents_resume_after_a_restart() {
         let (f, _) = started();
         let state = f.desk.state.clone();
-        let mut desk = Desk::new(state, "pi", "/tmp");
+        let desk = Desk::new(state, "pi", "/tmp");
         let agent = desk.state.agent(&f.id).unwrap().clone();
         assert_eq!(agent.status, Status::Queued);
         assert_eq!(agent.outbox.unwrap().kind, OutboxKind::Resume);
-        desk.set_priority(&f.id, Priority::Urgent);
-        assert_eq!(desk.state.agent(&f.id).unwrap().priority, Priority::Urgent);
-        assert!(desk.undo());
-        assert_eq!(desk.state.agent(&f.id).unwrap().priority, Priority::Medium);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::{ago, chip, dot, faint, key, list::subtitle, muted};
+use super::{ago, dot, faint, key, list::subtitle, muted};
 use crate::app::{App, Message, REPLY_ID};
 use crate::model::{Agent, QuestionKind, Status};
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED, RED};
@@ -116,10 +116,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let mut header = column![
         row![
             faint(project).width(Fill),
-            chip(
-                agent.priority.label(),
-                theme::priority_color(agent.priority)
-            ),
             row![
                 dot(status_color),
                 text(agent.status.label()).size(12).color(MUTED)
@@ -146,6 +142,25 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     let mut body = column![header, text(agent.title.as_str()).size(20).font(BOLD)].spacing(12);
+
+    if !agent.status.is_done() {
+        body = body.push(super::session::controls(app, Some(agent.id.clone())));
+    } else {
+        body = body.push(faint(format!(
+            "Model: {}  ·  Effort: {}",
+            agent
+                .session_settings
+                .model
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "Pi default".into()),
+            agent
+                .session_settings
+                .effort
+                .as_deref()
+                .unwrap_or("Pi default")
+        )));
+    }
 
     if let Some(note) = &agent.note {
         body = body.push(text(note.as_str()).size(13).color(MUTED));

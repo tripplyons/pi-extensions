@@ -7,6 +7,7 @@ mod detail;
 mod list;
 mod overlays;
 mod preview;
+mod session;
 mod sidebar;
 mod stable_column;
 
@@ -181,13 +182,6 @@ pub fn dot<'a>(color: Color) -> Element<'a, Message> {
         .width(8)
         .height(8)
         .style(theme::dot(color))
-        .into()
-}
-
-pub fn chip<'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a, Message> {
-    container(text(label).size(11))
-        .padding([1, 6])
-        .style(theme::chip(color))
         .into()
 }
 

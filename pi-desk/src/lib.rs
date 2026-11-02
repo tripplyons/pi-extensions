@@ -8,6 +8,7 @@ pub mod git;
 pub mod highlight;
 pub mod later;
 pub mod model;
+pub mod models;
 pub mod order;
 pub mod rpc;
 pub mod store;
