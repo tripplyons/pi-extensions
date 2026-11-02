@@ -204,7 +204,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
             );
         }
         Status::Working | Status::Queued => {
-            body = body.push(muted(subtitle(app, agent)).size(13));
+            if app.focus {
+                body = body.push(super::live_text::LiveText::new(
+                    format!("{}:status", agent.id),
+                    subtitle(app, agent),
+                    false,
+                ));
+            } else {
+                body = body.push(muted(subtitle(app, agent)).size(13));
+            }
         }
         _ => {}
     }

@@ -15,16 +15,16 @@ mod tests;
 const DURATION: Duration = Duration::from_millis(180);
 type Lines = Vec<String>;
 
-struct Motion {
-    outgoing: Lines,
-    incoming: Lines,
+pub(super) struct Motion {
+    pub(super) outgoing: Lines,
+    pub(super) incoming: Lines,
     latest: Lines,
-    started: Option<Instant>,
+    pub(super) started: Option<Instant>,
     progress: f32,
 }
 
 impl Motion {
-    fn new(lines: Lines) -> Self {
+    pub(super) fn new(lines: Lines) -> Self {
         Self {
             outgoing: lines.clone(),
             incoming: lines.clone(),
@@ -34,7 +34,7 @@ impl Motion {
         }
     }
 
-    fn retarget(&mut self, latest: &Lines, now: Instant) {
+    pub(super) fn retarget(&mut self, latest: &Lines, now: Instant) {
         self.latest.clone_from(latest);
         if self.started.is_none() && self.incoming != self.latest {
             self.start(now);
@@ -48,7 +48,7 @@ impl Motion {
         self.progress = 0.0;
     }
 
-    fn advance(&mut self, now: Instant) {
+    pub(super) fn advance(&mut self, now: Instant) {
         let Some(started) = self.started else { return };
         let elapsed = now.saturating_duration_since(started);
         self.progress = (elapsed.as_secs_f32() / DURATION.as_secs_f32()).min(1.0);
@@ -60,7 +60,7 @@ impl Motion {
         }
     }
 
-    fn eased(&self) -> f32 {
+    pub(super) fn eased(&self) -> f32 {
         self.progress * self.progress * (3.0 - 2.0 * self.progress)
     }
 }

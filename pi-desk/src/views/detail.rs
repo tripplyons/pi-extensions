@@ -109,7 +109,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-fn markdown_settings() -> markdown::Settings {
+pub(super) fn markdown_settings() -> markdown::Settings {
     let mut style = markdown::Style::from_palette(theme::theme().palette());
     style.link_color = ACCENT;
     style.inline_code_color = TEXT;
@@ -150,10 +150,22 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                 let mut content = column![].spacing(6);
                 for (block_index, block) in blocks {
                     match block {
-                        AssistantBlock::Text { markdown, .. } => {
-                            content = content.push(
-                                markdown::view(markdown.items(), settings).map(Message::Link),
-                            );
+                        AssistantBlock::Text { text, markdown } => {
+                            if app
+                                .current()
+                                .is_some_and(|agent| agent.status == crate::model::Status::Working)
+                                && std::ptr::eq(entry, transcript.entries.last().unwrap())
+                            {
+                                content = content.push(super::live_text::LiveText::new(
+                                    format!("{id}:{message_id}:{block_index}"),
+                                    text.clone(),
+                                    true,
+                                ));
+                            } else {
+                                content = content.push(
+                                    markdown::view(markdown.items(), settings).map(Message::Link),
+                                );
+                            }
                         }
                         AssistantBlock::Thinking { text: thinking } => {
                             let open = app.expanded_thinking.contains(&(

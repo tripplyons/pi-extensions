@@ -146,12 +146,14 @@ first) and then task ID break ties. Each view keeps its existing filters; projec
 lists omit Done tasks. When the selected task changes status between Working
 and Inbox, the sidebar follows it and keeps that task selected. Status changes
 to other tasks do not change the view or selection. Explicit navigation and
-actions that advance to another task still take precedence. Heading labels and counts
+actions that advance to another task still take precedence. Answering a question
+keeps that task open, including when resuming it fails. Heading labels and counts
 share one text baseline in both layouts. List and board previews slide upward over
 180 ms when their text changes, with smooth height changes for wrapped text and
 the review's Needs line. Rapid streaming updates are combined into the latest
-pending preview rather than queued. The full Transcript and detail card do not
-animate.
+pending preview rather than queued. Live assistant text in the Transcript and
+working text in the focused card use the same slide timing. Markdown formatting
+and links remain available. Completed history and switching agents do not animate.
 Use Hide sidebar / Show sidebar in the list or board header to toggle navigation
 without hiding the task list. These actions are also in the command palette.
 Focus mode hides the sidebar and list. Task summaries are always shown when available. Review previews put the outcome

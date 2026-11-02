@@ -172,20 +172,25 @@ fn selected_thread_follows_status_to_inbox_without_following_other_threads() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = seeded(dir.path());
         let effects = app.desk.schedule(now());
-        let generation = effects.iter().find_map(|effect| match effect {
-            Effect::Spawn(spawn) if spawn.agent == "agent-5" => Some(spawn.generation),
-            _ => None,
-        }).unwrap();
+        let generation = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Spawn(spawn) if spawn.agent == "agent-5" => Some(spawn.generation),
+                _ => None,
+            })
+            .unwrap();
         let _ = app.update(Message::Show(View::Working));
         if !selected {
             let _ = app.update(Message::Show(View::Inbox));
         }
         let original = app.selected.clone();
-        let event = |record: &str| Message::Supervisor(Event::Lines {
-            agent: "agent-5".into(),
-            generation,
-            lines: vec![record.into()],
-        });
+        let event = |record: &str| {
+            Message::Supervisor(Event::Lines {
+                agent: "agent-5".into(),
+                generation,
+                lines: vec![record.into()],
+            })
+        };
         let _ = app.update(event(r#"{"type":"extension_ui_request","id":"q1","method":"select","title":"Which?","options":["A","B"]}"#));
         assert_eq!(app.view, View::Inbox);
         assert_eq!(app.selected, original);
@@ -974,9 +979,27 @@ fn question_cards_show_numbered_choices_and_a_click_answers() {
     assert!(agent.question.is_none());
     // The process is gone, so the answer waits as a prompt for the next run.
     assert_ne!(agent.status, Status::Question);
-    assert!(!app.rows().iter().any(|row| row.id == "agent-1"));
-    // The next row takes its place.
-    assert_eq!(app.selected.as_deref(), Some("agent-2"));
+    // Answering keeps this thread open, even if resuming it fails.
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    assert!(app.rows().iter().any(|row| row.id == "agent-1"));
+}
+
+#[test]
+fn answering_in_all_tasks_keeps_the_selected_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::Show(View::All));
+    // Select the question through the same navigation used by the UI.
+    for _ in 0..app.rows().len() {
+        if app.selected.as_deref() == Some("agent-1") {
+            break;
+        }
+        key(&mut app, "j");
+    }
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    let _ = app.update(Message::Choose(0));
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    assert_eq!(app.view, View::All);
 }
 
 #[test]

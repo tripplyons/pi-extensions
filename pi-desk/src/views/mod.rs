@@ -5,6 +5,7 @@ mod board;
 mod card;
 mod detail;
 mod list;
+mod live_text;
 mod overlays;
 mod preview;
 mod session;

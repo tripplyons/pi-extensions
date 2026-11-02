@@ -558,11 +558,19 @@ impl App {
     }
 
     fn act(&mut self, id: &str, action: impl FnOnce(&mut Desk) -> Vec<Effect>) -> Task<Message> {
+        let answering = self
+            .desk
+            .state
+            .agent(id)
+            .is_some_and(|agent| agent.status == Status::Question);
         let before = self.row_ids();
         let effects = action(&mut self.desk);
         let run = self.run(effects);
-        // Replying or answering resumes this thread. Let update follow it
-        // to Working instead of advancing to an unrelated Inbox row.
+        // A question answer belongs to this thread, even if resuming fails.
+        // Let update follow its status instead of selecting an unrelated row.
+        if answering {
+            return run;
+        }
         if self.view == View::Inbox
             && self.selected.as_deref() == Some(id)
             && self.current().is_some_and(|agent| {
