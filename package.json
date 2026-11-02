@@ -39,7 +39,6 @@
       "./extensions/action-fusion/index.ts",
       "./extensions/observation-pack/index.ts",
       "./extensions/evidence-preserving-reducer/index.ts",
-      "./extensions/online-context-compact/index.ts",
       "./extensions/openai-subscription/index.ts",
       "./extensions/lm-studio/index.ts",
       "./extensions/extension-manager/index.ts"

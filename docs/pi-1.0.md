@@ -34,8 +34,7 @@ Dotfiles drops old catalog copies and artificial context caps. Custom endpoints
 and models stay configured.
 
 Skill, goal, and autoresearch instructions use native prompt sections.
-The todos extension is retired; `update_plan` from Online Context Compact
-replaces `todo_write`. Old todo entries stay in session files.
+The todos extension is retired. Old todo entries stay in session files.
 
 ## Pi 1.2.0
 

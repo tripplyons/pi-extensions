@@ -91,26 +91,3 @@ test("Escape pauses the goal at once", async () => {
   await h.emit("message_end", assistant("aborted"));
   expect(await status(h)).toBe("paused");
 });
-
-test("online compaction's planned stop leaves the goal to its hidden turn", async () => {
-  const h = harness(); install(h.pi);
-  await h.call("create_goal", { objective: "Verify" });
-  h.pi.events.emit("pi:online-compaction", { phase: "aborting", ctx: h.ctx });
-  await h.emit("message_end", assistant("error"));
-  await h.emit("agent_end"); expect(h.sent).toHaveLength(0);
-  await h.emit("agent_settled", { aborted: true });
-  expect(await status(h)).toBe("active");
-  h.pi.events.emit("pi:online-compaction", { phase: "continuing", ctx: h.ctx });
-  await h.emit("message_end", assistant("stop"));
-  await h.emit("agent_end"); expect(h.sent).toHaveLength(1);
-});
-
-test("Escape during online compaction pauses the goal", async () => {
-  const h = harness(); install(h.pi);
-  await h.call("create_goal", { objective: "Verify" });
-  h.pi.events.emit("pi:online-compaction", { phase: "aborting", ctx: h.ctx });
-  await h.emit("message_end", assistant("aborted"));
-  expect(await status(h)).toBe("active");
-  h.pi.events.emit("pi:online-compaction", { phase: "stopped", ctx: h.ctx });
-  expect(await status(h)).toBe("paused");
-});

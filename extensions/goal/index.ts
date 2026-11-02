@@ -35,13 +35,7 @@ export default function goals(pi: ExtensionAPI) {
     if (goal?.status !== "active") return;
     account(); goal.status = "paused"; save(ctx);
   });
-  // Online compaction stops the run on purpose, then starts its own hidden turn.
-  let plannedStop = false;
   let lastStopReason: string | undefined;
-  pi.events.on("pi:online-compaction", ({ phase, ctx }: { phase: string; ctx: ExtensionContext }) => {
-    plannedStop = phase === "aborting";
-    if (phase === "stopped" && goal?.status === "active") { account(); goal.status = "paused"; save(ctx); }
-  });
   function load(_event: unknown, ctx: ExtensionContext) {
     goal = restore<Goal | null>(ctx, key) ?? undefined;
     // Resuming a file never silently restarts an autonomous loop.
@@ -114,24 +108,23 @@ export default function goals(pi: ExtensionAPI) {
   pi.on("message_end", (event, ctx) => {
     if (event.message.role !== "assistant") return;
     lastStopReason = event.message.stopReason;
-    if (!["aborted", "error"].includes(lastStopReason)) plannedStop = false;
     if (!goal || goal.status !== "active") return;
     goal.tokens += event.message.usage.totalTokens;
     // Escape pauses at once. Pi may still retry errors, so those wait for agent_settled.
-    if (lastStopReason === "aborted" && !plannedStop) { account(); goal.status = "paused"; }
+    if (lastStopReason === "aborted") { account(); goal.status = "paused"; }
     save(ctx);
   });
   pi.on("agent_end", (_event, ctx) => {
     if (!goal || goal.status !== "active") return;
     if (attached(ctx)) { account(); goal.status = "paused"; save(ctx); return; }
-    if (ctx.hasPendingMessages() || plannedStop || lastStopReason === "error") return;
+    if (ctx.hasPendingMessages() || lastStopReason === "error") return;
     goal.continuations++;
     save(ctx);
     pi.sendUserMessage(`Continue the goal: ${goal.objective}\nCheck get_goal. Do not finish until the full objective is verified. If stuck, try a different approach; blocked requires the same impasse on at least three consecutive goal turns.`, { deliverAs: "steer" });
   });
   // Errors pause only when automatic retries and recovery have finished without success.
   pi.on("agent_settled", (_event, ctx) => {
-    if (!goal || goal.status !== "active" || plannedStop || lastStopReason !== "error") return;
+    if (!goal || goal.status !== "active" || lastStopReason !== "error") return;
     account(); goal.status = "paused"; save(ctx);
     if (ctx.hasUI) ctx.ui.notify("Goal paused after a failed model request. Use /goal resume to continue.", "warning");
   });

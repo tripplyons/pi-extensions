@@ -11,8 +11,6 @@ Objectives, active elapsed time, and token usage persist on the session branch.
 Resume/fork/tree navigation loads goals paused; use `/goal resume` to restart.
 Escape pauses continuation at once. After a failed model request, the goal
 stays active while Pi retries and pauses only if the run settles in an error.
-Planned stops from online context compaction do not pause the goal; its hidden
-turn continues the work. Escape during that compaction pauses the goal.
 
 `/goal edit <objective>` changes the objective without changing its status.
 Stack-style `/goal:status`, `/goal:edit`, `/goal:pause`, `/goal:resume`, and

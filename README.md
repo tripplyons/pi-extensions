@@ -8,7 +8,7 @@ look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
 See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
-## Extensions (31)
+## Extensions (30)
 
 | Extension | Behavior |
 | --- | --- |
@@ -24,7 +24,6 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [action-fusion](extensions/action-fusion) | Managed `then_run` commands after edit and write, with background tracking |
 | [observation-pack](extensions/observation-pack) | Large tool results replaced by excerpts after two requests, with `obs_recall` paging |
 | [evidence-preserving-reducer](extensions/evidence-preserving-reducer) | Long build and test logs reduced by GPT 6 Luna to receipts with verified quotes |
-| [online-context-compact](extensions/online-context-compact) | `update_plan` steps that request cost-aware native compaction and resume interrupted work |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
 | [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; visible narration and a context footer with session and background activity |
@@ -74,6 +73,5 @@ and is installed separately with `sh ../overseer/scripts/install-pi-hooks.sh`.
 It is not bundled here, so only one extension controls the glow.
 
 Historical third-party license notices are retained under `licenses/`.
-Action Fusion, ObservationPack, Evidence-Preserving Reducer, and Online Context
-Compact are adapted from [SoL-Pi](https://github.com/NVlabs/SoL-Pi) under its
+Action Fusion, ObservationPack, and Evidence-Preserving Reducer are adapted from [SoL-Pi](https://github.com/NVlabs/SoL-Pi) under its
 MIT license (`licenses/sol-pi.txt`).
