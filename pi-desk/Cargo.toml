@@ -14,6 +14,11 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7"] }
 rfd = "0.17"
 
+# Keep text origins on physical pixels after display and UI scaling.
+[patch.crates-io]
+iced_wgpu = { path = "vendor/iced_wgpu" }
+iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
+
 [dev-dependencies]
 tempfile = "3"
 iced_test = "0.14"

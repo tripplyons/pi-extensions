@@ -1,5 +1,9 @@
 # pi-desk
 
+Text origins snap to physical pixels after display and UI scaling, using the
+same rule as Overseer. Fonts and text shaping are unchanged. Both iced renderer
+backends use [local patches](vendor/README.md).
+
 A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in its
 own git worktree. Questions and completed work enter your Inbox; answer, review
 the diff, and merge without switching terminals. Panels, controls, selections,
