@@ -102,7 +102,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     Key::Named(Named::Escape) => {
                         Some(text_editor::Binding::Custom(Message::CloseOverlay))
                     }
-                    _ => text_editor::Binding::from_key_press(press),
+                    _ => crate::composer_edit::binding(press),
                 });
             let count = drafts.len().max(1);
             sheet(

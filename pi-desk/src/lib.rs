@@ -3,6 +3,7 @@
 pub mod app;
 pub mod commit_message;
 pub mod compose;
+pub mod composer_edit;
 pub mod desk;
 pub mod git;
 pub mod highlight;

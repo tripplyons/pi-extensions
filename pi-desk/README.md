@@ -27,7 +27,10 @@ selectors in New task and the task detail card let you override them per task.
 Model choices come from Pi's configured/authenticated models. Effort lists only
 the thinking levels Pi supports for that model, including "off" for models
 without reasoning and "xhigh" or "max" where supported. Switching models lets Pi
-normalize an unsupported effort level.
+normalize an unsupported effort level. The outlined Refresh models button sits
+beside the selectors. Switching back to a task reuses its loaded options when
+its saved settings have not changed. Refresh keeps the selectors visible but
+unavailable until loading finishes; first load reserves the same selector area.
 
 Each task saves its own model and effort and restores them when resumed. New
 tasks do not inherit the last task's selection. Changes during a run apply to
@@ -162,6 +165,12 @@ removes the worktree and branch, including uncommitted changes, after confirmati
 Mark done keeps the branch. Undo is not a way to reverse a merge after it runs.
 
 ## Keys
+
+The New task composer supports macOS word navigation and deletion with Option,
+line navigation and deletion with Cmd, Cmd+Up/Down for document navigation,
+and Shift variants for selection. Clipboard shortcuts and Cmd+A select all work
+as usual. Cmd+Z undoes composer edits; Cmd+Shift+Z redoes them. Cmd+Enter still
+files the task, and Escape closes the composer. Reply-editor shortcuts are unchanged.
 
 Single-key shortcuts apply outside text inputs. Cmd+K opens the command palette.
 Zoom shortcuts also work while typing or using a dialog. On Linux and Windows,

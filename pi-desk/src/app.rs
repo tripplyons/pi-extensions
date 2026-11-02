@@ -66,6 +66,7 @@ pub struct Pending {
 }
 
 pub struct Composer {
+    pub history: crate::composer_edit::History,
     pub project: Option<Id>,
     /// The branch new tasks merge into: the project's current branch.
     pub base: Result<String, String>,
@@ -155,6 +156,7 @@ pub enum Message {
         Result<crate::models::Options, String>,
     ),
     ComposerEdit(text_editor::Action),
+    ComposerCommand(crate::composer_edit::Command),
     ComposerSubmit,
     CloseOverlay,
     OpenPalette,
@@ -395,7 +397,18 @@ impl App {
         self.replying = false;
         let Some(id) = id else { return Task::none() };
         self.desk.load_transcript(&id);
-        let models = self.load_session(Some(id.clone()), None);
+        let cached = self.sessions.get(&id).is_some_and(|picker| {
+            (picker.options.is_some() || picker.loading)
+                && self.desk.state.agent(&id).is_some_and(|agent| {
+                    picker.settings == agent.session_settings
+                        || picker.requested.as_ref() == Some(&agent.session_settings)
+                })
+        });
+        let models = if cached {
+            Task::none()
+        } else {
+            self.load_session(Some(id.clone()), None)
+        };
         Task::batch([self.load_diff(&id), models])
     }
 
@@ -1006,6 +1019,7 @@ impl App {
                 };
                 let base = self.base_branch(project.as_deref());
                 self.overlay = Some(Overlay::Composer(Composer {
+                    history: Default::default(),
                     project,
                     base,
                     session: SessionPicker::default(),
@@ -1137,7 +1151,13 @@ impl App {
             }
             Message::ComposerEdit(action) => {
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
-                    composer.content.perform(action);
+                    composer.history.edit(&mut composer.content, action);
+                }
+                Task::none()
+            }
+            Message::ComposerCommand(command) => {
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    composer.history.command(&mut composer.content, command);
                 }
                 Task::none()
             }

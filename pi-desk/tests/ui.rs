@@ -1024,6 +1024,38 @@ fn merge_and_discard_wait_out_an_undo_window() {
 }
 
 #[tokio::test]
+async fn switching_tasks_reuses_models_and_refresh_keeps_selectors_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let target = Some("agent-4".to_string());
+    let task = app.update(Message::RefreshSession(target.clone()));
+    finish_task(&mut app, task).await;
+    let _ = app.update(Message::Select("agent-2".into()));
+    let _ = app.update(Message::Select("agent-4".into()));
+    assert!(!app.session_picker(&target).unwrap().loading);
+    let task = app.update(Message::RefreshSession(target.clone()));
+    assert!(app.session_picker(&target).unwrap().loading);
+    {
+        let mut rendered = ui(&app);
+        assert!(rendered.find("Model").is_ok());
+        assert!(rendered.find("Effort").is_ok());
+        assert!(rendered.find("Refreshing…").is_ok());
+    }
+    finish_task(&mut app, task).await;
+    app.desk
+        .state
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == "agent-4")
+        .unwrap()
+        .session_settings
+        .effort = Some("changed".into());
+    let _ = app.update(Message::Select("agent-2".into()));
+    let _ = app.update(Message::Select("agent-4".into()));
+    assert!(app.session_picker(&target).unwrap().loading);
+}
+
+#[tokio::test]
 async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
