@@ -11,8 +11,8 @@ pub const SURFACE: Color = color!(0x1b1b1b);
 pub const RAISED: Color = color!(0x242424);
 pub const BORDER: Color = color!(0x363636);
 pub const TEXT: Color = color!(0xe6e6e6);
-pub const MUTED: Color = color!(0xa1a1a1);
-pub const FAINT: Color = color!(0x808080);
+pub const MUTED: Color = color!(0xb0b0b0);
+pub const FAINT: Color = color!(0x999999);
 pub const ACCENT: Color = color!(0xc7c7c7);
 pub const ACCENT_SOFT: Color = color!(0x303030);
 pub const AMBER: Color = color!(0xbba67f);
@@ -21,11 +21,37 @@ pub const RED: Color = color!(0xc18d8d);
 pub const ADDED_BG: Color = color!(0x1c241e);
 pub const REMOVED_BG: Color = color!(0x291f1f);
 
+/// Native sans for interface text and Markdown; monospace only for technical text.
+#[cfg(target_os = "macos")]
+pub const SANS: Font = Font::with_name(".SF NS");
+#[cfg(target_os = "windows")]
+pub const SANS: Font = Font::with_name("Segoe UI");
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const SANS: Font = Font::DEFAULT;
 pub const MONO: Font = Font::MONOSPACE;
 pub const BOLD: Font = Font {
     weight: iced::font::Weight::Semibold,
-    ..Font::DEFAULT
+    ..SANS
 };
+
+pub mod size {
+    pub const CAPTION: f32 = 12.0;
+    pub const CONTROL: f32 = 13.0;
+    pub const BODY: f32 = 14.0;
+    pub const HEADING: f32 = 16.0;
+    pub const TITLE: f32 = 18.0;
+}
+
+pub const LINE_HEIGHT: f32 = 1.5;
+
+/// Shared by the desktop and windowless simulator so snapshots use real fonts.
+pub fn settings() -> iced::Settings {
+    iced::Settings {
+        default_font: SANS,
+        default_text_size: iced::Pixels(size::CONTROL),
+        ..iced::Settings::default()
+    }
+}
 
 pub fn theme() -> Theme {
     Theme::custom(

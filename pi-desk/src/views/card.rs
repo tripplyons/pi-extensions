@@ -47,7 +47,7 @@ fn choices(agent: &Agent) -> Vec<Choice> {
 
 fn action<'a>(hint: &'a str, label: &'a str, message: Message) -> Element<'a, Message> {
     button(
-        row![key(hint), text(label).size(13)]
+        row![key(hint), text(label).size(theme::size::CONTROL)]
             .spacing(6)
             .align_y(Alignment::Center),
     )
@@ -64,7 +64,7 @@ fn reply_editor<'a>(app: &'a App, placeholder: &'static str) -> Element<'a, Mess
         .on_action(Message::ReplyEdit)
         .height(110)
         .padding(10)
-        .size(14)
+        .size(theme::size::BODY)
         .style(theme::editor)
         .key_binding(|press| match press.key.as_ref() {
             Key::Named(Named::Enter) if !press.modifiers.shift() => {
@@ -91,13 +91,17 @@ fn reply_editor<'a>(app: &'a App, placeholder: &'static str) -> Element<'a, Mess
 fn summary_line<'a>(label: &'static str, value: &'a str) -> Element<'a, Message> {
     row![
         text(label)
-            .size(14)
+            .size(theme::size::BODY)
             .line_height(iced::Pixels(20.0))
             .color(MUTED)
             .width(52),
-        container(text(value).size(14).line_height(iced::Pixels(20.0)))
-            .width(Fill)
-            .id(format!("summary-value-{label}")),
+        container(
+            text(value)
+                .size(theme::size::BODY)
+                .line_height(iced::Pixels(20.0))
+        )
+        .width(Fill)
+        .id(format!("summary-value-{label}")),
     ]
     .into()
 }
@@ -118,7 +122,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
             faint(project).width(Fill),
             row![
                 dot(status_color),
-                text(agent.status.label()).size(12).color(MUTED)
+                text(agent.status.label())
+                    .size(theme::size::CAPTION)
+                    .color(MUTED)
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -127,7 +133,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .align_y(Alignment::Center),
         row![
             text(agent.branch.as_str())
-                .size(11)
+                .size(theme::size::CAPTION)
                 .font(MONO)
                 .color(FAINT)
                 .width(Fill),
@@ -138,10 +144,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(6);
     if let Some(busy) = app.desk.busy(&agent.id) {
-        header = header.push(text(format!("{busy}…")).size(12).color(MUTED));
+        header = header.push(
+            text(format!("{busy}…"))
+                .size(theme::size::CAPTION)
+                .color(MUTED),
+        );
     }
 
-    let mut body = column![header, text(agent.title.as_str()).size(20).font(BOLD)].spacing(12);
+    let mut body = column![
+        header,
+        text(agent.title.as_str())
+            .size(theme::size::TITLE)
+            .font(BOLD)
+    ]
+    .spacing(12);
 
     if !agent.status.is_done() {
         body = body.push(super::session::controls(app, Some(agent.id.clone())));
@@ -163,7 +179,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     if let Some(note) = &agent.note {
-        body = body.push(text(note.as_str()).size(13).color(MUTED));
+        body = body.push(text(note.as_str()).size(theme::size::CONTROL).color(MUTED));
     }
 
     if let Some(summary) = &agent.summary {
@@ -179,7 +195,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             if let Some(question) = &agent.question {
                 body = body.push(
                     container(
-                        scrollable(text(question.text.as_str()).size(15))
+                        scrollable(text(question.text.as_str()).size(theme::size::BODY))
                             .style(theme::scrollbar)
                             .height(iced::Length::Shrink),
                     )
@@ -195,8 +211,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Status::Failed { error } => {
             body = body.push(
                 container(
-                    scrollable(text(error.as_str()).size(12).font(MONO).color(RED))
-                        .style(theme::scrollbar),
+                    scrollable(
+                        text(error.as_str())
+                            .size(theme::size::CAPTION)
+                            .font(MONO)
+                            .color(RED),
+                    )
+                    .style(theme::scrollbar),
                 )
                 .padding(10)
                 .max_height(160)
@@ -211,7 +232,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                     false,
                 ));
             } else {
-                body = body.push(muted(subtitle(app, agent)).size(13));
+                body = body.push(muted(subtitle(app, agent)).size(theme::size::CONTROL));
             }
         }
         _ => {}
@@ -223,8 +244,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
         for (index, choice) in options.iter().enumerate().take(9) {
             let number = (index + 1).to_string();
             let mut line = row![
-                container(text(number).size(12).font(MONO).color(MUTED)).width(18),
-                text(choice.label.clone()).size(14).width(Fill),
+                container(
+                    text(number)
+                        .size(theme::size::CAPTION)
+                        .font(MONO)
+                        .color(MUTED)
+                )
+                .width(18),
+                text(choice.label.clone())
+                    .size(theme::size::BODY)
+                    .width(Fill),
             ]
             .spacing(8)
             .align_y(Alignment::Center);

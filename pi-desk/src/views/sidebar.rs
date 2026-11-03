@@ -9,17 +9,19 @@ fn item<'a>(app: &App, label: &'a str, count: Option<usize>, view: View) -> Elem
     let selected = app.view == view;
     let count: Element<'a, Message> = match count {
         Some(count) if count > 0 => text(count.to_string())
-            .size(12)
+            .size(theme::size::CAPTION)
             .color(if selected { ACCENT } else { MUTED })
             .into(),
         _ => Space::new().into(),
     };
-    button(row![text(label).size(13).width(Fill), count].align_y(Alignment::Center))
-        .width(Fill)
-        .padding([6, 10])
-        .style(theme::row(selected))
-        .on_press(Message::Show(view))
-        .into()
+    button(
+        row![text(label).size(theme::size::CONTROL).width(Fill), count].align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .padding([6, 10])
+    .style(theme::row(selected))
+    .on_press(Message::Show(view))
+    .into()
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -47,14 +49,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .filter(|agent| agent.project_id == project.id && !agent.status.is_done())
             .count();
         let selected = app.view == View::Project(project.id.clone());
-        let handle = mouse_area(container(text("⠿").size(12).color(FAINT)).padding([6, 4]))
-            .interaction(mouse::Interaction::Grab)
-            .on_press(Message::DragProject(project.id.clone()));
+        let handle = mouse_area(
+            container(text("⠿").size(theme::size::CAPTION).color(FAINT)).padding([6, 4]),
+        )
+        .interaction(mouse::Interaction::Grab)
+        .on_press(Message::DragProject(project.id.clone()));
         let label = button(
             row![
-                text(project.name.as_str()).size(13).width(Fill),
+                text(project.name.as_str())
+                    .size(theme::size::CONTROL)
+                    .width(Fill),
                 if active > 0 {
-                    text(active.to_string()).size(12).color(MUTED)
+                    text(active.to_string())
+                        .size(theme::size::CAPTION)
+                        .color(MUTED)
                 } else {
                     text("")
                 },
@@ -81,7 +89,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     if state.projects.is_empty() {
         projects = projects.push(
-            container(faint("Add a git repository to file work in it.").size(12)).padding([4, 10]),
+            container(faint("Add a git repository to file work in it.").size(theme::size::CAPTION))
+                .padding([4, 10]),
         );
     }
 
@@ -96,7 +105,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     let header = row![
         faint("PROJECTS").width(Fill),
-        button(text("+").size(14).color(MUTED))
+        button(text("+").size(theme::size::BODY).color(MUTED))
             .padding([0, 8])
             .style(theme::row(false))
             .on_press(Message::AddProject),
@@ -105,21 +114,30 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .padding([0, 4]);
 
     let footer = column![
-        button(row![text("New task").size(13).width(Fill), key("N")].align_y(Alignment::Center))
-            .width(Fill)
-            .padding([8, 10])
-            .style(theme::ghost)
-            .on_press(Message::NewTask),
+        button(
+            row![
+                text("New task").size(theme::size::CONTROL).width(Fill),
+                key("N")
+            ]
+            .align_y(Alignment::Center)
+        )
+        .width(Fill)
+        .padding([8, 10])
+        .style(theme::ghost)
+        .on_press(Message::NewTask),
         row![
-            button(text("Settings").size(12))
+            button(text("Settings").size(theme::size::CAPTION))
                 .style(theme::row(false))
                 .padding([4, 8])
                 .on_press(Message::OpenSettings),
             Space::new().width(Fill),
             button(
-                row![key("⌘K"), text("Commands").size(12).color(MUTED)]
-                    .spacing(6)
-                    .align_y(Alignment::Center)
+                row![
+                    key("⌘K"),
+                    text("Commands").size(theme::size::CAPTION).color(MUTED)
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center)
             )
             .style(theme::row(false))
             .padding([4, 6])
@@ -131,7 +149,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     container(
         column![
-            container(text("pi-desk").font(BOLD).size(15)).padding([2, 10]),
+            container(text("pi-desk").font(BOLD).size(theme::size::BODY)).padding([2, 10]),
             nav,
             Space::new().height(14),
             header,

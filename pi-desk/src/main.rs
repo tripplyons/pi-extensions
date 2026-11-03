@@ -9,6 +9,7 @@ fn main() -> iced::Result {
         .scale_factor(App::scale_factor)
         .theme(|_: &App| pi_desk::theme::theme())
         .subscription(App::subscription)
+        .settings(pi_desk::theme::settings())
         .window_size((1440.0, 900.0))
         .run()
 }

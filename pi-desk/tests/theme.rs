@@ -26,6 +26,44 @@ fn readable(foreground: Color, background: Color) {
 }
 
 #[test]
+fn desktop_and_snapshots_share_a_small_type_scale_and_font_family() {
+    let settings = theme::settings();
+    assert_eq!(settings.default_font, theme::SANS);
+    assert_eq!(settings.default_text_size.0, theme::size::CONTROL);
+    assert_eq!(theme::BOLD.family, theme::SANS.family);
+    assert_eq!(theme::BOLD.weight, iced::font::Weight::Semibold);
+    assert_ne!(theme::MONO.family, theme::SANS.family);
+    assert_eq!(
+        [
+            theme::size::CAPTION,
+            theme::size::CONTROL,
+            theme::size::BODY,
+            theme::size::HEADING,
+            theme::size::TITLE,
+        ],
+        [12.0, 13.0, 14.0, 16.0, 18.0]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_native_sans_family_is_available_to_the_renderer() {
+    let mut system = iced::advanced::graphics::text::font_system()
+        .write()
+        .unwrap();
+    let iced::font::Family::Name(name) = theme::SANS.family else {
+        panic!("expected a named macOS system font")
+    };
+    assert!(
+        system
+            .raw()
+            .db()
+            .faces()
+            .any(|face| face.families.iter().any(|(family, _)| family == name))
+    );
+}
+
+#[test]
 fn controls_are_neutral() {
     let theme = theme::theme();
     for color in [
@@ -123,6 +161,7 @@ fn body_secondary_and_action_text_remain_readable() {
     ] {
         readable(theme::TEXT, background);
         readable(theme::MUTED, background);
+        readable(theme::FAINT, background);
     }
     let theme = theme::theme();
     for status in [button::Status::Active, button::Status::Hovered] {

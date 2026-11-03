@@ -4,6 +4,7 @@
 mod board;
 mod card;
 mod detail;
+mod line_reveal;
 mod list;
 mod live_text;
 mod overlays;
@@ -58,8 +59,8 @@ pub fn root(app: &App) -> Element<'_, Message> {
         page = page.push(
             container(
                 row![
-                    text(error.as_str()).size(13).width(Fill),
-                    button(text("Dismiss").size(12))
+                    text(error.as_str()).size(theme::size::CONTROL).width(Fill),
+                    button(text("Dismiss").size(theme::size::CAPTION))
                         .style(theme::ghost)
                         .on_press(Message::DismissError)
                 ]
@@ -125,7 +126,7 @@ fn sidebar_toggle(app: &App) -> Element<'_, Message> {
             } else {
                 "Show sidebar"
             })
-            .size(12),
+            .size(theme::size::CAPTION),
             key("S"),
         ]
         .spacing(6)
@@ -146,10 +147,10 @@ fn status_bar(app: &App) -> Option<Element<'_, Message>> {
             .as_secs()
             + 1;
         row![
-            text(format!("{} in {left}s", pending.label)).size(13),
+            text(format!("{} in {left}s", pending.label)).size(theme::size::CONTROL),
             Space::new().width(16),
             button(
-                row![key("Z"), text("Undo").size(13)]
+                row![key("Z"), text("Undo").size(theme::size::CONTROL)]
                     .spacing(6)
                     .align_y(Alignment::Center)
             )
@@ -160,7 +161,7 @@ fn status_bar(app: &App) -> Option<Element<'_, Message>> {
         .align_y(Alignment::Center)
         .into()
     } else if let Some((message, _)) = &app.toast {
-        text(message.as_str()).size(13).into()
+        text(message.as_str()).size(theme::size::CONTROL).into()
     } else {
         return None;
     };
@@ -188,25 +189,30 @@ pub fn dot<'a>(color: Color) -> Element<'a, Message> {
 
 /// A key hint such as `E` or `⌘K`.
 pub fn key<'a>(label: &'a str) -> Element<'a, Message> {
-    container(text(label).size(11).font(MONO).color(MUTED))
-        .padding([0, 5])
-        .style(|_: &iced::Theme| container::Style {
-            border: iced::Border {
-                color: theme::BORDER,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+    container(
+        text(label)
+            .size(theme::size::CAPTION)
+            .font(MONO)
+            .color(MUTED),
+    )
+    .padding([0, 5])
+    .style(|_: &iced::Theme| container::Style {
+        border: iced::Border {
+            color: theme::BORDER,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 pub fn muted<'a>(label: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(label).size(12).color(MUTED)
+    text(label).size(theme::size::CONTROL).color(MUTED)
 }
 
 pub fn faint<'a>(label: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(label).size(11).color(FAINT)
+    text(label).size(theme::size::CAPTION).color(FAINT)
 }
 
 pub fn ago(now: Timestamp, at: Timestamp) -> String {
@@ -234,9 +240,12 @@ pub fn line(text: &str, max: usize) -> String {
 
 pub fn empty<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
     container(
-        column![text(title).size(15).color(MUTED), faint(hint).size(12)]
-            .spacing(6)
-            .align_x(Alignment::Center),
+        column![
+            text(title).size(theme::size::BODY).color(MUTED),
+            faint(hint).size(theme::size::CAPTION)
+        ]
+        .spacing(6)
+        .align_x(Alignment::Center),
     )
     .width(Fill)
     .height(Length::Fill)

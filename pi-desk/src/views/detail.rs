@@ -17,9 +17,11 @@ pub fn pane(app: &App) -> Element<'_, Message> {
     let content: Element<'_, Message> = if app.desk.state.projects.is_empty() {
         container(
             column![
-                text("Add a project to start").size(16).color(MUTED),
+                text("Add a project to start")
+                    .size(theme::size::HEADING)
+                    .color(MUTED),
                 faint("pi-desk files each task as a Pi agent in its own git worktree."),
-                button(text("Add project").size(13))
+                button(text("Add project").size(theme::size::CONTROL))
                     .style(theme::primary)
                     .padding([6, 12])
                     .on_press(Message::AddProject),
@@ -43,7 +45,7 @@ pub fn pane(app: &App) -> Element<'_, Message> {
 
 fn tab<'a>(label: String, hint: &'a str, active: bool, message: Message) -> Element<'a, Message> {
     button(
-        row![text(label).size(13), key(hint)]
+        row![text(label).size(theme::size::CONTROL), key(hint)]
             .spacing(6)
             .align_y(Alignment::Center),
     )
@@ -111,7 +113,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
 pub(super) fn markdown_settings() -> markdown::Settings {
     let mut style = markdown::Style::from_palette(theme::theme().palette());
-    style.link_color = ACCENT;
+    style.font = theme::SANS;
+    style.inline_code_font = MONO;
+    style.code_block_font = MONO;
+    style.link_color = TEXT;
     style.inline_code_color = TEXT;
     style.inline_code_highlight = markdown::Highlight {
         background: RAISED.into(),
@@ -120,7 +125,15 @@ pub(super) fn markdown_settings() -> markdown::Settings {
             ..iced::Border::default()
         },
     };
-    markdown::Settings::with_text_size(14, style)
+    let mut settings = markdown::Settings::with_text_size(theme::size::BODY, style);
+    settings.h1_size = theme::size::TITLE.into();
+    settings.h2_size = theme::size::HEADING.into();
+    settings.h3_size = theme::size::BODY.into();
+    settings.h4_size = theme::size::BODY.into();
+    settings.h5_size = theme::size::BODY.into();
+    settings.h6_size = theme::size::BODY.into();
+    settings.code_size = theme::size::CONTROL.into();
+    settings
 }
 
 fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
@@ -130,17 +143,16 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
     if transcript.entries.is_empty() {
         return empty("No transcript yet", "It appears once the agent starts.");
     }
-    let settings = markdown_settings();
     let mut entries = column![].spacing(12).padding([14, 4]);
     for entry in &transcript.entries {
         let element: Element<'a, Message> = match entry {
-            Entry::User { text: message } => {
-                container(column![faint("You"), text(message.as_str()).size(14)].spacing(4))
-                    .padding(12)
-                    .width(Fill)
-                    .style(theme::panel)
-                    .into()
-            }
+            Entry::User { text: message } => container(
+                column![faint("You"), text(message.as_str()).size(theme::size::BODY)].spacing(4),
+            )
+            .padding(12)
+            .width(Fill)
+            .style(theme::panel)
+            .into(),
             Entry::Assistant {
                 id: message_id,
                 blocks,
@@ -162,9 +174,7 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                                     true,
                                 ));
                             } else {
-                                content = content.push(
-                                    markdown::view(markdown.items(), settings).map(Message::Link),
-                                );
+                                content = content.push(super::live_text::markdown_view(markdown));
                             }
                         }
                         AssistantBlock::Thinking { text: thinking } => {
@@ -175,10 +185,12 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                             ));
                             let head = button(
                                 row![
-                                    text(if open { "▾" } else { "▸" }).size(11).color(FAINT),
-                                    text("Thinking").size(12).color(MUTED),
+                                    text(if open { "▾" } else { "▸" })
+                                        .size(theme::size::CAPTION)
+                                        .color(FAINT),
+                                    text("Thinking").size(theme::size::CAPTION).color(MUTED),
                                     text(super::line(thinking, 110))
-                                        .size(12)
+                                        .size(theme::size::CAPTION)
                                         .color(FAINT)
                                         .wrapping(text::Wrapping::None)
                                         .width(Fill),
@@ -197,17 +209,22 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                             content = content.push(head);
                             if open && !thinking.is_empty() {
                                 content = content.push(
-                                    container(text(thinking.as_str()).size(13).color(MUTED))
-                                        .padding(10)
-                                        .width(Fill)
-                                        .style(theme::panel),
+                                    container(
+                                        text(thinking.as_str())
+                                            .size(theme::size::CONTROL)
+                                            .color(MUTED),
+                                    )
+                                    .padding(10)
+                                    .width(Fill)
+                                    .style(theme::panel),
                                 );
                             }
                         }
                     }
                 }
                 if let Some(error) = error {
-                    content = content.push(text(error.as_str()).size(13).color(RED));
+                    content =
+                        content.push(text(error.as_str()).size(theme::size::CONTROL).color(RED));
                 }
                 content.into()
             }
@@ -229,16 +246,23 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                 };
                 let head = button(
                     row![
-                        text(if open { "▾" } else { "▸" }).size(11).color(FAINT),
-                        text(name.as_str()).size(12).font(MONO).color(ACCENT),
+                        text(if open { "▾" } else { "▸" })
+                            .size(theme::size::CAPTION)
+                            .color(FAINT),
+                        text(name.as_str())
+                            .size(theme::size::CAPTION)
+                            .font(MONO)
+                            .color(ACCENT),
                         text(super::line(preview, 110))
-                            .size(12)
+                            .size(theme::size::CAPTION)
                             .font(MONO)
                             .color(MUTED)
                             .width(Fill),
-                        text(state)
-                            .size(11)
-                            .color(if *is_error { RED } else { FAINT }),
+                        text(state).size(theme::size::CAPTION).color(if *is_error {
+                            RED
+                        } else {
+                            FAINT
+                        }),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
@@ -252,7 +276,7 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                         head,
                         container(
                             text(output.as_str())
-                                .size(12)
+                                .size(theme::size::CAPTION)
                                 .font(MONO)
                                 .color(if *is_error { RED } else { TEXT })
                         )
@@ -300,9 +324,16 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         list = list.push(
             button(
                 row![
-                    text(file.path.as_str()).size(12).font(MONO).width(Fill),
-                    text(format!("+{}", file.added)).size(11).color(GREEN),
-                    text(format!("−{}", file.removed)).size(11).color(RED),
+                    text(file.path.as_str())
+                        .size(theme::size::CAPTION)
+                        .font(MONO)
+                        .width(Fill),
+                    text(format!("+{}", file.added))
+                        .size(theme::size::CAPTION)
+                        .color(GREEN),
+                    text(format!("−{}", file.removed))
+                        .size(theme::size::CAPTION)
+                        .color(RED),
                 ]
                 .spacing(6),
             )
@@ -346,7 +377,7 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
             ),
         }
         lines = lines.push(
-            container(rich_text(spans).size(12))
+            container(rich_text(spans).size(theme::size::CAPTION))
                 .id(format!("diff-line-{index}"))
                 .padding([0, 10])
                 .style(theme::fill(background)),

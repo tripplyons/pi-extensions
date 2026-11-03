@@ -1,8 +1,12 @@
 # pi-desk
 
 Text origins snap to physical pixels after display and UI scaling, using the
-same rule as Overseer. Fonts and text shaping are unchanged. Both iced renderer
-backends use [local patches](vendor/README.md).
+same rule as Overseer. Both iced renderer backends use
+[local patches](vendor/README.md). Interface text and Markdown share a native
+sans family (San Francisco on macOS, Segoe UI on Windows, system sans on Linux).
+A shared 12/13/14/16/18 px scale separates captions, controls, body text, headings,
+and titles. Semibold marks hierarchy; code, paths, and key hints use monospace.
+Secondary text stays readable against the neutral dark panels.
 
 A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in its
 own git worktree. Questions and completed work enter your Inbox; answer, review
@@ -156,8 +160,11 @@ share one text baseline in both layouts. List and board previews slide upward ov
 180 ms when their text changes, with smooth height changes for wrapped text and
 the review's Needs line. Rapid streaming updates are combined into the latest
 pending preview rather than queued. Live assistant text in the Transcript and
-working text in the focused card use the same slide timing. Markdown formatting
-and links remain available. Completed history and switching agents do not animate.
+working text in the focused card reveal each new visible line once, with a
+6 px entrance over 180 ms. Wrapped lines enter too; tokens on existing lines
+update in place without restarting the animation or queuing stale text.
+Markdown formatting and links remain available. Completed history, switching
+agents, and reflow from resize or zoom do not replay line entrances.
 Use Hide sidebar / Show sidebar in the list or board header to toggle navigation
 without hiding the task list. These actions are also in the command palette.
 Focus mode hides the sidebar and list. Task summaries are always shown when available. Review previews put the outcome

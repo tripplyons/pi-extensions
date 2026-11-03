@@ -1,33 +1,166 @@
-//! Sliding live text. Snapshot rendering keeps Markdown links interactive while
-//! the shared preview clock coalesces streaming updates.
-use super::preview::Motion;
+//! Current streaming text with one-time entrances for newly shaped lines.
+//! A single Markdown tree preserves links and never queues stale snapshots.
+use super::line_reveal::LineReveal;
 use crate::{app::Message, theme};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget};
-use iced::widget::{markdown, text};
-use iced::{Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, window};
-use std::time::Instant;
+use iced::widget::{column, container, markdown, rich_text, scrollable, text};
+use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme};
 
 struct State {
     key: String,
-    motion: Motion,
-    outgoing: markdown::Content,
-    incoming: markdown::Content,
+    value: String,
+    content: markdown::Content,
+    laid_out: bool,
 }
 
 impl State {
     fn new(key: String, value: String) -> Self {
         Self {
             key,
-            motion: Motion::new(vec![value.clone()]),
-            outgoing: markdown::Content::parse(&value),
-            incoming: markdown::Content::parse(&value),
+            content: markdown::Content::parse(&value),
+            value,
+            laid_out: false,
         }
     }
+}
 
-    fn sync(&mut self) {
-        self.outgoing = markdown::Content::parse(&self.motion.outgoing[0]);
-        self.incoming = markdown::Content::parse(&self.motion.incoming[0]);
+/// Use the same measured line height for rendering and entrance clipping.
+struct Viewer {
+    animate_initial: bool,
+}
+
+/// Markdown emphasis uses the same restrained weight as interface headings.
+fn prose_spans(
+    value: &markdown::Text,
+    style: markdown::Style,
+) -> Vec<text::Span<'static, markdown::Uri>> {
+    value
+        .spans(style)
+        .iter()
+        .cloned()
+        .map(|mut span| {
+            if span.link.is_some() {
+                span.underline = true;
+            }
+            if let Some(font) = &mut span.font {
+                if font.family == theme::SANS.family && font.weight == iced::font::Weight::Bold {
+                    font.weight = theme::BOLD.weight;
+                }
+            }
+            span
+        })
+        .collect()
+}
+impl<'a> markdown::Viewer<'a, Message> for Viewer {
+    fn on_link_click(url: markdown::Uri) -> Message {
+        Message::Link(url)
     }
+
+    fn paragraph(
+        &self,
+        settings: markdown::Settings,
+        value: &markdown::Text,
+    ) -> Element<'a, Message> {
+        self.lines(
+            rich_text(prose_spans(value, settings.style))
+                .size(settings.text_size)
+                .line_height(theme::LINE_HEIGHT)
+                .on_link_click(Message::Link),
+            settings.text_size.0,
+        )
+    }
+
+    fn heading(
+        &self,
+        settings: markdown::Settings,
+        level: &'a markdown::HeadingLevel,
+        value: &'a markdown::Text,
+        index: usize,
+    ) -> Element<'a, Message> {
+        use markdown::HeadingLevel::*;
+        let size = match level {
+            H1 => settings.h1_size,
+            H2 => settings.h2_size,
+            H3 => settings.h3_size,
+            H4 => settings.h4_size,
+            H5 => settings.h5_size,
+            H6 => settings.h6_size,
+        };
+        let mut style = settings.style;
+        style.font = theme::BOLD;
+        container(
+            self.lines(
+                rich_text(prose_spans(value, style))
+                    .size(size)
+                    .font(theme::BOLD)
+                    .line_height(theme::LINE_HEIGHT)
+                    .on_link_click(Message::Link),
+                size.0,
+            ),
+        )
+        .padding(iced::Padding::default().top(if index > 0 {
+            settings.text_size.0 / 2.0
+        } else {
+            0.0
+        }))
+        .into()
+    }
+
+    fn code_block(
+        &self,
+        settings: markdown::Settings,
+        _language: Option<&'a str>,
+        _code: &'a str,
+        lines: &'a [markdown::Text],
+    ) -> Element<'a, Message> {
+        let mut style = settings.style;
+        style.font = settings.style.code_block_font;
+        container(
+            scrollable(
+                container(column(lines.iter().map(|line| {
+                    self.lines(
+                        rich_text(line.spans(style))
+                            .font(settings.style.code_block_font)
+                            .size(settings.code_size)
+                            .line_height(theme::LINE_HEIGHT)
+                            .on_link_click(Message::Link),
+                        settings.code_size.0,
+                    )
+                })))
+                .padding(settings.code_size),
+            )
+            .style(theme::scrollbar)
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::default()
+                    .width(settings.code_size / 2)
+                    .scroller_width(settings.code_size / 2),
+            )),
+        )
+        .width(Length::Fill)
+        .padding(settings.code_size / 4)
+        .style(container::dark)
+        .into()
+    }
+}
+
+impl Viewer {
+    fn lines<'a>(
+        &self,
+        content: impl Into<Element<'a, Message>>,
+        size: f32,
+    ) -> Element<'a, Message> {
+        LineReveal::new(content, size * theme::LINE_HEIGHT, self.animate_initial).into()
+    }
+}
+
+pub(super) fn markdown_view(content: &markdown::Content) -> Element<'_, Message> {
+    markdown::view_with(
+        content.items(),
+        super::detail::markdown_settings(),
+        &Viewer {
+            animate_initial: false,
+        },
+    )
 }
 
 pub(super) struct LiveText {
@@ -35,7 +168,6 @@ pub(super) struct LiveText {
     value: String,
     markdown: bool,
 }
-
 impl LiveText {
     pub fn new(key: String, value: String, markdown: bool) -> Self {
         Self {
@@ -45,21 +177,25 @@ impl LiveText {
         }
     }
 
-    fn content<'a>(&self, state: &'a State) -> Vec<Element<'a, Message>> {
-        let render = |value: &String, content: &'a markdown::Content| -> Element<'a, Message> {
-            if self.markdown {
-                markdown::view(content.items(), super::detail::markdown_settings())
-                    .map(Message::Link)
-            } else {
-                text(value.clone()).size(13).color(theme::MUTED).into()
-            }
+    fn content<'a>(&self, state: &'a State) -> Element<'a, Message> {
+        let viewer = Viewer {
+            animate_initial: state.laid_out,
         };
-        let mut content = Vec::new();
-        if state.motion.started.is_some() {
-            content.push(render(&state.motion.outgoing[0], &state.outgoing));
+        if self.markdown {
+            markdown::view_with(
+                state.content.items(),
+                super::detail::markdown_settings(),
+                &viewer,
+            )
+        } else {
+            viewer.lines(
+                text(state.value.clone())
+                    .size(theme::size::CONTROL)
+                    .line_height(theme::LINE_HEIGHT)
+                    .color(theme::MUTED),
+                theme::size::CONTROL,
+            )
         }
-        content.push(render(&state.motion.incoming[0], &state.incoming));
-        content
     }
 }
 
@@ -75,14 +211,9 @@ impl Widget<Message, Theme, Renderer> for LiveText {
         if state.key != self.key {
             *state = State::new(self.key.clone(), self.value.clone());
             tree.children.clear();
-        } else {
-            let before = state.motion.incoming.clone();
-            state
-                .motion
-                .retarget(&vec![self.value.clone()], Instant::now());
-            if before != state.motion.incoming {
-                state.sync();
-            }
+        } else if state.value != self.value {
+            state.content = markdown::Content::parse(&self.value);
+            state.value.clone_from(&self.value);
         }
     }
     fn size(&self) -> Size<Length> {
@@ -94,41 +225,20 @@ impl Widget<Message, Theme, Renderer> for LiveText {
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let state = tree.state.downcast_ref::<State>();
-        let moving = state.motion.started.is_some();
-        let progress = state.motion.eased();
-        let mut content = self.content(state);
-        // Keep children separate from the snapshot state they borrow.
-        tree.children.truncate(content.len());
-        while tree.children.len() < content.len() {
-            tree.children
-                .push(widget::Tree::new(&content[tree.children.len()]));
+        let mut content = self.content(tree.state.downcast_ref::<State>());
+        if tree.children.is_empty() {
+            tree.children.push(widget::Tree::new(&content));
+        } else {
+            tree.children[0].diff(&content);
         }
-        for (child, element) in tree.children.iter_mut().zip(&content) {
-            child.diff(element);
-        }
-        let limits = limits.width(Length::Fill);
-        let mut nodes: Vec<_> = content
-            .iter_mut()
-            .zip(&mut tree.children)
-            .map(|(element, child)| {
-                element
-                    .as_widget_mut()
-                    .layout(child, renderer, &limits.loose())
-            })
-            .collect();
-        let old_height = nodes[0].size().height;
-        let new_height = nodes.last().unwrap().size().height;
-        let height = old_height + (new_height - old_height) * progress;
-        let width = nodes.last().unwrap().size().width;
-        if moving {
-            nodes[0].move_to_mut(Point::new(0.0, -progress * old_height));
-            nodes[1].move_to_mut(Point::new(0.0, (1.0 - progress) * old_height));
-        }
-        layout::Node::with_children(
-            limits.resolve(Length::Fill, Length::Shrink, Size::new(width, height)),
-            nodes,
-        )
+        let node = content.as_widget_mut().layout(
+            &mut tree.children[0],
+            renderer,
+            &limits.width(Length::Fill),
+        );
+        drop(content);
+        tree.state.downcast_mut::<State>().laid_out = true;
+        layout::Node::with_children(node.size(), vec![node])
     }
     fn update(
         &mut self,
@@ -141,37 +251,18 @@ impl Widget<Message, Theme, Renderer> for LiveText {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let state = tree.state.downcast_mut::<State>();
-        if let Event::Window(window::Event::RedrawRequested(now)) = event {
-            if state.motion.started.is_some() {
-                let before = state.motion.incoming.clone();
-                state.motion.advance(*now);
-                if before != state.motion.incoming {
-                    state.sync();
-                }
-                shell.invalidate_layout();
-                // The current layout belongs to the previous snapshots.
-                if state.motion.started.is_some() {
-                    shell.request_redraw();
-                }
-                return;
-            }
-        }
-        if state.motion.started.is_some() {
-            shell.request_redraw();
-        }
-        // Only the incoming snapshot accepts input.
-        if let Some(((mut element, child), bounds)) = self
-            .content(state)
-            .into_iter()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-            .last()
-        {
-            element.as_widget_mut().update(
-                child, event, bounds, cursor, renderer, clipboard, shell, viewport,
+        self.content(tree.state.downcast_ref::<State>())
+            .as_widget_mut()
+            .update(
+                &mut tree.children[0],
+                event,
+                layout.children().next().unwrap(),
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
             );
-        }
     }
     fn draw(
         &self,
@@ -183,20 +274,17 @@ impl Widget<Message, Theme, Renderer> for LiveText {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let Some(clip) = layout.bounds().intersection(viewport) else {
-            return;
-        };
-        use iced::advanced::Renderer as _;
-        let content = self.content(tree.state.downcast_ref::<State>());
-        renderer.with_layer(clip, |renderer| {
-            for ((element, child), bounds) in
-                content.iter().zip(&tree.children).zip(layout.children())
-            {
-                element
-                    .as_widget()
-                    .draw(child, renderer, theme, style, bounds, cursor, &clip);
-            }
-        });
+        self.content(tree.state.downcast_ref::<State>())
+            .as_widget()
+            .draw(
+                &tree.children[0],
+                renderer,
+                theme,
+                style,
+                layout.children().next().unwrap(),
+                cursor,
+                viewport,
+            );
     }
     fn operate(
         &mut self,
@@ -205,20 +293,14 @@ impl Widget<Message, Theme, Renderer> for LiveText {
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        operation.container(None, layout.bounds());
-        let mut content = self.content(tree.state.downcast_ref::<State>());
-        operation.traverse(&mut |operation| {
-            if let Some(((element, child), bounds)) = content
-                .iter_mut()
-                .zip(&mut tree.children)
-                .zip(layout.children())
-                .last()
-            {
-                element
-                    .as_widget_mut()
-                    .operate(child, bounds, renderer, operation);
-            }
-        });
+        self.content(tree.state.downcast_ref::<State>())
+            .as_widget_mut()
+            .operate(
+                &mut tree.children[0],
+                layout.children().next().unwrap(),
+                renderer,
+                operation,
+            );
     }
     fn mouse_interaction(
         &self,
@@ -229,19 +311,16 @@ impl Widget<Message, Theme, Renderer> for LiveText {
         renderer: &Renderer,
     ) -> mouse::Interaction {
         self.content(tree.state.downcast_ref::<State>())
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .last()
-            .map(|((element, child), bounds)| {
-                element
-                    .as_widget()
-                    .mouse_interaction(child, bounds, cursor, viewport, renderer)
-            })
-            .unwrap_or_default()
+            .as_widget()
+            .mouse_interaction(
+                &tree.children[0],
+                layout.children().next().unwrap(),
+                cursor,
+                viewport,
+                renderer,
+            )
     }
 }
-
 impl<'a> From<LiveText> for Element<'a, Message> {
     fn from(value: LiveText) -> Self {
         Element::new(value)
@@ -249,74 +328,5 @@ impl<'a> From<LiveText> for Element<'a, Message> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use iced::advanced::renderer::Headless;
-    use iced::{Font, Pixels};
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn live_markdown_slides_coalesces_and_resets_on_agent_switch() {
-        let renderer = <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("tiny-skia"))
-            .await
-            .expect("headless renderer");
-        let limits = layout::Limits::new(Size::ZERO, Size::new(200.0, 500.0));
-        let mut value = LiveText::new("a:1".into(), "Old **text**".into(), true);
-        let mut tree = widget::Tree::new(&value as &dyn Widget<Message, Theme, Renderer>);
-        let initial = value.layout(&mut tree, &renderer, &limits);
-        assert!(tree.state.downcast_ref::<State>().motion.started.is_none());
-        value.value =
-            "New [link](https://example.com) with enough text to wrap over multiple lines".into();
-        value.diff(&mut tree);
-        let start = tree.state.downcast_ref::<State>().motion.started.unwrap();
-        let first = value.layout(&mut tree, &renderer, &limits);
-        assert_eq!(first.size().height, initial.size().height);
-        value.value = "Latest **replacement**".into();
-        value.diff(&mut tree);
-        assert_eq!(
-            tree.state.downcast_ref::<State>().motion.started,
-            Some(start)
-        );
-        let mut messages = Vec::new();
-        let mut shell = Shell::new(&mut messages);
-        value.update(
-            &mut tree,
-            &Event::Window(window::Event::RedrawRequested(
-                start + Duration::from_millis(90),
-            )),
-            Layout::new(&first),
-            mouse::Cursor::Unavailable,
-            &renderer,
-            &mut iced::advanced::clipboard::Null,
-            &mut shell,
-            &Rectangle::with_size(Size::new(200.0, 500.0)),
-        );
-        assert!(shell.is_layout_invalid());
-        let middle = value.layout(&mut tree, &renderer, &limits);
-        assert!(middle.children()[0].bounds().y < 0.0);
-        assert!(middle.children()[1].bounds().y > 0.0);
-        // Only one pending update is retained and its Markdown is refreshed.
-        value.update(
-            &mut tree,
-            &Event::Window(window::Event::RedrawRequested(
-                start + Duration::from_millis(180),
-            )),
-            Layout::new(&middle),
-            mouse::Cursor::Unavailable,
-            &renderer,
-            &mut iced::advanced::clipboard::Null,
-            &mut shell,
-            &Rectangle::with_size(Size::new(200.0, 500.0)),
-        );
-        let state = tree.state.downcast_ref::<State>();
-        assert_eq!(state.motion.incoming[0], "Latest **replacement**");
-        assert!(!state.incoming.items().is_empty());
-        value.key = "b:1".into();
-        value.diff(&mut tree);
-        let switched = value.layout(&mut tree, &renderer, &limits);
-        assert_eq!(switched.children().len(), 1);
-        assert!(tree.state.downcast_ref::<State>().motion.started.is_none());
-        value.diff(&mut tree);
-        assert!(tree.state.downcast_ref::<State>().motion.started.is_none());
-    }
-}
+#[path = "live_text_tests.rs"]
+mod tests;

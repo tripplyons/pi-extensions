@@ -18,12 +18,15 @@ fn sheet<'a>(width: u32, content: impl Into<Element<'a, Message>>) -> Element<'a
 }
 
 fn title<'a>(label: &'a str) -> Element<'a, Message> {
-    text(label).size(17).font(BOLD).into()
+    text(label).size(theme::size::HEADING).font(BOLD).into()
 }
 
 fn error<'a>(message: &'a Option<String>) -> Element<'a, Message> {
     match message {
-        Some(message) => text(message.as_str()).size(12).color(RED).into(),
+        Some(message) => text(message.as_str())
+            .size(theme::size::CAPTION)
+            .color(RED)
+            .into(),
         None => Space::new().into(),
     }
 }
@@ -68,8 +71,10 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 for (index, draft) in drafts.iter().take(12).enumerate() {
                     preview = preview.push(
                         row![
-                            text(format!("{}.", index + 1)).size(13).color(MUTED),
-                            text(line(&draft.title, 80)).size(13)
+                            text(format!("{}.", index + 1))
+                                .size(theme::size::CONTROL)
+                                .color(MUTED),
+                            text(line(&draft.title, 80)).size(theme::size::CONTROL)
                         ]
                         .spacing(8),
                     );
@@ -93,7 +98,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 .on_action(Message::ComposerEdit)
                 .height(180)
                 .padding(12)
-                .size(14)
+                .size(theme::size::BODY)
                 .style(theme::editor)
                 .key_binding(|press| match press.key.as_ref() {
                     Key::Named(Named::Enter) if press.modifiers.command() => {
@@ -113,7 +118,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         pick_list(options, selected, |option: ProjectOption| {
                             Message::ComposerProject(option.id)
                         })
-                        .text_size(13)
+                        .text_size(theme::size::CONTROL)
                         .padding([5, 10]),
                         Space::new().width(Fill),
                     ]
@@ -128,7 +133,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         faint(base),
                         Space::new().width(Fill),
                         button(
-                            row![text("Cancel").size(13), key("Esc")]
+                            row![text("Cancel").size(theme::size::CONTROL), key("Esc")]
                                 .spacing(6)
                                 .align_y(Alignment::Center)
                         )
@@ -142,7 +147,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                                 } else {
                                     format!("File {count} tasks")
                                 })
-                                .size(13),
+                                .size(theme::size::CONTROL),
                                 key("⌘↵"),
                             ]
                             .spacing(6)
@@ -171,8 +176,11 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 };
                 list = list.push(
                     button(
-                        row![text(command.label).size(13).width(Fill), hint]
-                            .align_y(Alignment::Center),
+                        row![
+                            text(command.label).size(theme::size::CONTROL).width(Fill),
+                            hint
+                        ]
+                        .align_y(Alignment::Center),
                     )
                     .width(Fill)
                     .padding([7, 10])
@@ -187,7 +195,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .id(PALETTE_ID)
                         .on_input(Message::PaletteQuery)
                         .padding(10)
-                        .size(14)
+                        .size(theme::size::BODY)
                         .style(theme::input),
                     scrollable(list)
                         .style(theme::scrollbar)
@@ -213,12 +221,12 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         row![
                             container(
                                 text((index + 1).to_string())
-                                    .size(12)
+                                    .size(theme::size::CAPTION)
                                     .font(MONO)
                                     .color(MUTED)
                             )
                             .width(18),
-                            text(preset.label()).size(14)
+                            text(preset.label()).size(theme::size::BODY)
                         ]
                         .spacing(8),
                     )
@@ -242,7 +250,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     .on_input(Message::LaterCustom)
                     .on_submit(Message::LaterSubmit)
                     .padding(10)
-                    .size(14)
+                    .size(theme::size::BODY)
                     .style(theme::input),
                 row![
                     row![key("Enter"), faint("apply typed time")].spacing(5),
@@ -255,7 +263,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
             .spacing(12);
             if snoozed {
                 body = body.push(
-                    button(text("Wake now").size(13))
+                    button(text("Wake now").size(theme::size::CONTROL))
                         .style(theme::ghost)
                         .padding([6, 12])
                         .on_press(Message::WakeNow),
@@ -272,7 +280,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     text_input("4", &form.slots)
                         .on_input(Message::SettingsSlots)
                         .padding(8)
-                        .size(14)
+                        .size(theme::size::BODY)
                         .style(theme::input)
                 ]
                 .spacing(6),
@@ -281,7 +289,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     text_input("open -a Terminal {path}", &form.terminal)
                         .on_input(Message::SettingsTerminal)
                         .padding(8)
-                        .size(13)
+                        .size(theme::size::CONTROL)
                         .font(MONO)
                         .style(theme::input)
                 ]
@@ -292,7 +300,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .on_input(Message::SettingsEditor)
                         .on_submit(Message::SaveSettings)
                         .padding(8)
-                        .size(13)
+                        .size(theme::size::CONTROL)
                         .font(MONO)
                         .style(theme::input)
                 ]
@@ -305,14 +313,14 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 row![
                     Space::new().width(Fill),
                     button(
-                        row![text("Cancel").size(13), key("Esc")]
+                        row![text("Cancel").size(theme::size::CONTROL), key("Esc")]
                             .spacing(6)
                             .align_y(Alignment::Center)
                     )
                     .style(theme::ghost)
                     .padding([6, 12])
                     .on_press(Message::CloseOverlay),
-                    button(text("Save").size(13))
+                    button(text("Save").size(theme::size::CONTROL))
                         .style(theme::primary)
                         .padding([6, 12])
                         .on_press(Message::SaveSettings),
@@ -332,11 +340,11 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 440,
                 column![
                     title("Discard this task?"),
-                    text(format!("“{name}” stops, and its worktree and branch are deleted. You have five seconds to undo.")).size(13),
+                    text(format!("“{name}” stops, and its worktree and branch are deleted. You have five seconds to undo.")).size(theme::size::CONTROL),
                     row![
                         Space::new().width(Fill),
-                        button(row![text("Cancel").size(13), key("Esc")].spacing(6).align_y(Alignment::Center)).style(theme::ghost).padding([6, 12]).on_press(Message::CloseOverlay),
-                        button(row![text("Discard").size(13), key("X"), key("Enter")].spacing(6).align_y(Alignment::Center))
+                        button(row![text("Cancel").size(theme::size::CONTROL), key("Esc")].spacing(6).align_y(Alignment::Center)).style(theme::ghost).padding([6, 12]).on_press(Message::CloseOverlay),
+                        button(row![text("Discard").size(theme::size::CONTROL), key("X"), key("Enter")].spacing(6).align_y(Alignment::Center))
                             .style(|theme: &iced::Theme, status| {
                                 let mut style = theme::primary(theme, status);
                                 style.background = Some(RED.into());

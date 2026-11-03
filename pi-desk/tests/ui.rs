@@ -205,7 +205,7 @@ fn selected_thread_follows_status_to_inbox_without_following_other_threads() {
 fn ui(app: &App) -> Simulator<'_, Message> {
     // iced applies application scale by reducing the logical window viewport.
     let size = (SIZE.0 / app.scale_factor(), SIZE.1 / app.scale_factor());
-    Simulator::with_size(iced::Settings::default(), size, app.view())
+    Simulator::with_size(pi_desk::theme::settings(), size, app.view())
 }
 
 fn snapshot(app: &App, name: &str) {
@@ -230,7 +230,7 @@ fn snapshot_size(app: &App, name: &str, size: (f32, f32)) {
         }
     }
     let path = directory.join(format!("{name}.png"));
-    let shot = Simulator::with_size(iced::Settings::default(), size, app.view())
+    let shot = Simulator::with_size(pi_desk::theme::settings(), size, app.view())
         .snapshot(&pi_desk::theme::theme())
         .unwrap();
     assert!(shot.matches_image(&path).unwrap());
@@ -279,7 +279,7 @@ fn long_task_branches_wrap_in_a_narrow_pane() {
         "pi-desk/hello-world-with-a-long-task-name-and-a-unique-identifier-5efb6b".into();
     let branch = agent.branch.clone();
     let size = (760.0, 900.0);
-    let mut rendered = Simulator::with_size(iced::Settings::default(), size, app.view());
+    let mut rendered = Simulator::with_size(pi_desk::theme::settings(), size, app.view());
     let branch = rendered
         .find(branch.as_str())
         .unwrap()
@@ -369,7 +369,7 @@ fn text_rows_align_and_wrapped_summaries_keep_their_first_line_alignment() {
         .unwrap()
         .did = did.clone();
     app.show_sidebar = false;
-    let mut rendered = Simulator::with_size(iced::Settings::default(), (760.0, 900.0), app.view());
+    let mut rendered = Simulator::with_size(pi_desk::theme::settings(), (760.0, 900.0), app.view());
     let label = rendered.find("Did").unwrap().visible_bounds().unwrap();
     let value = rendered
         .find(did.as_str())
@@ -826,7 +826,7 @@ fn thinking_is_one_line_by_default_and_expands_independently() {
     assert!(app.expanded_thinking.is_empty());
     for width in [760.0, 1440.0] {
         let mut rendered =
-            Simulator::with_size(iced::Settings::default(), (width, 900.0), app.view());
+            Simulator::with_size(pi_desk::theme::settings(), (width, 900.0), app.view());
         let bounds = rendered
             .find(preview.as_str())
             .unwrap()
@@ -927,6 +927,30 @@ fn diff_and_transcript_tabs_render_content() {
     let visible = line.visible_bounds().expect("diff code must be visible");
     assert!(visible.width > 80.0, "diff line collapsed: {visible:?}");
     snapshot(&app, "diff");
+}
+
+#[test]
+fn rich_transcript_typography_uses_the_same_layout_live_and_completed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let id = app.selected.clone().unwrap();
+    app.focus = true;
+    let message = serde_json::json!({"role":"assistant","content":[{"type":"text","text":
+        "# Streaming stays still\n\nExisting lines stay in place as **new tokens** arrive. A wrapped line gets one entrance, not an endless slide. Read the [guide](https://example.com/guide) or check `src/main.rs`.\n\n## Checks\n\n- Consistent body text and **emphasis**.\n- Secondary labels remain readable.\n- Code stays monospace.\n\n```rust\nfn main() {\n    println!(\"one entrance per line\");\n}\n```\n\n> Wrapped text, headings, code, and links share the same type scale."
+    }]});
+    app.desk.transcripts.insert(
+        id.clone(),
+        pi_desk::transcript::Transcript::from_messages([&message]),
+    );
+    snapshot_size(&app, "typography-completed", (1100.0, 1300.0));
+    app.desk
+        .state
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == id)
+        .unwrap()
+        .status = Status::Working;
+    snapshot_size(&app, "typography-streaming", (1100.0, 1300.0));
 }
 
 #[test]

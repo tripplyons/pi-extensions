@@ -99,13 +99,9 @@ pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
         meta = meta.push(faint(when));
     }
     let title = text(line(&agent.title, 60))
-        .size(14)
+        .size(theme::size::BODY)
         .line_height(iced::Pixels(20.0))
-        .font(if needs_user {
-            BOLD
-        } else {
-            iced::Font::DEFAULT
-        });
+        .font(if needs_user { BOLD } else { theme::SANS });
     let when = agent.updated_at;
     button(
         row![
@@ -148,11 +144,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ),
     };
     let header = row![
-        container(super::counted_heading(title, rows.len(), 18.0)).id("task-list-heading"),
+        container(super::counted_heading(
+            title,
+            rows.len(),
+            theme::size::TITLE
+        ))
+        .id("task-list-heading"),
         Space::new().width(Fill),
         super::sidebar_toggle(app),
         button(
-            row![text("Board").size(12), super::key("B")]
+            row![text("Board").size(theme::size::CAPTION), super::key("B")]
                 .spacing(6)
                 .align_y(Alignment::Center),
         )

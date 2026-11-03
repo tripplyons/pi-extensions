@@ -31,7 +31,7 @@ pub fn controls(app: &App, target: Option<Id>) -> Element<'_, Message> {
         } else {
             "Load model options"
         })
-        .size(12),
+        .size(theme::size::CAPTION),
     )
     .padding([5, 10])
     .width(Length::Fixed(136.0))
@@ -51,7 +51,7 @@ pub fn controls(app: &App, target: Option<Id>) -> Element<'_, Message> {
                 } else {
                     "Pi default"
                 })
-                .text_size(12)
+                .text_size(theme::size::CAPTION)
                 .padding([5, 8])
                 .width(Fill),
             ]
@@ -65,7 +65,7 @@ pub fn controls(app: &App, target: Option<Id>) -> Element<'_, Message> {
                     move |effort| Message::SessionEffort(effort_target.clone(), effort)
                 )
                 .placeholder("Pi default")
-                .text_size(12)
+                .text_size(theme::size::CAPTION)
                 .padding([5, 8])
                 .width(Fill),
             ]
@@ -81,7 +81,7 @@ pub fn controls(app: &App, target: Option<Id>) -> Element<'_, Message> {
         content = content.push(faint("Applying settings to the next model request…"));
     }
     if let Some(error) = picker.and_then(|picker| picker.error.as_ref()) {
-        content = content.push(text(error).size(12).color(theme::RED));
+        content = content.push(text(error).size(theme::size::CAPTION).color(theme::RED));
     }
     content.into()
 }

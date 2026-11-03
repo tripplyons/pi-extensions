@@ -51,7 +51,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
                     column![
                         row![
                             dot(theme::status_color(&agent.status)),
-                            text(line(&agent.title, 40)).size(13).font(BOLD)
+                            text(line(&agent.title, 40))
+                                .size(theme::size::CONTROL)
+                                .font(BOLD)
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
@@ -80,8 +82,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         board = board.push(
             container(
                 column![
-                    container(super::counted_heading(name, agents.len(), 13.0))
-                        .id(format!("board-heading-{name}")),
+                    container(super::counted_heading(
+                        name,
+                        agents.len(),
+                        theme::size::CONTROL
+                    ))
+                    .id(format!("board-heading-{name}")),
                     scrollable(cards).style(theme::scrollbar).height(Fill),
                 ]
                 .spacing(10),
@@ -94,11 +100,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     let header = row![
-        text("Board").size(18).font(BOLD),
+        text("Board").size(theme::size::TITLE).font(BOLD),
         Space::new().width(Fill),
         super::sidebar_toggle(app),
         button(
-            row![text("List").size(12), super::key("B")]
+            row![text("List").size(theme::size::CAPTION), super::key("B")]
                 .spacing(6)
                 .align_y(Alignment::Center),
         )
