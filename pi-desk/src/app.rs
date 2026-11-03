@@ -333,42 +333,53 @@ impl App {
 
     // Rows and selection
 
-    /// Rows of the current view, in display order.
+    /// Rows of the current view, in display order. The selected task keeps
+    /// its row after it stops matching the view, until the user selects
+    /// another task or changes views.
     pub fn rows(&self) -> Vec<&Agent> {
-        let state = &self.desk.state;
-        let hidden = |agent: &Agent| self.pending.iter().any(|pending| pending.id == agent.id);
-        let mut rows: Vec<&Agent> = state
+        let mut rows: Vec<&Agent> = self
+            .desk
+            .state
             .agents
             .iter()
+            .filter(|agent| !self.hidden(&agent.id))
             .filter(|agent| {
-                !hidden(agent)
-                    && match &self.view {
-                        View::All => true,
-                        View::Inbox => agent.in_inbox(self.now),
-                        View::Working => {
-                            matches!(agent.status, Status::Working | Status::Queued)
-                                && !agent.snoozed(self.now)
-                        }
-                        View::Later => agent.snoozed(self.now) && !agent.status.is_done(),
-                        View::Done => agent.status.is_done(),
-                        View::Project(id) => &agent.project_id == id && !agent.status.is_done(),
-                    }
+                self.selected.as_ref() == Some(&agent.id) || self.in_view(agent, &self.view)
             })
             .collect();
         rows.sort_by(|a, b| order::compare_display(a, b, self.now));
         rows
     }
 
+    /// Whether a task matches a view's filter.
+    fn in_view(&self, agent: &Agent, view: &View) -> bool {
+        match view {
+            View::All => true,
+            View::Inbox => agent.in_inbox(self.now),
+            View::Working => {
+                matches!(agent.status, Status::Working | Status::Queued) && !agent.snoozed(self.now)
+            }
+            View::Later => agent.snoozed(self.now) && !agent.status.is_done(),
+            View::Done => agent.status.is_done(),
+            View::Project(id) => &agent.project_id == id && !agent.status.is_done(),
+        }
+    }
+
+    /// Tasks waiting out an undo window are hidden everywhere.
+    fn hidden(&self, id: &str) -> bool {
+        self.pending.iter().any(|pending| pending.id == id)
+    }
+
     pub fn inbox_count(&self) -> usize {
         order::inbox(&self.desk.state, self.now)
             .iter()
-            .filter(|agent| !self.pending.iter().any(|pending| pending.id == agent.id))
+            .filter(|agent| !self.hidden(&agent.id))
             .count()
     }
 
     pub fn current(&self) -> Option<&Agent> {
         let id = self.selected.as_ref()?;
-        if self.pending.iter().any(|pending| &pending.id == id) {
+        if self.hidden(id) {
             return None;
         }
         self.desk.state.agent(id)
@@ -395,7 +406,11 @@ impl App {
         }
         self.selected = id.clone();
         self.replying = false;
-        let Some(id) = id else { return Task::none() };
+        let Some(id) = id else {
+            // Otherwise focus mode would reappear when a task is next selected.
+            self.focus = false;
+            return Task::none();
+        };
         self.desk.load_transcript(&id);
         let cached = self.sessions.get(&id).is_some_and(|picker| {
             (picker.options.is_some() || picker.loading)
@@ -424,7 +439,8 @@ impl App {
             .chain(before[..index].iter().rev())
             .find(|row| rows.contains(row))
             .cloned();
-        let next = next.or_else(|| rows.first().cloned());
+        // The acted-on row stays listed while selected; don't fall back to it.
+        let next = next.or_else(|| rows.iter().find(|row| row.as_str() != id).cloned());
         self.select(next)
     }
 
@@ -567,10 +583,11 @@ impl App {
         let effects = action(&mut self.desk);
         let run = self.run(effects);
         // A question answer belongs to this thread, even if resuming fails.
-        // Let update follow its status instead of selecting an unrelated row.
+        // Keep it selected; its row stays listed in the current view.
         if answering {
             return run;
         }
+        // Likewise for a reply or retry that sends an Inbox task back to work.
         if self.view == View::Inbox
             && self.selected.as_deref() == Some(id)
             && self.current().is_some_and(|agent| {
@@ -819,25 +836,7 @@ impl App {
     // Update
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        let previous_view = self.view.clone();
-        let previous = self.current().map(|agent| (agent.id.clone(), agent.status.clone()));
         let task = self.handle(message);
-        // Follow status changes, not unrelated rows or explicit navigation/actions.
-        if self.view == previous_view
-            && let Some((id, status)) = previous
-            && self.selected.as_ref() == Some(&id)
-            && let Some(agent) = self.current()
-            && agent.status != status
-            && !agent.snoozed(self.now)
-        {
-            match self.view {
-                View::Working if agent.in_inbox(self.now) => self.view = View::Inbox,
-                View::Inbox if matches!(agent.status, Status::Working | Status::Queued) => {
-                    self.view = View::Working;
-                }
-                _ => {}
-            }
-        }
         // Readback is authoritative. In particular, don't leave a rejected or
         // clamped selection displayed as though Pi accepted it.
         let mut reload = Vec::new();
@@ -915,6 +914,14 @@ impl App {
                 self.view = view;
                 self.focus = false;
                 self.overlay = None;
+                let keep = self
+                    .current()
+                    .is_some_and(|agent| self.in_view(agent, &self.view));
+                if keep {
+                    return Task::none();
+                }
+                // Drop the old selection first so its held row isn't listed.
+                self.selected = None;
                 let first = self.rows().first().map(|agent| agent.id.clone());
                 self.select(first)
             }

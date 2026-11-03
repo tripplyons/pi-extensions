@@ -165,7 +165,7 @@ fn seeded(dir: &std::path::Path) -> App {
 }
 
 #[test]
-fn selected_thread_follows_status_to_inbox_without_following_other_threads() {
+fn status_changes_keep_the_view_and_selection() {
     use pi_desk::{desk::Effect, supervisor::Event};
 
     for selected in [true, false] {
@@ -179,11 +179,10 @@ fn selected_thread_follows_status_to_inbox_without_following_other_threads() {
                 _ => None,
             })
             .unwrap();
-        let _ = app.update(Message::Show(View::Working));
-        if !selected {
-            let _ = app.update(Message::Show(View::Inbox));
-        }
+        let view = if selected { View::Working } else { View::Inbox };
+        let _ = app.update(Message::Show(view.clone()));
         let original = app.selected.clone();
+        assert_eq!(original.as_deref() == Some("agent-5"), selected);
         let event = |record: &str| {
             Message::Supervisor(Event::Lines {
                 agent: "agent-5".into(),
@@ -192,14 +191,67 @@ fn selected_thread_follows_status_to_inbox_without_following_other_threads() {
             })
         };
         let _ = app.update(event(r#"{"type":"extension_ui_request","id":"q1","method":"select","title":"Which?","options":["A","B"]}"#));
-        assert_eq!(app.view, View::Inbox);
+        assert_eq!(app.view, view);
         assert_eq!(app.selected, original);
         if selected {
+            // The task no longer matches Working, but its row stays listed.
+            assert!(app.rows().iter().any(|row| row.id == "agent-5"));
             let _ = app.update(Message::Choose(0));
             assert_eq!(app.view, View::Working);
             assert_eq!(app.selected, original);
         }
     }
+}
+
+#[test]
+fn a_held_row_leaves_when_the_user_navigates() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.desk.state.agents[3].snooze_until = Some(now() + 3600);
+    let _ = app.update(Message::Show(View::Later));
+    assert_eq!(app.selected.as_deref(), Some("agent-4"));
+    // The snooze ends in the background: keep the task selected and listed.
+    app.desk.state.agents[3].snooze_until = Some(now() - 1);
+    let _ = app.update(Message::Tick);
+    assert_eq!(app.view, View::Later);
+    assert_eq!(app.selected.as_deref(), Some("agent-4"));
+    assert_eq!(app.rows().iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["agent-4"]);
+    let _ = app.update(Message::Show(View::Done));
+    assert_eq!(app.selected.as_deref(), Some("agent-6"));
+    assert!(!app.rows().iter().any(|row| row.id == "agent-4"));
+}
+
+#[test]
+fn changing_views_keeps_a_task_that_matches_the_new_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    key(&mut app, "j");
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    let _ = app.update(Message::Show(View::All));
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    let _ = app.update(Message::Show(View::Project("p1".into())));
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    // The task isn't in this view, so the first row is selected instead.
+    let _ = app.update(Message::Show(View::Working));
+    assert_eq!(app.selected.as_deref(), Some("agent-5"));
+    assert_eq!(app.rows().len(), 1);
+}
+
+#[test]
+fn focus_mode_ends_when_nothing_is_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::Show(View::Working));
+    let _ = app.update(Message::Open("agent-5".into()));
+    assert!(app.focus);
+    let _ = app.update(Message::Discard);
+    let _ = app.update(Message::ConfirmDiscard);
+    assert_eq!(app.selected, None);
+    assert!(!app.focus);
+    // A later selection doesn't bring focus mode back.
+    key(&mut app, "z");
+    assert_eq!(app.selected.as_deref(), Some("agent-5"));
+    assert!(!app.focus);
 }
 
 fn ui(app: &App) -> Simulator<'_, Message> {
