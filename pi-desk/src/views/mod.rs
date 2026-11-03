@@ -150,7 +150,7 @@ fn status_bar(app: &App) -> Option<Element<'_, Message>> {
             text(format!("{} in {left}s", pending.label)).size(theme::size::CONTROL),
             Space::new().width(16),
             button(
-                row![key("Z"), text("Undo").size(theme::size::CONTROL)]
+                row![text("Undo").size(theme::size::CONTROL), key("Z")]
                     .spacing(6)
                     .align_y(Alignment::Center)
             )

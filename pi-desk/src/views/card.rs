@@ -47,7 +47,7 @@ fn choices(agent: &Agent) -> Vec<Choice> {
 
 fn action<'a>(hint: &'a str, label: &'a str, message: Message) -> Element<'a, Message> {
     button(
-        row![key(hint), text(label).size(theme::size::CONTROL)]
+        row![text(label).size(theme::size::CONTROL), key(hint)]
             .spacing(6)
             .align_y(Alignment::Center),
     )

@@ -133,8 +133,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             Space::new().width(Fill),
             button(
                 row![
-                    key("⌘K"),
-                    text("Commands").size(theme::size::CAPTION).color(MUTED)
+                    text("Commands").size(theme::size::CAPTION).color(MUTED),
+                    key("⌘K")
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center)
