@@ -596,8 +596,7 @@ impl App {
         if self.view == View::Inbox
             && self.selected.as_deref() == Some(id)
             && self.current().is_some_and(|agent| {
-                matches!(agent.status, Status::Working | Status::Queued)
-                    && !agent.snoozed(self.now)
+                matches!(agent.status, Status::Working | Status::Queued) && !agent.snoozed(self.now)
             })
         {
             return run;

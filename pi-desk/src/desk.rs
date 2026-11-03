@@ -1656,16 +1656,24 @@ mod tests {
     #[test]
     fn background_naming_refreshes_the_title_while_streaming() {
         let (mut f, generation) = started();
-        let effects = feed(&mut f, generation, &[
-            json!({"type":"agent_start"}),
-            json!({"type":"extension_ui_request","id":"naming","method":"setStatus",
-                "statusKey":"auto-rename"})
-        ]);
+        let effects = feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"agent_start"}),
+                json!({"type":"extension_ui_request","id":"naming","method":"setStatus",
+                "statusKey":"auto-rename"}),
+            ],
+        );
         assert_eq!(sent(&effects)[0]["type"], "get_state");
-        feed(&mut f, generation, &[
-            json!({"type":"response","id":"state","command":"get_state","success":true,
-                "data":{"sessionName":"Background title","isStreaming":true}})
-        ]);
+        feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"response","id":"state","command":"get_state","success":true,
+                "data":{"sessionName":"Background title","isStreaming":true}}),
+            ],
+        );
         assert_eq!(f.desk.state.agent(&f.id).unwrap().title, "Background title");
     }
 

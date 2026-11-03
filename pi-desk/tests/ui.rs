@@ -215,7 +215,13 @@ fn a_held_row_leaves_when_the_user_navigates() {
     let _ = app.update(Message::Tick);
     assert_eq!(app.view, View::Later);
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
-    assert_eq!(app.rows().iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["agent-4"]);
+    assert_eq!(
+        app.rows()
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["agent-4"]
+    );
     let _ = app.update(Message::Show(View::Done));
     assert_eq!(app.selected.as_deref(), Some("agent-6"));
     assert!(!app.rows().iter().any(|row| row.id == "agent-4"));
