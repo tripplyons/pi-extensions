@@ -128,6 +128,8 @@ pub enum Message {
         captured: bool,
     },
     MouseReleased,
+    /// A file dragged onto the window, such as a screenshot.
+    FileDropped(PathBuf),
     Show(View),
     Select(Id),
     Open(Id),
@@ -316,6 +318,9 @@ impl App {
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
                     iced::mouse::Button::Left,
                 )) => Some(Message::MouseReleased),
+                iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+                    Some(Message::FileDropped(path))
+                }
                 _ => None,
             }),
         ];
@@ -995,6 +1000,7 @@ impl App {
                 self.replying = true;
                 self.focus_reply()
             }
+            Message::FileDropped(path) => self.insert_path(&path),
             Message::ReplyEdit(action) => {
                 self.reply.perform(action);
                 Task::none()
@@ -1458,6 +1464,30 @@ impl App {
         operation::focus(REPLY_ID)
     }
 
+    /// Types a dropped file's path at the cursor of the open task composer or
+    /// reply. With neither open, it starts a reply to the selected task.
+    fn insert_path(&mut self, path: &std::path::Path) -> Task<Message> {
+        let paste = text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(
+            format!("{} ", quote_path(path)),
+        )));
+        match &mut self.overlay {
+            Some(Overlay::Composer(composer)) => {
+                composer.history.edit(&mut composer.content, paste);
+                return operation::focus(COMPOSER_ID);
+            }
+            Some(_) => return Task::none(),
+            None => {}
+        }
+        if !self.replying {
+            if self.current().is_none_or(|agent| agent.status.is_done()) {
+                return Task::none();
+            }
+            self.replying = true;
+        }
+        self.reply.perform(paste);
+        self.focus_reply()
+    }
+
     fn snooze(&mut self, until: Timestamp) -> Task<Message> {
         let Some(Overlay::Later(picker)) = self.overlay.take() else {
             return Task::none();
@@ -1765,5 +1795,19 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         crate::views::root(self)
+    }
+}
+
+/// A path as text an agent can read back unambiguously. Paths with spaces,
+/// like macOS screenshot names, are single-quoted in shell style.
+fn quote_path(path: &std::path::Path) -> String {
+    let path = path.to_string_lossy();
+    if path
+        .chars()
+        .any(|c| c.is_whitespace() || c == '\'' || c == '"')
+    {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    } else {
+        path.into_owned()
     }
 }

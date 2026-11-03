@@ -119,6 +119,9 @@ the app does not reset them.
    Reorder projects by dragging or with Alt+Up/Down in a project view.
 4. Questions enter Inbox with choices, an optional recommendation, and a typed
    reply. Agents are asked to end with `Did:` and `Needs:` lines for review cards.
+   Drop a file, such as a screenshot, onto the window to type its path into
+   the open New task box or reply. With neither open, the drop starts a reply
+   to the selected task. Paths with spaces are single-quoted.
 5. Inspect the live Transcript or the highlighted Diff, including untracked
    files. Thinking blocks in live and saved transcripts default to a single
    collapsed row labeled "Thinking" with a truncated preview. Click a row to

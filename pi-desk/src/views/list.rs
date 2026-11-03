@@ -1,4 +1,4 @@
-use super::{ago, dot, empty, faint, line, preview::Preview, stable_column::StableColumn};
+use super::{ago, empty, faint, line, preview::Preview, stable_column::StableColumn};
 use crate::app::{App, Message, View};
 use crate::model::{Agent, Status};
 use crate::theme::{self, BOLD};
@@ -104,20 +104,14 @@ pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
         .font(if needs_user { BOLD } else { theme::SANS });
     let when = agent.updated_at;
     button(
-        row![
-            container(dot(theme::status_color(&agent.status)))
-                .center_y(20)
-                .id(format!("task-status-{}", agent.id)),
-            column![
-                row![title.width(Fill), faint(ago(app.now, when))]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                preview(app, agent, 90),
-                meta,
-            ]
-            .spacing(3),
+        column![
+            row![title.width(Fill), faint(ago(app.now, when))]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            preview(app, agent, 90),
+            meta,
         ]
-        .spacing(10),
+        .spacing(3),
     )
     .width(Fill)
     .padding([9, 12])

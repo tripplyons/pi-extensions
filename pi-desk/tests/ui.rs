@@ -380,18 +380,13 @@ fn text_rows_align_and_wrapped_summaries_keep_their_first_line_alignment() {
             .visible_bounds()
             .unwrap();
         assert!((heading.height - 24.0).abs() < 0.01);
-        let dot = rendered
-            .find(iced_test::selector::id("task-status-agent-4"))
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
-        let title = rendered
-            .find("Fix the login crash")
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
-        assert_eq!(dot.y, title.y);
-        assert_eq!(dot.height, title.height);
+        // List rows show the title without a status dot.
+        assert!(
+            rendered
+                .find(iced_test::selector::id("task-status-agent-4"))
+                .is_err()
+        );
+        assert!(rendered.find("Fix the login crash").is_ok());
         let did = rendered.find("Did").unwrap().visible_bounds().unwrap();
         let value = rendered
             .find(iced_test::selector::id("summary-value-Did"))
@@ -434,6 +429,39 @@ fn text_rows_align_and_wrapped_summaries_keep_their_first_line_alignment() {
     let needs = rendered.find("Needs").unwrap().visible_bounds().unwrap();
     assert!(needs.y >= value.y + value.height);
     snapshot_size(&app, "aligned-wrapped-summary", (760.0, 900.0));
+}
+
+#[test]
+fn a_dropped_file_types_its_path_into_the_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::Select("agent-4".into()));
+    assert!(!app.replying);
+    // With no box open, a drop starts a reply to the selected task.
+    let _ = app.update(Message::FileDropped(PathBuf::from(
+        "/Users/me/Desktop/Screenshot 2026-11-03 at 10.00.00.png",
+    )));
+    assert!(app.replying);
+    let _ = app.update(Message::FileDropped(PathBuf::from("/tmp/it's.png")));
+    let _ = app.update(Message::FileDropped(PathBuf::from("/tmp/plain.png")));
+    assert_eq!(
+        app.reply.text(),
+        "'/Users/me/Desktop/Screenshot 2026-11-03 at 10.00.00.png' '/tmp/it'\\''s.png' /tmp/plain.png "
+    );
+}
+
+#[tokio::test]
+async fn a_dropped_file_types_its_path_into_the_task_composer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
+    let _ = app.update(Message::FileDropped(PathBuf::from("/tmp/shot.png")));
+    let Some(Overlay::Composer(composer)) = &app.overlay else {
+        panic!("composer should stay open")
+    };
+    assert_eq!(composer.content.text(), "/tmp/shot.png ");
+    assert!(!app.replying);
 }
 
 #[test]
