@@ -1,7 +1,7 @@
 //! Window layout: sidebar, row list, and detail pane, with focus mode, the
 //! board, and overlays on top.
 
-mod board;
+pub(crate) mod board;
 mod card;
 mod detail;
 mod line_reveal;

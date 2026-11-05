@@ -432,7 +432,12 @@ impl App {
         } else {
             self.load_session(Some(id.clone()), None)
         };
-        Task::batch([self.load_diff(&id), models])
+        let reveal = if self.board {
+            crate::views::board::reveal(&id)
+        } else {
+            Task::none()
+        };
+        Task::batch([self.load_diff(&id), models, reveal])
     }
 
     /// After acting on a row, show the row that took its place.
@@ -954,7 +959,10 @@ impl App {
             Message::ToggleBoard => {
                 self.board = !self.board;
                 self.focus = false;
-                Task::none()
+                match &self.selected {
+                    Some(id) if self.board => crate::views::board::reveal(id),
+                    _ => Task::none(),
+                }
             }
             Message::ToggleFocus => {
                 self.focus = !self.focus && self.current().is_some();
