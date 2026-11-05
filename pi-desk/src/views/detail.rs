@@ -1,6 +1,7 @@
-use super::{card, empty, faint, key};
+use super::{card, empty, faint, icon, key};
 use crate::app::{App, Message, Tab};
 use crate::git::LineKind;
+use crate::icon::Icon;
 use crate::theme::{
     self, ACCENT, ADDED_BG, FAINT, GREEN, MONO, MUTED, RAISED, RED, REMOVED_BG, TEXT,
 };
@@ -67,7 +68,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .map(|files| {
             let added: usize = files.iter().map(|file| file.added).sum();
             let removed: usize = files.iter().map(|file| file.removed).sum();
-            format!("Diff  +{added} −{removed}")
+            format!("Diff  +{added} -{removed}")
         })
         .unwrap_or_else(|| "Diff".into());
     let underline = |active: bool| {
@@ -185,9 +186,7 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                             ));
                             let head = button(
                                 row![
-                                    text(if open { "▾" } else { "▸" })
-                                        .size(theme::size::CAPTION)
-                                        .color(FAINT),
+                                    icon(Icon::disclosure(open), theme::size::CAPTION, FAINT),
                                     text("Thinking").size(theme::size::CAPTION).color(MUTED),
                                     text(super::line(thinking, 110))
                                         .size(theme::size::CAPTION)
@@ -246,9 +245,7 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                 };
                 let head = button(
                     row![
-                        text(if open { "▾" } else { "▸" })
-                            .size(theme::size::CAPTION)
-                            .color(FAINT),
+                        icon(Icon::disclosure(open), theme::size::CAPTION, FAINT),
                         text(name.as_str())
                             .size(theme::size::CAPTION)
                             .font(MONO)
@@ -331,7 +328,7 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                     text(format!("+{}", file.added))
                         .size(theme::size::CAPTION)
                         .color(GREEN),
-                    text(format!("−{}", file.removed))
+                    text(format!("-{}", file.removed))
                         .size(theme::size::CAPTION)
                         .color(RED),
                 ]
@@ -349,7 +346,7 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
     for (index, line) in file.lines.iter().enumerate().take(DIFF_LINE_LIMIT) {
         let (background, prefix, base) = match line.kind {
             LineKind::Added => (ADDED_BG, "+", GREEN),
-            LineKind::Removed => (REMOVED_BG, "−", RED),
+            LineKind::Removed => (REMOVED_BG, "-", RED),
             LineKind::Context => (Color::TRANSPARENT, " ", TEXT),
             LineKind::Hunk => (Color { a: 0.08, ..ACCENT }, "", ACCENT),
             LineKind::Meta => (Color::TRANSPARENT, "", FAINT),

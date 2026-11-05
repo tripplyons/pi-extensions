@@ -4,6 +4,7 @@
 
 use crate::desk::{Desk, Effect, Isolation};
 use crate::git::{self, FileDiff, Merge};
+use crate::icon::{ALT, COMMAND, Icon, KeyPart};
 use crate::later;
 use crate::model::*;
 use crate::order;
@@ -243,7 +244,7 @@ fn shell_quote(text: &str) -> String {
 
 pub struct PaletteCommand {
     pub label: String,
-    pub keys: &'static str,
+    pub keys: &'static [KeyPart<'static>],
     pub message: Message,
 }
 
@@ -655,37 +656,37 @@ impl App {
         let mut commands = vec![
             PaletteCommand {
                 label: "New task".into(),
-                keys: "N",
+                keys: &[KeyPart::Text("N")],
                 message: Message::NewTask,
             },
             PaletteCommand {
                 label: "Add project…".into(),
-                keys: "",
+                keys: &[],
                 message: Message::AddProject,
             },
             PaletteCommand {
                 label: "Show inbox".into(),
-                keys: "",
+                keys: &[],
                 message: Message::Show(View::Inbox),
             },
             PaletteCommand {
                 label: "Show working".into(),
-                keys: "",
+                keys: &[],
                 message: Message::Show(View::Working),
             },
             PaletteCommand {
                 label: "Show later".into(),
-                keys: "",
+                keys: &[],
                 message: Message::Show(View::Later),
             },
             PaletteCommand {
                 label: "Show done".into(),
-                keys: "",
+                keys: &[],
                 message: Message::Show(View::Done),
             },
             PaletteCommand {
                 label: "Show all tasks".into(),
-                keys: "",
+                keys: &[],
                 message: Message::Show(View::All),
             },
             PaletteCommand {
@@ -695,34 +696,22 @@ impl App {
                     "Show sidebar"
                 }
                 .into(),
-                keys: "S",
+                keys: &[KeyPart::Text("S")],
                 message: Message::ToggleSidebar,
             },
             PaletteCommand {
                 label: format!("Zoom in (current: {}%)", self.zoom_percent),
-                keys: if cfg!(target_os = "macos") {
-                    "⌘+"
-                } else {
-                    "Ctrl++"
-                },
+                keys: &[COMMAND, KeyPart::Text("+")],
                 message: Message::ZoomIn,
             },
             PaletteCommand {
                 label: format!("Zoom out (current: {}%)", self.zoom_percent),
-                keys: if cfg!(target_os = "macos") {
-                    "⌘−"
-                } else {
-                    "Ctrl+-"
-                },
+                keys: &[COMMAND, KeyPart::Text("-")],
                 message: Message::ZoomOut,
             },
             PaletteCommand {
                 label: "Reset zoom to 100%".into(),
-                keys: if cfg!(target_os = "macos") {
-                    "⌘0"
-                } else {
-                    "Ctrl+0"
-                },
+                keys: &[COMMAND, KeyPart::Text("0")],
                 message: Message::ResetZoom,
             },
             PaletteCommand {
@@ -732,7 +721,7 @@ impl App {
                     "Board view"
                 }
                 .into(),
-                keys: "B",
+                keys: &[KeyPart::Text("B")],
                 message: Message::ToggleBoard,
             },
             PaletteCommand {
@@ -742,36 +731,36 @@ impl App {
                     "Focus mode"
                 }
                 .into(),
-                keys: "F",
+                keys: &[KeyPart::Text("F")],
                 message: Message::ToggleFocus,
             },
             PaletteCommand {
                 label: "Settings".into(),
-                keys: "",
+                keys: &[],
                 message: Message::OpenSettings,
             },
             PaletteCommand {
                 label: "Undo".into(),
-                keys: "Z",
+                keys: &[KeyPart::Text("Z")],
                 message: Message::Undo,
             },
         ];
         for project in &self.desk.state.projects {
             commands.push(PaletteCommand {
                 label: format!("Show project {}", project.name),
-                keys: "",
+                keys: &[],
                 message: Message::Show(View::Project(project.id.clone())),
             });
         }
         if let View::Project(id) = &self.view {
             commands.push(PaletteCommand {
                 label: "Move project up".into(),
-                keys: "⌥↑",
+                keys: &[ALT, KeyPart::Icon(Icon::ArrowUp)],
                 message: Message::MoveProject(id.clone(), -1),
             });
             commands.push(PaletteCommand {
                 label: "Move project down".into(),
-                keys: "⌥↓",
+                keys: &[ALT, KeyPart::Icon(Icon::ArrowDown)],
                 message: Message::MoveProject(id.clone(), 1),
             });
         }
@@ -779,34 +768,34 @@ impl App {
             if !agent.status.is_done() {
                 commands.push(PaletteCommand {
                     label: "Later…".into(),
-                    keys: "L",
+                    keys: &[KeyPart::Text("L")],
                     message: Message::OpenLater,
                 });
                 commands.push(PaletteCommand {
                     label: "Reply".into(),
-                    keys: "R",
+                    keys: &[KeyPart::Text("R")],
                     message: Message::StartReply,
                 });
                 commands.push(PaletteCommand {
                     label: "Discard".into(),
-                    keys: "X",
+                    keys: &[KeyPart::Text("X")],
                     message: Message::Discard,
                 });
                 commands.push(PaletteCommand {
                     label: "Mark done (keep branch)".into(),
-                    keys: "",
+                    keys: &[],
                     message: Message::MarkDone,
                 });
             }
             match agent.status {
                 Status::Review => commands.push(PaletteCommand {
                     label: "Merge".into(),
-                    keys: "E",
+                    keys: &[KeyPart::Text("E")],
                     message: Message::Approve,
                 }),
                 Status::Failed { .. } => commands.push(PaletteCommand {
                     label: "Retry".into(),
-                    keys: "E",
+                    keys: &[KeyPart::Text("E")],
                     message: Message::Retry,
                 }),
                 _ => {}
@@ -814,28 +803,28 @@ impl App {
             if agent.snooze_until.is_some() {
                 commands.push(PaletteCommand {
                     label: "Wake now".into(),
-                    keys: "",
+                    keys: &[],
                     message: Message::WakeNow,
                 });
             }
             commands.push(PaletteCommand {
                 label: "Open in terminal".into(),
-                keys: "",
+                keys: &[],
                 message: Message::OpenTerminal,
             });
             commands.push(PaletteCommand {
                 label: "Open in editor".into(),
-                keys: "",
+                keys: &[],
                 message: Message::OpenEditor,
             });
             commands.push(PaletteCommand {
                 label: "Show diff".into(),
-                keys: "D",
+                keys: &[KeyPart::Text("D")],
                 message: Message::SetTab(Tab::Diff),
             });
             commands.push(PaletteCommand {
                 label: "Show transcript".into(),
-                keys: "T",
+                keys: &[KeyPart::Text("T")],
                 message: Message::SetTab(Tab::Transcript),
             });
         }

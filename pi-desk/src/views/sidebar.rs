@@ -1,5 +1,6 @@
-use super::{faint, key};
+use super::{faint, icon, key, keys};
 use crate::app::{App, Message, View};
+use crate::icon::{COMMAND, Icon, KeyPart};
 use crate::model::Status;
 use crate::theme::{self, ACCENT, BOLD, FAINT, MUTED};
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
@@ -49,11 +50,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .filter(|agent| agent.project_id == project.id && !agent.status.is_done())
             .count();
         let selected = app.view == View::Project(project.id.clone());
-        let handle = mouse_area(
-            container(text("⠿").size(theme::size::CAPTION).color(FAINT)).padding([6, 4]),
-        )
-        .interaction(mouse::Interaction::Grab)
-        .on_press(Message::DragProject(project.id.clone()));
+        let handle =
+            mouse_area(container(icon(Icon::Grip, theme::size::CAPTION, FAINT)).padding([6, 4]))
+                .interaction(mouse::Interaction::Grab)
+                .on_press(Message::DragProject(project.id.clone()));
         let label = button(
             row![
                 text(project.name.as_str())
@@ -137,7 +137,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             button(
                 row![
                     text("Commands").size(theme::size::CAPTION).color(MUTED),
-                    key("⌘K")
+                    keys(&[COMMAND, KeyPart::Text("K")])
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center)

@@ -1,6 +1,7 @@
-use super::{faint, key, line, muted};
+use super::{faint, key, keys, line, muted};
 use crate::app::{App, COMPOSER_ID, LATER_ID, Message, Overlay, PALETTE_ID};
 use crate::compose;
+use crate::icon::{COMMAND, Icon, KeyPart, RETURN};
 use crate::later::Preset;
 use crate::theme::{self, BOLD, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
@@ -158,7 +159,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                                     format!("File {count} tasks")
                                 })
                                 .size(theme::size::CONTROL),
-                                key("⌘↵"),
+                                keys(&[COMMAND, RETURN]),
                             ]
                             .spacing(6)
                             .align_y(Alignment::Center)
@@ -182,7 +183,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 let hint: Element<'_, Message> = if command.keys.is_empty() {
                     Space::new().into()
                 } else {
-                    key(command.keys)
+                    keys(command.keys)
                 };
                 list = list.push(
                     button(
@@ -211,7 +212,15 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .style(theme::scrollbar)
                         .height(iced::Length::Shrink),
                     row![
-                        row![key("↑ / ↓"), faint("navigate")].spacing(5),
+                        row![
+                            keys(&[
+                                KeyPart::Icon(Icon::ArrowUp),
+                                KeyPart::Text("/"),
+                                KeyPart::Icon(Icon::ArrowDown),
+                            ]),
+                            faint("navigate")
+                        ]
+                        .spacing(5),
                         row![key("Enter"), faint("run")].spacing(5),
                         row![key("Esc"), faint("close")].spacing(5),
                     ]

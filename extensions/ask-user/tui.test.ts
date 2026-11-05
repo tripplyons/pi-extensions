@@ -16,7 +16,7 @@ for (const mode of ["regular", "fullscreen"]) test(`real ${mode} TUI renders, sc
   (h.ctx as any).mode = "tui";
   h.ctx.ui.custom = (factory: any, options: any) => new Promise(resolve => {
     let component: any, handle: any;
-    component = factory(tui, { fg: (_color: string, text: string) => text }, getKeybindings(), (answer: any) => {
+    component = factory(tui, { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text }, getKeybindings(), (answer: any) => {
       handle?.hide();
       component?.dispose();
       resolve(answer);
@@ -34,7 +34,7 @@ for (const mode of ["regular", "fullscreen"]) test(`real ${mode} TUI renders, sc
     const pending = h.call("ask_user", { question, choices: ["A"] });
     expect(tui.hasOverlay()).toBe(true);
     expect(screen().join("\n")).toContain("q00:");
-    expect(screen().join("\n")).toContain("→ A");
+    expect(screen().join("\n")).toContain("  A");
     input("\x1b[6~");
     expect(screen().join("\n")).toContain("q02:");
     if (mode === "fullscreen") {
@@ -45,7 +45,7 @@ for (const mode of ["regular", "fullscreen"]) test(`real ${mode} TUI renders, sc
     terminal.columns = 22;
     resize();
     expect(screen().length).toBeLessThanOrEqual(5);
-    expect(screen().join("\n")).toContain("→ A");
+    expect(screen().join("\n")).toContain("  A");
     expect(screen().join("\n")).toContain("PgUp/PgDn");
     input("\r");
     expect((await pending).details).toEqual({ answer: "A", choice: 1 });

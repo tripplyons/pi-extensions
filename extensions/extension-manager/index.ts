@@ -92,7 +92,7 @@ async function showMenu(ctx: ExtensionCommandContext, settings: SettingsManager,
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
 		const box = new Box(1, 1, value => theme.bg("customMessageBg", value));
 		box.addChild(new Text(theme.fg("customMessageText", "Extensions"), 0, 0));
-		box.addChild(new Text(theme.fg("muted", "~/.pi/agent/settings.json · Pi reloads on close"), 0, 0));
+		box.addChild(new Text(`${theme.fg("muted", "~/.pi/agent/settings.json")}  ${theme.fg("dim", "Pi reloads on close")}`, 0, 0));
 		const maxVisible = Math.max(1, Math.min(items.length, Math.floor(tui.terminal.rows * 0.7) - 8));
 		const list = new SettingsList(
 			items,

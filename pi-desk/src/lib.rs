@@ -7,6 +7,7 @@ pub mod composer_edit;
 pub mod desk;
 pub mod git;
 pub mod highlight;
+pub mod icon;
 pub mod later;
 pub mod model;
 pub mod models;

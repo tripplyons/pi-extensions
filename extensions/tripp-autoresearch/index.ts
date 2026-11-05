@@ -90,12 +90,21 @@ interface ASI {
   [key: string]: unknown;
 }
 
+type ExperimentStatus = "keep" | "discard" | "crash" | "checks_failed";
+
+const STATUS_LABELS: Record<ExperimentStatus, string> = {
+  keep: "kept",
+  discard: "discarded",
+  crash: "crashed",
+  checks_failed: "checks failed",
+};
+
 interface ExperimentResult {
   commit: string;
   metric: number;
   /** Additional tracked metrics: { name: value } */
   metrics: Record<string, number>;
-  status: "keep" | "discard" | "crash" | "checks_failed";
+  status: ExperimentStatus;
   description: string;
   timestamp: number;
   /** Segment index — increments on each config header. Current segment = highest. */
@@ -829,7 +838,7 @@ function renderDashboardLines(
   const baselineSuffix = baselineRunNumber === null ? "" : ` #${baselineRunNumber}`;
   lines.push(
     truncateToWidth(
-      `  ${th.fg("muted", "Baseline:")} ${th.fg("muted", `★ ${st.metricName}: ${formatNum(baseline, st.metricUnit, precision.primary)}${baselineSuffix}`)}`,
+      `  ${th.fg("muted", "Baseline:")} ${th.fg("muted", `${st.metricName}: ${formatNum(baseline, st.metricUnit, precision.primary)}${baselineSuffix}`)}`,
       width
     )
   );
@@ -837,7 +846,7 @@ function renderDashboardLines(
 
   // Progress: best primary metric with delta + run number
   if (bestPrimary !== null) {
-    let progressLine = `  ${th.fg("muted", "Progress:")} ${th.fg("warning", th.bold(`★ ${st.metricName}: ${formatNum(bestPrimary, st.metricUnit, precision.primary)}`))}${th.fg("dim", ` #${bestRunNum}`)}`;
+    let progressLine = `  ${th.fg("muted", "Progress:")} ${th.fg("warning", th.bold(`${st.metricName}: ${formatNum(bestPrimary, st.metricUnit, precision.primary)}`))}${th.fg("dim", ` #${bestRunNum}`)}`;
 
     if (baseline !== null && baseline !== 0 && bestPrimary !== baseline) {
       const pct = ((bestPrimary - baseline) / baseline) * 100;
@@ -907,7 +916,7 @@ function renderDashboardLines(
 
   // Column definitions
   // Keep complete scores before allocating space to descriptions and secondary columns.
-  const primaryLabel = "★ " + (st.metricName || "metric");
+  const primaryLabel = st.metricName || "metric";
   const primaryW = Math.max(11, Math.min(Math.floor(width * 0.25), visibleWidth(primaryLabel) + 1),
     ...rowsToRender.map(run => visibleWidth(formatNum(run.metric, st.metricUnit,
       run.segment === st.currentSegment ? precision.primary : 6)) + 1));
@@ -938,7 +947,6 @@ function renderDashboardLines(
 
   const descW = Math.max(minDescW, width - fixedW - totalSecWidth());
 
-  // Table header — primary metric name bolded with ★
   let headerLine =
     `  ${th.fg("muted", "#".padEnd(col.idx))}` +
     `${th.fg("muted", "commit".padEnd(col.commit))}` +
@@ -1244,17 +1252,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     return steerMessageFor(payload.event, result);
   };
 
-  // Running experiment state (for spinner in fullscreen overlay)
+  // Running experiment state (for the elapsed timer in the fullscreen overlay)
   let overlayTui: { requestRender: () => void } | null = null;
-  let spinnerInterval: ReturnType<typeof setInterval> | null = null;
-  let spinnerFrame = 0;
-  const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let elapsedInterval: ReturnType<typeof setInterval> | null = null;
 
   const clearOverlay = () => {
     overlayTui = null;
-    if (spinnerInterval) {
-      clearInterval(spinnerInterval);
-      spinnerInterval = null;
+    if (elapsedInterval) {
+      clearInterval(elapsedInterval);
+      elapsedInterval = null;
     }
   };
 
@@ -1399,11 +1405,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           const safeWidth = Math.max(1, width || getTuiSize(tui).width);
           const runningLine = joinPartsToWidth(
             [
-              theme.fg("accent", "🔬"),
-              theme.fg("warning", " running…"),
-              state.name ? theme.fg("dim", ` │ ${state.name}`) : "",
-              theme.fg("dim", ` │ ${runtime.runningExperiment?.command ?? ""}`),
-              theme.fg("dim", " │ waiting for first logged result"),
+              theme.fg("accent", "autoresearch"),
+              theme.fg("warning", "  running…"),
+              state.name ? theme.fg("text", `  ${state.name}`) : "",
+              theme.fg("dim", `  ${runtime.runningExperiment?.command ?? ""}`),
+              theme.fg("dim", "  waiting for first logged result"),
             ],
             safeWidth
           );
@@ -1419,7 +1425,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         render(width: number): string[] {
           const safeWidth = Math.max(1, width || getTuiSize(tui).width);
           const title = truncateDisplayText(
-            `🔬 autoresearch${state.name ? `: ${state.name}` : ""}`,
+            `autoresearch${state.name ? `: ${state.name}` : ""}`,
             Math.max(0, safeWidth - 5)
           );
           const fillLen = Math.max(0, safeWidth - 3 - 1 - visibleWidth(title) - 1);
@@ -2083,7 +2089,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         const elapsed = d?.elapsed ?? "";
         const outputText = result.content[0]?.type === "text" ? result.content[0].text : "";
 
-        let text = theme.fg("warning", `⏳ Running${elapsed ? ` ${elapsed}` : ""}…`);
+        let text = theme.fg("warning", `Running${elapsed ? ` ${elapsed}` : ""}…`);
 
         // Always show tail of streaming output (like bash tool shows preview lines)
         if (outputText) {
@@ -2124,7 +2130,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       };
 
       if (d.timedOut) {
-        let text = theme.fg("error", `⏰ TIMEOUT ${d.durationSeconds.toFixed(1)}s`);
+        let text = theme.fg("error", `Timed out after ${d.durationSeconds.toFixed(1)}s`);
         text = appendOutput(text, d.tailOutput);
         return new Text(text, 0, 0);
       }
@@ -2136,29 +2142,31 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (d.checksTimedOut) {
         let text =
-          theme.fg("success", `✅ wall: ${d.durationSeconds.toFixed(1)}s`) +
+          theme.fg("success", "Passed ") +
+          theme.fg("accent", `wall: ${d.durationSeconds.toFixed(1)}s`) +
           parsedSuffix +
-          theme.fg("error", ` ⏰ checks timeout ${d.checksDuration.toFixed(1)}s`);
+          theme.fg("error", `  checks timed out after ${d.checksDuration.toFixed(1)}s`);
         text = appendOutput(text, d.checksOutput);
         return new Text(text, 0, 0);
       }
 
       if (d.checksPass === false) {
         let text =
-          theme.fg("success", `✅ wall: ${d.durationSeconds.toFixed(1)}s`) +
+          theme.fg("success", "Passed ") +
+          theme.fg("accent", `wall: ${d.durationSeconds.toFixed(1)}s`) +
           parsedSuffix +
-          theme.fg("error", ` 💥 checks failed ${d.checksDuration.toFixed(1)}s`);
+          theme.fg("error", `  checks failed in ${d.checksDuration.toFixed(1)}s`);
         text = appendOutput(text, d.checksOutput);
         return new Text(text, 0, 0);
       }
 
       if (d.crashed) {
-        let text = theme.fg("error", `💥 FAIL exit=${d.exitCode} ${d.durationSeconds.toFixed(1)}s`) + parsedSuffix;
+        let text = theme.fg("error", `Failed with exit code ${d.exitCode} in ${d.durationSeconds.toFixed(1)}s`) + parsedSuffix;
         text = appendOutput(text, d.tailOutput);
         return new Text(text, 0, 0);
       }
 
-      let text = theme.fg("success", "✅ ");
+      let text = theme.fg("success", "Passed ");
 
       // Show wall-clock and parsed primary metric together
       const parts: string[] = [`wall: ${d.durationSeconds.toFixed(1)}s`];
@@ -2168,7 +2176,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       text += theme.fg("accent", parts.join(", "));
 
       if (d.checksPass === true) {
-        text += theme.fg("success", ` ✓ checks ${d.checksDuration.toFixed(1)}s`);
+        text += theme.fg("success", `  checks passed in ${d.checksDuration.toFixed(1)}s`);
       }
 
       if (d.truncation?.truncated && d.fullOutputPath) {
@@ -2513,12 +2521,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           : exp.status === "crash" || exp.status === "checks_failed"
             ? "error"
             : "warning";
-      const icon =
-        exp.status === "keep" ? "✓" : exp.status === "crash" ? "✗" : exp.status === "checks_failed" ? "⚠" : "–";
-
       let text =
-        theme.fg(color, `${icon} `) +
-        theme.fg("accent", `#${s.results.length}`);
+        theme.fg(color, theme.bold(STATUS_LABELS[exp.status])) +
+        theme.fg("accent", ` #${s.results.length}`);
 
       // Show wall-clock and primary metric together
       const metricParts: string[] = [];
@@ -2544,8 +2549,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           }
         }
         text +=
-          theme.fg("dim", " │ ") +
-          theme.fg("warning", `★ best: ${formatNum(best, s.metricUnit, precision.primary)}`);
+          theme.fg("dim", "  best: ") +
+          theme.fg("warning", theme.bold(formatNum(best, s.metricUnit, precision.primary)));
       }
 
       // Show secondary metrics inline
@@ -2588,21 +2593,19 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           let lastTotalRows = 0;
           overlayTui = tui;
 
-          spinnerInterval = setInterval(() => {
-            spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
+          elapsedInterval = setInterval(() => {
             if (runtime.runningExperiment) tui.requestRender();
-          }, 80);
+          }, 1000);
 
           const buildOverlayContent = (renderWidth: number): string[] => {
             const content = renderDashboardLines(state, renderWidth, theme, 0);
             if (runtime.runningExperiment) {
               const elapsed = formatElapsed(Date.now() - runtime.runningExperiment.startedAt);
-              const frame = SPINNER[spinnerFrame % SPINNER.length];
               const nextIdx = state.results.length + 1;
               content.push(
                 truncateToWidth(
                   `  ${theme.fg("dim", String(nextIdx).padEnd(3))}` +
-                    theme.fg("warning", `${frame} running… ${elapsed}`),
+                    theme.fg("warning", `running… ${elapsed}`),
                   renderWidth,
                   "…",
                   true
@@ -2628,7 +2631,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               const out: string[] = [];
 
               const title = truncateDisplayText(
-                `🔬 autoresearch${state.name ? `: ${state.name}` : ""}`,
+                `autoresearch${state.name ? `: ${state.name}` : ""}`,
                 Math.max(0, safeWidth - 5)
               );
               const fillLen = Math.max(0, safeWidth - 3 - 1 - visibleWidth(title) - 1);
@@ -2652,8 +2655,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
                 ? ` ${scrollOffset + 1}-${Math.min(scrollOffset + viewportRows, totalRows)}/${totalRows}`
                 : "";
               const helpText = safeWidth >= 85
-                ? ` ↑↓/j/k scroll • pgup/pgdn • g/G • esc close${scrollInfo} `
-                : ` j/k scroll • esc close${scrollInfo} `;
+                ? ` ↑↓/j/k scroll   pgup/pgdn page   g/G jump   esc close${scrollInfo} `
+                : ` j/k scroll   esc close${scrollInfo} `;
               const footFill = Math.max(0, safeWidth - visibleWidth(helpText));
 
               out.push(

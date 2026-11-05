@@ -159,20 +159,24 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if !agent.status.is_done() {
         body = body.push(super::session::controls(app, Some(agent.id.clone())));
     } else {
-        body = body.push(faint(format!(
-            "Model: {}  ·  Effort: {}",
-            agent
-                .session_settings
-                .model
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "Pi default".into()),
-            agent
-                .session_settings
-                .effort
-                .as_deref()
-                .unwrap_or("Pi default")
-        )));
+        let settings = &agent.session_settings;
+        body = body.push(
+            row![
+                faint(format!(
+                    "Model: {}",
+                    settings
+                        .model
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "Pi default".into())
+                )),
+                faint(format!(
+                    "Effort: {}",
+                    settings.effort.as_deref().unwrap_or("Pi default")
+                )),
+            ]
+            .spacing(24),
+        );
     }
 
     if let Some(note) = &agent.note {

@@ -117,7 +117,7 @@ test("dashboard labels are concise and human readable", () => {
     direction: "Lower is better",
     kept: "kept",
     checksFailed: "checks failed",
-    summary: "2 runs · 1 kept · Lower is better",
+    summary: "2 runs, 1 kept, lower is better",
   });
 });
 

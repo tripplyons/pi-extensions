@@ -110,7 +110,7 @@ test("progress reports provider and timeout while executing, then stops", () => 
   };
   await h.tools.get("web_extract").execute("id", { url: "https://pi.dev" }, undefined, (value: any) => updates.push(value));
   expect(updates.length).toBeGreaterThanOrEqual(2);
-  expect(updates.at(-1).content[0].text).toContain("1s elapsed · 30s timeout");
+  expect(updates.at(-1).content[0].text).toContain("1s elapsed, 30s timeout");
   const count = updates.length;
   await new Promise(resolve => setTimeout(resolve, 1100));
   expect(updates).toHaveLength(count);

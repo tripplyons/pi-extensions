@@ -7,7 +7,8 @@ import install, { other } from "./index.ts";
 
 const down = "\x1b[B", up = "\x1b[A", pageDown = "\x1b[6~", pageUp = "\x1b[5~";
 const question = Array.from({ length: 40 }, (_, index) => `q${String(index).padStart(2, "0")}: question details`).join("\n");
-const theme = { fg: (_color: string, value: string) => value } as any;
+const highlight = "\x1b[48;5;236m";
+const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => `${highlight}${value}\x1b[49m` } as any;
 
 function ui(rows = 8, columns = 40) {
   const h = harness(); install(h.pi);
@@ -26,7 +27,8 @@ function ui(rows = 8, columns = 40) {
   const current = () => dialogs.at(-1);
   const raw = () => current().render(terminal.columns) as string[];
   const lines = () => raw().map(line => stripTerminalSequences(line).trimEnd());
-  return { h, terminal, dialogs, options, current, raw, lines, renders: () => renders };
+  const selected = () => raw().filter(line => line.includes(highlight)).map(line => stripTerminalSequences(line).trim()).join("\n");
+  return { h, terminal, dialogs, options, current, raw, lines, selected, renders: () => renders };
 }
 
 test("small choice dialogs page through the whole question without changing the answer", async () => {
@@ -38,7 +40,7 @@ test("small choice dialogs page through the whole question without changing the 
   for (let page = 0; page < 60; page++) {
     const lines = view.lines();
     expect(lines.length).toBeLessThanOrEqual(view.terminal.rows);
-    expect(lines.some(line => line === "→ A")).toBe(true);
+    expect(view.selected()).toBe("A");
     for (const line of lines) if (/^q\d\d:/.test(line)) seen.add(line);
     const current = lines.join("\n");
     if (current === previous) break;
@@ -62,11 +64,11 @@ test("all choices, including Other, remain reachable while the question stays sc
   view.current().handleInput(pageDown);
   const scrolled = view.lines().find(line => /^q\d/.test(line));
   for (let i = 0; i < 8; i++) {
-    expect(view.lines().join("\n")).toContain(`→ Choice ${i + 1}`);
+    expect(view.selected()).toBe(`Choice ${i + 1}`);
     expect(view.lines().find(line => /^q\d/.test(line))).toBe(scrolled);
     view.current().handleInput(down);
   }
-  expect(view.lines().join("\n")).toContain(`→ ${other}`);
+  expect(view.selected()).toBe(other);
   view.current().handleInput("\r");
   await new Promise(setImmediate);
   expect(view.dialogs).toHaveLength(2);
@@ -109,7 +111,7 @@ test("fullscreen wheel events scroll the question without changing the selected 
   expect(view.current().handleMouse({ type: "click" })).toBeUndefined();
   expect(view.current().handleMouse({ type: "wheel", wheelDelta: 5 })).toEqual({ handled: true });
   expect(view.lines().join("\n")).toContain("q05:");
-  expect(view.lines().join("\n")).toContain("→ A");
+  expect(view.selected()).toBe("A");
   view.current().handleMouse({ type: "wheel", wheelDelta: -100 });
   expect(view.lines().join("\n")).toContain("q00:");
   expect(view.renders()).toBeGreaterThan(0);
@@ -122,7 +124,7 @@ test("wrapped choice labels return their full text and clamp at both ends", asyn
   const choices = ["First choice with a wrapped label", "全ての設定を維持する長い選択肢"];
   const pending = view.h.call("ask_user", { question: "Q?", choices });
   view.current().handleInput(up);
-  expect(view.lines().join("\n")).toContain("→ First");
+  expect(view.selected()).toBe("First choice\nwith a wrapped\nlabel");
   view.current().handleInput("j");
   for (const line of view.lines()) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
   view.current().handleInput("\n");
@@ -211,9 +213,10 @@ test("RPC keeps native select/input requests and never attempts a custom TUI", a
 test("the recommended choice starts selected and is marked", async () => {
   const view = ui(12, 60);
   const pending = view.h.call("ask_user", { question: "Pick one", choices: ["A", "B", "C"], recommended: 3 });
-  expect(view.lines()).toContain("→ C (recommended)");
+  expect(view.selected()).toBe("C (recommended)");
   expect(view.lines()).toContain("  A");
   view.current().handleInput(up);
+  expect(view.selected()).toBe("B");
   expect(view.lines()).toContain("  C (recommended)");
   view.current().handleInput("\r");
   expect((await pending).details).toEqual({ answer: "B", choice: 2 });

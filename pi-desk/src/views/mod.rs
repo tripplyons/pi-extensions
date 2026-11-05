@@ -14,12 +14,13 @@ mod sidebar;
 mod stable_column;
 
 use crate::app::{App, Message};
+use crate::icon::{Icon, KeyPart};
 use crate::model::Timestamp;
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED};
 use iced::widget::{
-    Space, button, column, container, opaque, rich_text, row, rule, span, stack, text,
+    Space, button, column, container, opaque, rich_text, row, rule, span, stack, svg, text,
 };
-use iced::{Alignment, Element, Fill, Length, Padding};
+use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 pub fn root(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if app.focus && app.current().is_some() {
@@ -179,24 +180,40 @@ pub fn divider(_: &iced::Theme) -> rule::Style {
     }
 }
 
-/// A key hint such as `E` or `⌘K`.
+/// A key hint with one text key, such as `E` or `Esc`.
 pub fn key<'a>(label: &'a str) -> Element<'a, Message> {
-    container(
-        text(label)
+    keys(&[KeyPart::Text(label)])
+}
+
+/// A key hint whose modifiers and arrows draw as icons.
+pub fn keys<'a>(parts: &[KeyPart<'a>]) -> Element<'a, Message> {
+    let parts = parts.iter().map(|part| match *part {
+        KeyPart::Text(label) => text(label)
             .size(theme::size::CAPTION)
             .font(MONO)
-            .color(MUTED),
-    )
-    .padding([0, 5])
-    .style(|_: &iced::Theme| container::Style {
-        border: iced::Border {
-            color: theme::BORDER,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
-    })
-    .into()
+            .color(MUTED)
+            .into(),
+        KeyPart::Icon(glyph) => icon(glyph, theme::size::CAPTION, MUTED),
+    });
+    container(row(parts).spacing(2).align_y(Alignment::Center))
+        .padding([0, 5])
+        .style(|_: &iced::Theme| container::Style {
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+pub fn icon<'a>(glyph: Icon, size: f32, color: Color) -> Element<'a, Message> {
+    svg(glyph.handle())
+        .width(size)
+        .height(size)
+        .style(move |_, _| svg::Style { color: Some(color) })
+        .into()
 }
 
 pub fn muted<'a>(label: impl text::IntoFragment<'a>) -> text::Text<'a> {

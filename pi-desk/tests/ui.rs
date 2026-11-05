@@ -7,6 +7,7 @@ mod common;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced_test::simulator::Simulator;
 use pi_desk::app::{App, Message, Overlay, View};
+use pi_desk::icon::KeyPart;
 use pi_desk::model::*;
 use pi_desk::store::Store;
 use std::path::PathBuf;
@@ -642,12 +643,12 @@ fn existing_shortcuts_have_visible_control_and_overlay_hints() {
     }
     key(&mut app, "escape");
     let _ = app.update(Message::OpenPalette);
-    for label in ["↑ / ↓", "navigate", "Enter", "run", "Esc", "close"] {
+    for label in ["/", "navigate", "Enter", "run", "Esc", "close"] {
         ui(&app).find(label).unwrap();
     }
     key(&mut app, "escape");
     key(&mut app, "n");
-    ui(&app).find("⌘↵").unwrap();
+    ui(&app).find("File task").unwrap();
     ui(&app).find("Esc").unwrap();
     key(&mut app, "escape");
     key(&mut app, "x");
@@ -693,11 +694,9 @@ fn sidebar_shortcut_respects_typing_modifiers_and_overlays() {
     assert!(app.show_sidebar, "overlays own character input");
     assert!(app.overlay.is_some());
     key(&mut app, "Escape");
-    assert!(
-        app.commands()
-            .iter()
-            .any(|command| { command.label == "Hide sidebar" && command.keys == "S" })
-    );
+    assert!(app.commands().iter().any(|command| {
+        command.label == "Hide sidebar" && command.keys == [KeyPart::Text("S")]
+    }));
 }
 
 #[test]

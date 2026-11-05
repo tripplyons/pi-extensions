@@ -5,15 +5,15 @@ const payload = { rate_limit: { primary_window: { limit_window_seconds: 18000, u
 test('usage windows, clamping, relative resets and Prime fallback', () => {
   expect(parseUsage(payload, 100)).toEqual({ fiveHour: { remaining: 75, reset: 220 }, weekly: { remaining: 0, reset: 200 } });
   expect(parseUsage({ rate_limit: { primary_window: { used_percent: -1 } } }).weekly?.remaining).toBe(100);
-  expect(formatUsage(parseUsage(payload, 100), 100)).toBe('Codex usage\n5h  75% remaining · resets in 0d 0h 2m\n1w  0% remaining · resets in 0d 0h 2m');
+  expect(formatUsage(parseUsage(payload, 100), 100)).toBe('Codex usage\n5h  75% remaining, resets in 0d 0h 2m\n1w  0% remaining, resets in 0d 0h 2m');
   expect(() => parseUsage({})).toThrow('no supported');
 });
 test('five-hour quota is displayed but not used as a weekly fallback', () => {
   const usage = parseUsage({ rate_limit: payload.rate_limit }, 100);
   expect(usage.fiveHour?.remaining).toBe(75);
   expect(usage.weekly).toBeUndefined();
-  expect(formatUsage(usage, 100)).toBe('Codex usage\n5h  75% remaining · resets in 0d 0h 2m\n1w  unavailable');
-  expect(formatUsage({ weekly: { remaining: 60 } }, 100)).toBe('Codex usage\n1w  60% remaining · reset time unavailable');
+  expect(formatUsage(usage, 100)).toBe('Codex usage\n5h  75% remaining, resets in 0d 0h 2m\n1w  unavailable');
+  expect(formatUsage({ weekly: { remaining: 60 } }, 100)).toBe('Codex usage\n1w  60% remaining, reset time unavailable');
 });
 test('request uses fixed HTTPS endpoint, private headers and blocks redirects', async () => {
   const token = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-account' } })).toString('base64url')}.signature`;
@@ -59,7 +59,7 @@ test('legacy Codex login still resolves credentials and displays weekly quota', 
     await h.command('usage');
     expect(getProviderAuth).toHaveBeenCalledWith('openai-codex');
     expect(request).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith('Codex usage\n5h  75% remaining · resets in 0d 0h 2m\n1w  0% remaining · resets now', 'info');
+    expect(notify).toHaveBeenCalledWith('Codex usage\n5h  75% remaining, resets in 0d 0h 2m\n1w  0% remaining, resets now', 'info');
   } finally { request.mockRestore(); notify.mockRestore(); }
 });
 
@@ -95,10 +95,10 @@ const claudeEvent = { status: 'allowed', resetsAt: 1_000_000 + 7_800, rateLimitT
   unifiedWindows: { five_hour: { utilization: 0.23, resetsAt: 1_000_000 + 7_800 }, seven_day: { utilization: 0.38, resetsAt: 1_000_000 + 90_000 } } };
 test('Claude usage formats both plan windows from the latest bridge event', () => {
   const now = 1_000_000_000;
-  expect(formatClaudeUsage({ info: claudeEvent, observedAt: now - 180_000 }, now)).toBe('Claude usage (as of 3m ago)\n5h  77% remaining · resets in 0d 2h 10m\n1w  62% remaining · resets in 1d 1h 0m');
+  expect(formatClaudeUsage({ info: claudeEvent, observedAt: now - 180_000 }, now)).toBe('Claude usage (as of 3m ago)\n5h  77% remaining, resets in 0d 2h 10m\n1w  62% remaining, resets in 1d 1h 0m');
   // Events without unified windows still report the window that set their status.
   expect(formatClaudeUsage({ info: { status: 'rejected', rateLimitType: 'seven_day', utilization: 1, resetsAt: 1_000_060 }, observedAt: now }, now))
-    .toBe('Claude usage (as of now)\n1w  0% remaining · resets in 0d 0h 1m\nLimited by the seven-day window');
+    .toBe('Claude usage (as of now)\n1w  0% remaining, resets in 0d 0h 1m\nLimited by the seven-day window');
   for (const shared of [undefined, {}, { info: {}, observedAt: now }]) expect(formatClaudeUsage(shared, now)).toContain('No Claude response in this Pi process yet');
 });
 
@@ -135,7 +135,7 @@ test("API cost uses only active-branch assistant usage, including failed respons
     usage: { input: 10, output: 2, cacheRead: 3, cacheWrite: 4, cost: { total: 0.125 } },
   } });
   await h.command("api-cost");
-  expect(notice).toContain("2 responses · input 20 · output 4");
+  expect(notice).toContain("2 responses, input 20, output 4");
   expect(notice).toContain("$0.250000");
   h.entries.length = 0;
   await h.command("api-cost");

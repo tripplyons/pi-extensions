@@ -6,6 +6,8 @@ same rule as Overseer. Both iced renderer backends use
 sans family (San Francisco on macOS, Segoe UI on Windows, system sans on Linux).
 A shared 12/13/14/16/18 px scale separates captions, controls, body text, headings,
 and titles. Semibold marks hierarchy; code, paths, and key hints use monospace.
+Disclosure chevrons, drag handles, and modifier and arrow keys are bundled
+[Lucide](https://lucide.dev) SVG icons tinted with theme colors.
 Secondary text stays readable against the neutral dark panels.
 
 A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in the

@@ -1507,7 +1507,7 @@
 
     function shareSummaryText() {
       const kept = session.runs.filter(run => run.status === 'keep').length;
-      return session.runs.length + ' runs · ' + kept + ' kept · ' + directionLabel();
+      return session.runs.length + ' runs, ' + kept + ' kept, ' + directionLabel().toLowerCase();
     }
 
   </script>

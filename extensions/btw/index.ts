@@ -9,6 +9,7 @@ interface BtwSlot {
 	question: string;
 	thinking: string;
 	answer: string;
+	error?: string;
 	done: boolean;
 	activity?: string[];
 }
@@ -18,29 +19,20 @@ function formatActivity(activity: string[]): string {
 	for (const item of activity) counts.set(item, (counts.get(item) ?? 0) + 1);
 	const summary = [...counts.entries()]
 		.slice(0, 6)
-		.map(([name, count]) => (count === 1 ? name : `${name}×${count}`));
+		.map(([name, count]) => (count === 1 ? name : `${name} (${count})`));
 	if (counts.size > summary.length) summary.push(`+${counts.size - summary.length} more`);
 	return `used ${summary.join(", ")}`;
 }
 
 function formatBtw(slot: BtwSlot, theme: any): string[] {
-	const dim = (s: string) => theme.fg("dim", s);
-	const green = (s: string) => theme.fg("success", s);
 	const italic = (s: string) => theme.fg("dim", theme.italic(s));
-	const yellow = (s: string) => theme.fg("warning", s);
-	const lines = [dim("💭 btw ") + green("› ") + slot.question];
+	const status = slot.done ? "" : `  ${theme.fg("warning", slot.answer ? "answering" : "thinking")}`;
+	const lines = [`${theme.fg("dim", "btw")}  ${theme.bold(slot.question)}${status}`];
 
 	if (slot.activity?.length) lines.push(italic(formatActivity(slot.activity)));
-
-	if (slot.thinking && !slot.answer) {
-		lines.push(italic(slot.thinking) + (slot.done ? "" : yellow(" ▍")));
-	}
-
-	if (slot.answer) {
-		lines.push(slot.answer + (slot.done ? "" : yellow(" ▍")));
-	} else if (!slot.thinking) {
-		lines.push(yellow("⏳ thinking..."));
-	}
+	if (slot.error) lines.push(theme.fg("error", `Error: ${slot.error}`));
+	else if (slot.answer) lines.push(slot.answer);
+	else if (slot.thinking) lines.push(italic(slot.thinking));
 
 	return lines;
 }
@@ -137,7 +129,7 @@ export function installBtw(pi: ExtensionAPI, spawnProcess: typeof spawn = spawn)
 	function showBtw(slot: BtwSlot) {
 		pi.sendMessage({
 			customType: "btw",
-			content: slot.answer || slot.thinking || "thinking...",
+			content: slot.error ? `Error: ${slot.error}` : slot.answer || slot.thinking || "thinking...",
 			display: true,
 			details: { ...slot },
 		});
@@ -203,7 +195,7 @@ export function installBtw(pi: ExtensionAPI, spawnProcess: typeof spawn = spawn)
 					if (event.type === "message_end" && event.message?.role === "assistant") {
 						const text = textFromContent(event.message.content).trim();
 						if (text) slot.answer = text;
-						if (event.message.errorMessage) slot.answer = `❌ ${event.message.errorMessage}`;
+						if (event.message.errorMessage) slot.error = event.message.errorMessage;
 					}
 				};
 
@@ -228,14 +220,15 @@ export function installBtw(pi: ExtensionAPI, spawnProcess: typeof spawn = spawn)
 
 				runningAgents.delete(proc);
 				slot.done = true;
-				if (exitCode !== 0 && !slot.answer) {
-					slot.answer = `❌ btw exited with code ${exitCode}${stderr.trim() ? `\n${stderr.trim()}` : ""}`;
-				} else if (!slot.answer) {
-					slot.answer = stderr.trim() ? `❌ ${stderr.trim()}` : "(no answer)";
+				if (exitCode !== 0 && !slot.answer && !slot.error) {
+					slot.error = `btw exited with code ${exitCode}${stderr.trim() ? `\n${stderr.trim()}` : ""}`;
+				} else if (!slot.answer && !slot.error) {
+					if (stderr.trim()) slot.error = stderr.trim();
+					else slot.answer = "(no answer)";
 				}
 				showBtw(slot);
 			} catch (err: any) {
-				slot.answer = `❌ ${err.message}`;
+				slot.error = err.message;
 				slot.done = true;
 				showBtw(slot);
 			} finally {

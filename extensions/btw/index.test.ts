@@ -48,3 +48,20 @@ for (const tools of [false, true]) test(`/btw${tools ? ":tools" : ""} copies the
     expect(h.entries).toHaveLength(0);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("/btw renders progress and errors as themed words", () => {
+  const h = harness();
+  let renderer: any;
+  h.pi.registerMessageRenderer = (_type: string, render: any) => { renderer = render; };
+  installBtw(h.pi);
+  const theme = {
+    fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => `<b>${text}</b>`,
+    italic: (text: string) => text,
+  };
+  const render = (details: any) => renderer({ content: "", details }, {}, theme).render(80).map((line: string) => line.trim()).filter(Boolean);
+  expect(render({ question: "Why?", thinking: "", answer: "", done: false })).toEqual(["<dim>btw</dim>  <b>Why?</b>  <warning>thinking</warning>"]);
+  expect(render({ question: "Why?", thinking: "", answer: "Because", done: false })[0]).toEndWith("<warning>answering</warning>");
+  expect(render({ question: "Why?", thinking: "", answer: "", error: "boom", done: true })).toEqual(["<dim>btw</dim>  <b>Why?</b>", "<error>Error: boom</error>"]);
+});

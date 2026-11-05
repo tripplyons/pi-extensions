@@ -76,3 +76,5 @@ It is not bundled here, so only one extension controls the glow.
 Historical third-party license notices are retained under `licenses/`.
 Action Fusion, ObservationPack, and Evidence-Preserving Reducer are adapted from [SoL-Pi](https://github.com/NVlabs/SoL-Pi) under its
 MIT license (`licenses/sol-pi.txt`).
+pi-desk bundles [Lucide](https://lucide.dev) icons under the ISC license
+(`licenses/lucide.txt`).

@@ -31,7 +31,7 @@ function windowLine(label: string, item: Window | undefined, now: number) {
   if (!item) return `${label}  unavailable`;
   const minutes = item.reset === undefined ? undefined : Math.max(0, Math.ceil((item.reset - now) / 60));
   const duration = minutes === undefined ? "reset time unavailable" : minutes === 0 ? "resets now" : `resets in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ${minutes % 60}m`;
-  return `${label}  ${Math.round(item.remaining)}% remaining · ${duration}`;
+  return `${label}  ${Math.round(item.remaining)}% remaining, ${duration}`;
 }
 /** Lists the five-hour window when the account has one; the weekly window always has a line. */
 function formatWindows(title: string, usage: Usage, now: number) {
@@ -95,7 +95,7 @@ export default function usage(pi: ExtensionAPI) {
         cacheRead += usage.cacheRead; cacheWrite += usage.cacheWrite;
         cost += usage.cost.total; requests++;
       }
-      ctx.ui.notify(`${requests} responses · input ${input} · output ${output} · cache read ${cacheRead} · cache write ${cacheWrite}\nEstimated API cost: $${cost.toFixed(6)} (not a billing statement; subscription usage may report $0)`, "info");
+      ctx.ui.notify(`${requests} responses, input ${input}, output ${output}, cache read ${cacheRead}, cache write ${cacheWrite}\nEstimated API cost: $${cost.toFixed(6)} (not a billing statement; subscription usage may report $0)`, "info");
     },
   });
   let pending: AbortController | undefined;

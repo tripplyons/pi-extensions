@@ -1,5 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Input, ScrollView, Text, truncateToWidth, type Component, type Focusable, type KeybindingsManager, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Input, ScrollView, Text, truncateToWidth, visibleWidth, type Component, type Focusable, type KeybindingsManager, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 
 class QuestionDialog implements Component, Focusable {
   private readonly input = new Input();
@@ -43,9 +43,10 @@ class QuestionDialog implements Component, Focusable {
       this.choices.forEach((choice, index) => {
         const selected = index === this.selected;
         if (selected) selectedStart = answers.length;
-        const label = this.theme.fg(selected ? "accent" : "text", `${selected ? "→ " : "  "}${choice}`);
+        const label = this.theme.fg(selected ? "accent" : "text", choice);
         const mark = index === this.recommended ? this.theme.fg("dim", " (recommended)") : "";
-        answers.push(...new Text(label + mark, 0, 0).render(width));
+        const rows = new Text(label + mark, 2, 0).render(width);
+        answers.push(...selected ? rows.map(row => this.theme.bg("selectedBg", row + " ".repeat(Math.max(0, width - visibleWidth(row))))) : rows);
         if (selected) selectedEnd = answers.length;
       });
     } else {
@@ -65,8 +66,9 @@ class QuestionDialog implements Component, Focusable {
     if (showHelp) {
       const first = this.questionHeight ? this.question.scrollTop + 1 : 0;
       const last = this.question.scrollTop + this.questionHeight;
-      const help = `PgUp/PgDn ${first}-${last}/${questionLines.length} · ${this.choices.length ? "↑↓ choose · " : ""}Enter answer · Esc cancel`;
-      lines.push(this.theme.fg("dim", truncateToWidth(help, width, this.theme.fg("dim", "..."))));
+      const hints: [string, string][] = [["PgUp/PgDn", `${first}-${last}/${questionLines.length}`], ...this.choices.length ? [["↑↓", "choose"] satisfies [string, string]] : [], ["Enter", "answer"], ["Esc", "cancel"]];
+      const help = hints.map(([key, action]) => `${this.theme.fg("muted", key)} ${this.theme.fg("dim", action)}`).join("   ");
+      lines.push(truncateToWidth(help, width, this.theme.fg("dim", "...")));
     }
     if (framed) {
       const border = this.theme.fg("border", "─".repeat(width));

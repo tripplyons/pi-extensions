@@ -51,7 +51,7 @@ export default function presentation(pi: ExtensionAPI) {
     }
     ctx.ui.setWorkingIndicator({ frames: [] });
     ctx.ui.setWorkingVisible(false);
-    ctx.ui.setTitle(`pi · ${basename(ctx.cwd)}`);
+    ctx.ui.setTitle(`pi: ${basename(ctx.cwd)}`);
     ctx.ui.setFooter((tui, theme, data) => {
       const frames = ["[/]", "[-]", "[\\]", "[|]"];
       let frame = 0;

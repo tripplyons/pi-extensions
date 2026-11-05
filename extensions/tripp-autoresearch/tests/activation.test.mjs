@@ -260,6 +260,7 @@ test("score formatting reaches terminal widgets and experiment tool output", asy
       assert.ok(lines.some(line => line.includes('Baseline:') && line.includes('1.0000000000000002')));
       assert.ok(lines.some(line => line.includes('Progress:') && line.includes('score: 1')));
       if (width === 200) assert.ok(lines.some(line => line.includes('0.11928002ms')));
+      assert.doesNotMatch(lines.join('\n'), /[★✓✗⚠│•\u{1F300}-\u{1FAFF}]/u);
     }
     const runTool = harness.tools.get('run_experiment');
     const result = await runTool.execute('score-test', {
@@ -272,6 +273,7 @@ test("score formatting reaches terminal widgets and experiment tool output", asy
     assert.ok(text.includes('0.11928003ms'));
     const renderedRun = runTool.renderResult(result, {}, theme).render(200).join('\n');
     assert.ok(renderedRun.includes('score: 1'));
+    assert.ok(renderedRun.startsWith('Passed wall: '));
 
     const state = { results: runs, currentSegment: 0, bestMetric: runs[0].metric,
       metricName: 'score', metricUnit: '', bestDirection: 'lower',
@@ -281,6 +283,8 @@ test("score formatting reaches terminal widgets and experiment tool output", asy
     }, {}, theme).render(200).join('\n');
     assert.ok(renderedLog.includes('score: 1.0000000000000002'));
     assert.ok(renderedLog.includes('best: 1'));
+    assert.ok(renderedLog.startsWith('kept #8'));
+    assert.doesNotMatch(renderedLog + renderedRun, /[★✓✗⚠│•\u{2600}-\u{27BF}\u{1F300}-\u{1FAFF}]/u);
     assert.ok(renderedLog.includes('latency_ms=0.11928001ms'));
     assert.ok(renderedLog.includes('count=-1,234.5'));
     assert.equal(readFileSync(join(cwd, '.auto/log.jsonl'), 'utf8'), log);

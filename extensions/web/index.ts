@@ -21,7 +21,7 @@ export default function web(pi: ExtensionAPI) {
     try { await access(script); } catch { throw new Error(`Web CLI not found at ${script}. Install the web-search-and-extract skill or set PI_WEB_CLI to its script's absolute path.`); }
     const started = Date.now();
     const progress = () => onUpdate?.({
-      content: [{ type: "text", text: `${command === "search" ? "Searching" : "Extracting"} with ${provider} · ${Math.floor((Date.now() - started) / 1000)}s elapsed · ${timeout}s timeout` }],
+      content: [{ type: "text", text: `${command === "search" ? "Searching" : "Extracting"} with ${provider}, ${Math.floor((Date.now() - started) / 1000)}s elapsed, ${timeout}s timeout` }],
       details: undefined,
     });
     progress();
