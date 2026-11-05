@@ -1,13 +1,23 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import manifest from "../package.json";
 import { SwarmStore } from "../extensions/swarm/state.ts";
 
 // Invoke the pinned CLI directly: a global package-manager shim may resolve a
 // different program when HOME points at the isolated test directory.
 const cli = resolve(import.meta.dir, "../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+
+// The run is --offline with an isolated agent directory, so Pi cannot download
+// fd for the find tool. Reuse fd from PATH or from the user's Pi tool directory.
+function findFd(): string {
+  const managed = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "bin", "fd");
+  const found = Bun.which("fd") ?? (existsSync(managed) ? managed : null);
+  if (!found) throw new Error("fd is required: install it on PATH or let Pi download it once");
+  return found;
+}
 
 test.each(["nested tools", "python task", "malformed image", "waiting-approval", "waiting-dependency", "checkpoint-hold"])("pinned Pi codemode safely handles %s without model requests", async (scenario) => {
   if (scenario === "python task" && !Bun.which("uv")) return;
@@ -54,7 +64,8 @@ text("python nested task verified");
     : 'text("keep neighboring text"); image("data:image/jpeg;base64,montage: unable to read font\\n/9j/2Q==");';
   try {
     const agentDir = join(home, "agent");
-    await mkdir(agentDir);
+    await mkdir(join(agentDir, "bin"), { recursive: true });
+    if (scenario === "nested tools") await symlink(findFd(), join(agentDir, "bin", "fd"));
     await writeFile(join(agentDir, "settings.json"), JSON.stringify({
       defaultTools: ["+codemode", "+grep", "+find", "+ls"], codemode: { mode: "only" },
       retry: { enabled: false }, cacheWarming: "off",
