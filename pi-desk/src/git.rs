@@ -1,4 +1,5 @@
-//! Git through the git CLI: worktrees, diffs, and squash merges.
+//! Git through the git CLI: worktrees, diffs, squash merges, and commits in
+//! the main checkout.
 //!
 //! The squash merge is computed with `git merge-tree --write-tree` and
 //! `git commit-tree`, so it never checks anything out. If the base branch is
@@ -45,6 +46,10 @@ pub fn current_branch(repo: &Path) -> Result<String, String> {
             repo.display()
         )
     })
+}
+
+pub fn head(repo: &Path) -> Result<String, String> {
+    git(repo, &["rev-parse", "--verify", "HEAD"])
 }
 
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: &str) -> Result<(), String> {
@@ -292,6 +297,22 @@ pub fn squash_merge(
         None => git(repo, &["update-ref", &base_ref, &commit, &base_tip])?,
     };
     Ok(Merge::Merged { commit })
+}
+
+/// Commits what is left in the main checkout onto `base`. Refuses when the
+/// checkout has moved to another branch, so the work never lands elsewhere.
+pub fn commit_checkout(checkout: &Path, base: &str, message: &str) -> Result<Merge, String> {
+    let branch = current_branch(checkout)?;
+    if branch != base {
+        return Err(format!(
+            "{} is on {branch}, not {base}; check out {base} and approve again",
+            checkout.display()
+        ));
+    }
+    commit_all(checkout, message)?;
+    Ok(Merge::Merged {
+        commit: head(checkout)?,
+    })
 }
 
 #[cfg(test)]

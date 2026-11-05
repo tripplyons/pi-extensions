@@ -8,8 +8,9 @@ A shared 12/13/14/16/18 px scale separates captions, controls, body text, headin
 and titles. Semibold marks hierarchy; code, paths, and key hints use monospace.
 Secondary text stays readable against the neutral dark panels.
 
-A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in its
-own git worktree. Questions and completed work enter your Inbox; answer, review
+A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in the
+project's own checkout, or in its own git worktree when you check Use worktree.
+Questions and completed work enter your Inbox; answer, review
 the diff, and merge without switching terminals. Panels, controls, selections,
 and dark primary buttons use neutral grays. Muted status dots, errors, red/green diffs,
 and subdued syntax colors keep semantic cues visible. Scrollbar tracks are
@@ -65,7 +66,8 @@ It does not replace an existing Pi session name. If naming is unavailable or
 fails, pi-desk keeps the current task title. No separate naming call is made by
 pi-desk; branch names and task prompts do not change.
 
-Agents have the same local permissions as Pi in your terminal. Worktrees isolate
+Agents have the same local permissions as Pi in your terminal. Main-checkout
+tasks edit your project files directly. Worktrees isolate
 git changes, not processes, secrets, networking, or files outside the worktree.
 Only run tasks and extensions you trust. Run one pi-desk instance per state
 directory; concurrent writers are not supported.
@@ -110,13 +112,19 @@ the app does not reset them.
 2. Open **New task** with the regular outlined sidebar button or N. Plain text
    creates one task; a list creates one task per
    item, with a preview before filing. Submit with Cmd+Enter. Tasks use the
-   project's current branch as their base. Model and effort apply to every task
+   project's current branch as their base. Use worktree starts unchecked each
+   time New task opens. Unchecked tasks work in the project's checkout and
+   record its HEAD commit; the task diff is everything since that commit. Check
+   it to give each task its own worktree and `pi-desk/` branch. Model and effort apply to every task
    in the submitted list; each task can be changed independently afterward.
 3. Four agents run at once by default. Settings lets you change the slot limit.
    Scheduling uses project order, then replies before new work, then oldest
    queued task first. Display order does not change scheduling. Priority is not
    used; older saved tasks still load, but their old priority values are ignored.
    Reorder projects by dragging or with Alt+Up/Down in a project view.
+   A project's checkout holds one main-checkout task at a time, from its first
+   start until it is merged, discarded, or marked done. Later main-checkout
+   tasks for that project wait in Queued; worktree tasks are not affected.
 4. Questions enter Inbox with choices, an optional recommendation, and a typed
    reply. Agents are asked to end with `Did:` and `Needs:` lines for review cards.
    Drop a file, such as a screenshot, onto the window to type its path into
@@ -129,11 +137,13 @@ the app does not reset them.
    Context compaction adds transcript notes and keeps the task Working through
    the interruption and continuation. Pi-desk confirms Pi is idle before moving
    a task to review or reporting an abort. Use the command palette to open the
-   worktree in a terminal or editor.
+   task's checkout or worktree in a terminal or editor.
 6. Approve a review to ask Pi for a specific commit message, then commit remaining
    changes, squash-merge locally into the base branch, and remove the worktree and
    branch. Nothing is pushed. Merge conflicts return the task to Pi with
-   instructions to rebase and resolve them.
+   instructions to rebase and resolve them. For a main-checkout task, approval
+   commits all changes in the checkout onto its branch, including any of your
+   own uncommitted edits there. It refuses if the checkout is on another branch.
 
 Before merging, pi-desk makes a separate `pi --print --no-session` request with
 no tools or MCP access. It sends the task title, completed-work summary, and final
@@ -181,7 +191,8 @@ system notifications or dock badges.
 
 Merge, discard, and mark-done actions have a five-second undo window. Discard
 removes the worktree and branch, including uncommitted changes, after confirmation.
-Mark done keeps the branch. Undo is not a way to reverse a merge after it runs.
+Mark done keeps the branch. For main-checkout tasks, discard and mark done stop
+the agent and leave the checkout's files unchanged. Undo is not a way to reverse a merge after it runs.
 
 ## Keys
 
@@ -237,7 +248,7 @@ also survive restart. A corrupt state file produces an error and disables app
 state saves for that run; it is not silently replaced with an empty file.
 
 Settings includes terminal and editor shell command templates. `{path}` is
-replaced with a shell-quoted worktree path. Defaults use Ghostty if installed,
+replaced with a shell-quoted checkout or worktree path. Defaults use Ghostty if installed,
 otherwise Terminal, and `$EDITOR` (or `vi`). Templates are trusted shell commands.
 
 `PI_DESK_PI` overrides the Pi executable, for example to test with the fake:

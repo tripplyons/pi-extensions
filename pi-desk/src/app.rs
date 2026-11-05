@@ -2,7 +2,7 @@
 //! logic lives in [`Desk`]; this module turns its effects into processes and
 //! git jobs, and turns input into desk actions.
 
-use crate::desk::{Desk, Effect};
+use crate::desk::{Desk, Effect, Isolation};
 use crate::git::{self, FileDiff, Merge};
 use crate::later;
 use crate::model::*;
@@ -70,6 +70,8 @@ pub struct Composer {
     pub project: Option<Id>,
     /// The branch new tasks merge into: the project's current branch.
     pub base: Result<String, String>,
+    /// Off: tasks work in the project's own checkout.
+    pub use_worktree: bool,
     pub session: SessionPicker,
     pub content: text_editor::Content,
     pub error: Option<String>,
@@ -160,6 +162,7 @@ pub enum Message {
     ComposerEdit(text_editor::Action),
     ComposerCommand(crate::composer_edit::Command),
     ComposerSubmit,
+    ComposerWorktree(bool),
     CloseOverlay,
     OpenPalette,
     PaletteQuery(String),
@@ -509,6 +512,15 @@ impl App {
                     },
                     move |result| Message::CommitMessageGenerated(agent.clone(), result),
                 )),
+                Effect::Commit {
+                    agent,
+                    checkout,
+                    base,
+                    message,
+                } => tasks.push(Task::perform(
+                    blocking(move || git::commit_checkout(&checkout, &base, &message)),
+                    move |result| Message::Merged(agent.clone(), result),
+                )),
                 Effect::Merge {
                     agent,
                     repo,
@@ -540,10 +552,13 @@ impl App {
         let Some(agent) = self.desk.state.agent(id) else {
             return Task::none();
         };
-        if !agent.worktree.exists() {
+        if !agent.workspace.path().exists() {
             return Task::none();
         }
-        let (worktree, base) = (agent.worktree.clone(), agent.base_branch.clone());
+        let (worktree, base) = (
+            agent.workspace.path().to_path_buf(),
+            agent.diff_base().to_string(),
+        );
         let entry = self.diffs.entry(id.to_string()).or_insert(DiffState {
             files: Ok(Vec::new()),
             colors: Vec::new(),
@@ -610,8 +625,8 @@ impl App {
 
     fn launch(&mut self, template: &str) {
         let Some(agent) = self.current() else { return };
-        let path = if agent.worktree.exists() {
-            agent.worktree.clone()
+        let path = if agent.workspace.path().exists() {
+            agent.workspace.path().to_path_buf()
         } else {
             self.desk
                 .state
@@ -1042,6 +1057,7 @@ impl App {
                     history: Default::default(),
                     project,
                     base,
+                    use_worktree: false,
                     session: SessionPicker::default(),
                     content: text_editor::Content::new(),
                     error: None,
@@ -1182,6 +1198,12 @@ impl App {
                 Task::none()
             }
             Message::ComposerSubmit => self.submit_composer(),
+            Message::ComposerWorktree(on) => {
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    composer.use_worktree = on;
+                }
+                Task::none()
+            }
             Message::CloseOverlay => {
                 self.overlay = None;
                 Task::none()
@@ -1531,8 +1553,8 @@ impl App {
                     return Task::none();
                 };
                 (
-                    if agent.worktree.exists() {
-                        agent.worktree.clone()
+                    if agent.workspace.path().exists() {
+                        agent.workspace.path().to_path_buf()
                     } else {
                         project.path.clone()
                     },
@@ -1605,10 +1627,23 @@ impl App {
                 return Task::none();
             }
         };
+        let isolation = if composer.use_worktree {
+            Isolation::Worktree
+        } else {
+            match git::head(&project.path) {
+                Ok(start) => Isolation::Main { start },
+                Err(error) => {
+                    composer.error = Some(error);
+                    return Task::none();
+                }
+            }
+        };
         let settings = composer.session.settings.clone();
         let count = drafts.len();
         self.overlay = None;
-        let effects = self.desk.file(&project.id, &base, settings, drafts);
+        let effects = self
+            .desk
+            .file(&project.id, &base, isolation, settings, drafts);
         self.notify(if count == 1 {
             "Filed 1 task".to_string()
         } else {

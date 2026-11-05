@@ -1,20 +1,37 @@
 //! The two summary lines an agent ends with, and the system prompt that asks
 //! for them.
 
-use crate::model::Summary;
+use crate::model::{Summary, Workspace};
 
-pub const SYSTEM_PROMPT: &str = "\
-You are running inside pi-desk, a desktop inbox for parallel Pi agents. You work alone in a \
-dedicated git worktree on your own branch. The user is not watching: they review your diff later, \
-and pi-desk squash-merges your branch when they approve. You may commit; pi-desk commits anything \
-left uncommitted before it merges.
+const WORKTREE: &str = "\
+You work alone in a dedicated git worktree on your own branch. The user is not watching: they \
+review your diff later, and pi-desk squash-merges your branch when they approve. You may commit; \
+pi-desk commits anything left uncommitted before it merges.";
 
+const MAIN: &str = "\
+You work in the user's own checkout on its current branch, not in a separate worktree. Other \
+uncommitted changes there may be the user's; do not revert or discard them, and do not switch \
+branches. The user is not watching: they review your diff later, and pi-desk commits all changes \
+in the checkout onto the branch when they approve. You may commit.";
+
+const REST: &str = "\
 When you need a decision, call ask_user with short choices and set recommended to the number of \
 the choice you recommend. Do not stop to ask in plain text.
 
 End every final message with exactly these two lines:
 Did: <what you did, in one sentence>
 Needs: <what you need from the user, in one sentence, or \"Review and merge\">";
+
+/// The prompt appended to Pi's system prompt for an agent in `workspace`.
+pub fn system_prompt(workspace: &Workspace) -> String {
+    let place = match workspace {
+        Workspace::Worktree { .. } => WORKTREE,
+        Workspace::Main { .. } => MAIN,
+    };
+    format!(
+        "You are running inside pi-desk, a desktop inbox for parallel Pi agents. {place}\n\n{REST}"
+    )
+}
 
 fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let line = line.trim().trim_start_matches(['-', '*', '>']).trim();

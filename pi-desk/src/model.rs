@@ -1,7 +1,7 @@
 //! Projects, agents, and the settings saved between runs.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub type Id = String;
 
@@ -193,9 +193,10 @@ pub struct Agent {
     pub updated_at: Timestamp,
     /// When the row last entered the inbox; orders rows of equal rank.
     pub inbox_at: Option<Timestamp>,
+    /// The branch the work lands on.
     pub base_branch: String,
-    pub branch: String,
-    pub worktree: PathBuf,
+    #[serde(flatten)]
+    pub workspace: Workspace,
     pub session_id: String,
     pub session_file: Option<PathBuf>,
     pub summary: Option<Summary>,
@@ -208,7 +209,40 @@ pub struct Agent {
     pub started: bool,
 }
 
+/// Where an agent works. Untagged so state saved before the main-checkout
+/// option still loads as a worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Workspace {
+    /// A dedicated worktree on its own branch, squash-merged into the base.
+    Worktree { worktree: PathBuf, branch: String },
+    /// The project's own checkout. `start` is the commit HEAD named at filing;
+    /// the task's diff is everything since then.
+    Main { checkout: PathBuf, start: String },
+}
+
+impl Workspace {
+    pub fn path(&self) -> &Path {
+        match self {
+            Workspace::Worktree { worktree, .. } => worktree,
+            Workspace::Main { checkout, .. } => checkout,
+        }
+    }
+
+    pub fn is_main(&self) -> bool {
+        matches!(self, Workspace::Main { .. })
+    }
+}
+
 impl Agent {
+    /// The revision the task's diff is measured from.
+    pub fn diff_base(&self) -> &str {
+        match &self.workspace {
+            Workspace::Worktree { .. } => &self.base_branch,
+            Workspace::Main { start, .. } => start,
+        }
+    }
+
     pub fn snoozed(&self, at: Timestamp) -> bool {
         self.snooze_until.is_some_and(|until| until > at)
     }
@@ -227,7 +261,7 @@ impl Agent {
 pub struct Settings {
     /// Most agents that may work at once.
     pub slots: usize,
-    /// Shell command templates. `{path}` becomes the quoted worktree path.
+    /// Shell command templates. `{path}` becomes the quoted task checkout path.
     pub terminal_command: String,
     pub editor_command: String,
 }

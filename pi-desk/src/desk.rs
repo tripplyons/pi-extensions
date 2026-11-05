@@ -48,6 +48,13 @@ pub enum Effect {
         title: String,
         summary: String,
     },
+    /// Commits a main-checkout task's remaining changes onto `base`.
+    Commit {
+        agent: Id,
+        checkout: PathBuf,
+        base: String,
+        message: String,
+    },
     Merge {
         agent: Id,
         repo: PathBuf,
@@ -100,6 +107,16 @@ struct Runtime {
 enum Undo {
     Snooze { agent: Id, until: Option<Timestamp> },
     Projects(Vec<Project>),
+}
+
+/// How filed tasks get their working copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Isolation {
+    Worktree,
+    /// Work in the project's checkout, measured from commit `start`.
+    Main {
+        start: String,
+    },
 }
 
 pub struct Desk {
@@ -285,11 +302,12 @@ impl Desk {
 
     // Filing
 
-    /// Files drafts as queued agents. `base` is the branch they merge into.
+    /// Files drafts as queued agents. `base` is the branch their work lands on.
     pub fn file(
         &mut self,
         project_id: &str,
         base: &str,
+        isolation: Isolation,
         session_settings: SessionSettings,
         drafts: Vec<Draft>,
     ) -> Vec<Effect> {
@@ -313,8 +331,16 @@ impl Desk {
                 updated_at: at,
                 inbox_at: None,
                 base_branch: base.to_string(),
-                branch: format!("pi-desk/{name}"),
-                worktree: self.worktree_root.join(slug(&project.name, 40)).join(&name),
+                workspace: match &isolation {
+                    Isolation::Worktree => Workspace::Worktree {
+                        worktree: self.worktree_root.join(slug(&project.name, 40)).join(&name),
+                        branch: format!("pi-desk/{name}"),
+                    },
+                    Isolation::Main { start } => Workspace::Main {
+                        checkout: project.path.clone(),
+                        start: start.clone(),
+                    },
+                },
                 session_id: new_id(),
                 session_file: None,
                 summary: None,
@@ -327,27 +353,30 @@ impl Desk {
                 note: None,
                 started: false,
             };
-            effects.push(self.prepare(&agent));
             self.state.agents.push(agent);
         }
         self.dirty = true;
+        effects.extend(self.schedule(now()));
         effects
     }
 
-    fn prepare(&mut self, agent: &Agent) -> Effect {
+    fn prepare(&mut self, agent: &Agent) -> Option<Effect> {
+        let Workspace::Worktree { worktree, branch } = &agent.workspace else {
+            return None;
+        };
         self.rt(&agent.id).preparing = true;
         let repo = self
             .state
             .project(&agent.project_id)
             .map(|project| project.path.clone())
             .unwrap_or_default();
-        Effect::CreateWorktree {
+        Some(Effect::CreateWorktree {
             agent: agent.id.clone(),
             repo,
-            path: agent.worktree.clone(),
-            branch: agent.branch.clone(),
+            path: worktree.clone(),
+            branch: branch.clone(),
             base: agent.base_branch.clone(),
-        }
+        })
     }
 
     pub fn on_worktree(&mut self, id: &str, result: Result<(), String>) -> Vec<Effect> {
@@ -372,7 +401,7 @@ impl Desk {
             .state
             .agents
             .iter()
-            .filter(|agent| agent.status == Status::Queued && !agent.worktree.exists())
+            .filter(|agent| agent.status == Status::Queued && !agent.workspace.path().exists())
             .filter(|agent| {
                 !self
                     .runtime
@@ -382,15 +411,28 @@ impl Desk {
             .cloned()
             .collect();
         for agent in &missing {
-            if agent.started {
-                self.edit(&agent.id, |agent| {
-                    agent.status = Status::Failed {
-                        error: format!("The worktree at {} is missing", agent.worktree.display()),
-                    };
-                    agent.inbox_at = Some(now());
-                });
+            let prepared = if agent.started {
+                None
             } else {
-                effects.push(self.prepare(agent));
+                self.prepare(agent)
+            };
+            match prepared {
+                Some(effect) => effects.push(effect),
+                None => {
+                    self.edit(&agent.id, |agent| {
+                        let kind = match agent.workspace {
+                            Workspace::Worktree { .. } => "worktree",
+                            Workspace::Main { .. } => "checkout",
+                        };
+                        agent.status = Status::Failed {
+                            error: format!(
+                                "The {kind} at {} is missing",
+                                agent.workspace.path().display()
+                            ),
+                        };
+                        agent.inbox_at = Some(now());
+                    });
+                }
             }
         }
         let ready: Vec<Id> = order::to_start(&self.state, self.running(), at)
@@ -398,7 +440,7 @@ impl Desk {
             .filter(|id| {
                 self.state
                     .agent(id)
-                    .is_some_and(|agent| agent.worktree.exists())
+                    .is_some_and(|agent| agent.workspace.path().exists())
             })
             .collect();
         for id in ready {
@@ -438,12 +480,12 @@ impl Desk {
                 "--session-id".into(),
                 agent.session_id.clone(),
                 "--append-system-prompt".into(),
-                summary::SYSTEM_PROMPT.into(),
+                summary::system_prompt(&agent.workspace),
             ]
             .into_iter()
             .chain(agent.session_settings.args())
             .collect(),
-            cwd: agent.worktree.clone(),
+            cwd: agent.workspace.path().to_path_buf(),
             env: vec![
                 ("PI_ASK_USER_TIMEOUT".into(), "0".into()),
                 ("PI_DESK".into(), "1".into()),
@@ -1034,8 +1076,8 @@ impl Desk {
                 vec![Effect::GenerateCommitMessage {
                     agent: id.to_string(),
                     program: self.pi_program.clone(),
-                    worktree: agent.worktree,
-                    base: agent.base_branch,
+                    worktree: agent.workspace.path().to_path_buf(),
+                    base: agent.diff_base().to_string(),
                     title: agent.title,
                     summary: agent.summary.map(|summary| summary.did).unwrap_or_default(),
                 }]
@@ -1066,15 +1108,28 @@ impl Desk {
                     return Vec::new();
                 };
                 let repo = project.path.clone();
-                self.rt(id).busy = Some("Merging");
-                vec![Effect::Merge {
-                    agent: id.to_string(),
-                    repo,
-                    worktree: agent.worktree,
-                    branch: agent.branch,
-                    base: agent.base_branch,
-                    message,
-                }]
+                match agent.workspace {
+                    Workspace::Worktree { worktree, branch } => {
+                        self.rt(id).busy = Some("Merging");
+                        vec![Effect::Merge {
+                            agent: id.to_string(),
+                            repo,
+                            worktree,
+                            branch,
+                            base: agent.base_branch,
+                            message,
+                        }]
+                    }
+                    Workspace::Main { checkout, .. } => {
+                        self.rt(id).busy = Some("Committing");
+                        vec![Effect::Commit {
+                            agent: id.to_string(),
+                            checkout,
+                            base: agent.base_branch,
+                            message,
+                        }]
+                    }
+                }
             }
             Err(error) => {
                 self.edit(id, |agent| {
@@ -1095,6 +1150,9 @@ impl Desk {
                 self.remove(id, false, Outcome::Merged)
             }
             Ok(Merge::Conflict { files }) => {
+                let Workspace::Worktree { branch, .. } = &agent.workspace else {
+                    return Vec::new();
+                };
                 let list = if files.is_empty() {
                     "some files".to_string()
                 } else {
@@ -1102,7 +1160,7 @@ impl Desk {
                 };
                 let text = format!(
                     "Squash-merging your branch into {} conflicts in: {list}. Rebase {} onto {}, resolve the conflicts, run the checks, and commit.",
-                    agent.base_branch, agent.branch, agent.base_branch
+                    agent.base_branch, branch, agent.base_branch
                 );
                 self.edit(id, |agent| {
                     agent.note = Some(format!("Merge conflict in {list}; sent back to rebase"));
@@ -1138,15 +1196,21 @@ impl Desk {
                 agent: id.to_string(),
             });
         }
-        self.rt(id).busy = Some("Cleaning up");
-        effects.push(Effect::Remove {
-            agent: id.to_string(),
-            repo,
-            worktree: agent.worktree,
-            branch: agent.branch,
-            keep_branch,
-            outcome,
-        });
+        match agent.workspace {
+            Workspace::Worktree { worktree, branch } => {
+                self.rt(id).busy = Some("Cleaning up");
+                effects.push(Effect::Remove {
+                    agent: id.to_string(),
+                    repo,
+                    worktree,
+                    branch,
+                    keep_branch,
+                    outcome,
+                });
+            }
+            // The user's checkout is never cleaned up; its files stay as they are.
+            Workspace::Main { .. } => effects.extend(self.on_removed(id, outcome, Ok(()))),
+        }
         effects
     }
 
@@ -1168,7 +1232,8 @@ impl Desk {
         self.schedule(now())
     }
 
-    /// X: stop the agent and delete its worktree and branch.
+    /// X: stop the agent and delete its worktree and branch. A main-checkout
+    /// task keeps its files.
     pub fn discard(&mut self, id: &str) -> Vec<Effect> {
         if self.busy(id).is_some() {
             return Vec::new();
@@ -1477,6 +1542,7 @@ mod tests {
         let effects = desk.file(
             "p",
             "main",
+            Isolation::Worktree,
             SessionSettings::default(),
             vec![Draft {
                 title: "Fix".into(),
@@ -2121,6 +2187,151 @@ mod tests {
         let agent = f.desk.state.agent(&id).unwrap();
         assert!(agent.note.as_deref().unwrap().contains("src/a.rs"));
         assert!(matches!(agent.status, Status::Working | Status::Queued));
+    }
+
+    fn file_main(titles: &[&str]) -> (Desk, tempfile::TempDir, Vec<Effect>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::default();
+        state.projects.push(Project {
+            id: "p".into(),
+            name: "Repo".into(),
+            path: dir.path().into(),
+        });
+        let mut desk = Desk::new(state, "pi", dir.path().join("worktrees"));
+        let drafts = titles
+            .iter()
+            .map(|title| Draft {
+                title: title.to_string(),
+                prompt: title.to_string(),
+            })
+            .collect();
+        let effects = desk.file(
+            "p",
+            "main",
+            Isolation::Main {
+                start: "abc123".into(),
+            },
+            SessionSettings::default(),
+            drafts,
+        );
+        (desk, dir, effects)
+    }
+
+    #[test]
+    fn main_checkout_tasks_run_in_the_project_one_at_a_time() {
+        let (mut desk, dir, effects) = file_main(&["First", "Second"]);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::CreateWorktree { .. }))
+        );
+        let spawns: Vec<&Spawn> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Spawn(spawn) => Some(spawn),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].cwd, dir.path());
+        let prompt = spawns[0]
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--append-system-prompt")
+            .map(|pair| pair[1].clone())
+            .unwrap();
+        assert!(prompt.contains("the user's own checkout"));
+        let (first, second) = (
+            desk.state.agents[0].id.clone(),
+            desk.state.agents[1].id.clone(),
+        );
+        assert_eq!(desk.state.agent(&second).unwrap().status, Status::Queued);
+
+        // Discard stops the agent, leaves files alone, and frees the checkout.
+        let effects = desk.discard(&first);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Kill { .. }))
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Remove { .. }))
+        );
+        assert_eq!(
+            desk.state.agent(&first).unwrap().status,
+            Status::Done {
+                outcome: Outcome::Discarded
+            }
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Spawn(spawn) if spawn.agent == second))
+        );
+    }
+
+    #[test]
+    fn approving_a_main_checkout_task_commits_on_its_branch() {
+        let (mut desk, dir, _) = file_main(&["Fix"]);
+        let id = desk.state.agents[0].id.clone();
+        desk.state.agent_mut(&id).unwrap().status = Status::Review;
+        desk.rt(&id).live = false;
+        let effects = desk.approve(&id);
+        assert!(
+            matches!(&effects[0], Effect::GenerateCommitMessage { worktree, base, .. }
+            if worktree == dir.path() && base == "abc123")
+        );
+        let effects = desk.on_commit_message(&id, Ok(Some("Fix it".into())));
+        assert_eq!(
+            effects,
+            [Effect::Commit {
+                agent: id.clone(),
+                checkout: dir.path().into(),
+                base: "main".into(),
+                message: "Fix it".into(),
+            }]
+        );
+        assert_eq!(desk.busy(&id), Some("Committing"));
+        let effects = desk.on_merged(
+            &id,
+            Ok(Merge::Merged {
+                commit: "def".into(),
+            }),
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Remove { .. }))
+        );
+        assert_eq!(
+            desk.state.agent(&id).unwrap().status,
+            Status::Done {
+                outcome: Outcome::Merged
+            }
+        );
+    }
+
+    #[test]
+    fn saved_agents_without_a_workspace_kind_load_as_worktrees() {
+        let (desk, _dir, _) = file_main(&["Fix"]);
+        let mut value = serde_json::to_value(&desk.state.agents[0]).unwrap();
+        let main: Agent = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(main, desk.state.agents[0]);
+        let object = value.as_object_mut().unwrap();
+        object.remove("checkout");
+        object.remove("start");
+        object.insert("worktree".into(), json!("/tmp/w"));
+        object.insert("branch".into(), json!("pi-desk/fix"));
+        let legacy: Agent = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            legacy.workspace,
+            Workspace::Worktree {
+                worktree: "/tmp/w".into(),
+                branch: "pi-desk/fix".into(),
+            }
+        );
     }
 
     #[test]

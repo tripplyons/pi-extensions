@@ -2,7 +2,7 @@
 //! dots, errors, and changed code.
 
 use crate::model::Status;
-use iced::widget::{button, container, scrollable, text_editor, text_input};
+use iced::widget::{button, checkbox as check, container, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Font, Shadow, Theme, color};
 
 pub const WINDOW: Color = color!(0x111111);
@@ -289,6 +289,24 @@ pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             },
             ..button::Style::default()
         }
+    }
+}
+
+pub fn checkbox(_: &Theme, status: check::Status) -> check::Style {
+    let (checked, hovered) = match status {
+        check::Status::Active { is_checked } => (is_checked, false),
+        check::Status::Hovered { is_checked } => (is_checked, true),
+        check::Status::Disabled { is_checked } => (is_checked, false),
+    };
+    check::Style {
+        background: if checked { ACCENT_SOFT } else { RAISED }.into(),
+        icon_color: TEXT,
+        border: Border {
+            color: if hovered { color!(0x5b5b5b) } else { BORDER },
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        text_color: Some(if hovered { TEXT } else { MUTED }),
     }
 }
 

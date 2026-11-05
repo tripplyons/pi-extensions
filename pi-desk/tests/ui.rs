@@ -49,8 +49,10 @@ fn agent(
         updated_at: at,
         inbox_at: Some(at),
         base_branch: "main".into(),
-        branch: format!("pi-desk/task-{n}"),
-        worktree: PathBuf::new(),
+        workspace: Workspace::Worktree {
+            worktree: PathBuf::new(),
+            branch: format!("pi-desk/task-{n}"),
+        },
         session_id: format!("session-{n}"),
         session_file: None,
         summary: None,
@@ -140,8 +142,11 @@ fn seeded(dir: &std::path::Path) -> App {
     );
     let mut agents = vec![question, review, failed, recent, queued, done];
     for agent in &mut agents {
-        agent.worktree = dir.join("worktrees").join(&agent.id);
-        std::fs::create_dir_all(&agent.worktree).unwrap();
+        let path = dir.join("worktrees").join(&agent.id);
+        std::fs::create_dir_all(&path).unwrap();
+        if let Workspace::Worktree { worktree, .. } = &mut agent.workspace {
+            *worktree = path;
+        }
     }
     let state = State {
         projects: vec![
@@ -333,16 +338,13 @@ fn long_task_branches_wrap_in_a_narrow_pane() {
         .iter_mut()
         .find(|agent| agent.id == "agent-4")
         .unwrap();
-    agent.branch =
-        "pi-desk/hello-world-with-a-long-task-name-and-a-unique-identifier-5efb6b".into();
-    let branch = agent.branch.clone();
+    let branch = "pi-desk/hello-world-with-a-long-task-name-and-a-unique-identifier-5efb6b";
+    if let Workspace::Worktree { branch: saved, .. } = &mut agent.workspace {
+        *saved = branch.into();
+    }
     let size = (760.0, 900.0);
     let mut rendered = Simulator::with_size(pi_desk::theme::settings(), size, app.view());
-    let branch = rendered
-        .find(branch.as_str())
-        .unwrap()
-        .visible_bounds()
-        .unwrap();
+    let branch = rendered.find(branch).unwrap().visible_bounds().unwrap();
     assert!(
         branch.height > 20.0,
         "long branches must wrap rather than clip"
@@ -1390,13 +1392,20 @@ async fn the_composer_previews_a_list_and_files_one_task_per_item() {
     {
         let mut ui = ui(&app);
         assert!(ui.find("Files 3 tasks, one agent each:").is_ok());
-        assert!(ui.find("Merges into main").is_ok());
+        assert!(ui.find("Works in the main checkout on main").is_ok());
     }
+    click(&mut app, "Use worktree");
+    assert!(ui(&app).find("Merges into main").is_ok());
     snapshot(&app, "composer");
     let before = app.desk.state.agents.len();
     let _ = app.update(Message::ComposerSubmit);
     assert!(app.overlay.is_none());
     let filed: Vec<&Agent> = app.desk.state.agents[before..].iter().collect();
+    assert!(
+        filed
+            .iter()
+            .all(|agent| matches!(agent.workspace, Workspace::Worktree { .. }))
+    );
     assert_eq!(
         filed
             .iter()
@@ -1409,6 +1418,51 @@ async fn the_composer_previews_a_list_and_files_one_task_per_item() {
             .iter()
             .all(|agent| agent.prompt.starts_with("In the API:") && agent.base_branch == "main")
     );
+}
+
+#[tokio::test]
+async fn the_composer_files_into_the_main_checkout_unless_worktree_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
+    let Some(Overlay::Composer(composer)) = &mut app.overlay else {
+        panic!("composer should open")
+    };
+    assert!(!composer.use_worktree);
+    composer.content = iced::widget::text_editor::Content::with_text("- First\n- Second");
+    let project = app
+        .desk
+        .state
+        .project(composer.project.as_ref().unwrap())
+        .unwrap()
+        .path
+        .clone();
+    let head = pi_desk::git::head(&project).unwrap();
+    let before = app.desk.state.agents.len();
+    let _ = app.update(Message::ComposerSubmit);
+    let filed = &app.desk.state.agents[before..];
+    assert_eq!(filed.len(), 2);
+    for agent in filed {
+        assert_eq!(
+            agent.workspace,
+            Workspace::Main {
+                checkout: project.clone(),
+                start: head.clone(),
+            }
+        );
+    }
+    // The checkout holds one task at a time, so only the first starts.
+    assert_eq!(filed[0].status, Status::Working);
+    assert_eq!(filed[1].status, Status::Queued);
+
+    // A fresh composer starts unchecked again.
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
+    let Some(Overlay::Composer(composer)) = &app.overlay else {
+        panic!("composer should open")
+    };
+    assert!(!composer.use_worktree);
 }
 
 #[test]

@@ -3,6 +3,7 @@
 
 use crate::model::{Agent, OutboxKind, State, Status, Timestamp};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// Shared list groups and board columns, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,9 +78,16 @@ pub fn inbox<'a>(state: &'a State, at: Timestamp) -> Vec<&'a Agent> {
     rows
 }
 
-/// Queued agents to start now, given how many are running.
+/// Queued agents to start now, given how many are running. A project's main
+/// checkout holds one task at a time: from its first start until it is done.
 pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
     let free = state.settings.slots.max(1).saturating_sub(running);
+    let mut holders: HashMap<&str, &str> = state
+        .agents
+        .iter()
+        .filter(|agent| agent.workspace.is_main() && agent.started && !agent.status.is_done())
+        .map(|agent| (agent.project_id.as_str(), agent.id.as_str()))
+        .collect();
     let mut queued: Vec<&Agent> = state
         .agents
         .iter()
@@ -88,6 +96,15 @@ pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
     queued.sort_by(|a, b| compare_queue(state, a, b));
     queued
         .into_iter()
+        .filter(|agent| {
+            if !agent.workspace.is_main() {
+                return true;
+            }
+            let holder = holders
+                .entry(agent.project_id.as_str())
+                .or_insert(agent.id.as_str());
+            *holder == agent.id
+        })
         .take(free)
         .map(|agent| agent.id.clone())
         .collect()
@@ -96,7 +113,7 @@ pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::model::{Outbox, Project, SessionSettings, Settings};
+    use crate::model::{Outbox, Project, SessionSettings, Settings, Workspace};
 
     pub fn agent(id: &str, project: &str, status: Status, created: Timestamp) -> Agent {
         Agent {
@@ -110,8 +127,10 @@ pub(crate) mod tests {
             updated_at: created,
             inbox_at: Some(created),
             base_branch: "main".into(),
-            branch: format!("pi-desk/{id}"),
-            worktree: format!("/tmp/{id}").into(),
+            workspace: Workspace::Worktree {
+                worktree: format!("/tmp/{id}").into(),
+                branch: format!("pi-desk/{id}"),
+            },
             session_id: id.into(),
             session_file: None,
             summary: None,
@@ -222,5 +241,50 @@ pub(crate) mod tests {
         assert_eq!(to_start(&s, 0, 0), ["answered", "oldest"]);
         assert_eq!(to_start(&s, 1, 0), ["answered"]);
         assert!(to_start(&s, 2, 0).is_empty());
+    }
+
+    fn main(id: &str, project: &str, status: Status, created: Timestamp) -> Agent {
+        Agent {
+            workspace: Workspace::Main {
+                checkout: "/a".into(),
+                start: "abc".into(),
+            },
+            ..agent(id, project, status, created)
+        }
+    }
+
+    #[test]
+    fn a_main_checkout_runs_one_task_per_project_until_it_is_done() {
+        let mut s = state(vec![
+            main("first-main", "first", Status::Queued, 0),
+            main("second-main", "first", Status::Queued, 1),
+            main("other-project", "second", Status::Queued, 2),
+            agent("worktree", "first", Status::Queued, 3),
+        ]);
+        s.settings.slots = 4;
+        assert_eq!(
+            to_start(&s, 0, 0),
+            ["first-main", "worktree", "other-project"]
+        );
+
+        // A started task holds the checkout while it waits for review.
+        s.agents[0].started = true;
+        s.agents[0].status = Status::Review;
+        assert_eq!(to_start(&s, 0, 0), ["worktree", "other-project"]);
+
+        // A reply re-queues the holder; it may start again.
+        s.agents[0].status = Status::Queued;
+        assert_eq!(
+            to_start(&s, 0, 0),
+            ["first-main", "worktree", "other-project"]
+        );
+
+        s.agents[0].status = Status::Done {
+            outcome: crate::model::Outcome::Discarded,
+        };
+        assert_eq!(
+            to_start(&s, 0, 0),
+            ["second-main", "worktree", "other-project"]
+        );
     }
 }

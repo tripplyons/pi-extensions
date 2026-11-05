@@ -1,6 +1,6 @@
 use super::{ago, dot, faint, key, list::subtitle, muted};
 use crate::app::{App, Message, REPLY_ID};
-use crate::model::{Agent, QuestionKind, Status};
+use crate::model::{Agent, QuestionKind, Status, Workspace};
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_editor};
@@ -132,11 +132,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .spacing(12)
         .align_y(Alignment::Center),
         row![
-            text(agent.branch.as_str())
-                .size(theme::size::CAPTION)
-                .font(MONO)
-                .color(FAINT)
-                .width(Fill),
+            text(match &agent.workspace {
+                Workspace::Worktree { branch, .. } => branch.clone(),
+                Workspace::Main { .. } => format!("{} (main checkout)", agent.base_branch),
+            })
+            .size(theme::size::CAPTION)
+            .font(MONO)
+            .color(FAINT)
+            .width(Fill),
             faint(format!("started {} ago", ago(app.now, agent.created_at))),
         ]
         .spacing(12)

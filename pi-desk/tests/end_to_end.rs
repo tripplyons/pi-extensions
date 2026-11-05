@@ -7,7 +7,7 @@ mod common;
 use common::{fake_pi, git, repo};
 use iced::futures::StreamExt;
 use pi_desk::compose::Draft;
-use pi_desk::desk::{Desk, Effect};
+use pi_desk::desk::{Desk, Effect, Isolation};
 use pi_desk::model::{ModelChoice, Outcome, SessionSettings, State, Status};
 use pi_desk::supervisor::{self, Event, Handle, Request};
 use std::time::Duration;
@@ -52,6 +52,15 @@ impl Harness {
                         )
                         .await;
                         queue.extend(self.desk.on_commit_message(&agent, result));
+                    }
+                    Effect::Commit {
+                        agent,
+                        checkout,
+                        base,
+                        message,
+                    } => {
+                        let result = pi_desk::git::commit_checkout(&checkout, &base, &message);
+                        queue.extend(self.desk.on_merged(&agent, result));
                     }
                     Effect::Merge {
                         agent,
@@ -143,7 +152,7 @@ async fn real_pi_smoke() {
     let repo = repo(dir.path());
     let mut h = start_with(State::default(), dir.path().join("worktrees"), "pi".into()).await;
     let project = h.desk.add_project(&repo).unwrap();
-    let effects = h.desk.file(&project, "main", SessionSettings::default(), vec![Draft {
+    let effects = h.desk.file(&project, "main", Isolation::Worktree, SessionSettings::default(), vec![Draft {
         title: "Write smoke greeting".into(),
         prompt: "This is an authorized integration smoke test in a disposable repository. First call ask_user with question 'Which greeting?', choices ['Hello', 'Hi'], and recommended 2. Wait for the answer. Then write the chosen greeting followed by a newline to greeting.txt. Do not commit. Finish with Did: Wrote greeting.txt and Needs: Review and merge. Do not do any other work.".into(),
     }]);
@@ -180,7 +189,7 @@ async fn real_pi_smoke() {
     let agent = h.desk.state.agent(&id).unwrap();
     assert_eq!(agent.status, Status::Review);
     assert_eq!(
-        std::fs::read_to_string(agent.worktree.join("greeting.txt")).unwrap(),
+        std::fs::read_to_string(agent.workspace.path().join("greeting.txt")).unwrap(),
         "Hi\n"
     );
     let effects = h.desk.approve(&id);
@@ -204,6 +213,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
     let effects = h.desk.file(
         &project,
         "main",
+        Isolation::Worktree,
         SessionSettings::default(),
         vec![Draft {
             title: "Write a greeting".into(),
@@ -269,7 +279,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
         "Wrote Hi to answer.txt."
     );
     assert_eq!(
-        std::fs::read_to_string(agent.worktree.join("answer.txt")).unwrap(),
+        std::fs::read_to_string(agent.workspace.path().join("answer.txt")).unwrap(),
         "Hi\n"
     );
 
@@ -305,7 +315,7 @@ async fn a_task_runs_asks_is_answered_and_merges() {
         git(&repo, &["log", "-1", "--format=%b", "main"]),
         "Use the user's selected greeting in the generated file."
     );
-    assert!(!agent.worktree.exists());
+    assert!(!agent.workspace.path().exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -324,6 +334,7 @@ async fn an_unavailable_saved_model_does_not_run_a_prompt_on_the_fallback() {
     let effects = h.desk.file(
         &project,
         "main",
+        Isolation::Worktree,
         requested.clone(),
         vec![Draft {
             title: "Write a greeting".into(),
@@ -384,6 +395,7 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
     let effects = h.desk.file(
         &project,
         "main",
+        Isolation::Worktree,
         SessionSettings::default(),
         vec![Draft {
             title: "Greet".into(),
@@ -435,9 +447,72 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
         desk.state.agent(&id).unwrap().status == Status::Review
     })
     .await;
-    let worktree = h.desk.state.agent(&id).unwrap().worktree.clone();
+    let worktree = h
+        .desk
+        .state
+        .agent(&id)
+        .unwrap()
+        .workspace
+        .path()
+        .to_path_buf();
     assert_eq!(
         std::fs::read_to_string(worktree.join("answer.txt")).unwrap(),
         "Howdy\n"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_main_checkout_task_edits_the_project_and_commits_on_approve() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let worktrees = dir.path().join("worktrees");
+    let mut h = start(State::default(), worktrees.clone()).await;
+    let project = h.desk.add_project(&repo).unwrap();
+    let start = pi_desk::git::head(&repo).unwrap();
+
+    let effects = h.desk.file(
+        &project,
+        "main",
+        Isolation::Main { start },
+        SessionSettings::default(),
+        vec![Draft {
+            title: "Write a greeting".into(),
+            prompt: "Write a greeting".into(),
+        }],
+    );
+    let id = h.desk.state.agents[0].id.clone();
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        matches!(
+            desk.state.agent(&id).unwrap().status,
+            Status::Question | Status::Review | Status::Failed { .. }
+        )
+    })
+    .await;
+    let effects = h.desk.approve(&id);
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        desk.state.agent(&id).unwrap().status == Status::Review
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(repo.join("answer.txt")).unwrap(),
+        "Hi\n"
+    );
+    assert!(!worktrees.exists());
+
+    let effects = h.desk.approve(&id);
+    h.run(effects).await;
+    assert_eq!(
+        h.desk.state.agent(&id).unwrap().status,
+        Status::Done {
+            outcome: Outcome::Merged
+        }
+    );
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%s", "main"]),
+        "Write the selected greeting to answer.txt"
+    );
+    assert!(git(&repo, &["status", "--porcelain"]).is_empty());
+    assert!(repo.join("answer.txt").exists());
 }

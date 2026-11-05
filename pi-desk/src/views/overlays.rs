@@ -5,7 +5,8 @@ use crate::later::Preset;
 use crate::theme::{self, BOLD, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{
-    Space, button, column, container, pick_list, row, scrollable, text, text_editor, text_input,
+    Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_editor,
+    text_input,
 };
 use iced::{Alignment, Element, Fill};
 
@@ -86,9 +87,10 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 preview =
                     preview.push(muted(format!("Files one task: {}", line(&draft.title, 80))));
             }
-            let base = match &composer.base {
-                Ok(branch) => format!("Merges into {branch}"),
-                Err(error) => error.clone(),
+            let base = match (&composer.base, composer.use_worktree) {
+                (Ok(branch), true) => format!("Merges into {branch}"),
+                (Ok(branch), false) => format!("Works in the main checkout on {branch}"),
+                (Err(error), _) => error.clone(),
             };
             let editor = text_editor(&composer.content)
                 .id(COMPOSER_ID)
@@ -121,7 +123,15 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .text_size(theme::size::CONTROL)
                         .padding([5, 10]),
                         Space::new().width(Fill),
+                        checkbox(composer.use_worktree)
+                            .label("Use worktree")
+                            .on_toggle(Message::ComposerWorktree)
+                            .size(16)
+                            .spacing(8)
+                            .text_size(theme::size::CONTROL)
+                            .style(theme::checkbox),
                     ]
+                    .spacing(12)
                     .align_y(Alignment::Center),
                     super::session::controls(app, None),
                     editor,
@@ -285,7 +295,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 ]
                 .spacing(6),
                 column![
-                    muted("Open in terminal ({path} is the worktree)"),
+                    muted("Open in terminal ({path} is the task checkout)"),
                     text_input("open -a Terminal {path}", &form.terminal)
                         .on_input(Message::SettingsTerminal)
                         .padding(8)
@@ -330,28 +340,47 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
             .spacing(14),
         ),
         Overlay::ConfirmDiscard(id) => {
-            let name = app
-                .desk
-                .state
-                .agent(id)
+            let agent = app.desk.state.agent(id);
+            let name = agent
                 .map(|agent| agent.title.as_str())
                 .unwrap_or("this task");
+            let effect = if agent.is_some_and(|agent| agent.workspace.is_main()) {
+                "stops. Its changes stay in the main checkout"
+            } else {
+                "stops, and its worktree and branch are deleted"
+            };
             sheet(
                 440,
                 column![
                     title("Discard this task?"),
-                    text(format!("“{name}” stops, and its worktree and branch are deleted. You have five seconds to undo.")).size(theme::size::CONTROL),
+                    text(format!("“{name}” {effect}. You have five seconds to undo."))
+                        .size(theme::size::CONTROL),
                     row![
                         Space::new().width(Fill),
-                        button(row![text("Cancel").size(theme::size::CONTROL), key("Esc")].spacing(6).align_y(Alignment::Center)).style(theme::ghost).padding([6, 12]).on_press(Message::CloseOverlay),
-                        button(row![text("Discard").size(theme::size::CONTROL), key("X"), key("Enter")].spacing(6).align_y(Alignment::Center))
-                            .style(|theme: &iced::Theme, status| {
-                                let mut style = theme::primary(theme, status);
-                                style.background = Some(RED.into());
-                                style
-                            })
-                            .padding([6, 12])
-                            .on_press(Message::ConfirmDiscard),
+                        button(
+                            row![text("Cancel").size(theme::size::CONTROL), key("Esc")]
+                                .spacing(6)
+                                .align_y(Alignment::Center)
+                        )
+                        .style(theme::ghost)
+                        .padding([6, 12])
+                        .on_press(Message::CloseOverlay),
+                        button(
+                            row![
+                                text("Discard").size(theme::size::CONTROL),
+                                key("X"),
+                                key("Enter")
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center)
+                        )
+                        .style(|theme: &iced::Theme, status| {
+                            let mut style = theme::primary(theme, status);
+                            style.background = Some(RED.into());
+                            style
+                        })
+                        .padding([6, 12])
+                        .on_press(Message::ConfirmDiscard),
                     ]
                     .spacing(8),
                 ]

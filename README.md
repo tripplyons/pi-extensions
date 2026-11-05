@@ -56,8 +56,8 @@ extensions. Existing sessions and archive files are not deleted.
 
 Implementation and runtime audits are ongoing.
 
-[pi-desk](pi-desk) is a separate Rust/iced desktop inbox for Pi agents in git
-worktrees, with an All tasks view, a collapsible sidebar (S), and session-only UI
+[pi-desk](pi-desk) is a separate Rust/iced desktop inbox for Pi agents in the
+project checkout or optional git worktrees, with an All tasks view, a collapsible sidebar (S), and session-only UI
 zoom. Per-task model and effort selectors support live changes. Task titles
 follow Pi session names, including auto-generated names that arrive while the agent is working.
 Before merging, it asks Pi for a commit message from the final diff and summary.

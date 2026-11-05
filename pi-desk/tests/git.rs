@@ -110,3 +110,33 @@ fn detached_checkouts_are_rejected_as_a_base() {
             .contains("not on a branch")
     );
 }
+
+#[test]
+fn main_checkout_diffs_from_its_start_and_commits_only_on_its_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let start = desk_git::head(&repo).unwrap();
+    std::fs::write(repo.join("committed.txt"), "agent commit\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "Agent commit"]);
+    std::fs::write(repo.join("new.txt"), "untracked\n").unwrap();
+
+    let paths: Vec<String> = desk_git::parse_diff(&desk_git::diff(&repo, &start).unwrap())
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(paths, ["committed.txt", "new.txt"]);
+
+    git(&repo, &["checkout", "--quiet", "-b", "elsewhere"]);
+    let error = desk_git::commit_checkout(&repo, "main", "Task").unwrap_err();
+    assert!(error.contains("not main"));
+    assert!(!git(&repo, &["status", "--porcelain"]).is_empty());
+
+    git(&repo, &["checkout", "--quiet", "main"]);
+    let Merge::Merged { commit } = desk_git::commit_checkout(&repo, "main", "Task").unwrap() else {
+        panic!("expected a commit")
+    };
+    assert_eq!(commit, desk_git::head(&repo).unwrap());
+    assert!(git(&repo, &["status", "--porcelain"]).is_empty());
+    assert_eq!(git(&repo, &["log", "-1", "--format=%s"]), "Task");
+}

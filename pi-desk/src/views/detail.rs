@@ -20,7 +20,7 @@ pub fn pane(app: &App) -> Element<'_, Message> {
                 text("Add a project to start")
                     .size(theme::size::HEADING)
                     .color(MUTED),
-                faint("pi-desk files each task as a Pi agent in its own git worktree."),
+                faint("pi-desk runs each task as a Pi agent in your checkout or in its own git worktree."),
                 button(text("Add project").size(theme::size::CONTROL))
                     .style(theme::primary)
                     .padding([6, 12])
