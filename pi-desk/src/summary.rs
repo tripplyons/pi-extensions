@@ -2,6 +2,7 @@
 //! for them.
 
 use crate::model::{Summary, Workspace};
+use crate::text::one_line;
 
 const WORKTREE: &str = "\
 You work alone in a dedicated git worktree on your own branch. The user is not watching: they \
@@ -44,18 +45,6 @@ fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     (!rest.is_empty()).then_some(rest)
 }
 
-fn shorten(text: &str, max: usize) -> String {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.chars().count() <= max {
-        text
-    } else {
-        format!(
-            "{}…",
-            text.chars().take(max - 1).collect::<String>().trim_end()
-        )
-    }
-}
-
 /// Uses the last `Did:` and `Needs:` lines. Without them, the first line of
 /// the message stands in for what the agent did.
 pub fn parse(text: &str) -> Option<Summary> {
@@ -79,8 +68,8 @@ pub fn parse(text: &str) -> Option<Summary> {
             .to_string(),
     };
     Some(Summary {
-        did: shorten(&did, 200),
-        needs: shorten(needs.unwrap_or(""), 200),
+        did: one_line(&did, 200),
+        needs: one_line(needs.unwrap_or(""), 200),
     })
 }
 

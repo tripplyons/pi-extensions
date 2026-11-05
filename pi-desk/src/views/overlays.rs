@@ -1,8 +1,9 @@
-use super::{faint, key, keys, line, muted};
+use super::{faint, key, keys, muted};
 use crate::app::{App, COMPOSER_ID, LATER_ID, Message, Overlay, PALETTE_ID};
 use crate::compose;
 use crate::icon::{COMMAND, Icon, KeyPart, RETURN};
 use crate::later::Preset;
+use crate::text::one_line;
 use crate::theme::{self, BOLD, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{
@@ -76,7 +77,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                             text(format!("{}.", index + 1))
                                 .size(theme::size::CONTROL)
                                 .color(MUTED),
-                            text(line(&draft.title, 80)).size(theme::size::CONTROL)
+                            text(one_line(&draft.title, 80)).size(theme::size::CONTROL)
                         ]
                         .spacing(8),
                     );
@@ -85,8 +86,10 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     preview = preview.push(faint(format!("and {} more", drafts.len() - 12)));
                 }
             } else if let Some(draft) = drafts.first() {
-                preview =
-                    preview.push(muted(format!("Files one task: {}", line(&draft.title, 80))));
+                preview = preview.push(muted(format!(
+                    "Files one task: {}",
+                    one_line(&draft.title, 80)
+                )));
             }
             let base = match (&composer.base, composer.use_worktree) {
                 (Ok(branch), true) => format!("Merges into {branch}"),

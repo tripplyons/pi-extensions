@@ -67,17 +67,6 @@ pub fn compare_queue(state: &State, a: &Agent, b: &Agent) -> Ordering {
         .then(a.created_at.cmp(&b.created_at))
 }
 
-/// Inbox rows in display order, newest activity first.
-pub fn inbox<'a>(state: &'a State, at: Timestamp) -> Vec<&'a Agent> {
-    let mut rows: Vec<&Agent> = state
-        .agents
-        .iter()
-        .filter(|agent| agent.in_inbox(at))
-        .collect();
-    rows.sort_by(|a, b| compare_display(a, b, at));
-    rows
-}
-
 /// Queued agents to start now, given how many are running. A project's main
 /// checkout holds one task at a time: from its first start until it is done.
 pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
@@ -125,7 +114,6 @@ pub(crate) mod tests {
             status,
             created_at: created,
             updated_at: created,
-            inbox_at: Some(created),
             base_branch: "main".into(),
             workspace: Workspace::Worktree {
                 worktree: format!("/tmp/{id}").into(),
@@ -165,21 +153,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn inbox_recency_outweighs_project_rank() {
-        let s = state(vec![
+    fn display_recency_outweighs_project_rank() {
+        let mut agents = [
             agent("side-older", "second", Status::Review, 1),
             agent("main-recent", "first", Status::Review, 2),
+            agent("working", "first", Status::Working, 0),
             agent("side-newest", "second", Status::Question, 3),
             agent("main-oldest", "first", Status::Review, 0),
-            agent("working", "first", Status::Working, 0),
-        ]);
-        let ids: Vec<&str> = inbox(&s, 10)
-            .iter()
-            .map(|agent| agent.id.as_str())
-            .collect();
+        ];
+        agents.sort_by(|a, b| compare_display(a, b, 10));
+        let ids: Vec<&str> = agents.iter().map(|agent| agent.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["side-newest", "main-recent", "side-older", "main-oldest"]
+            [
+                "side-newest",
+                "main-recent",
+                "side-older",
+                "main-oldest",
+                "working"
+            ]
         );
     }
 
@@ -188,9 +180,7 @@ pub(crate) mod tests {
         let mut a = agent("a", "second", Status::Review, 1);
         let mut b = agent("b", "first", Status::Question, 2);
         a.updated_at = 10;
-        a.inbox_at = Some(0);
         b.updated_at = 5;
-        b.inbox_at = Some(20);
         assert_eq!(compare_display(&a, &b, 30), Ordering::Less);
         b.updated_at = 10;
         assert_eq!(compare_display(&a, &b, 30), Ordering::Greater);
@@ -215,9 +205,8 @@ pub(crate) mod tests {
     fn snoozed_rows_leave_the_inbox_until_due() {
         let mut row = agent("later", "first", Status::Review, 0);
         row.snooze_until = Some(100);
-        let s = state(vec![row]);
-        assert!(inbox(&s, 99).is_empty());
-        assert_eq!(inbox(&s, 100).len(), 1);
+        assert!(!row.in_inbox(99));
+        assert!(row.in_inbox(100));
     }
 
     #[test]

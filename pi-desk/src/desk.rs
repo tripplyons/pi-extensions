@@ -20,6 +20,13 @@ pub const OTHER: &str = "Other (type an answer)";
 const RESUME: &str =
     "pi-desk restarted while you were working. Continue the task from where you left off.";
 
+/// RPC ids for requests that have at most one in flight per process.
+const STARTUP: &str = "startup";
+const MESSAGES: &str = "messages";
+/// A `get_state` whose response only refreshes session metadata. It is not
+/// tracked, so it applies however often it arrives.
+const SYNC: &str = "state";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Spawn(Spawn),
@@ -80,6 +87,55 @@ struct Ask {
     recommended: Option<usize>,
 }
 
+/// What an outstanding Pi request is for, keyed by its RPC id.
+#[derive(Debug)]
+enum Pending {
+    /// The first `get_state` after a spawn. Prompts wait for it.
+    Startup {
+        resumed: bool,
+    },
+    /// `get_messages` after a resume, to rebuild the transcript.
+    Messages,
+    Prompt,
+    /// A `get_state` round trip that decides whether the run is over.
+    /// Invalidated when more work starts.
+    Settle {
+        error: Option<String>,
+    },
+    /// One step of a settings change. `previous` is the last confirmed selection.
+    Configure {
+        step: Step,
+        previous: SessionSettings,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    Model,
+    Effort,
+    Readback,
+}
+
+/// Slow app-side work on a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busy {
+    WritingCommitMessage,
+    Merging,
+    Committing,
+    CleaningUp,
+}
+
+impl Busy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Busy::WritingCommitMessage => "Writing commit message",
+            Busy::Merging => "Merging",
+            Busy::Committing => "Committing",
+            Busy::CleaningUp => "Cleaning up",
+        }
+    }
+}
+
 /// Process facts that are not saved.
 #[derive(Debug, Default)]
 struct Runtime {
@@ -89,18 +145,36 @@ struct Runtime {
     closing: bool,
     streaming: bool,
     compacting: bool,
-    /// Awaiting startup state before sending any prompt; true means resume.
-    starting: Option<bool>,
-    /// A round-trip idle check, invalidated when more work starts.
-    settling: Option<(String, Option<String>)>,
+    pending: HashMap<String, Pending>,
     ask: Option<Ask>,
     /// Free text to send when the `input` after "Other" arrives.
     other_text: Option<String>,
     preparing: bool,
-    busy: Option<&'static str>,
-    /// The outstanding settings command and the last confirmed selection.
-    configuring: Option<(String, SessionSettings)>,
+    busy: Option<Busy>,
+    /// An idle check that arrived during a settings change, with its error.
     deferred_idle: Option<Option<String>>,
+}
+
+impl Runtime {
+    fn has(&self, test: impl Fn(&Pending) -> bool) -> bool {
+        self.pending.values().any(test)
+    }
+
+    fn changing_settings(&self) -> bool {
+        self.has(|pending| matches!(pending, Pending::Configure { .. }))
+    }
+
+    fn cancel_settle(&mut self) {
+        self.pending
+            .retain(|_, pending| !matches!(pending, Pending::Settle { .. }));
+    }
+}
+
+fn send(agent: &str, line: String) -> Effect {
+    Effect::Send {
+        agent: agent.to_string(),
+        line,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -188,8 +262,7 @@ impl Desk {
         self.runtime.get(id).is_some_and(|runtime| runtime.live)
     }
 
-    /// A short label for slow app-side work on a row, such as merging.
-    pub fn busy(&self, id: &str) -> Option<&'static str> {
+    pub fn busy(&self, id: &str) -> Option<Busy> {
         self.runtime.get(id).and_then(|runtime| runtime.busy)
     }
 
@@ -205,9 +278,36 @@ impl Desk {
         self.runtime.entry(id.to_string()).or_default()
     }
 
-    fn request_id(&mut self, kind: &str) -> String {
+    /// Whether events from process `generation` still belong to the agent.
+    fn current(&self, id: &str, generation: u64) -> bool {
+        self.runtime.get(id).map(|runtime| runtime.generation) == Some(generation)
+    }
+
+    /// A fresh RPC id, remembered as `pending` until its response arrives.
+    fn track(&mut self, id: &str, kind: &str, pending: Pending) -> String {
         self.next_request += 1;
-        format!("{kind}-{}", self.next_request)
+        let request = format!("{kind}-{}", self.next_request);
+        self.rt(id).pending.insert(request.clone(), pending);
+        request
+    }
+
+    fn prompt(&mut self, id: &str, text: &str, streaming: Option<&str>) -> Effect {
+        let request = self.track(id, "prompt", Pending::Prompt);
+        send(id, rpc::prompt(&request, text, streaming))
+    }
+
+    fn repo(&self, agent: &Agent) -> PathBuf {
+        self.state
+            .project(&agent.project_id)
+            .map(|project| project.path.clone())
+            .unwrap_or_default()
+    }
+
+    fn push_undo(&mut self, undo: Undo) {
+        self.undo.push(undo);
+        if self.undo.len() > 50 {
+            self.undo.remove(0);
+        }
     }
 
     fn edit(&mut self, id: &str, change: impl FnOnce(&mut Agent)) -> bool {
@@ -234,8 +334,6 @@ impl Desk {
         self.dirty = true;
         true
     }
-
-    // Projects
 
     pub fn add_project(&mut self, path: &Path) -> Result<Id, String> {
         let root = crate::git::toplevel(path)
@@ -264,21 +362,13 @@ impl Desk {
 
     /// Moves a project up (`-1`) or down (`1`) in rank.
     pub fn move_project(&mut self, id: &str, delta: isize) {
-        let Some(index) = self
+        if let Some(index) = self
             .state
             .projects
             .iter()
             .position(|project| project.id == id)
-        else {
-            return;
-        };
-        let target =
-            (index as isize + delta).clamp(0, self.state.projects.len() as isize - 1) as usize;
-        if target != index {
-            self.undo.push(Undo::Projects(self.state.projects.clone()));
-            let project = self.state.projects.remove(index);
-            self.state.projects.insert(target, project);
-            self.dirty = true;
+        {
+            self.place_project(id, index.saturating_add_signed(delta));
         }
     }
 
@@ -293,14 +383,12 @@ impl Desk {
         };
         let target = target.min(self.state.projects.len() - 1);
         if target != index {
-            self.undo.push(Undo::Projects(self.state.projects.clone()));
+            self.push_undo(Undo::Projects(self.state.projects.clone()));
             let project = self.state.projects.remove(index);
             self.state.projects.insert(target, project);
             self.dirty = true;
         }
     }
-
-    // Filing
 
     /// Files drafts as queued agents. `base` is the branch their work lands on.
     pub fn file(
@@ -314,7 +402,6 @@ impl Desk {
         let Some(project) = self.state.project(project_id).cloned() else {
             return Vec::new();
         };
-        let mut effects = Vec::new();
         for draft in drafts {
             let id = new_id();
             let short = &id[id.len() - 6..];
@@ -329,7 +416,6 @@ impl Desk {
                 status: Status::Queued,
                 created_at: at,
                 updated_at: at,
-                inbox_at: None,
                 base_branch: base.to_string(),
                 workspace: match &isolation {
                     Isolation::Worktree => Workspace::Worktree {
@@ -356,8 +442,7 @@ impl Desk {
             self.state.agents.push(agent);
         }
         self.dirty = true;
-        effects.extend(self.schedule(now()));
-        effects
+        self.schedule(now())
     }
 
     fn prepare(&mut self, agent: &Agent) -> Option<Effect> {
@@ -365,14 +450,9 @@ impl Desk {
             return None;
         };
         self.rt(&agent.id).preparing = true;
-        let repo = self
-            .state
-            .project(&agent.project_id)
-            .map(|project| project.path.clone())
-            .unwrap_or_default();
         Some(Effect::CreateWorktree {
             agent: agent.id.clone(),
-            repo,
+            repo: self.repo(agent),
             path: worktree.clone(),
             branch: branch.clone(),
             base: agent.base_branch.clone(),
@@ -386,13 +466,10 @@ impl Desk {
                 agent.status = Status::Failed {
                     error: format!("Could not create the worktree: {error}"),
                 };
-                agent.inbox_at = Some(now());
             });
         }
         self.schedule(now())
     }
-
-    // Scheduling
 
     /// Starts queued agents while slots are free, preparing missing worktrees.
     pub fn schedule(&mut self, at: Timestamp) -> Vec<Effect> {
@@ -430,7 +507,6 @@ impl Desk {
                                 agent.workspace.path().display()
                             ),
                         };
-                        agent.inbox_at = Some(now());
                     });
                 }
             }
@@ -455,13 +531,13 @@ impl Desk {
         };
         self.next_generation += 1;
         let generation = self.next_generation;
+        let resumed = agent.started;
         *self.rt(id) = Runtime {
             generation,
             live: true,
-            starting: Some(agent.started),
+            pending: HashMap::from([(STARTUP.into(), Pending::Startup { resumed })]),
             ..Runtime::default()
         };
-        let resumed = agent.started;
         self.edit(id, |agent| {
             agent.status = Status::Working;
             agent.started = true;
@@ -470,32 +546,30 @@ impl Desk {
             self.transcripts
                 .insert(id.to_string(), Transcript::default());
         }
-        let mut effects = vec![Effect::Spawn(Spawn {
-            agent: id.to_string(),
-            generation,
-            program: self.pi_program.clone(),
-            args: [
-                "--mode".into(),
-                "rpc".into(),
-                "--session-id".into(),
-                agent.session_id.clone(),
-                "--append-system-prompt".into(),
-                summary::system_prompt(&agent.workspace),
-            ]
-            .into_iter()
-            .chain(agent.session_settings.args())
-            .collect(),
-            cwd: agent.workspace.path().to_path_buf(),
-            env: vec![
-                ("PI_ASK_USER_TIMEOUT".into(), "0".into()),
-                ("PI_DESK".into(), "1".into()),
-            ],
-        })];
-        effects.push(Effect::Send {
-            agent: id.to_string(),
-            line: rpc::command("startup", "get_state"),
-        });
-        effects
+        vec![
+            Effect::Spawn(Spawn {
+                agent: id.to_string(),
+                generation,
+                program: self.pi_program.clone(),
+                args: [
+                    "--mode".into(),
+                    "rpc".into(),
+                    "--session-id".into(),
+                    agent.session_id.clone(),
+                    "--append-system-prompt".into(),
+                    summary::system_prompt(&agent.workspace),
+                ]
+                .into_iter()
+                .chain(agent.session_settings.args())
+                .collect(),
+                cwd: agent.workspace.path().to_path_buf(),
+                env: rpc::ENV
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect(),
+            }),
+            send(id, rpc::command(STARTUP, "get_state")),
+        ]
     }
 
     fn send_outbox(&mut self, id: &str) -> Vec<Effect> {
@@ -503,17 +577,11 @@ impl Desk {
             return Vec::new();
         };
         self.edit(id, |agent| agent.outbox = None);
-        let request = self.request_id("prompt");
-        vec![Effect::Send {
-            agent: id.to_string(),
-            line: rpc::prompt(&request, &outbox.text, None),
-        }]
+        vec![self.prompt(id, &outbox.text, None)]
     }
 
-    // Process events
-
     pub fn on_lines(&mut self, id: &str, generation: u64, lines: &[String]) -> Vec<Effect> {
-        if self.runtime.get(id).map(|runtime| runtime.generation) != Some(generation) {
+        if !self.current(id, generation) {
             return Vec::new();
         }
         let mut effects = Vec::new();
@@ -539,174 +607,19 @@ impl Desk {
                 error,
                 ..
             } => {
-                let starting = if request == "startup" {
-                    let Some(resumed) = self.rt(id).starting.take() else {
-                        return Vec::new();
-                    };
-                    if !success {
-                        return self.fail(
-                            id,
-                            error.unwrap_or_else(|| "Could not read Pi's startup settings".into()),
-                        );
-                    }
-                    let actual = SessionSettings::from_state(&data);
-                    let requested = self
-                        .state
-                        .agent(id)
-                        .and_then(|agent| agent.session_settings.model.as_ref());
-                    if actual.model.is_none()
-                        || requested.is_some_and(|model| actual.model.as_ref() != Some(model))
-                    {
-                        return self.fail(id, "Pi could not restore this task's model. Select an available model and retry.".into());
-                    }
-                    Some(resumed)
-                } else {
-                    None
-                };
-                if self
-                    .rt(id)
-                    .configuring
-                    .as_ref()
-                    .is_some_and(|(pending, _)| pending == &request)
-                {
-                    let (_, previous) = self.rt(id).configuring.take().unwrap();
-                    if !success {
-                        self.edit(id, |agent| {
-                            agent.session_settings = previous;
-                            agent.note = Some(
-                                error.unwrap_or_else(|| "Pi rejected the settings change".into()),
-                            );
-                        });
-                        let mut effects = vec![Effect::Send {
-                            agent: id.into(),
-                            line: rpc::command("state", "get_state"),
-                        }];
-                        effects.extend(self.finish_configuration(id));
-                        return effects;
-                    }
-                    if request.starts_with("model-") {
-                        return self.send_effort(id, previous);
-                    }
-                    if request.starts_with("effort-") {
-                        let request = self.request_id("settings");
-                        self.rt(id).configuring = Some((request.clone(), previous));
-                        return vec![Effect::Send {
-                            agent: id.into(),
-                            line: rpc::command(&request, "get_state"),
-                        }];
-                    }
-                    self.capture_settings(id, &data);
-                    return self.finish_configuration(id);
-                }
-                if (request == "state" || request == "startup")
-                    && success
-                    && self.rt(id).configuring.is_none()
-                {
-                    self.capture_settings(id, &data);
-                }
-                if (request == "state"
-                    || request == "startup"
-                    || self
-                        .rt(id)
-                        .settling
-                        .as_ref()
-                        .is_some_and(|(pending, _)| pending == &request))
-                    && success
-                {
-                    if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
-                        let file = PathBuf::from(file);
-                        if self
-                            .state
-                            .agent(id)
-                            .is_some_and(|agent| agent.session_file.as_ref() != Some(&file))
-                        {
-                            self.edit(id, |agent| agent.session_file = Some(file));
-                        }
-                    }
-                    if let Some(name) = data
-                        .get("sessionName")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                        && self
-                            .state
-                            .agent(id)
-                            .is_some_and(|agent| agent.title != name)
-                    {
-                        self.edit(id, |agent| agent.title = name.to_string());
-                    }
-                }
-                if let Some(resumed) = starting {
-                    return if resumed {
-                        vec![Effect::Send {
-                            agent: id.into(),
-                            line: rpc::command("messages", "get_messages"),
-                        }]
-                    } else {
-                        self.send_outbox(id)
-                    };
-                }
-                if request == "messages" {
-                    if let Some(messages) = data.get("messages").and_then(Value::as_array) {
-                        self.transcripts
-                            .insert(id.to_string(), Transcript::from_messages(messages.iter()));
-                    }
-                    return self.send_outbox(id);
-                } else if request.starts_with("settle") {
-                    let Some((pending, fallback_error)) = self.rt(id).settling.clone() else {
-                        return Vec::new();
-                    };
-                    if pending != request {
-                        return Vec::new();
-                    }
-                    self.rt(id).settling = None;
-                    if self.rt(id).configuring.is_some() {
-                        self.rt(id).deferred_idle = Some(fallback_error);
-                        return Vec::new();
-                    }
-                    if !self
-                        .state
-                        .agent(id)
-                        .is_some_and(|agent| agent.status == Status::Working)
-                    {
-                        return Vec::new();
-                    }
-                    if !success {
-                        return self.fail(
-                            id,
-                            error.unwrap_or_else(|| "Could not confirm Pi is idle".into()),
-                        );
-                    }
-                    if self.rt(id).compacting
-                        || data.get("isStreaming") == Some(&Value::Bool(true))
-                        || data.get("isCompacting") == Some(&Value::Bool(true))
-                        || data
-                            .get("pendingMessageCount")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0)
-                            > 0
-                    {
-                        return Vec::new();
-                    }
-                    return self.settle(id, fallback_error);
-                } else if request.starts_with("prompt") && !success {
-                    let error = error.unwrap_or_else(|| "Pi rejected the prompt".into());
-                    return self.fail(id, error);
-                }
+                let pending = self.rt(id).pending.remove(&request);
+                return self.on_response(id, &request, pending, success, data, error);
             }
             Incoming::NamingFinished => {
-                return vec![Effect::Send {
-                    agent: id.into(),
-                    line: rpc::command("state", "get_state"),
-                }];
+                return vec![send(id, rpc::command(SYNC, "get_state"))];
             }
             Incoming::AgentStart => {
                 self.rt(id).streaming = true;
-                self.rt(id).settling = None;
+                self.rt(id).cancel_settle();
             }
             Incoming::CompactionStart => {
                 self.rt(id).compacting = true;
-                self.rt(id).settling = None;
+                self.rt(id).cancel_settle();
             }
             Incoming::CompactionEnd { aborted, error } => {
                 self.rt(id).compacting = false;
@@ -769,11 +682,148 @@ impl Desk {
         Vec::new()
     }
 
+    fn on_response(
+        &mut self,
+        id: &str,
+        request: &str,
+        pending: Option<Pending>,
+        success: bool,
+        data: Value,
+        error: Option<String>,
+    ) -> Vec<Effect> {
+        match pending {
+            Some(Pending::Startup { resumed }) => {
+                if !success {
+                    return self.fail(
+                        id,
+                        error.unwrap_or_else(|| "Could not read Pi's startup settings".into()),
+                    );
+                }
+                let actual = SessionSettings::from_state(&data);
+                let requested = self
+                    .state
+                    .agent(id)
+                    .and_then(|agent| agent.session_settings.model.as_ref());
+                if actual.model.is_none()
+                    || requested.is_some_and(|model| actual.model.as_ref() != Some(model))
+                {
+                    return self.fail(id, "Pi could not restore this task's model. Select an available model and retry.".into());
+                }
+                self.capture_settings(id, &data);
+                self.sync_session(id, &data);
+                if resumed {
+                    self.rt(id)
+                        .pending
+                        .insert(MESSAGES.into(), Pending::Messages);
+                    vec![send(id, rpc::command(MESSAGES, "get_messages"))]
+                } else {
+                    self.send_outbox(id)
+                }
+            }
+            Some(Pending::Messages) => {
+                if let Some(messages) = data.get("messages").and_then(Value::as_array) {
+                    self.transcripts
+                        .insert(id.to_string(), Transcript::from_messages(messages.iter()));
+                }
+                self.send_outbox(id)
+            }
+            Some(Pending::Prompt) if !success => {
+                self.fail(id, error.unwrap_or_else(|| "Pi rejected the prompt".into()))
+            }
+            Some(Pending::Prompt) => Vec::new(),
+            Some(Pending::Settle { error: fallback }) => {
+                if success {
+                    self.sync_session(id, &data);
+                }
+                if self.rt(id).changing_settings() {
+                    self.rt(id).deferred_idle = Some(fallback);
+                    return Vec::new();
+                }
+                if !self
+                    .state
+                    .agent(id)
+                    .is_some_and(|agent| agent.status == Status::Working)
+                {
+                    return Vec::new();
+                }
+                if !success {
+                    return self.fail(
+                        id,
+                        error.unwrap_or_else(|| "Could not confirm Pi is idle".into()),
+                    );
+                }
+                if self.rt(id).compacting
+                    || data.get("isStreaming") == Some(&Value::Bool(true))
+                    || data.get("isCompacting") == Some(&Value::Bool(true))
+                    || data
+                        .get("pendingMessageCount")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                {
+                    return Vec::new();
+                }
+                self.settle(id, fallback)
+            }
+            Some(Pending::Configure { previous, .. }) if !success => {
+                self.edit(id, |agent| {
+                    agent.session_settings = previous;
+                    agent.note =
+                        Some(error.unwrap_or_else(|| "Pi rejected the settings change".into()));
+                });
+                let mut effects = vec![send(id, rpc::command(SYNC, "get_state"))];
+                effects.extend(self.finish_configuration(id));
+                effects
+            }
+            Some(Pending::Configure { step, previous }) => match step {
+                Step::Model => self.send_effort(id, previous),
+                Step::Effort => self.read_back(id, previous),
+                Step::Readback => {
+                    self.capture_settings(id, &data);
+                    self.finish_configuration(id)
+                }
+            },
+            None if request == SYNC && success => {
+                if !self.rt(id).changing_settings() {
+                    self.capture_settings(id, &data);
+                }
+                self.sync_session(id, &data);
+                Vec::new()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Saves the session file and name Pi reports, when they changed.
+    fn sync_session(&mut self, id: &str, data: &Value) {
+        if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
+            let file = PathBuf::from(file);
+            if self
+                .state
+                .agent(id)
+                .is_some_and(|agent| agent.session_file.as_ref() != Some(&file))
+            {
+                self.edit(id, |agent| agent.session_file = Some(file));
+            }
+        }
+        if let Some(name) = data
+            .get("sessionName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            && self
+                .state
+                .agent(id)
+                .is_some_and(|agent| agent.title != name)
+        {
+            self.edit(id, |agent| agent.title = name.to_string());
+        }
+    }
+
     fn ask_question(&mut self, id: &str, question: Question) {
         self.edit(id, |agent| {
             agent.question = Some(question);
             agent.status = Status::Question;
-            agent.inbox_at = Some(now());
         });
     }
 
@@ -809,10 +859,7 @@ impl Desk {
             }
             "input" | "editor" => {
                 if let Some(text) = self.rt(id).other_text.take() {
-                    return vec![Effect::Send {
-                        agent: id.to_string(),
-                        line: rpc::ui_value(&request.id, &text),
-                    }];
+                    return vec![send(id, rpc::ui_value(&request.id, &text))];
                 }
                 let text = if request.title.is_empty() {
                     request.message.clone()
@@ -865,12 +912,9 @@ impl Desk {
         {
             return Vec::new();
         }
-        let request = self.request_id("settle");
-        self.rt(id).settling = Some((request.clone(), error));
-        vec![Effect::Send {
-            agent: id.to_string(),
-            line: rpc::command(&request, "get_state"),
-        }]
+        self.rt(id).cancel_settle();
+        let request = self.track(id, "settle", Pending::Settle { error });
+        vec![send(id, rpc::command(&request, "get_state"))]
     }
 
     fn settle(&mut self, id: &str, fallback_error: Option<String>) -> Vec<Effect> {
@@ -899,7 +943,6 @@ impl Desk {
                 self.edit(id, |agent| {
                     agent.status = Status::Review;
                     agent.summary = parsed;
-                    agent.inbox_at = Some(now());
                     agent.note = None;
                 });
                 effects.extend(self.schedule(now()));
@@ -911,10 +954,7 @@ impl Desk {
     fn fail(&mut self, id: &str, error: String) -> Vec<Effect> {
         let live = self.is_live(id);
         self.rt(id).closing = true;
-        self.edit(id, |agent| {
-            agent.status = Status::Failed { error };
-            agent.inbox_at = Some(now());
-        });
+        self.edit(id, |agent| agent.status = Status::Failed { error });
         let mut effects = if live {
             vec![Effect::Close {
                 agent: id.to_string(),
@@ -933,17 +973,13 @@ impl Desk {
         code: Option<i32>,
         stderr: &str,
     ) -> Vec<Effect> {
-        let Some(runtime) = self
-            .runtime
-            .get_mut(id)
-            .filter(|runtime| runtime.generation == generation)
-        else {
+        if !self.current(id, generation) {
             return Vec::new();
-        };
+        }
+        let runtime = self.rt(id);
         runtime.live = false;
         runtime.streaming = false;
-        runtime.starting = None;
-        runtime.configuring = None;
+        runtime.pending.clear();
         runtime.deferred_idle = None;
         let expected = runtime.closing;
         let status = self.state.agent(id).map(|agent| agent.status.clone());
@@ -981,52 +1017,36 @@ impl Desk {
     }
 
     pub fn on_spawn_failed(&mut self, id: &str, generation: u64, error: String) -> Vec<Effect> {
-        if self.runtime.get(id).map(|runtime| runtime.generation) != Some(generation) {
+        if !self.current(id, generation) {
             return Vec::new();
         }
         self.rt(id).live = false;
         self.fail(id, error)
     }
 
-    // User actions
-
-    /// Picks a numbered choice (0-based) on a question or review card.
-    pub fn choose(&mut self, id: &str, index: usize) -> Vec<Effect> {
-        let Some(agent) = self.state.agent(id).cloned() else {
+    /// Answers an open question with its choice at `index` (0-based).
+    pub fn answer(&mut self, id: &str, index: usize) -> Vec<Effect> {
+        let Some(question) = self
+            .state
+            .agent(id)
+            .filter(|agent| agent.status == Status::Question)
+            .and_then(|agent| agent.question.clone())
+        else {
             return Vec::new();
         };
-        match agent.status {
-            Status::Question => {
-                let Some(question) = agent.question.clone() else {
-                    return Vec::new();
+        let Some(choice) = question.choices.get(index) else {
+            return Vec::new();
+        };
+        match (&question.request_id, self.is_live(id)) {
+            (Some(request), true) => {
+                let line = match question.kind {
+                    QuestionKind::Confirm => rpc::ui_confirm(request, index == 0),
+                    _ => rpc::ui_value(request, choice),
                 };
-                let Some(choice) = question.choices.get(index).cloned() else {
-                    return Vec::new();
-                };
-                match (&question.request_id, self.is_live(id)) {
-                    (Some(request), true) => {
-                        let line = match question.kind {
-                            QuestionKind::Confirm => rpc::ui_confirm(request, index == 0),
-                            _ => rpc::ui_value(request, &choice),
-                        };
-                        self.resume_working(id);
-                        vec![Effect::Send {
-                            agent: id.to_string(),
-                            line,
-                        }]
-                    }
-                    _ => self.answer_later(id, &question.text, &choice),
-                }
+                self.resume_working(id);
+                vec![send(id, line)]
             }
-            Status::Review => match index {
-                0 => self.approve(id),
-                _ => Vec::new(),
-            },
-            Status::Failed { .. } => match index {
-                0 => self.retry(id),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
+            _ => self.answer_later(id, &question.text, choice),
         }
     }
 
@@ -1034,7 +1054,6 @@ impl Desk {
         self.edit(id, |agent| {
             agent.question = None;
             agent.status = Status::Working;
-            agent.inbox_at = None;
         });
     }
 
@@ -1047,7 +1066,6 @@ impl Desk {
                 kind: OutboxKind::Answer,
             });
             agent.status = Status::Queued;
-            agent.inbox_at = None;
         });
         self.schedule(now())
     }
@@ -1067,11 +1085,11 @@ impl Desk {
                     .as_ref()
                     .and_then(|question| question.recommended)
                     .unwrap_or(0);
-                self.choose(id, index)
+                self.answer(id, index)
             }
             Status::Failed { .. } => self.retry(id),
             Status::Review => {
-                self.rt(id).busy = Some("Writing commit message");
+                self.rt(id).busy = Some(Busy::WritingCommitMessage);
                 self.edit(id, |agent| agent.note = None);
                 vec![Effect::GenerateCommitMessage {
                     agent: id.to_string(),
@@ -1091,7 +1109,7 @@ impl Desk {
         id: &str,
         result: Result<Option<String>, String>,
     ) -> Vec<Effect> {
-        if self.busy(id) != Some("Writing commit message") {
+        if self.busy(id) != Some(Busy::WritingCommitMessage) {
             return Vec::new();
         }
         self.rt(id).busy = None;
@@ -1110,7 +1128,7 @@ impl Desk {
                 let repo = project.path.clone();
                 match agent.workspace {
                     Workspace::Worktree { worktree, branch } => {
-                        self.rt(id).busy = Some("Merging");
+                        self.rt(id).busy = Some(Busy::Merging);
                         vec![Effect::Merge {
                             agent: id.to_string(),
                             repo,
@@ -1121,7 +1139,7 @@ impl Desk {
                         }]
                     }
                     Workspace::Main { checkout, .. } => {
-                        self.rt(id).busy = Some("Committing");
+                        self.rt(id).busy = Some(Busy::Committing);
                         vec![Effect::Commit {
                             agent: id.to_string(),
                             checkout,
@@ -1169,7 +1187,6 @@ impl Desk {
                         kind: OutboxKind::Reply,
                     });
                     agent.status = Status::Queued;
-                    agent.inbox_at = None;
                 });
                 self.schedule(now())
             }
@@ -1184,11 +1201,7 @@ impl Desk {
         let Some(agent) = self.state.agent(id).cloned() else {
             return Vec::new();
         };
-        let repo = self
-            .state
-            .project(&agent.project_id)
-            .map(|project| project.path.clone())
-            .unwrap_or_default();
+        let repo = self.repo(&agent);
         let mut effects = Vec::new();
         if self.is_live(id) {
             self.rt(id).closing = true;
@@ -1198,7 +1211,7 @@ impl Desk {
         }
         match agent.workspace {
             Workspace::Worktree { worktree, branch } => {
-                self.rt(id).busy = Some("Cleaning up");
+                self.rt(id).busy = Some(Busy::CleaningUp);
                 effects.push(Effect::Remove {
                     agent: id.to_string(),
                     repo,
@@ -1225,7 +1238,6 @@ impl Desk {
             agent.status = Status::Done { outcome };
             agent.question = None;
             agent.outbox = None;
-            agent.inbox_at = None;
             agent.snooze_until = None;
             agent.note = result.err().map(|error| format!("Cleanup failed: {error}"));
         });
@@ -1235,32 +1247,24 @@ impl Desk {
     /// X: stop the agent and delete its worktree and branch. A main-checkout
     /// task keeps its files.
     pub fn discard(&mut self, id: &str) -> Vec<Effect> {
-        if self.busy(id).is_some() {
-            return Vec::new();
-        }
-        if self
-            .state
-            .agent(id)
-            .is_none_or(|agent| agent.status.is_done())
-        {
-            return Vec::new();
-        }
-        self.remove(id, false, Outcome::Discarded)
+        self.close(id, false, Outcome::Discarded)
     }
 
     /// Close without merging. The branch stays for later use.
     pub fn mark_done(&mut self, id: &str) -> Vec<Effect> {
-        if self.busy(id).is_some() {
-            return Vec::new();
-        }
-        if self
-            .state
-            .agent(id)
-            .is_none_or(|agent| agent.status.is_done())
+        self.close(id, true, Outcome::Closed)
+    }
+
+    fn close(&mut self, id: &str, keep_branch: bool, outcome: Outcome) -> Vec<Effect> {
+        if self.busy(id).is_some()
+            || self
+                .state
+                .agent(id)
+                .is_none_or(|agent| agent.status.is_done())
         {
             return Vec::new();
         }
-        self.remove(id, true, Outcome::Closed)
+        self.remove(id, keep_branch, outcome)
     }
 
     pub fn retry(&mut self, id: &str) -> Vec<Effect> {
@@ -1283,7 +1287,6 @@ impl Desk {
                 });
             }
             agent.status = Status::Queued;
-            agent.inbox_at = None;
         });
         self.schedule(now())
     }
@@ -1319,35 +1322,18 @@ impl Desk {
                     QuestionKind::Select | QuestionKind::Confirm => {
                         // These dialogs take no free text: dismiss it and steer.
                         self.resume_working(id);
-                        let prompt = self.request_id("prompt");
                         return vec![
-                            Effect::Send {
-                                agent: id.to_string(),
-                                line: rpc::ui_cancel(&request),
-                            },
-                            Effect::Send {
-                                agent: id.to_string(),
-                                line: rpc::prompt(&prompt, text, Some("steer")),
-                            },
+                            send(id, rpc::ui_cancel(&request)),
+                            self.prompt(id, text, Some("steer")),
                         ];
                     }
                 };
                 self.resume_working(id);
-                vec![Effect::Send {
-                    agent: id.to_string(),
-                    line,
-                }]
+                vec![send(id, line)]
             }
             Status::Working if live => {
-                let prompt = self.request_id("prompt");
-                let streaming = self
-                    .runtime
-                    .get(id)
-                    .is_some_and(|runtime| runtime.streaming);
-                vec![Effect::Send {
-                    agent: id.to_string(),
-                    line: rpc::prompt(&prompt, text, streaming.then_some("steer")),
-                }]
+                let streaming = self.rt(id).streaming;
+                vec![self.prompt(id, text, streaming.then_some("steer"))]
             }
             Status::Queued => {
                 self.edit(id, |agent| {
@@ -1372,11 +1358,28 @@ impl Desk {
                     });
                     agent.status = Status::Queued;
                     agent.summary = None;
-                    agent.inbox_at = None;
                 });
                 self.schedule(now())
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// The task's checkout, or its project's while the worktree is missing.
+    pub fn work_dir(&self, agent: &Agent) -> Option<PathBuf> {
+        let path = agent.workspace.path();
+        if path.exists() {
+            return Some(path.to_path_buf());
+        }
+        self.state
+            .project(&agent.project_id)
+            .map(|project| project.path.clone())
+    }
+
+    pub fn set_settings(&mut self, settings: Settings) {
+        if settings != self.state.settings {
+            self.state.settings = settings;
+            self.dirty = true;
         }
     }
 
@@ -1385,10 +1388,13 @@ impl Desk {
         &self.pi_program
     }
 
+    /// True while a settings change or the startup readback is in flight.
     pub fn configuring(&self, id: &str) -> bool {
-        self.runtime
-            .get(id)
-            .is_some_and(|runtime| runtime.configuring.is_some() || runtime.starting.is_some())
+        self.runtime.get(id).is_some_and(|runtime| {
+            runtime.has(|pending| {
+                matches!(pending, Pending::Startup { .. } | Pending::Configure { .. })
+            })
+        })
     }
 
     /// Change only the session configuration. Never abort, restart, or send a
@@ -1412,36 +1418,53 @@ impl Desk {
             .model
             .filter(|model| Some(model) != previous.model.as_ref())
         {
-            let request = self.request_id("model");
-            self.rt(id).configuring = Some((request.clone(), previous));
-            vec![Effect::Send {
-                agent: id.into(),
-                line: rpc::set_model(&request, &model.provider, &model.id),
-            }]
+            let request = self.track(
+                id,
+                "model",
+                Pending::Configure {
+                    step: Step::Model,
+                    previous,
+                },
+            );
+            vec![send(
+                id,
+                rpc::set_model(&request, &model.provider, &model.id),
+            )]
         } else {
             self.send_effort(id, previous)
         }
     }
 
     fn send_effort(&mut self, id: &str, previous: SessionSettings) -> Vec<Effect> {
-        let level = self
+        let Some(level) = self
             .state
             .agent(id)
-            .and_then(|agent| agent.session_settings.effort.clone());
-        let request = self.request_id(if level.is_some() {
-            "effort"
-        } else {
-            "settings"
-        });
-        self.rt(id).configuring = Some((request.clone(), previous));
-        let line = match level {
-            Some(level) => rpc::set_effort(&request, &level),
-            None => rpc::command(&request, "get_state"),
+            .and_then(|agent| agent.session_settings.effort.clone())
+        else {
+            return self.read_back(id, previous);
         };
-        vec![Effect::Send {
-            agent: id.into(),
-            line,
-        }]
+        let request = self.track(
+            id,
+            "effort",
+            Pending::Configure {
+                step: Step::Effort,
+                previous,
+            },
+        );
+        vec![send(id, rpc::set_effort(&request, &level))]
+    }
+
+    /// Reads back what Pi selected, the last step of a settings change.
+    fn read_back(&mut self, id: &str, previous: SessionSettings) -> Vec<Effect> {
+        let request = self.track(
+            id,
+            "settings",
+            Pending::Configure {
+                step: Step::Readback,
+                previous,
+            },
+        );
+        vec![send(id, rpc::command(&request, "get_state"))]
     }
 
     fn finish_configuration(&mut self, id: &str) -> Vec<Effect> {
@@ -1466,13 +1489,11 @@ impl Desk {
 
     pub fn snooze(&mut self, id: &str, until: Option<Timestamp>) {
         if let Some(agent) = self.state.agent(id) {
-            self.undo.push(Undo::Snooze {
+            let undo = Undo::Snooze {
                 agent: id.into(),
                 until: agent.snooze_until,
-            });
-            if self.undo.len() > 50 {
-                self.undo.remove(0);
-            }
+            };
+            self.push_undo(undo);
             self.edit(id, |agent| agent.snooze_until = until);
         }
     }
@@ -1682,7 +1703,7 @@ mod tests {
         assert_eq!(agent.status, Status::Question);
         assert_eq!(agent.question.as_ref().unwrap().request_id, None);
         // The answer queues and respawns in the saved session.
-        let effects = f.desk.choose(&id, 0);
+        let effects = f.desk.answer(&id, 0);
         let commands = sent(&effects);
         assert!(
             effects
@@ -2163,7 +2184,7 @@ mod tests {
             matches!(&effects[0], Effect::GenerateCommitMessage { title, summary, base, .. }
                 if title == "Fix" && summary == "Fixed it." && base == "main")
         );
-        assert_eq!(f.desk.busy(&id), Some("Writing commit message"));
+        assert_eq!(f.desk.busy(&id), Some(Busy::WritingCommitMessage));
         assert!(f.desk.approve(&id).is_empty());
         assert!(f.desk.reply(&id, "Change the task").is_empty());
         assert!(f.desk.retry(&id).is_empty());
@@ -2176,7 +2197,7 @@ mod tests {
         assert!(
             matches!(&effects[0], Effect::Merge { message, .. } if message == "Fix the actual bug")
         );
-        assert_eq!(f.desk.busy(&id), Some("Merging"));
+        assert_eq!(f.desk.busy(&id), Some(Busy::Merging));
         assert!(f.desk.approve(&id).is_empty());
         f.desk.on_merged(
             &id,
@@ -2293,7 +2314,7 @@ mod tests {
                 message: "Fix it".into(),
             }]
         );
-        assert_eq!(desk.busy(&id), Some("Committing"));
+        assert_eq!(desk.busy(&id), Some(Busy::Committing));
         let effects = desk.on_merged(
             &id,
             Ok(Merge::Merged {

@@ -48,7 +48,6 @@ fn agent(
         status,
         created_at: at,
         updated_at: at,
-        inbox_at: Some(at),
         base_branch: "main".into(),
         workspace: Workspace::Worktree {
             worktree: PathBuf::new(),
@@ -754,7 +753,6 @@ fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
     for (agent, age) in app.desk.state.agents.iter_mut().zip(ages) {
         agent.title = format!("Task {}", agent.id);
         agent.created_at = at - 10000;
-        agent.inbox_at = Some(at - 9999);
         agent.updated_at = at - age;
         if agent.id == "agent-8" {
             agent.snooze_until = Some(at + 100);
@@ -1059,7 +1057,7 @@ fn the_inbox_puts_latest_activity_first_and_opens_the_first_card() {
         ]
     );
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
-    assert_eq!(app.inbox_count(), 4);
+    assert_eq!(app.count(&View::Inbox), 4);
     let mut ui = ui(&app);
     assert!(
         ui.find(iced_test::selector::id("task-group-Needs you"))

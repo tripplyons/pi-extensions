@@ -1,49 +1,10 @@
 use super::{ago, faint, key, list::subtitle, muted};
-use crate::app::{App, Message, REPLY_ID};
-use crate::model::{Agent, QuestionKind, Status, Workspace};
+use crate::app::{App, Message, REPLY_ID, choices};
+use crate::model::{QuestionKind, Status, Workspace};
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_editor};
 use iced::{Alignment, Element, Fill};
-
-struct Choice {
-    label: String,
-    recommended: bool,
-}
-
-/// Numbered choices for the card. Review and failed rows get app actions.
-fn choices(agent: &Agent) -> Vec<Choice> {
-    let plain = |labels: &[&str]| {
-        labels
-            .iter()
-            .enumerate()
-            .map(|(index, label)| Choice {
-                label: label.to_string(),
-                recommended: index == 0,
-            })
-            .collect()
-    };
-    match &agent.status {
-        Status::Question => agent
-            .question
-            .as_ref()
-            .map(|question| {
-                question
-                    .choices
-                    .iter()
-                    .enumerate()
-                    .map(|(index, label)| Choice {
-                        label: label.clone(),
-                        recommended: question.recommended.unwrap_or(0) == index,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Status::Review => plain(&["Merge", "Send back with a reply", "Discard"]),
-        Status::Failed { .. } => plain(&["Retry", "Discard"]),
-        _ => Vec::new(),
-    }
-}
 
 fn action<'a>(hint: &'a str, label: &'a str, message: Message) -> Element<'a, Message> {
     button(
@@ -142,7 +103,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .spacing(6);
     if let Some(busy) = app.desk.busy(&agent.id) {
         header = header.push(
-            text(format!("{busy}…"))
+            text(format!("{}…", busy.label()))
                 .size(theme::size::CAPTION)
                 .color(MUTED),
         );

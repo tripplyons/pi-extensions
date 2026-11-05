@@ -16,6 +16,7 @@ pub mod rpc;
 pub mod store;
 pub mod summary;
 pub mod supervisor;
+pub mod text;
 pub mod theme;
 pub mod transcript;
 mod views;

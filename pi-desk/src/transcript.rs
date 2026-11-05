@@ -2,6 +2,7 @@
 //! messages (`get_messages` or the session file).
 
 use crate::rpc::{self, Incoming};
+use crate::text::one_line;
 use iced::widget::markdown;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -68,15 +69,6 @@ pub struct Transcript {
     pub last_error: Option<String>,
 }
 
-fn shorten(text: &str, max: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        format!("{}…", flat.chars().take(max - 1).collect::<String>())
-    }
-}
-
 /// One line describing a tool call, from its most telling argument.
 pub fn preview(name: &str, args: &Value) -> String {
     for key in [
@@ -92,7 +84,7 @@ pub fn preview(name: &str, args: &Value) -> String {
         "task_id",
     ] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
-            return shorten(value, 120);
+            return one_line(value, 120);
         }
     }
     if name == "edit" || name == "write" {
@@ -101,7 +93,7 @@ pub fn preview(name: &str, args: &Value) -> String {
     match args {
         Value::Object(map) if map.is_empty() => String::new(),
         Value::Null => String::new(),
-        other => shorten(&other.to_string(), 120),
+        other => one_line(&other.to_string(), 120),
     }
 }
 

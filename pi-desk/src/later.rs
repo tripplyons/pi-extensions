@@ -2,6 +2,17 @@
 
 use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Weekday};
 
+/// A snooze time as local weekday and clock time, such as `Mon 09:00`.
+pub fn clock(at: crate::model::Timestamp) -> String {
+    DateTime::from_timestamp(at, 0)
+        .map(|time| {
+            time.with_timezone(&chrono::Local)
+                .format("%a %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
     Hour,

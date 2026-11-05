@@ -204,7 +204,8 @@ and Shift variants for selection. Clipboard shortcuts and Cmd+A select all work
 as usual. Cmd+Z undoes composer edits; Cmd+Shift+Z redoes them. Cmd+Enter still
 files the task, and Escape closes the composer. Reply-editor shortcuts are unchanged.
 
-Single-key shortcuts apply outside text inputs. Cmd+K opens the command palette.
+Single-key shortcuts apply outside text inputs. Each letter shortcut runs the
+command palette entry that shows the same key. Cmd+K opens the command palette.
 Zoom shortcuts also work while typing or using a dialog. On Linux and Windows,
 use Ctrl instead of Cmd. Controls with existing shortcuts show key chips;
 overlays also show navigation, submit, and close hints where applicable.
@@ -214,7 +215,7 @@ Controls without shortcuts have no key chip.
 | --- | --- |
 | J / K, Down / Up | Next / previous row |
 | E | Recommended answer, merge, or retry |
-| 1–8 | Choose a numbered action |
+| 1–9 | Choose a numbered action |
 | R | Reply |
 | N | New task |
 | Cmd+Enter | Submit task or reply |

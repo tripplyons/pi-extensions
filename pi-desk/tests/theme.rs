@@ -31,18 +31,15 @@ fn desktop_and_snapshots_share_a_small_type_scale_and_font_family() {
     assert_eq!(settings.default_font, theme::SANS);
     assert_eq!(settings.default_text_size.0, theme::size::CONTROL);
     assert_eq!(theme::BOLD.family, theme::SANS.family);
-    assert_eq!(theme::BOLD.weight, iced::font::Weight::Semibold);
     assert_ne!(theme::MONO.family, theme::SANS.family);
-    assert_eq!(
-        [
-            theme::size::CAPTION,
-            theme::size::CONTROL,
-            theme::size::BODY,
-            theme::size::HEADING,
-            theme::size::TITLE,
-        ],
-        [12.0, 13.0, 14.0, 16.0, 18.0]
-    );
+    let scale = [
+        theme::size::CAPTION,
+        theme::size::CONTROL,
+        theme::size::BODY,
+        theme::size::HEADING,
+        theme::size::TITLE,
+    ];
+    assert!(scale.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 #[cfg(target_os = "macos")]

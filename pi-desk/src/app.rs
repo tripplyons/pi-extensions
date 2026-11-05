@@ -121,6 +121,17 @@ pub struct DiffState {
     pub loading: bool,
 }
 
+impl Default for DiffState {
+    fn default() -> Self {
+        DiffState {
+            files: Ok(Vec::new()),
+            colors: Vec::new(),
+            selected: 0,
+            loading: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Supervisor(supervisor::Event),
@@ -143,7 +154,9 @@ pub enum Message {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+    /// The card's numbered choice at this 0-based index.
     Choose(usize),
+    Answer(usize),
     Approve,
     StartReply,
     ReplyEdit(text_editor::Action),
@@ -248,6 +261,56 @@ pub struct PaletteCommand {
     pub message: Message,
 }
 
+/// A numbered choice on a task card, picked by click or digit key.
+pub struct Choice {
+    pub label: String,
+    pub recommended: bool,
+    pub message: Message,
+}
+
+/// Question rows answer the question. Review and failed rows act on the task.
+pub fn choices(agent: &Agent) -> Vec<Choice> {
+    let actions = |actions: Vec<(&str, Message)>| {
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(index, (label, message))| Choice {
+                label: label.into(),
+                recommended: index == 0,
+                message,
+            })
+            .collect()
+    };
+    match &agent.status {
+        Status::Question => agent
+            .question
+            .iter()
+            .flat_map(|question| {
+                let recommended = question.recommended.unwrap_or(0);
+                question
+                    .choices
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, label)| Choice {
+                        label: label.clone(),
+                        recommended: index == recommended,
+                        message: Message::Answer(index),
+                    })
+            })
+            .collect(),
+        Status::Review => actions(vec![
+            ("Merge", Message::Approve),
+            ("Send back with a reply", Message::StartReply),
+            ("Discard", Message::Discard),
+        ]),
+        Status::Failed { .. } => actions(vec![
+            ("Retry", Message::Retry),
+            ("Discard", Message::Discard),
+        ]),
+        _ => Vec::new(),
+    }
+}
+
 impl App {
     pub fn boot() -> (App, Task<Message>) {
         let pi = std::env::var("PI_DESK_PI").unwrap_or_else(|_| "pi".into());
@@ -340,8 +403,6 @@ impl App {
         Subscription::batch(subscriptions)
     }
 
-    // Rows and selection
-
     /// Rows of the current view, in display order. The selected task keeps
     /// its row after it stops matching the view, until the user selects
     /// another task or changes views.
@@ -375,14 +436,17 @@ impl App {
     }
 
     /// Tasks waiting out an undo window are hidden everywhere.
-    fn hidden(&self, id: &str) -> bool {
+    pub fn hidden(&self, id: &str) -> bool {
         self.pending.iter().any(|pending| pending.id == id)
     }
 
-    pub fn inbox_count(&self) -> usize {
-        order::inbox(&self.desk.state, self.now)
+    /// Visible tasks that match a view's filter.
+    pub fn count(&self, view: &View) -> usize {
+        self.desk
+            .state
+            .agents
             .iter()
-            .filter(|agent| !self.hidden(&agent.id))
+            .filter(|agent| !self.hidden(&agent.id) && self.in_view(agent, view))
             .count()
     }
 
@@ -478,8 +542,6 @@ impl App {
         self.select(Some(rows[next].clone()))
     }
 
-    // Effects
-
     fn supervise(&mut self, request: Request) {
         match &self.supervisor {
             Some(handle) => handle.send(request),
@@ -565,12 +627,7 @@ impl App {
             agent.workspace.path().to_path_buf(),
             agent.diff_base().to_string(),
         );
-        let entry = self.diffs.entry(id.to_string()).or_insert(DiffState {
-            files: Ok(Vec::new()),
-            colors: Vec::new(),
-            selected: 0,
-            loading: false,
-        });
+        let entry = self.diffs.entry(id.to_string()).or_default();
         if entry.loading {
             return Task::none();
         }
@@ -616,9 +673,9 @@ impl App {
         // Likewise for a reply or retry that sends an Inbox task back to work.
         if self.view == View::Inbox
             && self.selected.as_deref() == Some(id)
-            && self.current().is_some_and(|agent| {
-                matches!(agent.status, Status::Working | Status::Queued) && !agent.snoozed(self.now)
-            })
+            && self
+                .current()
+                .is_some_and(|agent| self.in_view(agent, &View::Working))
         {
             return run;
         }
@@ -630,15 +687,8 @@ impl App {
     }
 
     fn launch(&mut self, template: &str) {
-        let Some(agent) = self.current() else { return };
-        let path = if agent.workspace.path().exists() {
-            agent.workspace.path().to_path_buf()
-        } else {
-            self.desk
-                .state
-                .project(&agent.project_id)
-                .map(|project| project.path.clone())
-                .unwrap_or_default()
+        let Some(path) = self.current().and_then(|agent| self.desk.work_dir(agent)) else {
+            return;
         };
         let command = template.replace("{path}", &shell_quote(&path.to_string_lossy()));
         if let Err(error) = std::process::Command::new("sh")
@@ -649,8 +699,6 @@ impl App {
             self.error = Some(format!("Could not run `{command}`: {error}"));
         }
     }
-
-    // Palette
 
     pub fn commands(&self) -> Vec<PaletteCommand> {
         let mut commands = vec![
@@ -788,6 +836,11 @@ impl App {
                 });
             }
             match agent.status {
+                Status::Question => commands.push(PaletteCommand {
+                    label: "Answer with the recommended choice".into(),
+                    keys: &[KeyPart::Text("E")],
+                    message: Message::Approve,
+                }),
                 Status::Review => commands.push(PaletteCommand {
                     label: "Merge".into(),
                     keys: &[KeyPart::Text("E")],
@@ -817,18 +870,26 @@ impl App {
                 keys: &[],
                 message: Message::OpenEditor,
             });
-            commands.push(PaletteCommand {
-                label: "Show diff".into(),
-                keys: &[KeyPart::Text("D")],
-                message: Message::SetTab(Tab::Diff),
-            });
-            commands.push(PaletteCommand {
-                label: "Show transcript".into(),
-                keys: &[KeyPart::Text("T")],
-                message: Message::SetTab(Tab::Transcript),
-            });
         }
+        commands.push(PaletteCommand {
+            label: "Show diff".into(),
+            keys: &[KeyPart::Text("D")],
+            message: Message::SetTab(Tab::Diff),
+        });
+        commands.push(PaletteCommand {
+            label: "Show transcript".into(),
+            keys: &[KeyPart::Text("T")],
+            message: Message::SetTab(Tab::Transcript),
+        });
         commands
+    }
+
+    /// The palette command whose key hint is this single letter.
+    fn shortcut(&self, letter: &str) -> Option<Message> {
+        self.commands()
+            .into_iter()
+            .find(|command| matches!(command.keys, [KeyPart::Text(key)] if key.eq_ignore_ascii_case(letter)))
+            .map(|command| command.message)
     }
 
     pub fn palette_matches(&self) -> Vec<PaletteCommand> {
@@ -845,8 +906,6 @@ impl App {
             })
             .collect()
     }
-
-    // Update
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
@@ -982,17 +1041,19 @@ impl App {
                 Task::none()
             }
             Message::Choose(index) => {
-                let Some(agent) = self.current() else {
+                match self
+                    .current()
+                    .and_then(|agent| choices(agent).into_iter().nth(index))
+                {
+                    Some(choice) => self.handle(choice.message),
+                    None => Task::none(),
+                }
+            }
+            Message::Answer(index) => {
+                let Some(id) = self.current().map(|agent| agent.id.clone()) else {
                     return Task::none();
                 };
-                let id = agent.id.clone();
-                match agent.status {
-                    Status::Review if index == 0 => self.defer(Deferred::Merge),
-                    Status::Review if index == 1 => self.handle(Message::StartReply),
-                    Status::Review if index == 2 => self.handle(Message::Discard),
-                    Status::Failed { .. } if index == 1 => self.handle(Message::Discard),
-                    _ => self.act(&id, |desk| desk.choose(&id, index)),
-                }
+                self.act(&id, |desk| desk.answer(&id, index))
             }
             Message::Approve => {
                 let Some(agent) = self.current() else {
@@ -1101,18 +1162,18 @@ impl App {
                 }
                 let mut settings = picker.settings.clone();
                 settings.effort = Some(effort);
-                if let Some(id) = target {
-                    if self.desk.configuring(&id) {
-                        return Task::none();
+                if target.as_ref().is_some_and(|id| self.desk.configuring(id)) {
+                    return Task::none();
+                }
+                if let Some(picker) = self.session_picker_mut(&target) {
+                    picker.settings = settings.clone();
+                }
+                match target {
+                    Some(id) => {
+                        let effects = self.desk.configure(&id, settings);
+                        self.run(effects)
                     }
-                    self.sessions.get_mut(&id).unwrap().settings = settings.clone();
-                    let effects = self.desk.configure(&id, settings);
-                    self.run(effects)
-                } else {
-                    if let Some(Overlay::Composer(composer)) = &mut self.overlay {
-                        composer.session.settings = settings;
-                    }
-                    Task::none()
+                    None => Task::none(),
                 }
             }
             Message::SessionLoaded(target, request, apply, result) => {
@@ -1120,14 +1181,10 @@ impl App {
                     .as_ref()
                     .and_then(|id| self.desk.state.agent(id))
                     .map(|agent| agent.session_settings.clone());
-                let picker = match &target {
-                    Some(id) => self.sessions.get_mut(id),
-                    None => match &mut self.overlay {
-                        Some(Overlay::Composer(composer)) => Some(&mut composer.session),
-                        _ => None,
-                    },
-                };
-                let Some(picker) = picker.filter(|picker| picker.request == request) else {
+                let Some(picker) = self
+                    .session_picker_mut(&target)
+                    .filter(|picker| picker.request == request)
+                else {
                     return Task::none();
                 };
                 picker.loading = false;
@@ -1346,12 +1403,7 @@ impl App {
                 Task::none()
             }
             Message::DiffLoaded(id, result) => {
-                let state = self.diffs.entry(id).or_insert(DiffState {
-                    files: Ok(Vec::new()),
-                    colors: Vec::new(),
-                    selected: 0,
-                    loading: false,
-                });
+                let state = self.diffs.entry(id).or_default();
                 state.loading = false;
                 state.files = result.map(|text| git::parse_diff(&text));
                 state.colors = match &state.files {
@@ -1441,14 +1493,7 @@ impl App {
                     editor_command: form.editor.trim().to_string(),
                 };
                 self.overlay = None;
-                if settings != self.desk.state.settings {
-                    self.desk.state.settings = settings;
-                    if self.save_enabled {
-                        if let Err(error) = self.store.save(&self.desk.state) {
-                            self.error = Some(format!("Could not save: {error}"));
-                        }
-                    }
-                }
+                self.desk.set_settings(settings);
                 let effects = self.desk.schedule(now());
                 self.run(effects)
             }
@@ -1512,22 +1557,26 @@ impl App {
         };
         let before = self.row_ids();
         self.desk.snooze(&picker.agent, Some(until));
-        let when = chrono::DateTime::from_timestamp(until, 0)
-            .map(|time| {
-                time.with_timezone(&chrono::Local)
-                    .format("%a %H:%M")
-                    .to_string()
-            })
-            .unwrap_or_default();
-        self.notify(format!("Later: {when}"));
+        self.notify(format!("Later: {}", later::clock(until)));
         self.advance_from(&picker.agent, &before)
     }
 
+    /// A task's model picker, or the open composer's when `target` is `None`.
     pub fn session_picker(&self, target: &Option<Id>) -> Option<&SessionPicker> {
         match target {
             Some(id) => self.sessions.get(id),
             None => match &self.overlay {
                 Some(Overlay::Composer(composer)) => Some(&composer.session),
+                _ => None,
+            },
+        }
+    }
+
+    fn session_picker_mut(&mut self, target: &Option<Id>) -> Option<&mut SessionPicker> {
+        match target {
+            Some(id) => self.sessions.get_mut(id),
+            None => match &mut self.overlay {
+                Some(Overlay::Composer(composer)) => Some(&mut composer.session),
                 _ => None,
             },
         }
@@ -1546,17 +1595,10 @@ impl App {
                 if agent.status.is_done() || self.desk.configuring(id) {
                     return Task::none();
                 }
-                let Some(project) = self.desk.state.project(&agent.project_id) else {
+                let Some(cwd) = self.desk.work_dir(agent) else {
                     return Task::none();
                 };
-                (
-                    if agent.workspace.path().exists() {
-                        agent.workspace.path().to_path_buf()
-                    } else {
-                        project.path.clone()
-                    },
-                    agent.session_settings.clone(),
-                )
+                (cwd, agent.session_settings.clone())
             }
             None => {
                 let Some(Overlay::Composer(composer)) = &self.overlay else {
@@ -1574,12 +1616,11 @@ impl App {
         };
         self.next_session_request += 1;
         let request = self.next_session_request;
-        let picker = match &target {
-            Some(id) => self.sessions.entry(id.clone()).or_default(),
-            None => match &mut self.overlay {
-                Some(Overlay::Composer(composer)) => &mut composer.session,
-                _ => return Task::none(),
-            },
+        if let Some(id) = &target {
+            self.sessions.entry(id.clone()).or_default();
+        }
+        let Some(picker) = self.session_picker_mut(&target) else {
+            return Task::none();
         };
         if change.is_none() {
             picker.settings = settings.clone();
@@ -1804,21 +1845,15 @@ impl App {
             Key::Character(c) => match c.to_lowercase().as_str() {
                 "j" => self.move_selection(1),
                 "k" => self.move_selection(-1),
-                "e" => self.handle(Message::Approve),
-                "r" => self.handle(Message::StartReply),
-                "n" => self.handle(Message::NewTask),
-                "l" => self.handle(Message::OpenLater),
-                "z" => self.handle(Message::Undo),
-                "f" => self.handle(Message::ToggleFocus),
-                "b" => self.handle(Message::ToggleBoard),
-                "s" => self.handle(Message::ToggleSidebar),
-                "d" => self.handle(Message::SetTab(Tab::Diff)),
-                "t" => self.handle(Message::SetTab(Tab::Transcript)),
-                "x" => self.handle(Message::Discard),
-                digit => match digit.parse::<usize>() {
-                    Ok(n) if (1..=9).contains(&n) => self.handle(Message::Choose(n - 1)),
-                    _ => Task::none(),
-                },
+                letter => {
+                    if let Some(message) = self.shortcut(letter) {
+                        return self.handle(message);
+                    }
+                    match letter.parse::<usize>() {
+                        Ok(n) if (1..=9).contains(&n) => self.handle(Message::Choose(n - 1)),
+                        _ => Task::none(),
+                    }
+                }
             },
             _ => Task::none(),
         }
@@ -1837,7 +1872,7 @@ fn quote_path(path: &std::path::Path) -> String {
         .chars()
         .any(|c| c.is_whitespace() || c == '\'' || c == '"')
     {
-        format!("'{}'", path.replace('\'', "'\\''"))
+        shell_quote(&path)
     } else {
         path.into_owned()
     }

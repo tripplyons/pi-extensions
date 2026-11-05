@@ -15,30 +15,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
         _ => true,
     };
     let at = app.now;
-    let hidden = |agent: &&Agent| app.pending.iter().any(|pending| pending.id == agent.id);
-    let mut columns: Vec<(&str, Vec<&Agent>)> = order::DisplayGroup::ALL
-        .into_iter()
-        .map(|group| {
-            (
-                group.label(),
-                state
-                    .agents
-                    .iter()
-                    .filter(|agent| order::display_group(agent, at) == group)
-                    .collect(),
-            )
-        })
-        .collect();
-    for (name, agents) in &mut columns {
-        agents.retain(|agent| scope(agent) && !hidden(agent));
+    let mut board = row![].spacing(12);
+    for group in order::DisplayGroup::ALL {
+        let name = group.label();
+        let mut agents: Vec<&Agent> = state
+            .agents
+            .iter()
+            .filter(|agent| {
+                order::display_group(agent, at) == group && scope(agent) && !app.hidden(&agent.id)
+            })
+            .collect();
         agents.sort_by(|a, b| order::compare_display(a, b, at));
-        if *name == "Done" {
+        if group == order::DisplayGroup::Done {
             agents.truncate(30);
         }
-    }
-
-    let mut board = row![].spacing(12);
-    for (name, agents) in columns {
         let mut cards = StableColumn::new(8.0);
         for agent in agents.iter() {
             let selected = app.selected.as_deref() == Some(agent.id.as_str());

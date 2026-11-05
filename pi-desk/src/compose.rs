@@ -36,12 +36,7 @@ pub fn title(text: &str) -> String {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or("Untitled");
-    let line = line.trim_start_matches('#').trim();
-    if line.chars().count() <= 80 {
-        line.to_string()
-    } else {
-        format!("{}…", line.chars().take(79).collect::<String>().trim_end())
-    }
+    crate::text::one_line(line.trim_start_matches('#'), 80)
 }
 
 pub fn split(text: &str) -> Vec<Draft> {

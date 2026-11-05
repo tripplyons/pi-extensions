@@ -1,7 +1,6 @@
 use super::{faint, icon, key, keys};
 use crate::app::{App, Message, View};
 use crate::icon::{COMMAND, Icon, KeyPart};
-use crate::model::Status;
 use crate::theme::{self, ACCENT, BOLD, FAINT, MUTED};
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Element, Fill, mouse};
@@ -27,28 +26,11 @@ fn item<'a>(app: &App, label: &'a str, count: Option<usize>, view: View) -> Elem
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let state = &app.desk.state;
-    let at = app.now;
-    let working = state
-        .agents
-        .iter()
-        .filter(|agent| {
-            matches!(agent.status, Status::Working | Status::Queued) && !agent.snoozed(at)
-        })
-        .count();
-    let later = state
-        .agents
-        .iter()
-        .filter(|agent| agent.snoozed(at) && !agent.status.is_done())
-        .count();
 
     let mut projects = column![].spacing(1);
     let target = app.dragging.as_ref().and_then(|(_, target)| *target);
     for (index, project) in state.projects.iter().enumerate() {
-        let active = state
-            .agents
-            .iter()
-            .filter(|agent| agent.project_id == project.id && !agent.status.is_done())
-            .count();
+        let active = app.count(&View::Project(project.id.clone()));
         let selected = app.view == View::Project(project.id.clone());
         let handle =
             mouse_area(container(icon(Icon::Grip, theme::size::CAPTION, FAINT)).padding([6, 4]))
@@ -96,9 +78,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     let nav = column![
         item(app, "All tasks", None, View::All),
-        item(app, "Inbox", Some(app.inbox_count()), View::Inbox),
-        item(app, "Working", Some(working), View::Working),
-        item(app, "Later", Some(later), View::Later),
+        item(app, "Inbox", Some(app.count(&View::Inbox)), View::Inbox),
+        item(
+            app,
+            "Working",
+            Some(app.count(&View::Working)),
+            View::Working
+        ),
+        item(app, "Later", Some(app.count(&View::Later)), View::Later),
         item(app, "Done", None, View::Done),
     ]
     .spacing(1);

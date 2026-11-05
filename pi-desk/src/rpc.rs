@@ -3,6 +3,10 @@
 
 use serde_json::{Value, json};
 
+/// Environment for every Pi process pi-desk starts. Questions have no
+/// deadline because the user answers them later.
+pub const ENV: [(&str, &str); 2] = [("PI_ASK_USER_TIMEOUT", "0"), ("PI_DESK", "1")];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiRequest {
     pub id: String,
@@ -10,14 +14,12 @@ pub struct UiRequest {
     pub title: String,
     pub message: String,
     pub options: Vec<String>,
-    pub prefill: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Incoming {
     Response {
         id: Option<String>,
-        command: String,
         success: bool,
         data: Value,
         error: Option<String>,
@@ -59,10 +61,6 @@ pub enum Incoming {
         name: String,
         args: Value,
     },
-    ToolUpdate {
-        id: String,
-        partial: Value,
-    },
     ToolEnd {
         id: String,
         name: String,
@@ -98,7 +96,6 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
     Ok(match kind {
         "response" => Incoming::Response {
             id: record.get("id").and_then(Value::as_str).map(str::to_string),
-            command: string(&record, "command"),
             success: record
                 .get("success")
                 .and_then(Value::as_bool)
@@ -168,10 +165,6 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
             name: string(&record, "toolName"),
             args: record.get("args").cloned().unwrap_or(Value::Null),
         },
-        "tool_execution_update" => Incoming::ToolUpdate {
-            id: string(&record, "toolCallId"),
-            partial: record.get("partialResult").cloned().unwrap_or(Value::Null),
-        },
         "tool_execution_end" => Incoming::ToolEnd {
             id: string(&record, "toolCallId"),
             name: string(&record, "toolName"),
@@ -204,7 +197,6 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            prefill: string(&record, "prefill"),
         }),
         "extension_error" => Incoming::ExtensionError {
             error: string(&record, "error"),

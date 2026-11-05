@@ -1,6 +1,7 @@
-use super::{ago, empty, faint, line, preview::Preview, stable_column::StableColumn};
+use super::{ago, empty, faint, preview::Preview, stable_column::StableColumn};
 use crate::app::{App, Message, View};
 use crate::model::{Agent, Status};
+use crate::text::one_line;
 use crate::theme::{self, BOLD};
 use crate::transcript::Entry;
 use iced::widget::{Space, button, column, container, row, scrollable, text};
@@ -9,7 +10,7 @@ use iced::{Alignment, Element, Fill};
 /// The second line of a row: what the agent needs or is doing.
 pub fn subtitle(app: &App, agent: &Agent) -> String {
     if let Some(busy) = app.desk.busy(&agent.id) {
-        return format!("{busy}…");
+        return format!("{}…", busy.label());
     }
     match &agent.status {
         Status::Question => agent
@@ -67,12 +68,12 @@ pub fn subtitle(app: &App, agent: &Agent) -> String {
 /// Review previews separate the outcome from the next action instead of joining
 /// unrelated fields with punctuation. Shared by the list and board cards.
 pub fn preview(app: &App, agent: &Agent, max: usize) -> Element<'static, Message> {
-    let mut lines = vec![line(&subtitle(app, agent), max)];
+    let mut lines = vec![one_line(&subtitle(app, agent), max)];
     lines.retain(|line| !line.is_empty());
     if matches!(agent.status, Status::Review) {
         if let Some(summary) = &agent.summary {
             if !summary.needs.is_empty() {
-                lines.push(format!("Needs: {}", line(&summary.needs, max)));
+                lines.push(format!("Needs: {}", one_line(&summary.needs, max)));
             }
         }
     }
@@ -91,16 +92,9 @@ pub fn summary<'a>(app: &'a App, agent: &'a Agent, title_max: usize) -> Element<
     let needs_user = agent.status.needs_user();
     let mut meta = row![faint(project)].spacing(6).align_y(Alignment::Center);
     if let Some(until) = agent.snooze_until.filter(|until| *until > app.now) {
-        let when = chrono::DateTime::from_timestamp(until, 0)
-            .map(|time| {
-                time.with_timezone(&chrono::Local)
-                    .format("until %a %H:%M")
-                    .to_string()
-            })
-            .unwrap_or_default();
-        meta = meta.push(faint(when));
+        meta = meta.push(faint(format!("until {}", crate::later::clock(until))));
     }
-    let title = text(line(&agent.title, title_max))
+    let title = text(one_line(&agent.title, title_max))
         .size(theme::size::BODY)
         .line_height(iced::Pixels(20.0))
         .font(if needs_user { BOLD } else { theme::SANS });

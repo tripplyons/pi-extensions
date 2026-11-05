@@ -11,7 +11,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Length};
 
-const DIFF_LINE_LIMIT: usize = 4000;
+use crate::highlight::SHOWN_LINES;
 
 /// The right pane in list layout: the card above its tabs.
 pub fn pane(app: &App) -> Element<'_, Message> {
@@ -188,7 +188,7 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                                 row![
                                     icon(Icon::disclosure(open), theme::size::CAPTION, FAINT),
                                     text("Thinking").size(theme::size::CAPTION).color(MUTED),
-                                    text(super::line(thinking, 110))
+                                    text(crate::text::one_line(thinking, 110))
                                         .size(theme::size::CAPTION)
                                         .color(FAINT)
                                         .wrapping(text::Wrapping::None)
@@ -250,7 +250,7 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                             .size(theme::size::CAPTION)
                             .font(MONO)
                             .color(ACCENT),
-                        text(super::line(preview, 110))
+                        text(crate::text::one_line(preview, 110))
                             .size(theme::size::CAPTION)
                             .font(MONO)
                             .color(MUTED)
@@ -343,7 +343,7 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
     let file = &files[diff.selected.min(files.len() - 1)];
     let colors = diff.colors.get(diff.selected);
     let mut lines = column![];
-    for (index, line) in file.lines.iter().enumerate().take(DIFF_LINE_LIMIT) {
+    for (index, line) in file.lines.iter().enumerate().take(SHOWN_LINES) {
         let (background, prefix, base) = match line.kind {
             LineKind::Added => (ADDED_BG, "+", GREEN),
             LineKind::Removed => (REMOVED_BG, "-", RED),
@@ -380,11 +380,11 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                 .style(theme::fill(background)),
         );
     }
-    if file.lines.len() > DIFF_LINE_LIMIT {
+    if file.lines.len() > SHOWN_LINES {
         lines = lines.push(
             container(faint(format!(
                 "{} more lines. Open the editor to see the rest.",
-                file.lines.len() - DIFF_LINE_LIMIT
+                file.lines.len() - SHOWN_LINES
             )))
             .padding(10),
         );

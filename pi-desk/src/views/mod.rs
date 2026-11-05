@@ -234,19 +234,6 @@ pub fn ago(now: Timestamp, at: Timestamp) -> String {
     }
 }
 
-/// Shortens to one line of at most `max` characters.
-pub fn line(text: &str, max: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        format!(
-            "{}…",
-            flat.chars().take(max - 1).collect::<String>().trim_end()
-        )
-    }
-}
-
 pub fn empty<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
     container(
         column![

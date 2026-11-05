@@ -191,8 +191,6 @@ pub struct Agent {
     pub status: Status,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
-    /// When the row last entered the inbox; orders rows of equal rank.
-    pub inbox_at: Option<Timestamp>,
     /// The branch the work lands on.
     pub base_branch: String,
     #[serde(flatten)]

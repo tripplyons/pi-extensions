@@ -5,8 +5,8 @@ use iced::Color;
 use iced::highlighter::{Settings, Stream, Theme};
 use std::ops::Range;
 
-/// Lines beyond this are shown without syntax colors.
-const LIMIT: usize = 4000;
+/// Diff lines shown per file. Only these get syntax colors.
+pub const SHOWN_LINES: usize = 4000;
 
 pub type Spans = Vec<(Range<usize>, Option<Color>)>;
 
@@ -34,9 +34,9 @@ pub fn diff_lines(path: &str, lines: &[DiffLine]) -> Vec<Spans> {
     });
     lines
         .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            if index >= LIMIT || matches!(line.kind, LineKind::Hunk | LineKind::Meta) {
+        .take(SHOWN_LINES)
+        .map(|line| {
+            if matches!(line.kind, LineKind::Hunk | LineKind::Meta) {
                 if line.kind == LineKind::Hunk {
                     stream.reset();
                 }
