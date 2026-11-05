@@ -12,8 +12,8 @@ A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in the
 project's own checkout, or in its own git worktree when you check Use worktree.
 Questions and completed work enter your Inbox; answer, review
 the diff, and merge without switching terminals. Panels, controls, selections,
-and dark primary buttons use neutral grays. Muted status dots, errors, red/green diffs,
-and subdued syntax colors keep semantic cues visible. Scrollbar tracks are
+and dark primary buttons use neutral grays. Errors, red/green diffs, and subdued
+syntax colors keep semantic cues visible. Scrollbar tracks are
 transparent so panel backgrounds stay unchanged; only the thumb is colored,
 with the usual hover and drag feedback.
 

@@ -1062,8 +1062,11 @@ fn the_inbox_puts_latest_activity_first_and_opens_the_first_card() {
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
     assert_eq!(app.inbox_count(), 4);
     let mut ui = ui(&app);
+    assert!(
+        ui.find(iced_test::selector::id("task-group-Needs you"))
+            .is_ok()
+    );
     for text in [
-        "NEEDS YOU",
         "Merge",
         "Send back with a reply",
         "Guarded the nil session.",

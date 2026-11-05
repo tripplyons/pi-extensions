@@ -104,7 +104,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .spacing(1);
 
     let header = row![
-        faint("PROJECTS").width(Fill),
+        text("Projects")
+            .size(theme::size::CAPTION)
+            .font(BOLD)
+            .width(Fill),
         button(text("+").size(theme::size::BODY).color(MUTED))
             .padding([0, 8])
             .style(theme::row(false))

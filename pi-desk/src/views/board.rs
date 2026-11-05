@@ -1,4 +1,4 @@
-use super::{dot, faint, line, list::preview, stable_column::StableColumn};
+use super::{list::summary, stable_column::StableColumn};
 use crate::app::{App, Message, View};
 use crate::model::Agent;
 use crate::order;
@@ -41,42 +41,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
         let mut cards = StableColumn::new(8.0);
         for agent in agents.iter() {
             let selected = app.selected.as_deref() == Some(agent.id.as_str());
-            let project = state
-                .project(&agent.project_id)
-                .map(|project| project.name.as_str())
-                .unwrap_or("");
             cards = cards.push(
                 agent.id.clone(),
-                button(
-                    column![
-                        row![
-                            dot(theme::status_color(&agent.status)),
-                            text(line(&agent.title, 40))
-                                .size(theme::size::CONTROL)
-                                .font(BOLD)
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                        preview(app, agent, 70),
-                        faint(project),
-                    ]
-                    .spacing(4),
-                )
-                .width(Fill)
-                .padding(10)
-                .style(move |theme, status| {
-                    let mut style = theme::row(selected)(theme, status);
-                    if !selected && style.background.is_none() {
-                        style.background = Some(theme::SURFACE.into());
-                    }
-                    style.border = iced::Border {
-                        color: theme::BORDER,
-                        width: 1.0,
-                        radius: 8.0.into(),
-                    };
-                    style
-                })
-                .on_press(Message::Open(agent.id.clone())),
+                button(summary(app, agent, 40))
+                    .width(Fill)
+                    .padding([9, 12])
+                    .style(theme::board_card(selected))
+                    .on_press(Message::Open(agent.id.clone())),
             );
         }
         board = board.push(
@@ -87,15 +58,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
                         agents.len(),
                         theme::size::CONTROL
                     ))
-                    .id(format!("board-heading-{name}")),
+                    .id(format!("board-heading-{name}"))
+                    .padding([4, 4]),
                     scrollable(cards).style(theme::scrollbar).height(Fill),
                 ]
-                .spacing(10),
+                .spacing(8),
             )
             .width(Fill)
             .height(Fill)
-            .padding(10)
-            .style(theme::panel),
+            .padding(8)
+            .style(theme::board_column),
         );
     }
 

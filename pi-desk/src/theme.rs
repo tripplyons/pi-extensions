@@ -1,7 +1,6 @@
-//! Neutral panels and controls, with restrained semantic color for status
-//! dots, errors, and changed code.
+//! Neutral panels and controls, with restrained semantic color for errors and
+//! changed code.
 
-use crate::model::Status;
 use iced::widget::{button, checkbox as check, container, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Font, Shadow, Theme, color};
 
@@ -65,17 +64,6 @@ pub fn theme() -> Theme {
             danger: RED,
         },
     )
-}
-
-pub fn status_color(status: &Status) -> Color {
-    match status {
-        Status::Queued => FAINT,
-        Status::Working => ACCENT,
-        Status::Question => AMBER,
-        Status::Review => GREEN,
-        Status::Failed { .. } => RED,
-        Status::Done { .. } => FAINT,
-    }
 }
 
 fn radius(value: f32) -> Border {
@@ -161,17 +149,40 @@ pub fn panel(_: &Theme) -> container::Style {
     }
 }
 
-pub fn fill(color: Color) -> impl Fn(&Theme) -> container::Style {
-    move |_| container::Style {
-        background: Some(color.into()),
+/// A board column: a quiet lane without its own border, so cards are the only
+/// outlined boxes.
+pub fn board_column(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(SURFACE.into()),
+        border: radius(10.0),
         ..container::Style::default()
     }
 }
 
-pub fn dot(color: Color) -> impl Fn(&Theme) -> container::Style {
+/// A task card on a board column, raised above the lane.
+pub fn board_card(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(if selected || hovered {
+                ACCENT_SOFT
+            } else {
+                RAISED
+            })),
+            text_color: TEXT,
+            border: Border {
+                color: if selected { FAINT } else { BORDER },
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+pub fn fill(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(color.into()),
-        border: radius(4.0),
         ..container::Style::default()
     }
 }

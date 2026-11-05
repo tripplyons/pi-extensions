@@ -1,4 +1,4 @@
-use super::{ago, dot, faint, key, list::subtitle, muted};
+use super::{ago, faint, key, list::subtitle, muted};
 use crate::app::{App, Message, REPLY_ID};
 use crate::model::{Agent, QuestionKind, Status, Workspace};
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED, RED};
@@ -115,19 +115,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .project(&agent.project_id)
         .map(|project| project.name.as_str())
         .unwrap_or("");
-    let status_color = theme::status_color(&agent.status);
 
     let mut header = column![
         row![
             faint(project).width(Fill),
-            row![
-                dot(status_color),
-                text(agent.status.label())
-                    .size(theme::size::CAPTION)
-                    .color(MUTED)
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
+            text(agent.status.label())
+                .size(theme::size::CAPTION)
+                .color(MUTED),
         ]
         .spacing(12)
         .align_y(Alignment::Center),

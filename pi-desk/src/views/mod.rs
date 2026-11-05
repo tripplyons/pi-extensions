@@ -19,7 +19,7 @@ use crate::theme::{self, BOLD, FAINT, MONO, MUTED};
 use iced::widget::{
     Space, button, column, container, opaque, rich_text, row, rule, span, stack, text,
 };
-use iced::{Alignment, Color, Element, Fill, Length, Padding};
+use iced::{Alignment, Element, Fill, Length, Padding};
 
 pub fn root(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if app.focus && app.current().is_some() {
@@ -177,14 +177,6 @@ pub fn divider(_: &iced::Theme) -> rule::Style {
         fill_mode: rule::FillMode::Full,
         snap: true,
     }
-}
-
-pub fn dot<'a>(color: Color) -> Element<'a, Message> {
-    container(Space::new())
-        .width(8)
-        .height(8)
-        .style(theme::dot(color))
-        .into()
 }
 
 /// A key hint such as `E` or `⌘K`.

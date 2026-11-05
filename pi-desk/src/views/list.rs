@@ -68,6 +68,7 @@ pub fn subtitle(app: &App, agent: &Agent) -> String {
 /// unrelated fields with punctuation. Shared by the list and board cards.
 pub fn preview(app: &App, agent: &Agent, max: usize) -> Element<'static, Message> {
     let mut lines = vec![line(&subtitle(app, agent), max)];
+    lines.retain(|line| !line.is_empty());
     if matches!(agent.status, Status::Review) {
         if let Some(summary) = &agent.summary {
             if !summary.needs.is_empty() {
@@ -78,8 +79,9 @@ pub fn preview(app: &App, agent: &Agent, max: usize) -> Element<'static, Message
     Preview::new(lines).into()
 }
 
-pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
-    let selected = app.selected.as_deref() == Some(agent.id.as_str());
+/// Title and age, preview, then project and snooze time. Shared by list rows
+/// and board cards so both describe a task the same way.
+pub fn summary<'a>(app: &'a App, agent: &'a Agent, title_max: usize) -> Element<'a, Message> {
     let project = app
         .desk
         .state
@@ -98,26 +100,29 @@ pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
             .unwrap_or_default();
         meta = meta.push(faint(when));
     }
-    let title = text(line(&agent.title, 60))
+    let title = text(line(&agent.title, title_max))
         .size(theme::size::BODY)
         .line_height(iced::Pixels(20.0))
         .font(if needs_user { BOLD } else { theme::SANS });
-    let when = agent.updated_at;
-    button(
-        column![
-            row![title.width(Fill), faint(ago(app.now, when))]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            preview(app, agent, 90),
-            meta,
-        ]
-        .spacing(3),
-    )
-    .width(Fill)
-    .padding([9, 12])
-    .style(theme::row(selected))
-    .on_press(Message::Select(agent.id.clone()))
+    column![
+        row![title.width(Fill), faint(ago(app.now, agent.updated_at))]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        preview(app, agent, title_max * 3 / 2),
+        meta,
+    ]
+    .spacing(3)
     .into()
+}
+
+pub fn row_button<'a>(app: &'a App, agent: &'a Agent) -> Element<'a, Message> {
+    let selected = app.selected.as_deref() == Some(agent.id.as_str());
+    button(summary(app, agent, 60))
+        .width(Fill)
+        .padding([9, 12])
+        .style(theme::row(selected))
+        .on_press(Message::Select(agent.id.clone()))
+        .into()
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -168,9 +173,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
             if previous_group != Some(group) {
                 list = list.push(
                     format!("group-{}", group.label()),
-                    container(faint(group.label().to_uppercase()))
-                        .id(format!("task-group-{}", group.label()))
-                        .padding([6, 12]),
+                    container(super::counted_heading(
+                        group.label(),
+                        rows.iter()
+                            .filter(|agent| crate::order::display_group(agent, app.now) == group)
+                            .count(),
+                        theme::size::CAPTION,
+                    ))
+                    .id(format!("task-group-{}", group.label()))
+                    .padding(iced::Padding {
+                        top: 10.0,
+                        right: 12.0,
+                        bottom: 4.0,
+                        left: 12.0,
+                    }),
                 );
                 previous_group = Some(group);
             }
