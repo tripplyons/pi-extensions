@@ -277,6 +277,55 @@ fn the_app_opens_on_all_tasks() {
 }
 
 #[test]
+fn command_p_fuzzy_searches_projects_in_the_composer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    key(&mut app, "n");
+    let composer = |app: &App| match &app.overlay {
+        Some(Overlay::Composer(composer)) => {
+            (composer.project.clone(), composer.project_search.is_some())
+        }
+        _ => panic!("the composer should be open"),
+    };
+    let command_p = |app: &mut App| {
+        let _ = app.update(Message::Key {
+            key: Key::Character("p".into()),
+            modifiers: Modifiers::COMMAND,
+            captured: false,
+        });
+    };
+    assert_eq!(composer(&app), (Some("p2".into()), false));
+
+    // Letters in order pick the project; Enter chooses the best match.
+    command_p(&mut app);
+    assert_eq!(composer(&app), (Some("p2".into()), true));
+    let _ = app.update(Message::ComposerProjectQuery("AI".into()));
+    assert_eq!(app.project_matches(), vec!["p1".to_string()]);
+    key(&mut app, "enter");
+    assert_eq!(composer(&app), (Some("p1".into()), false));
+
+    // Escape leaves the search but keeps the composer open.
+    command_p(&mut app);
+    let _ = app.update(Message::ComposerProjectQuery("zzz".into()));
+    assert!(app.project_matches().is_empty());
+    assert!(ui(&app).find("No matching projects").is_ok());
+    key(&mut app, "enter");
+    key(&mut app, "escape");
+    assert_eq!(composer(&app), (Some("p1".into()), false));
+
+    // An empty query lists every project in sidebar order.
+    command_p(&mut app);
+    assert_eq!(
+        app.project_matches(),
+        vec!["p1".to_string(), "p2".to_string()]
+    );
+    let _ = app.update(Message::ComposerProjectPick(1));
+    assert_eq!(composer(&app), (Some("p2".into()), false));
+    key(&mut app, "escape");
+    assert!(app.overlay.is_none());
+}
+
+#[test]
 fn command_e_toggles_use_worktree_in_the_composer() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());

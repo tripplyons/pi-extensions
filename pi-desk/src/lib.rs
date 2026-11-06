@@ -5,6 +5,7 @@ pub mod commit_message;
 pub mod compose;
 pub mod composer_edit;
 pub mod desk;
+pub mod fuzzy;
 pub mod git;
 pub mod highlight;
 pub mod icon;

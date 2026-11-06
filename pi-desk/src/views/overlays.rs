@@ -1,5 +1,5 @@
 use super::{faint, key, keys, muted};
-use crate::app::{App, COMPOSER_ID, LATER_ID, Message, Overlay, PALETTE_ID};
+use crate::app::{App, COMPOSER_ID, LATER_ID, Message, Overlay, PALETTE_ID, PROJECT_SEARCH_ID};
 use crate::compose;
 use crate::icon::{COMMAND, Icon, KeyPart, RETURN};
 use crate::later::Preset;
@@ -123,9 +123,73 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                             !use_worktree,
                         )))
                     }
+                    Key::Character("p")
+                        if press.modifiers.command()
+                            && !press.modifiers.shift()
+                            && !press.modifiers.alt() =>
+                    {
+                        Some(text_editor::Binding::Custom(Message::ComposerProjectSearch))
+                    }
                     _ => crate::composer_edit::binding(press),
                 });
             let count = drafts.len().max(1);
+            let search: Option<Element<'_, Message>> = match &composer.project_search {
+                None => None,
+                Some(search) => {
+                    let mut list = column![].spacing(1);
+                    let matches = app.project_matches();
+                    if matches.is_empty() {
+                        list = list.push(faint("No matching projects"));
+                    }
+                    for (index, id) in matches.iter().enumerate() {
+                        let name = app
+                            .desk
+                            .state
+                            .projects
+                            .iter()
+                            .find(|project| &project.id == id)
+                            .map(|project| project.name.as_str())
+                            .unwrap_or_default();
+                        list = list.push(
+                            button(text(name).size(theme::size::CONTROL).width(Fill))
+                                .width(Fill)
+                                .padding([6, 10])
+                                .style(theme::row(index == search.selected))
+                                .on_press(Message::ComposerProjectPick(index)),
+                        );
+                    }
+                    Some(
+                        column![
+                            text_input("Search projects", &search.query)
+                                .id(PROJECT_SEARCH_ID)
+                                .on_input(Message::ComposerProjectQuery)
+                                .padding(8)
+                                .size(theme::size::CONTROL)
+                                .style(theme::input),
+                            scrollable(list)
+                                .style(theme::scrollbar)
+                                .height(iced::Length::Shrink),
+                            row![
+                                row![
+                                    keys(&[
+                                        KeyPart::Icon(Icon::ArrowUp),
+                                        KeyPart::Text("/"),
+                                        KeyPart::Icon(Icon::ArrowDown),
+                                    ]),
+                                    faint("navigate")
+                                ]
+                                .spacing(5),
+                                row![key("Enter"), faint("choose")].spacing(5),
+                                row![key("Esc"), faint("back")].spacing(5),
+                            ]
+                            .spacing(16)
+                            .align_y(Alignment::Center),
+                        ]
+                        .spacing(8)
+                        .into(),
+                    )
+                }
+            };
             sheet(
                 640,
                 column![
@@ -136,6 +200,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         })
                         .text_size(theme::size::CONTROL)
                         .padding([5, 10]),
+                        keys(&[COMMAND, KeyPart::Text("P")]),
                         Space::new().width(Fill),
                         row![
                             checkbox(composer.use_worktree)
@@ -152,6 +217,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),
+                    search,
                     super::session::controls(app, None),
                     editor,
                     scrollable(preview)

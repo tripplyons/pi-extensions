@@ -214,7 +214,11 @@ The New task composer supports macOS word navigation and deletion with Option,
 line navigation and deletion with Cmd, Cmd+Up/Down for document navigation,
 and Shift variants for selection. Clipboard shortcuts and Cmd+A select all work
 as usual. Cmd+Z undoes composer edits; Cmd+Shift+Z redoes them. Cmd+E toggles Use
-worktree. Cmd+Enter still files the task, and Escape closes the composer. Reply-editor shortcuts are unchanged.
+worktree. Cmd+P opens a project search below the project selector. Type any
+letters of a project name in order, for example "pxt" for pi-extensions; the
+closest matches come first. Up/Down moves, Enter or a click chooses, and Escape
+returns to the task text. Cmd+Enter still files the task, and Escape closes the
+composer. Reply-editor shortcuts are unchanged.
 
 Single-key shortcuts apply outside text inputs. Each letter shortcut runs the
 command palette entry that shows the same key. Cmd+K opens the command palette.
@@ -232,6 +236,7 @@ Controls without shortcuts have no key chip.
 | N | New task |
 | Cmd+Enter | Submit task or reply |
 | Cmd+E | Toggle Use worktree in New task |
+| Cmd+P | Search projects in New task |
 | L | Later |
 | X | Discard, with confirmation |
 | Z | Undo |

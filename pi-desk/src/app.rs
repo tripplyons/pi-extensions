@@ -23,6 +23,7 @@ pub const REPLY_ID: &str = "reply";
 pub const PALETTE_ID: &str = "palette";
 pub const LATER_ID: &str = "later";
 pub const COMPOSER_ID: &str = "composer";
+pub const PROJECT_SEARCH_ID: &str = "project-search";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -76,6 +77,15 @@ pub struct Composer {
     pub session: SessionPicker,
     pub content: text_editor::Content,
     pub error: Option<String>,
+    /// Open while Cmd+P fuzzy project search is shown.
+    pub project_search: Option<ProjectSearch>,
+}
+
+#[derive(Debug, Default)]
+pub struct ProjectSearch {
+    pub query: String,
+    /// Index into [`App::project_matches`].
+    pub selected: usize,
 }
 
 #[derive(Default)]
@@ -164,6 +174,10 @@ pub enum Message {
     CancelReply,
     NewTask,
     ComposerProject(Id),
+    ComposerProjectSearch,
+    ComposerProjectQuery(String),
+    /// Pick the match at this index in [`App::project_matches`].
+    ComposerProjectPick(usize),
     SessionModel(Option<Id>, ModelChoice),
     SessionEffort(Option<Id>, String),
     RefreshSession(Option<Id>),
@@ -876,6 +890,25 @@ impl App {
             .collect()
     }
 
+    /// Project IDs matching the composer's project search, best first.
+    pub fn project_matches(&self) -> Vec<Id> {
+        let Some(Overlay::Composer(Composer {
+            project_search: Some(search),
+            ..
+        })) = &self.overlay
+        else {
+            return Vec::new();
+        };
+        let projects = &self.desk.state.projects;
+        crate::fuzzy::rank(
+            &search.query,
+            projects.iter().map(|project| project.name.as_str()),
+        )
+        .into_iter()
+        .map(|index| projects[index].id.clone())
+        .collect()
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
         // Readback is authoritative. In particular, don't leave a rejected or
@@ -1108,6 +1141,7 @@ impl App {
                     session: SessionPicker::default(),
                     content: text_editor::Content::new(),
                     error: None,
+                    project_search: None,
                 }));
                 Task::batch([operation::focus(COMPOSER_ID), self.load_session(None, None)])
             }
@@ -1119,6 +1153,47 @@ impl App {
                     composer.session = SessionPicker::default();
                 }
                 self.load_session(None, None)
+            }
+            Message::ComposerProjectSearch => {
+                let Some(Overlay::Composer(composer)) = &self.overlay else {
+                    return Task::none();
+                };
+                let current = composer.project.clone();
+                let selected = self
+                    .desk
+                    .state
+                    .projects
+                    .iter()
+                    .position(|project| Some(&project.id) == current.as_ref())
+                    .unwrap_or(0);
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    composer.project_search = Some(ProjectSearch {
+                        query: String::new(),
+                        selected,
+                    });
+                }
+                operation::focus(PROJECT_SEARCH_ID)
+            }
+            Message::ComposerProjectQuery(query) => {
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay
+                    && let Some(search) = &mut composer.project_search
+                {
+                    search.query = query;
+                    search.selected = 0;
+                }
+                Task::none()
+            }
+            Message::ComposerProjectPick(index) => {
+                let Some(id) = self.project_matches().into_iter().nth(index) else {
+                    return Task::none();
+                };
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    composer.project_search = None;
+                }
+                Task::batch([
+                    self.handle(Message::ComposerProject(id)),
+                    operation::focus(COMPOSER_ID),
+                ])
             }
             Message::RefreshSession(target) => self.load_session(target, None),
             Message::SessionModel(target, model) => {
@@ -1230,6 +1305,8 @@ impl App {
             }
             Message::ComposerEdit(action) => {
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    // Working in the editor again ends project search.
+                    composer.project_search = None;
                     composer.history.edit(&mut composer.content, action);
                 }
                 Task::none()
@@ -1754,10 +1831,17 @@ impl App {
         // Overlays first: Escape closes them, and they own arrows and Enter.
         if self.overlay.is_some() {
             if key == Key::Named(Named::Escape) {
+                // Escape leaves project search first, then the composer.
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay
+                    && composer.project_search.take().is_some()
+                {
+                    return operation::focus(COMPOSER_ID);
+                }
                 self.overlay = None;
                 return Task::none();
             }
             let count = self.palette_matches().len();
+            let project_count = self.project_matches().len();
             match &mut self.overlay {
                 Some(Overlay::Palette(palette)) => match key {
                     Key::Named(Named::ArrowDown) => {
@@ -1783,15 +1867,31 @@ impl App {
                         }
                     }
                 }
-                // The editor binds the same key while it has focus.
+                Some(Overlay::Composer(Composer {
+                    project_search: Some(search),
+                    ..
+                })) if !command && !modifiers.alt() => match key {
+                    Key::Named(Named::ArrowDown) => {
+                        search.selected = (search.selected + 1).min(project_count.saturating_sub(1))
+                    }
+                    Key::Named(Named::ArrowUp) => {
+                        search.selected = search.selected.saturating_sub(1)
+                    }
+                    Key::Named(Named::Enter) => {
+                        let index = search.selected;
+                        return self.handle(Message::ComposerProjectPick(index));
+                    }
+                    _ => {}
+                },
+                // The editor binds the same keys while it has focus.
                 Some(Overlay::Composer(composer))
-                    if !captured
-                        && command
-                        && !modifiers.shift()
-                        && !modifiers.alt()
-                        && key == Key::Character("e".into()) =>
+                    if !captured && command && !modifiers.shift() && !modifiers.alt() =>
                 {
-                    composer.use_worktree = !composer.use_worktree;
+                    if key == Key::Character("e".into()) {
+                        composer.use_worktree = !composer.use_worktree;
+                    } else if key == Key::Character("p".into()) {
+                        return self.handle(Message::ComposerProjectSearch);
+                    }
                 }
                 Some(Overlay::ConfirmDiscard(_)) if !captured => {
                     if key == Key::Named(Named::Enter) || key == Key::Character("x".into()) {
