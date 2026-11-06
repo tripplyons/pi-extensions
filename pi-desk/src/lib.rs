@@ -21,3 +21,4 @@ pub mod text;
 pub mod theme;
 pub mod transcript;
 mod views;
+pub mod vim;

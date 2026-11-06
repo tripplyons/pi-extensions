@@ -262,6 +262,10 @@ pub struct Settings {
     /// Shell command templates. `{path}` becomes the quoted task checkout path.
     pub terminal_command: String,
     pub editor_command: String,
+    /// Vim-style modal editing in the reply and task boxes.
+    pub vim_mode: bool,
+    /// Keys typed quickly in insert mode that act as Escape. Empty turns this off.
+    pub vim_escape: String,
 }
 
 impl Default for Settings {
@@ -270,6 +274,8 @@ impl Default for Settings {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
         Settings {
             slots: 4,
+            vim_mode: true,
+            vim_escape: "jk".into(),
             terminal_command: if ghostty {
                 "open -a Ghostty {path}".into()
             } else {

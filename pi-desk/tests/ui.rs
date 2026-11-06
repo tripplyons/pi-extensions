@@ -1647,3 +1647,88 @@ fn board_focus_palette_and_project_views_render() {
     assert_eq!(app.desk.state.projects[0].id, "p2");
     snapshot(&app, "project");
 }
+
+fn vim_type(app: &mut App, target: pi_desk::vim::Target, keys: &str) {
+    for c in keys.chars() {
+        let input = match c {
+            '\x1b' => pi_desk::vim::Input::Escape,
+            c => pi_desk::vim::Input::Char(c),
+        };
+        let _ = app.update(Message::Vim(target, input));
+    }
+}
+
+#[test]
+fn vim_reply_leaves_insert_on_jk_and_undoes_one_insert_at_a_time() {
+    use pi_desk::vim::{Mode, Target};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::Select("agent-4".into()));
+    key(&mut app, "r");
+    assert_eq!(app.reply_vim.mode, Mode::Insert);
+    assert!(ui(&app).find("-- INSERT --").is_ok());
+    vim_type(&mut app, Target::Reply, "hello worldjk");
+    assert_eq!(app.reply.text(), "hello world");
+    assert_eq!(app.reply_vim.mode, Mode::Normal);
+    assert!(ui(&app).find("-- NORMAL --").is_ok());
+    vim_type(&mut app, Target::Reply, "bdw");
+    assert_eq!(app.reply.text(), "hello ");
+    vim_type(&mut app, Target::Reply, "Athere\x1b");
+    assert_eq!(app.reply.text(), "hello there");
+    vim_type(&mut app, Target::Reply, "u");
+    assert_eq!(app.reply.text(), "hello ");
+    vim_type(&mut app, Target::Reply, "u");
+    assert_eq!(app.reply.text(), "hello world");
+    vim_type(&mut app, Target::Reply, "u");
+    assert_eq!(app.reply.text(), "");
+    let _ = app.update(Message::Vim(Target::Reply, pi_desk::vim::Input::Redo));
+    assert_eq!(app.reply.text(), "hello world");
+}
+
+#[tokio::test]
+async fn vim_escape_leaves_insert_before_it_closes_the_composer() {
+    use pi_desk::vim::{Mode, Target};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let task = app.update(Message::NewTask);
+    finish_task(&mut app, task).await;
+    vim_type(&mut app, Target::Composer, "fix it\x1b");
+    // The focused editor captured Escape, so the window handler leaves the composer open.
+    let _ = app.update(Message::Key {
+        key: Key::Named(Named::Escape),
+        modifiers: Modifiers::empty(),
+        captured: true,
+    });
+    let Some(Overlay::Composer(composer)) = &app.overlay else {
+        panic!("composer should stay open")
+    };
+    assert_eq!(composer.vim.mode, Mode::Normal);
+    assert_eq!(composer.content.text(), "fix it");
+    let _ = app.update(Message::Key {
+        key: Key::Named(Named::Escape),
+        modifiers: Modifiers::empty(),
+        captured: false,
+    });
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn vim_settings_save_and_reject_long_escape_sequences() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::OpenSettings);
+    assert!(
+        ui(&app)
+            .find("Vim mode in the reply and task boxes")
+            .is_ok()
+    );
+    let _ = app.update(Message::SettingsVimEscape("jj kk".into()));
+    let _ = app.update(Message::SaveSettings);
+    assert!(app.overlay.is_some());
+    let _ = app.update(Message::SettingsVimEscape("kj".into()));
+    let _ = app.update(Message::SettingsVim(false));
+    let _ = app.update(Message::SaveSettings);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.desk.state.settings.vim_escape, "kj");
+    assert!(!app.desk.state.settings.vim_mode);
+}

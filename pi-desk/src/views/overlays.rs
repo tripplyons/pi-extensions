@@ -97,6 +97,8 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 (Err(error), _) => error.clone(),
             };
             let use_worktree = composer.use_worktree;
+            let vim = app.desk.state.settings.vim_mode;
+            let escape = app.desk.state.settings.vim_escape.as_str();
             let editor = text_editor(&composer.content)
                 .id(COMPOSER_ID)
                 .placeholder(
@@ -107,31 +109,51 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 .padding(12)
                 .size(theme::size::BODY)
                 .style(theme::editor)
-                .key_binding(move |press| match press.key.as_ref() {
-                    Key::Named(Named::Enter) if press.modifiers.command() => {
-                        Some(text_editor::Binding::Custom(Message::ComposerSubmit))
+                .key_binding(move |press| {
+                    let usual = |press: text_editor::KeyPress| match press.key.as_ref() {
+                        Key::Named(Named::Enter) if press.modifiers.command() => {
+                            Some(text_editor::Binding::Custom(Message::ComposerSubmit))
+                        }
+                        Key::Named(Named::Escape) => {
+                            Some(text_editor::Binding::Custom(Message::CloseOverlay))
+                        }
+                        Key::Character("e")
+                            if press.modifiers.command()
+                                && !press.modifiers.shift()
+                                && !press.modifiers.alt() =>
+                        {
+                            Some(text_editor::Binding::Custom(Message::ComposerWorktree(
+                                !use_worktree,
+                            )))
+                        }
+                        Key::Character("p")
+                            if press.modifiers.command()
+                                && !press.modifiers.shift()
+                                && !press.modifiers.alt() =>
+                        {
+                            Some(text_editor::Binding::Custom(Message::ComposerProjectSearch))
+                        }
+                        _ => crate::composer_edit::binding(press),
+                    };
+                    if vim {
+                        crate::vim::binding(
+                            press,
+                            crate::vim::Target::Composer,
+                            &composer.vim,
+                            escape,
+                            usual,
+                        )
+                    } else {
+                        usual(press)
                     }
-                    Key::Named(Named::Escape) => {
-                        Some(text_editor::Binding::Custom(Message::CloseOverlay))
-                    }
-                    Key::Character("e")
-                        if press.modifiers.command()
-                            && !press.modifiers.shift()
-                            && !press.modifiers.alt() =>
-                    {
-                        Some(text_editor::Binding::Custom(Message::ComposerWorktree(
-                            !use_worktree,
-                        )))
-                    }
-                    Key::Character("p")
-                        if press.modifiers.command()
-                            && !press.modifiers.shift()
-                            && !press.modifiers.alt() =>
-                    {
-                        Some(text_editor::Binding::Custom(Message::ComposerProjectSearch))
-                    }
-                    _ => crate::composer_edit::binding(press),
                 });
+            let editor: Element<'_, Message> = if vim {
+                column![editor, super::card::mode(&composer.vim)]
+                    .spacing(6)
+                    .into()
+            } else {
+                editor.into()
+            };
             let count = drafts.len().max(1);
             let search: Option<Element<'_, Message>> = match &composer.project_search {
                 None => None,
@@ -401,6 +423,26 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                     muted("Open in editor"),
                     text_input("code {path}", &form.editor)
                         .on_input(Message::SettingsEditor)
+                        .on_submit(Message::SaveSettings)
+                        .padding(8)
+                        .size(theme::size::CONTROL)
+                        .font(MONO)
+                        .style(theme::input)
+                ]
+                .spacing(6),
+                checkbox(form.vim_mode)
+                    .label("Vim mode in the reply and task boxes")
+                    .on_toggle(Message::SettingsVim)
+                    .size(16)
+                    .spacing(8)
+                    .text_size(theme::size::CONTROL)
+                    .style(theme::checkbox),
+                column![
+                    muted(
+                        "Keys that leave insert mode, typed within 1 second (empty turns this off)"
+                    ),
+                    text_input("jk", &form.vim_escape)
+                        .on_input(Message::SettingsVimEscape)
                         .on_submit(Message::SaveSettings)
                         .padding(8)
                         .size(theme::size::CONTROL)

@@ -76,6 +76,7 @@ pub struct Composer {
     pub use_worktree: bool,
     pub session: SessionPicker,
     pub content: text_editor::Content,
+    pub vim: crate::vim::Vim,
     pub error: Option<String>,
     /// Open while Cmd+P fuzzy project search is shown.
     pub project_search: Option<ProjectSearch>,
@@ -113,6 +114,8 @@ pub struct SettingsForm {
     pub slots: String,
     pub terminal: String,
     pub editor: String,
+    pub vim_mode: bool,
+    pub vim_escape: String,
     pub error: Option<String>,
 }
 
@@ -170,6 +173,9 @@ pub enum Message {
     Approve,
     StartReply,
     ReplyEdit(text_editor::Action),
+    Vim(crate::vim::Target, crate::vim::Input),
+    /// Clipboard text for a vim put: after the cursor, and how many times.
+    VimPut(crate::vim::Target, bool, usize, Option<String>),
     SendReply,
     CancelReply,
     NewTask,
@@ -224,6 +230,8 @@ pub enum Message {
     SettingsSlots(String),
     SettingsTerminal(String),
     SettingsEditor(String),
+    SettingsVim(bool),
+    SettingsVimEscape(String),
     SaveSettings,
     DismissError,
     Link(String),
@@ -245,6 +253,8 @@ pub struct App {
     zoom_percent: u16,
     pub replying: bool,
     pub reply: text_editor::Content,
+    reply_history: crate::composer_edit::History,
+    pub reply_vim: crate::vim::Vim,
     pub overlay: Option<Overlay>,
     pub pending: Vec<Pending>,
     pub diffs: HashMap<Id, DiffState>,
@@ -360,6 +370,8 @@ impl App {
             zoom_percent: 100,
             replying: false,
             reply: text_editor::Content::new(),
+            reply_history: Default::default(),
+            reply_vim: Default::default(),
             overlay: None,
             pending: Vec::new(),
             diffs: HashMap::new(),
@@ -1072,11 +1084,30 @@ impl App {
                     return Task::none();
                 }
                 self.replying = true;
+                self.reply_vim = crate::vim::Vim::new(self.reply_history.depth());
                 self.focus_reply()
             }
             Message::FileDropped(path) => self.insert_path(&path),
             Message::ReplyEdit(action) => {
-                self.reply.perform(action);
+                let clicked = matches!(
+                    action,
+                    text_editor::Action::Click(_) | text_editor::Action::Drag(_)
+                );
+                self.reply_history.edit(&mut self.reply, action);
+                self.after_edit(crate::vim::Target::Reply, clicked);
+                Task::none()
+            }
+            Message::Vim(target, input) => self.vim_key(target, input),
+            Message::VimPut(target, after, count, text) => {
+                let Some(text) = text.filter(|text| !text.is_empty()) else {
+                    return Task::none();
+                };
+                if let Some((content, history, vim)) = self.vim_box(target) {
+                    let mut buffer = crate::vim::Buffer::read(content);
+                    history.checkpoint(content);
+                    vim.put(&mut buffer, &text, after, count);
+                    crate::vim::write(content, &buffer, None);
+                }
                 Task::none()
             }
             Message::SendReply => {
@@ -1105,6 +1136,8 @@ impl App {
                     _ => None,
                 };
                 self.reply = text_editor::Content::new();
+                self.reply_history = Default::default();
+                self.reply_vim = Default::default();
                 self.replying = false;
                 self.act(&id, |desk| match start {
                     Some(start) => desk.reopen(&id, &text, Some(start)),
@@ -1140,6 +1173,7 @@ impl App {
                     use_worktree: false,
                     session: SessionPicker::default(),
                     content: text_editor::Content::new(),
+                    vim: crate::vim::Vim::new(0),
                     error: None,
                     project_search: None,
                 }));
@@ -1304,17 +1338,23 @@ impl App {
                 Task::none()
             }
             Message::ComposerEdit(action) => {
+                let clicked = matches!(
+                    action,
+                    text_editor::Action::Click(_) | text_editor::Action::Drag(_)
+                );
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     // Working in the editor again ends project search.
                     composer.project_search = None;
                     composer.history.edit(&mut composer.content, action);
                 }
+                self.after_edit(crate::vim::Target::Composer, clicked);
                 Task::none()
             }
             Message::ComposerCommand(command) => {
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     composer.history.command(&mut composer.content, command);
                 }
+                self.after_edit(crate::vim::Target::Composer, false);
                 Task::none()
             }
             Message::ComposerSubmit => self.submit_composer(),
@@ -1532,6 +1572,8 @@ impl App {
                     slots: settings.slots.to_string(),
                     terminal: settings.terminal_command.clone(),
                     editor: settings.editor_command.clone(),
+                    vim_mode: settings.vim_mode,
+                    vim_escape: settings.vim_escape.clone(),
                     error: None,
                 }));
                 Task::none()
@@ -1539,6 +1581,8 @@ impl App {
             Message::SettingsSlots(value) => self.edit_settings(|form| form.slots = value),
             Message::SettingsTerminal(value) => self.edit_settings(|form| form.terminal = value),
             Message::SettingsEditor(value) => self.edit_settings(|form| form.editor = value),
+            Message::SettingsVim(on) => self.edit_settings(|form| form.vim_mode = on),
+            Message::SettingsVimEscape(value) => self.edit_settings(|form| form.vim_escape = value),
             Message::SaveSettings => {
                 let Some(Overlay::Settings(form)) = &mut self.overlay else {
                     return Task::none();
@@ -1553,10 +1597,18 @@ impl App {
                     form.error = Some("Running agents must be a number from 1 to 64".into());
                     return Task::none();
                 };
+                let vim_escape = form.vim_escape.trim().to_string();
+                if vim_escape.chars().count() > 4 || vim_escape.chars().any(char::is_whitespace) {
+                    form.error =
+                        Some("The escape sequence must be up to 4 keys with no spaces".into());
+                    return Task::none();
+                }
                 let settings = Settings {
                     slots,
                     terminal_command: form.terminal.trim().to_string(),
                     editor_command: form.editor.trim().to_string(),
+                    vim_mode: form.vim_mode,
+                    vim_escape,
                 };
                 self.overlay = None;
                 self.desk.set_settings(settings);
@@ -1589,6 +1641,103 @@ impl App {
         Task::none()
     }
 
+    /// The editor, its undo history, and its vim state for `target`.
+    fn vim_box(
+        &mut self,
+        target: crate::vim::Target,
+    ) -> Option<(
+        &mut text_editor::Content,
+        &mut crate::composer_edit::History,
+        &mut crate::vim::Vim,
+    )> {
+        match target {
+            crate::vim::Target::Reply => Some((
+                &mut self.reply,
+                &mut self.reply_history,
+                &mut self.reply_vim,
+            )),
+            crate::vim::Target::Composer => match &mut self.overlay {
+                Some(Overlay::Composer(composer)) => Some((
+                    &mut composer.content,
+                    &mut composer.history,
+                    &mut composer.vim,
+                )),
+                _ => None,
+            },
+        }
+    }
+
+    /// Keeps vim state in step after an ordinary edit, click, or drag.
+    fn after_edit(&mut self, target: crate::vim::Target, clicked: bool) {
+        if let Some((content, _, vim)) = self.vim_box(target) {
+            vim.interrupt();
+            if clicked && vim.mode != crate::vim::Mode::Insert {
+                let mut buffer = crate::vim::Buffer::read(content);
+                vim.settle(&mut buffer);
+                if content.selection().is_none() {
+                    crate::vim::write(content, &buffer, None);
+                }
+            }
+        }
+    }
+
+    fn vim_key(&mut self, target: crate::vim::Target, input: crate::vim::Input) -> Task<Message> {
+        use crate::vim::{Buffer, Input, Mode};
+        let sequence = self.desk.state.settings.vim_escape.clone();
+        let Some((content, history, vim)) = self.vim_box(target) else {
+            return Task::none();
+        };
+        let before = content.text();
+        let mut buffer = Buffer::read(content);
+        let outcome = match (vim.mode, input) {
+            (Mode::Insert, Input::Char(c)) => {
+                vim.insert_char(&sequence, &mut buffer, c, std::time::Instant::now())
+            }
+            (_, input) => vim.handle(&mut buffer, input),
+        };
+        if let Some(c) = outcome.insert {
+            history.edit(
+                content,
+                text_editor::Action::Edit(text_editor::Edit::Insert(c)),
+            );
+            return Task::none();
+        }
+        if outcome.entered_insert {
+            vim.insert_mark = Some(history.depth());
+        }
+        if buffer.text() != before && !outcome.silent {
+            history.checkpoint(content);
+        }
+        let mut task = Task::none();
+        if outcome.undo > 0 || outcome.redo > 0 {
+            let (command, count) = if outcome.undo > 0 {
+                (crate::composer_edit::Command::Undo, outcome.undo)
+            } else {
+                (crate::composer_edit::Command::Redo, outcome.redo)
+            };
+            for _ in 0..count {
+                history.command(content, command.clone());
+            }
+            buffer = Buffer::read(content);
+            vim.settle(&mut buffer);
+        }
+        let selection = vim.selection(&buffer);
+        crate::vim::write(content, &buffer, selection);
+        if outcome.left_insert
+            && let Some(mark) = vim.insert_mark.take()
+        {
+            history.collapse(mark, content);
+        }
+        if let Some(yank) = outcome.yank {
+            task = iced::clipboard::write(yank);
+        }
+        if let Some((after, count)) = outcome.put {
+            task = iced::clipboard::read()
+                .map(move |text| Message::VimPut(target, after, count, text));
+        }
+        task
+    }
+
     fn focus_reply(&self) -> Task<Message> {
         operation::focus(REPLY_ID)
     }
@@ -1613,7 +1762,7 @@ impl App {
             }
             self.replying = true;
         }
-        self.reply.perform(paste);
+        self.reply_history.edit(&mut self.reply, paste);
         self.focus_reply()
     }
 
@@ -1837,6 +1986,12 @@ impl App {
                 {
                     return operation::focus(COMPOSER_ID);
                 }
+            }
+            // A focused vim composer handles Escape itself: it leaves insert mode first.
+            let composer_owns_escape = captured
+                && self.desk.state.settings.vim_mode
+                && matches!(self.overlay, Some(Overlay::Composer(_)));
+            if key == Key::Named(Named::Escape) && !composer_owns_escape {
                 self.overlay = None;
                 return Task::none();
             }

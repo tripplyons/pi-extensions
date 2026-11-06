@@ -171,31 +171,8 @@ impl Snapshot {
     }
     fn restore(self, content: &mut text_editor::Content) {
         *content = text_editor::Content::with_text(&self.text);
-        let mut move_to = |position: text_editor::Position, selecting: bool| {
-            let action = |motion| {
-                if selecting {
-                    Action::Select(motion)
-                } else {
-                    Action::Move(motion)
-                }
-            };
-            content.perform(action(Motion::DocumentStart));
-            // Columns are byte offsets, while Right moves by grapheme.
-            // Walk to the saved position instead of treating bytes as keystrokes.
-            while content.cursor().position != position {
-                let before = content.cursor().position;
-                content.perform(action(Motion::Right));
-                if content.cursor().position == before {
-                    break;
-                }
-            }
-        };
-        if let Some(anchor) = self.cursor.selection {
-            move_to(anchor, false);
-            move_to(self.cursor.position, true);
-        } else {
-            move_to(self.cursor.position, false);
-        }
+        // Positions are byte offsets, as the editor stores them.
+        content.move_to(self.cursor);
     }
 }
 
@@ -211,6 +188,28 @@ impl History {
         }
         self.undo.push(snapshot);
         self.redo.clear();
+    }
+    pub fn depth(&self) -> usize {
+        self.undo.len()
+    }
+    /// Records `content` as one undo step before an outside change.
+    pub fn checkpoint(&mut self, content: &text_editor::Content) {
+        self.record(Snapshot::capture(content));
+    }
+    /// Merges the steps after `mark` into one, so a whole insert undoes at once.
+    /// Drops the merged step if it no longer changes the text.
+    pub fn collapse(&mut self, mark: usize, content: &text_editor::Content) {
+        if self.undo.len() > mark + 1 {
+            self.undo.truncate(mark + 1);
+        }
+        if self.undo.len() > mark
+            && self
+                .undo
+                .last()
+                .is_some_and(|last| last.text == content.text())
+        {
+            self.undo.pop();
+        }
     }
     pub fn edit(&mut self, content: &mut text_editor::Content, action: Action) {
         let before = action.is_edit().then(|| Snapshot::capture(content));

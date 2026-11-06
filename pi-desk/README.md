@@ -220,6 +220,40 @@ closest matches come first. Up/Down moves, Enter or a click chooses, and Escape
 returns to the task text. Cmd+Enter still files the task, and Escape closes the
 composer. Reply-editor shortcuts are unchanged.
 
+### Vim mode
+
+The reply box and the New task composer use Vim-style modal editing. Settings
+has a checkbox to turn it off. Single-line fields, such as the command palette
+and Settings, keep ordinary editing. Each box starts in insert mode, and a label
+under it shows the mode and any pending keys.
+
+In insert mode, Escape enters normal mode. The escape sequence does the same:
+type its keys with less than 1 second between them, and they are removed from
+the text. The default is `jk`. Settings accepts up to 4 keys with no spaces;
+leave it empty to turn the sequence off. In normal mode, with no pending keys,
+Escape cancels the reply or closes the composer as before. Enter still sends a
+reply in every mode.
+
+Normal mode supports these keys, with counts such as `3w` and `2dd`:
+
+| Keys | Action |
+| --- | --- |
+| `h` `j` `k` `l`, arrows | Move |
+| `w` `b` `e`, `W` `B` `E` | Word motions |
+| `0` `^` `$`, `gg` `G` | Line and document motions; `3G` goes to line 3 |
+| `i` `a` `I` `A` `o` `O` | Enter insert mode |
+| `x` `X` `D` `C` `s` `S` | Delete or change characters or lines |
+| `d` `c` `y` with a motion | Delete, change, or yank, as in `dw`, `c$`, `yj` |
+| `dd` `cc` `yy` | Whole-line delete, change, or yank |
+| `iw` `aw` after `d` `c` `y` | Word text objects, as in `ciw` |
+| `p` `P` | Put after or before the cursor |
+| `u`, Ctrl+R | Undo and redo; one insert-mode session undoes as one step |
+| `v`, `V` | Visual and visual-line mode; then `d` `c` `y` `o` |
+
+Yank, delete, and change copy to the system clipboard. Put reads the system
+clipboard. Text that ends in a newline, as from `yy`, puts as whole lines.
+Mouse selection, Cmd shortcuts, and Cmd+Z still work in every mode.
+
 Single-key shortcuts apply outside text inputs. Each letter shortcut runs the
 command palette entry that shows the same key. Cmd+K opens the command palette.
 Zoom shortcuts also work while typing or using a dialog. On Linux and Windows,
@@ -247,7 +281,7 @@ Controls without shortcuts have no key chip.
 | Cmd+Plus or Cmd+= | Zoom in |
 | Cmd+Minus | Zoom out |
 | Cmd+0 | Reset zoom to 100% |
-| Escape | Close overlay, cancel reply, or leave focus mode |
+| Escape | Close overlay, cancel reply, or leave focus mode; in a vim box, leave insert mode first |
 
 Zoom scales the whole interface in 10-percentage-point steps, from 70% to 200%.
 The command palette includes Zoom in, Zoom out, and Reset zoom, and shows the

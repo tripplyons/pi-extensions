@@ -3,6 +3,7 @@ use crate::app::{App, Message, REPLY_ID, choices};
 use crate::model::{QuestionKind, Status, Workspace};
 use crate::text::one_line;
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED, RED};
+use crate::vim::Target;
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_editor};
 use iced::{Alignment, Element, Fill};
@@ -19,7 +20,24 @@ fn action<'a>(hint: &'a str, label: &'a str, message: Message) -> Element<'a, Me
     .into()
 }
 
+/// The vim mode label and pending keys shown under a box.
+pub fn mode<'a>(vim: &crate::vim::Vim) -> Element<'a, Message> {
+    let pending = vim.pending();
+    let label = if pending.is_empty() {
+        vim.mode.label().to_string()
+    } else {
+        format!("{}  {pending}", vim.mode.label())
+    };
+    text(label)
+        .size(theme::size::CAPTION)
+        .font(MONO)
+        .color(MUTED)
+        .into()
+}
+
 fn reply_editor<'a>(app: &'a App, placeholder: &'static str) -> Element<'a, Message> {
+    let vim = app.desk.state.settings.vim_mode;
+    let escape = app.desk.state.settings.vim_escape.as_str();
     let editor = text_editor(&app.reply)
         .id(REPLY_ID)
         .placeholder(placeholder)
@@ -28,25 +46,40 @@ fn reply_editor<'a>(app: &'a App, placeholder: &'static str) -> Element<'a, Mess
         .padding(10)
         .size(theme::size::BODY)
         .style(theme::editor)
-        .key_binding(|press| match press.key.as_ref() {
-            Key::Named(Named::Enter) if !press.modifiers.shift() => {
-                Some(text_editor::Binding::Custom(Message::SendReply))
+        .key_binding(move |press| {
+            let usual = |press: text_editor::KeyPress| match press.key.as_ref() {
+                Key::Named(Named::Enter) if !press.modifiers.shift() => {
+                    Some(text_editor::Binding::Custom(Message::SendReply))
+                }
+                Key::Named(Named::Escape) => {
+                    Some(text_editor::Binding::Custom(Message::CancelReply))
+                }
+                _ => text_editor::Binding::from_key_press(press),
+            };
+            if vim {
+                crate::vim::binding(press, Target::Reply, &app.reply_vim, escape, usual)
+            } else {
+                usual(press)
             }
-            Key::Named(Named::Escape) => Some(text_editor::Binding::Custom(Message::CancelReply)),
-            _ => text_editor::Binding::from_key_press(press),
         });
-    column![
-        editor,
-        row![
-            row![key("Enter"), faint("sends")].spacing(5),
-            row![key("Shift+Enter"), faint("adds a line")].spacing(5),
-            row![key("Esc"), faint("cancels")].spacing(5),
-        ]
-        .spacing(16)
-        .align_y(Alignment::Center)
+    let esc = if vim && !app.reply_vim.idle() {
+        "normal mode"
+    } else {
+        "cancels"
+    };
+    let mut hints = row![
+        row![key("Enter"), faint("sends")].spacing(5),
+        row![key("Shift+Enter"), faint("adds a line")].spacing(5),
+        row![key("Esc"), faint(esc)].spacing(5),
     ]
-    .spacing(6)
-    .into()
+    .spacing(16)
+    .align_y(Alignment::Center);
+    if vim {
+        hints = hints
+            .push(Space::new().width(Fill))
+            .push(mode(&app.reply_vim));
+    }
+    column![editor, hints].spacing(6).into()
 }
 
 /// Equal line metrics keep labels aligned with the first line of wrapped values.
