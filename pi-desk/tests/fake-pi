@@ -24,6 +24,11 @@ while (( $# )); do
   esac
   shift
 done
+# FAKE_PI_SCOPE mimics Pi's enabledModels: a space-separated model cycle
+# drawn from a catalog that also includes an unscoped "other" model.
+scope=${FAKE_PI_SCOPE:-}
+catalog='{"provider":"fake","id":"reasoning"},{"provider":"fake","id":"plain"}'
+[[ -z "$scope" ]] || catalog+=',{"provider":"fake","id":"other"}'
 [[ "$model" == plain || "$model" == reasoning ]] || model=reasoning
 [[ "$provider" == fake ]] || provider=fake
 [[ "$model" != plain ]] || effort=off
@@ -38,7 +43,22 @@ while IFS= read -r line; do
   request_id=$(field id)
   case "$line" in
     *'"type":"get_available_models"'*)
-      printf '{"id":"%s","type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"fake","id":"reasoning"},{"provider":"fake","id":"plain"}]}}\n' "$request_id"
+      printf '{"id":"%s","type":"response","command":"get_available_models","success":true,"data":{"models":[%s]}}\n' "$request_id" "$catalog"
+      ;;
+    *'"type":"cycle_model"'*)
+      read -r -a cycle <<< "${scope:-reasoning plain}"
+      if (( ${#cycle[@]} <= 1 )); then
+        printf '{"id":"%s","type":"response","command":"cycle_model","success":true,"data":null}\n' "$request_id"
+      else
+        next=${cycle[1]}
+        for i in "${!cycle[@]}"; do
+          [[ "${cycle[$i]}" != "$model" ]] || next=${cycle[$(( (i + 1) % ${#cycle[@]} ))]}
+        done
+        model=$next
+        scoped=false
+        [[ -z "$scope" ]] || scoped=true
+        printf '{"id":"%s","type":"response","command":"cycle_model","success":true,"data":{"model":{"provider":"fake","id":"%s"},"thinkingLevel":"%s","isScoped":%s}}\n' "$request_id" "$model" "$effort" "$scoped"
+      fi
       ;;
     *'"type":"get_available_thinking_levels"'*)
       levels='["off","minimal","low","medium","high","xhigh","max"]'

@@ -35,7 +35,12 @@ cargo run --manifest-path pi-desk/Cargo.toml --release
 
 New tasks start with Pi's configured default model and effort. Model and Effort
 selectors in New task and the task detail card let you override them per task.
-Model choices come from Pi's configured/authenticated models. Effort lists only
+Model choices come from Pi's configured/authenticated models. When Pi has
+scoped models (`enabledModels` in settings or `--models`, set with
+`/scoped-models`), Model lists only those. Pi's RPC has no scoped-model query,
+so discovery walks Pi's model cycle in its sessionless helper; this saves no
+settings. A scope with only one available model cannot be listed this way, so
+Model then lists every authenticated model. Effort lists only
 the thinking levels Pi supports for that model, including "off" for models
 without reasoning and "xhigh" or "max" where supported. Switching models lets Pi
 normalize an unsupported effort level. The outlined Refresh models button sits
