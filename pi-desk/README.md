@@ -115,7 +115,7 @@ the app does not reset them.
    creates one task; a list creates one task per
    item, with a preview before filing. Submit with Cmd+Enter. Tasks use the
    project's current branch as their base. Use worktree starts unchecked each
-   time New task opens. Unchecked tasks work in the project's checkout and
+   time New task opens; Cmd+E toggles it. Unchecked tasks work in the project's checkout and
    record its HEAD commit; the task diff is everything since that commit. Check
    it to give each task its own worktree and `pi-desk/` branch. Model and effort apply to every task
    in the submitted list; each task can be changed independently afterward.
@@ -146,6 +146,10 @@ the app does not reset them.
    instructions to rebase and resolve them. For a main-checkout task, approval
    commits all changes in the checkout onto its branch, including any of your
    own uncommitted edits there. It refuses if the checkout is on another branch.
+7. Reply to a Done task to reopen it. The task returns to Queued and resumes its
+   Pi session with your reply. A worktree task gets its worktree back on its
+   kept branch, or on a fresh branch from the base after a merge or discard. A
+   main-checkout task diffs from the checkout's commit at the time of the reply.
 
 Before merging, pi-desk makes a separate `pi --print --no-session` request with
 no tools or MCP access. It sends the task title, completed-work summary, and final
@@ -160,20 +164,22 @@ request fails, times out after two minutes, or returns an empty or invalid messa
 the task stays in Review with an error. No Git changes are made by that request;
 approve again to retry. Tasks with no changes need no model request or merge.
 
-The main window has a sidebar, task list, and detail pane. All tasks shows every
-project and status, including Later and Done. Board mode groups work by status.
+The main window has a sidebar, task list, and detail pane. It opens on All tasks,
+which shows every project and status, including Later and Done. Board mode groups work by status.
 Lists and board columns group tasks as Needs you, Working, Queued, Later, and
 Done. Within each group, the most recent activity comes first, regardless of
-project. Row ages use that same activity time. Creation time (newest
+project. Row ages use that same activity time. Working rows show the newest
+assistant text or thinking block from its start, as plain text cut to about two
+lines. Creation time (newest
 first) and then task ID break ties. Each view keeps its existing filters; project
-lists omit Done tasks. Status changes never change the view or selection. When
-the selected task stops matching the view, for example when it moves from
+lists omit Done tasks. The selected task changes only when you select another
+task, move with J/K, or change views. Status changes and actions such as merge,
+discard, mark done, Later, and replies keep it selected, along with focus mode.
+When the selected task stops matching the view, for example when it moves from
 Working to Inbox, its row stays listed until you select another task or change
 views. Changing views keeps the selected task if it belongs to the new view;
-otherwise the first row is selected. Actions that advance to another task, such
-as merge, discard, or Later, still do so. Answering a question keeps that task
-open, including when resuming it fails. Focus mode ends when no task is
-selected, so it does not return on its own when a new task arrives. Heading labels and counts
+otherwise the first row is selected. Focus mode ends when no task is selected,
+so it does not return on its own when a new task arrives. Heading labels and counts
 share one text baseline in both layouts. List and board previews slide upward over
 180 ms when their text changes, with smooth height changes for wrapped text and
 the review's Needs line. Rapid streaming updates are combined into the latest
@@ -191,7 +197,8 @@ uses separate rows so long branch names wrap without crowding status. Later snoo
 its due time; the Inbox count is the only attention indicator. There are no
 system notifications or dock badges.
 
-Merge, discard, and mark-done actions have a five-second undo window. Discard
+Merge, discard, and mark-done actions have a five-second undo window. The
+selected task stays listed during the window; other views omit it. Discard
 removes the worktree and branch, including uncommitted changes, after confirmation.
 Mark done keeps the branch. For main-checkout tasks, discard and mark done stop
 the agent and leave the checkout's files unchanged. Undo is not a way to reverse a merge after it runs.
@@ -201,8 +208,8 @@ the agent and leave the checkout's files unchanged. Undo is not a way to reverse
 The New task composer supports macOS word navigation and deletion with Option,
 line navigation and deletion with Cmd, Cmd+Up/Down for document navigation,
 and Shift variants for selection. Clipboard shortcuts and Cmd+A select all work
-as usual. Cmd+Z undoes composer edits; Cmd+Shift+Z redoes them. Cmd+Enter still
-files the task, and Escape closes the composer. Reply-editor shortcuts are unchanged.
+as usual. Cmd+Z undoes composer edits; Cmd+Shift+Z redoes them. Cmd+E toggles Use
+worktree. Cmd+Enter still files the task, and Escape closes the composer. Reply-editor shortcuts are unchanged.
 
 Single-key shortcuts apply outside text inputs. Each letter shortcut runs the
 command palette entry that shows the same key. Cmd+K opens the command palette.
@@ -216,9 +223,10 @@ Controls without shortcuts have no key chip.
 | J / K, Down / Up | Next / previous row |
 | E | Recommended answer, merge, or retry |
 | 1–9 | Choose a numbered action |
-| R | Reply |
+| R | Reply, including to reopen a Done task |
 | N | New task |
 | Cmd+Enter | Submit task or reply |
+| Cmd+E | Toggle Use worktree in New task |
 | L | Later |
 | X | Discard, with confirmation |
 | Z | Undo |

@@ -1,6 +1,7 @@
 use super::{ago, faint, key, list::subtitle, muted};
 use crate::app::{App, Message, REPLY_ID, choices};
 use crate::model::{QuestionKind, Status, Workspace};
+use crate::text::one_line;
 use crate::theme::{self, BOLD, FAINT, MONO, MUTED, RED};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_editor};
@@ -190,11 +191,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
             if app.focus {
                 body = body.push(super::live_text::LiveText::new(
                     format!("{}:status", agent.id),
-                    subtitle(app, agent),
+                    one_line(&subtitle(app, agent), 240),
                     false,
                 ));
             } else {
-                body = body.push(muted(subtitle(app, agent)).size(theme::size::CONTROL));
+                body = body
+                    .push(muted(one_line(&subtitle(app, agent), 240)).size(theme::size::CONTROL));
             }
         }
         _ => {}
@@ -242,14 +244,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
             Status::Question => "Answer in your own words",
             Status::Working => "Steer the agent; it reads this after its current step",
             Status::Queued => "Add to the message the agent receives when it starts",
+            Status::Done { .. } => "Reopen the task; the agent picks up where it left off",
             _ => "Tell the agent what to change; it picks up where it left off",
         };
         body = body.push(reply_editor(app, placeholder));
-    } else if !agent.status.is_done() {
+    } else {
         let mut actions = row![].spacing(8);
         actions = actions.push(action("R", "Reply", Message::StartReply));
-        actions = actions.push(action("L", "Later", Message::OpenLater));
-        actions = actions.push(action("X", "Discard", Message::Discard));
+        if !agent.status.is_done() {
+            actions = actions.push(action("L", "Later", Message::OpenLater));
+            actions = actions.push(action("X", "Discard", Message::Discard));
+        }
         body = body.push(actions);
     }
 

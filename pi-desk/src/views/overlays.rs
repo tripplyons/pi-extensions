@@ -96,6 +96,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 (Ok(branch), false) => format!("Works in the main checkout on {branch}"),
                 (Err(error), _) => error.clone(),
             };
+            let use_worktree = composer.use_worktree;
             let editor = text_editor(&composer.content)
                 .id(COMPOSER_ID)
                 .placeholder(
@@ -106,12 +107,21 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 .padding(12)
                 .size(theme::size::BODY)
                 .style(theme::editor)
-                .key_binding(|press| match press.key.as_ref() {
+                .key_binding(move |press| match press.key.as_ref() {
                     Key::Named(Named::Enter) if press.modifiers.command() => {
                         Some(text_editor::Binding::Custom(Message::ComposerSubmit))
                     }
                     Key::Named(Named::Escape) => {
                         Some(text_editor::Binding::Custom(Message::CloseOverlay))
+                    }
+                    Key::Character("e")
+                        if press.modifiers.command()
+                            && !press.modifiers.shift()
+                            && !press.modifiers.alt() =>
+                    {
+                        Some(text_editor::Binding::Custom(Message::ComposerWorktree(
+                            !use_worktree,
+                        )))
                     }
                     _ => crate::composer_edit::binding(press),
                 });
@@ -127,13 +137,18 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                         .text_size(theme::size::CONTROL)
                         .padding([5, 10]),
                         Space::new().width(Fill),
-                        checkbox(composer.use_worktree)
-                            .label("Use worktree")
-                            .on_toggle(Message::ComposerWorktree)
-                            .size(16)
-                            .spacing(8)
-                            .text_size(theme::size::CONTROL)
-                            .style(theme::checkbox),
+                        row![
+                            checkbox(composer.use_worktree)
+                                .label("Use worktree")
+                                .on_toggle(Message::ComposerWorktree)
+                                .size(16)
+                                .spacing(8)
+                                .text_size(theme::size::CONTROL)
+                                .style(theme::checkbox),
+                            keys(&[COMMAND, KeyPart::Text("E")]),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),

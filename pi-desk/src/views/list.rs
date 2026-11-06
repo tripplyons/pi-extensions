@@ -3,7 +3,7 @@ use crate::app::{App, Message, View};
 use crate::model::{Agent, Status};
 use crate::text::one_line;
 use crate::theme::{self, BOLD};
-use crate::transcript::Entry;
+use crate::transcript::{AssistantBlock, Entry};
 use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Fill};
 
@@ -24,32 +24,9 @@ pub fn subtitle(app: &App, agent: &Agent) -> String {
             .map(|summary| summary.did.clone())
             .unwrap_or_else(|| "Finished".into()),
         Status::Failed { error } => error.lines().next().unwrap_or("Failed").to_string(),
-        Status::Working => {
-            if let Some(note) = &agent.note {
-                return note.clone();
-            }
-            let last = app.desk.transcripts.get(&agent.id).and_then(|transcript| {
-                transcript
-                    .entries
-                    .iter()
-                    .rev()
-                    .find_map(|entry| match entry {
-                        Entry::Tool {
-                            name,
-                            preview,
-                            running: true,
-                            ..
-                        } => Some(format!("{name} {preview}")),
-                        Entry::Assistant { text, .. } if !text.trim().is_empty() => text
-                            .lines()
-                            .rev()
-                            .find(|line| !line.trim().is_empty())
-                            .map(str::to_string),
-                        _ => None,
-                    })
-            });
-            last.unwrap_or_else(|| "Working…".into())
-        }
+        Status::Working => latest_message(app, agent)
+            .or_else(|| agent.note.clone())
+            .unwrap_or_else(|| "Working…".into()),
         Status::Queued => agent.note.clone().unwrap_or_else(|| {
             if agent.started {
                 "Waiting for a free slot".into()
@@ -65,10 +42,32 @@ pub fn subtitle(app: &App, agent: &Agent) -> String {
     }
 }
 
+/// The newest non-empty assistant text or thinking block, from its start.
+fn latest_message(app: &App, agent: &Agent) -> Option<String> {
+    let transcript = app.desk.transcripts.get(&agent.id)?;
+    transcript.entries.iter().rev().find_map(|entry| {
+        let Entry::Assistant { blocks, .. } = entry else {
+            return None;
+        };
+        blocks.values().rev().find_map(|block| {
+            let text = match block {
+                AssistantBlock::Text { text, .. } | AssistantBlock::Thinking { text } => text,
+            };
+            (!text.trim().is_empty()).then(|| crate::text::plain(text))
+        })
+    })
+}
+
 /// Review previews separate the outcome from the next action instead of joining
 /// unrelated fields with punctuation. Shared by the list and board cards.
 pub fn preview(app: &App, agent: &Agent, max: usize) -> Element<'static, Message> {
-    let mut lines = vec![one_line(&subtitle(app, agent), max)];
+    // Working rows show the latest message, up to about two wrapped lines.
+    let width = if matches!(agent.status, Status::Working) && app.desk.busy(&agent.id).is_none() {
+        max * 2
+    } else {
+        max
+    };
+    let mut lines = vec![one_line(&subtitle(app, agent), width)];
     lines.retain(|line| !line.is_empty());
     if matches!(agent.status, Status::Review) {
         if let Some(summary) = &agent.summary {

@@ -140,3 +140,28 @@ fn main_checkout_diffs_from_its_start_and_commits_only_on_its_branch() {
     assert!(git(&repo, &["status", "--porcelain"]).is_empty());
     assert_eq!(git(&repo, &["log", "-1", "--format=%s"]), "Task");
 }
+
+#[test]
+fn add_worktree_reuses_a_kept_branch_and_recreates_a_deleted_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let worktree = dir.path().join("worktrees/task");
+    desk_git::add_worktree(&repo, &worktree, "pi-desk/task", "main").unwrap();
+    std::fs::write(worktree.join("kept.txt"), "kept\n").unwrap();
+    git(&worktree, &["add", "kept.txt"]);
+    git(&worktree, &["commit", "--quiet", "-m", "Keep"]);
+
+    // Mark done keeps the branch; reopening checks it out again.
+    desk_git::remove(&repo, &worktree, "pi-desk/task", true).unwrap();
+    desk_git::add_worktree(&repo, &worktree, "pi-desk/task", "main").unwrap();
+    assert!(worktree.join("kept.txt").exists());
+
+    // Discard deletes the branch; reopening starts fresh from the base.
+    desk_git::remove(&repo, &worktree, "pi-desk/task", false).unwrap();
+    desk_git::add_worktree(&repo, &worktree, "pi-desk/task", "main").unwrap();
+    assert!(!worktree.join("kept.txt").exists());
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        git(&repo, &["rev-parse", "main"])
+    );
+}

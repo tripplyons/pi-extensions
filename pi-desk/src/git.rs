@@ -52,16 +52,33 @@ pub fn head(repo: &Path) -> Result<String, String> {
     git(repo, &["rev-parse", "--verify", "HEAD"])
 }
 
+/// Adds a worktree on `branch`, creating the branch from `base` if needed.
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     let path = path.to_string_lossy();
-    git(
+    // A reopened task reuses its kept branch.
+    let _ = git(repo, &["worktree", "prune"]);
+    let exists = git(
         repo,
-        &["worktree", "add", "--quiet", "-b", branch, &path, base],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
     )
+    .is_ok();
+    if exists {
+        git(repo, &["worktree", "add", "--quiet", &path, branch])
+    } else {
+        git(
+            repo,
+            &["worktree", "add", "--quiet", "-b", branch, &path, base],
+        )
+    }
     .map(|_| ())
 }
 

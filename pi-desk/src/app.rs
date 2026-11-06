@@ -337,7 +337,7 @@ impl App {
             store,
             supervisor: None,
             backlog: Vec::new(),
-            view: View::Inbox,
+            view: View::All,
             board: false,
             focus: false,
             selected: None,
@@ -435,8 +435,13 @@ impl App {
         }
     }
 
-    /// Tasks waiting out an undo window are hidden everywhere.
+    /// Tasks waiting out an undo window are hidden everywhere, except the
+    /// selected task, which stays listed and open.
     pub fn hidden(&self, id: &str) -> bool {
+        self.selected.as_deref() != Some(id) && self.is_pending(id)
+    }
+
+    fn is_pending(&self, id: &str) -> bool {
         self.pending.iter().any(|pending| pending.id == id)
     }
 
@@ -446,7 +451,7 @@ impl App {
             .state
             .agents
             .iter()
-            .filter(|agent| !self.hidden(&agent.id) && self.in_view(agent, view))
+            .filter(|agent| !self.is_pending(&agent.id) && self.in_view(agent, view))
             .count()
     }
 
@@ -503,23 +508,6 @@ impl App {
             Task::none()
         };
         Task::batch([self.load_diff(&id), models, reveal])
-    }
-
-    /// After acting on a row, show the row that took its place.
-    fn advance_from(&mut self, id: &str, before: &[Id]) -> Task<Message> {
-        if self.selected.as_deref() != Some(id) {
-            return Task::none();
-        }
-        let rows: Vec<Id> = self.rows().iter().map(|agent| agent.id.clone()).collect();
-        let index = before.iter().position(|row| row == id).unwrap_or(0);
-        let next = before[index + 1..]
-            .iter()
-            .chain(before[..index].iter().rev())
-            .find(|row| rows.contains(row))
-            .cloned();
-        // The acted-on row stays listed while selected; don't fall back to it.
-        let next = next.or_else(|| rows.iter().find(|row| row.as_str() != id).cloned());
-        self.select(next)
     }
 
     fn row_ids(&self) -> Vec<Id> {
@@ -645,41 +633,22 @@ impl App {
         };
         let id = agent.id.clone();
         let label = format!("{} “{}”", action.verb(), agent.title);
-        let before = self.row_ids();
         self.pending.retain(|pending| pending.id != id);
         self.pending.push(Pending {
-            id: id.clone(),
+            id,
             action,
             due: Instant::now() + UNDO_WINDOW,
             label,
         });
-        self.advance_from(&id, &before)
+        Task::none()
     }
 
+    /// Runs an action. The selected task stays selected whatever its new
+    /// status; its row stays listed in the current view. A new action replaces any deferred one still waiting on the task.
     fn act(&mut self, id: &str, action: impl FnOnce(&mut Desk) -> Vec<Effect>) -> Task<Message> {
-        let answering = self
-            .desk
-            .state
-            .agent(id)
-            .is_some_and(|agent| agent.status == Status::Question);
-        let before = self.row_ids();
+        self.pending.retain(|pending| pending.id != id);
         let effects = action(&mut self.desk);
-        let run = self.run(effects);
-        // A question answer belongs to this thread, even if resuming fails.
-        // Keep it selected; its row stays listed in the current view.
-        if answering {
-            return run;
-        }
-        // Likewise for a reply or retry that sends an Inbox task back to work.
-        if self.view == View::Inbox
-            && self.selected.as_deref() == Some(id)
-            && self
-                .current()
-                .is_some_and(|agent| self.in_view(agent, &View::Working))
-        {
-            return run;
-        }
-        Task::batch([run, self.advance_from(id, &before)])
+        self.run(effects)
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -813,16 +782,16 @@ impl App {
             });
         }
         if let Some(agent) = self.current() {
+            commands.push(PaletteCommand {
+                label: "Reply".into(),
+                keys: &[KeyPart::Text("R")],
+                message: Message::StartReply,
+            });
             if !agent.status.is_done() {
                 commands.push(PaletteCommand {
                     label: "Later…".into(),
                     keys: &[KeyPart::Text("L")],
                     message: Message::OpenLater,
-                });
-                commands.push(PaletteCommand {
-                    label: "Reply".into(),
-                    keys: &[KeyPart::Text("R")],
-                    message: Message::StartReply,
                 });
                 commands.push(PaletteCommand {
                     label: "Discard".into(),
@@ -1066,7 +1035,7 @@ impl App {
                 }
             }
             Message::StartReply => {
-                if self.current().is_none_or(|agent| agent.status.is_done()) {
+                if self.current().is_none() {
                     return Task::none();
                 }
                 self.replying = true;
@@ -1085,9 +1054,29 @@ impl App {
                 if text.trim().is_empty() {
                     return Task::none();
                 }
+                // A reopened main-checkout task diffs from the checkout's
+                // current commit, not from its first start.
+                let start = match self
+                    .current()
+                    .map(|agent| (&agent.status, &agent.workspace))
+                {
+                    Some((Status::Done { .. }, Workspace::Main { checkout, .. })) => {
+                        match git::head(checkout) {
+                            Ok(head) => Some(head),
+                            Err(error) => {
+                                self.error = Some(error);
+                                return Task::none();
+                            }
+                        }
+                    }
+                    _ => None,
+                };
                 self.reply = text_editor::Content::new();
                 self.replying = false;
-                self.act(&id, |desk| desk.reply(&id, &text))
+                self.act(&id, |desk| match start {
+                    Some(start) => desk.reopen(&id, &text, Some(start)),
+                    None => desk.reply(&id, &text),
+                })
             }
             Message::CancelReply => {
                 self.replying = false;
@@ -1542,7 +1531,7 @@ impl App {
             None => {}
         }
         if !self.replying {
-            if self.current().is_none_or(|agent| agent.status.is_done()) {
+            if self.current().is_none() {
                 return Task::none();
             }
             self.replying = true;
@@ -1555,10 +1544,9 @@ impl App {
         let Some(Overlay::Later(picker)) = self.overlay.take() else {
             return Task::none();
         };
-        let before = self.row_ids();
         self.desk.snooze(&picker.agent, Some(until));
         self.notify(format!("Later: {}", later::clock(until)));
-        self.advance_from(&picker.agent, &before)
+        Task::none()
     }
 
     /// A task's model picker, or the open composer's when `target` is `None`.
@@ -1794,6 +1782,16 @@ impl App {
                             return self.handle(Message::LaterPreset(*preset));
                         }
                     }
+                }
+                // The editor binds the same key while it has focus.
+                Some(Overlay::Composer(composer))
+                    if !captured
+                        && command
+                        && !modifiers.shift()
+                        && !modifiers.alt()
+                        && key == Key::Character("e".into()) =>
+                {
+                    composer.use_worktree = !composer.use_worktree;
                 }
                 Some(Overlay::ConfirmDiscard(_)) if !captured => {
                     if key == Key::Named(Named::Enter) || key == Key::Character("x".into()) {

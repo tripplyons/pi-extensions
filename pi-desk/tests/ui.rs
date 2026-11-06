@@ -249,7 +249,7 @@ fn changing_views_keeps_a_task_that_matches_the_new_view() {
 }
 
 #[test]
-fn focus_mode_ends_when_nothing_is_selected() {
+fn discard_keeps_the_focused_task_selected() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let _ = app.update(Message::Show(View::Working));
@@ -257,12 +257,86 @@ fn focus_mode_ends_when_nothing_is_selected() {
     assert!(app.focus);
     let _ = app.update(Message::Discard);
     let _ = app.update(Message::ConfirmDiscard);
-    assert_eq!(app.selected, None);
-    assert!(!app.focus);
-    // A later selection doesn't bring focus mode back.
-    key(&mut app, "z");
+    assert_eq!(app.pending.len(), 1);
     assert_eq!(app.selected.as_deref(), Some("agent-5"));
-    assert!(!app.focus);
+    assert!(app.focus);
+    assert!(app.rows().iter().any(|row| row.id == "agent-5"));
+    // Other views don't count or list the task during its undo window.
+    assert_eq!(app.count(&View::Working), 0);
+    key(&mut app, "z");
+    assert!(app.pending.is_empty());
+    assert_eq!(app.selected.as_deref(), Some("agent-5"));
+}
+
+#[test]
+fn the_app_opens_on_all_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = seeded(dir.path());
+    assert_eq!(app.view, View::All);
+    assert_eq!(app.rows().len(), 6);
+}
+
+#[test]
+fn command_e_toggles_use_worktree_in_the_composer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    key(&mut app, "n");
+    let use_worktree = |app: &App| match &app.overlay {
+        Some(Overlay::Composer(composer)) => composer.use_worktree,
+        _ => panic!("the composer should be open"),
+    };
+    assert!(!use_worktree(&app));
+    let press = |app: &mut App, modifiers| {
+        let _ = app.update(Message::Key {
+            key: Key::Character("e".into()),
+            modifiers,
+            captured: false,
+        });
+    };
+    press(&mut app, Modifiers::COMMAND);
+    assert!(use_worktree(&app));
+    // Shifted or plain E leaves it alone.
+    press(&mut app, Modifiers::COMMAND | Modifiers::SHIFT);
+    press(&mut app, Modifiers::empty());
+    assert!(use_worktree(&app));
+    press(&mut app, Modifiers::COMMAND);
+    assert!(!use_worktree(&app));
+}
+
+#[test]
+fn a_reply_brings_a_done_task_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::Select("agent-6".into()));
+    assert!(ui(&app).find("Reply").is_ok());
+    key(&mut app, "r");
+    assert!(app.replying);
+    app.reply = iced::widget::text_editor::Content::with_text("Rename the tests too");
+    let _ = app.update(Message::SendReply);
+    let agent = app.desk.state.agent("agent-6").unwrap();
+    assert!(!agent.status.is_done(), "{:?}", agent.status);
+    assert_eq!(app.selected.as_deref(), Some("agent-6"));
+}
+
+#[test]
+fn working_rows_show_the_start_of_the_latest_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.desk.state.agent_mut("agent-5").unwrap().status = Status::Working;
+    let messages = [serde_json::json!({"role":"assistant","content":[
+        {"type":"text","text":"Older reply"},
+        {"type":"thinking","thinking":"Checking the release script.\nThen the changelog."}
+    ]})];
+    app.desk.transcripts.insert(
+        "agent-5".into(),
+        pi_desk::transcript::Transcript::from_messages(messages.iter()),
+    );
+    let mut ui = ui(&app);
+    assert!(
+        ui.find("Checking the release script. Then the changelog.")
+            .is_ok()
+    );
+    assert!(ui.find("Older reply").is_err());
 }
 
 fn ui(app: &App) -> Simulator<'_, Message> {
@@ -1041,7 +1115,8 @@ fn rich_transcript_typography_uses_the_same_layout_live_and_completed() {
 #[test]
 fn the_inbox_puts_latest_activity_first_and_opens_the_first_card() {
     let dir = tempfile::tempdir().unwrap();
-    let app = seeded(dir.path());
+    let mut app = seeded(dir.path());
+    let _ = app.update(Message::Show(View::Inbox));
     let titles: Vec<&str> = app
         .rows()
         .iter()
@@ -1124,7 +1199,9 @@ fn later_snoozes_and_undo_restores() {
     key(&mut app, "3");
     assert!(app.overlay.is_none());
     assert!(app.desk.state.agent("agent-4").unwrap().snoozed(now()));
-    assert!(!app.rows().iter().any(|row| row.id == "agent-4"));
+    // The snoozed task stays selected and listed.
+    assert_eq!(app.selected.as_deref(), Some("agent-4"));
+    assert!(app.rows().iter().any(|row| row.id == "agent-4"));
     key(&mut app, "z");
     assert!(!app.desk.state.agent("agent-4").unwrap().snoozed(now()));
 }
@@ -1135,7 +1212,9 @@ fn merge_and_discard_wait_out_an_undo_window() {
     let mut app = seeded(dir.path());
     key(&mut app, "e");
     assert_eq!(app.pending.len(), 1);
-    assert!(!app.rows().iter().any(|row| row.id == "agent-4"));
+    // The task stays selected and listed while the merge waits.
+    assert_eq!(app.selected.as_deref(), Some("agent-4"));
+    assert!(app.rows().iter().any(|row| row.id == "agent-4"));
     {
         let mut ui = ui(&app);
         assert!(ui.find("Undo").is_ok());

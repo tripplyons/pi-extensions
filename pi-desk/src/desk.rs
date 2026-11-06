@@ -1361,8 +1361,48 @@ impl Desk {
                 });
                 self.schedule(now())
             }
+            Status::Done { .. } => self.reopen(id, text, None),
             _ => Vec::new(),
         }
+    }
+
+    /// Sends a done task back to work with `text`, resuming its session. A
+    /// missing worktree is recreated on its branch, or on a fresh branch from
+    /// the base when the branch is gone. `start` replaces a main-checkout
+    /// task's diff base.
+    pub fn reopen(&mut self, id: &str, text: &str, start: Option<String>) -> Vec<Effect> {
+        let text = text.trim();
+        if text.is_empty()
+            || self.busy(id).is_some()
+            || self
+                .state
+                .agent(id)
+                .is_none_or(|agent| !agent.status.is_done())
+        {
+            return Vec::new();
+        }
+        self.edit(id, |agent| {
+            if let (Workspace::Main { start: old, .. }, Some(start)) = (&mut agent.workspace, start)
+            {
+                *old = start;
+            }
+            agent.outbox = Some(Outbox {
+                text: text.to_string(),
+                kind: OutboxKind::Reply,
+            });
+            agent.status = Status::Queued;
+            agent.summary = None;
+            agent.question = None;
+            agent.note = None;
+        });
+        let mut effects = Vec::new();
+        if let Some(agent) = self.state.agent(id).cloned()
+            && !agent.workspace.path().exists()
+        {
+            effects.extend(self.prepare(&agent));
+        }
+        effects.extend(self.schedule(now()));
+        effects
     }
 
     /// The task's checkout, or its project's while the worktree is missing.
@@ -2208,6 +2248,82 @@ mod tests {
         let agent = f.desk.state.agent(&id).unwrap();
         assert!(agent.note.as_deref().unwrap().contains("src/a.rs"));
         assert!(matches!(agent.status, Status::Working | Status::Queued));
+    }
+
+    #[test]
+    fn a_reply_reopens_a_done_worktree_task_in_its_session() {
+        let (mut f, _) = started();
+        let id = f.id.clone();
+        let effects = f.desk.mark_done(&id);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Remove { .. }))
+        );
+        let worktree = f
+            .desk
+            .state
+            .agent(&id)
+            .unwrap()
+            .workspace
+            .path()
+            .to_path_buf();
+        std::fs::remove_dir_all(&worktree).unwrap();
+        f.desk.on_removed(&id, Outcome::Closed, Ok(()));
+        f.desk.rt(&id).live = false;
+        assert!(f.desk.state.agent(&id).unwrap().status.is_done());
+
+        let effects = f.desk.reply(&id, "Also handle the empty case");
+        let agent = f.desk.state.agent(&id).unwrap();
+        assert_eq!(agent.status, Status::Queued);
+        assert_eq!(
+            agent.outbox,
+            Some(Outbox {
+                text: "Also handle the empty case".into(),
+                kind: OutboxKind::Reply,
+            })
+        );
+        assert!(matches!(
+            &effects[..],
+            [Effect::CreateWorktree { path, .. }] if path == &worktree
+        ));
+
+        // Once the worktree exists again, the same session resumes.
+        std::fs::create_dir_all(&worktree).unwrap();
+        let effects = f.desk.on_worktree(&id, Ok(()));
+        let Some(Effect::Spawn(spawn)) = effects.first() else {
+            panic!("expected a spawn")
+        };
+        let session = f.desk.state.agent(&id).unwrap().session_id.clone();
+        assert!(
+            spawn
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--session-id", session.as_str()])
+        );
+        assert!(matches!(
+            f.desk.rt(&id).pending.get(STARTUP),
+            Some(Pending::Startup { resumed: true })
+        ));
+    }
+
+    #[test]
+    fn a_reply_reopens_a_done_main_checkout_task_from_a_new_start() {
+        let (mut desk, dir, _) = file_main(&["Fix"]);
+        let id = desk.state.agents[0].id.clone();
+        desk.discard(&id);
+        desk.rt(&id).live = false;
+        // Empty text and tasks that are not done are left alone.
+        assert!(desk.reopen(&id, "  ", Some("def456".into())).is_empty());
+        let effects = desk.reopen(&id, "Try again", Some("def456".into()));
+        let agent = desk.state.agent(&id).unwrap();
+        assert_eq!(agent.diff_base(), "def456");
+        assert_eq!(agent.status, Status::Working);
+        assert!(matches!(
+            &effects[..],
+            [Effect::Spawn(spawn), ..] if spawn.cwd == dir.path()
+        ));
+        assert!(desk.reopen(&id, "Again", None).is_empty());
     }
 
     fn file_main(titles: &[&str]) -> (Desk, tempfile::TempDir, Vec<Effect>) {

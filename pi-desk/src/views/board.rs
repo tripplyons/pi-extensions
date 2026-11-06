@@ -26,8 +26,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
             })
             .collect();
         agents.sort_by(|a, b| order::compare_display(a, b, at));
-        if group == order::DisplayGroup::Done {
+        if group == order::DisplayGroup::Done && agents.len() > 30 {
+            // The selected task stays listed even past the cut.
+            let selected = agents
+                .iter()
+                .position(|agent| app.selected.as_deref() == Some(agent.id.as_str()));
+            let kept = selected
+                .filter(|index| *index >= 30)
+                .map(|index| agents[index]);
             agents.truncate(30);
+            agents.extend(kept);
         }
         let mut cards = StableColumn::new(8.0);
         for agent in agents.iter() {
