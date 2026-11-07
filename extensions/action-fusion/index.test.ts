@@ -80,25 +80,35 @@ test("a failed mutation skips the command", async () => {
   await expect(readFile(join(dir, "ran"))).rejects.toThrow();
 });
 
-test("the file stays locked until its command finishes", async () => {
-  const { dir, h } = await setup();
-  const first = h.call("write", { path: "a.txt", content: "first\n", then_run: { command: "sleep 0.2; cat a.txt" } });
-  await new Promise(done => setTimeout(done, 50));
-  const second = h.call("write", { path: "a.txt", content: "second\n" });
-  expect(output(await first)).toContain("[then_run:succeeded]\nfirst");
-  await second;
-  expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("second\n");
-});
-
-test("symlinked paths share one lock", async () => {
-  const { dir, h } = await setup();
-  await symlink(dir, join(dir, "alias"));
-  const first = h.call("write", { path: "a.txt", content: "first\n", then_run: { command: "sleep 0.2; cat a.txt" } });
-  await new Promise(done => setTimeout(done, 50));
-  const second = h.call("write", { path: "alias/a.txt", content: "second\n" });
-  expect(output(await first)).toContain("first");
-  await second;
-});
+for (const path of ["a.txt", "alias/a.txt"]) {
+  test(`the file stays locked through then_run when accessed as ${path}`, async () => {
+    const { dir, h } = await setup();
+    if (path.startsWith("alias/")) await symlink(dir, join(dir, "alias"));
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    h.ctx.executeTool = async () => {
+      started.resolve();
+      await release.promise;
+      return { result: { content: [{ type: "text", text: await readFile(join(dir, "a.txt"), "utf8") }] }, isError: false };
+    };
+    const first = h.call("write", { path: "a.txt", content: "first\n", then_run: { command: "cat a.txt" } });
+    await started.promise;
+    const second = h.call("write", { path, content: "second\n" });
+    try {
+      // Allow filesystem resolution and the competing write to run while Bash is held open.
+      expect(await Promise.race([
+        second.then(() => "write finished"),
+        new Promise(resolve => setTimeout(() => resolve("still locked"), 50)),
+      ])).toBe("still locked");
+      expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("first\n");
+    } finally {
+      release.resolve();
+      await Promise.all([first, second]);
+    }
+    expect(output(await first)).toContain("[then_run:succeeded]\nfirst");
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("second\n");
+  });
+}
 
 test("the timeout reaches Bash", async () => {
   const { h } = await setup();

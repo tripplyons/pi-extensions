@@ -7,6 +7,7 @@ import { SwarmStore } from "./state.ts";
 import { Workers, type Launch } from "./worker.ts";
 import { git } from "./git.ts";
 import { harness } from "../../lib/harness.ts";
+import { waitForPolls, withFastPolling } from "./test-polling.ts";
 for (const objective of [undefined, " \t ", "  Build the feature  "]) {
   test(`/swarm:start accepts ${objective === undefined ? "no objective" : JSON.stringify(objective)} without spawning workers`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-swarm-activation-"));
@@ -75,7 +76,7 @@ test("publishes active swarm descendants including reviews, not the root or term
   }
 });
 
-test("inbox messages reach the session as readable notifications", async () => {
+test("inbox messages reach the session as readable notifications", () => withFastPolling(async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   // A live pane keeps health alerts out of this message count.
@@ -121,7 +122,7 @@ test("inbox messages reach the session as readable notifications", async () => {
     expect(statuses).toContain("swarm: 1 awaiting parent review");
     expect(background.at(-1).tasks).toHaveLength(1);
     expect(h.sentMessages[1].message.content).toContain("Awaiting parent review: handoff revision 1");
-    await new Promise(resolve => setTimeout(resolve, 1100));
+    await waitForPolls(() => statuses.length);
     expect(alerts).toHaveLength(1);
   } finally {
     Workers.prototype.alive = alive;
@@ -129,12 +130,14 @@ test("inbox messages reach the session as readable notifications", async () => {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
-});
-test("workers pause after completion and resume only after parent review", async () => {
+}));
+test("workers pause after completion and resume only after parent review", () => withFastPolling(async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness(); install(h.pi);
   const store = new SwarmStore(join(root, "swarm"));
+  let polls = 0;
+  h.ctx.ui.setStatus = (key: string) => { if (key === "swarm-review") polls++; };
   try {
     const run = await store.create("parent-session", root, "Build the feature");
     const child = await store.reserve(run.id, run.root, "Worker", "Build a part");
@@ -172,7 +175,7 @@ test("workers pause after completion and resume only after parent review", async
 
     await store.send(run.id, run.root, child.id, "instruction", "Historical checkpoint; do not resume audit", undefined, undefined, "replace");
     await store.send(run.id, run.root, child.id, "message", "Wait for review.");
-    await new Promise(resolve => setTimeout(resolve, 1100));
+    await waitForPolls(() => polls);
     expect(h.sentMessages).toHaveLength(1);
     expect(await store.inbox(run.id, child.id)).toHaveLength(2);
 
@@ -206,7 +209,7 @@ test("workers pause after completion and resume only after parent review", async
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
-});
+}));
 
 test("swarm activation is user-only, session-bound, and exposes all tools", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-extension-"));

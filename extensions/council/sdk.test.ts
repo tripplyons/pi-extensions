@@ -43,7 +43,7 @@ test.each([
 						expect(options?.reasoning).toBe("medium");
 						const round = execution <= TURN_BUDGET ? 1 : 2;
 						const guidance = context.messages.filter(message => message.role === "system" &&
-							String(message.content).includes(`Synthesize all ${count} advisory answers`));
+							String(message.content).includes(`Consider all ${count} advisory answers`));
 						expect(guidance).toHaveLength(round);
 						if (execution === 1 || execution === TURN_BUDGET + 1) expect(context.messages.at(-1)).toBe(guidance.at(-1));
 						if (previousPrompt) {

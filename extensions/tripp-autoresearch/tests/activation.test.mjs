@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { spyOn } from "bun:test";
 
 import autoresearchExtension, {
   shouldAutoActivateAutoresearch,
@@ -11,6 +12,30 @@ import autoresearchExtension, {
 
 const ACTIVATION_ENTRY = "pi-autoresearch.activation";
 const AUTORESEARCH_TOOLS = ["init_experiment", "log_experiment", "run_experiment"];
+
+function recoveryTimer() {
+  const setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout;
+  const token = {};
+  let callback, cleared = false;
+  const schedule = spyOn(globalThis, "setTimeout").mockImplementation((fn, delay, ...args) => {
+    if (delay !== 800) return setTimeout(fn, delay, ...args);
+    assert.equal(callback, undefined, "schedule one recovery timer");
+    callback = fn;
+    return token;
+  });
+  const cancel = spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
+    if (timer === token) cleared = true;
+    else clearTimeout(timer);
+  });
+  return {
+    fire() {
+      assert.equal(typeof callback, "function", "recovery was scheduled");
+      callback();
+    },
+    assertCanceled() { assert.equal(cleared, true, "recovery timer was canceled"); },
+    restore() { cancel.mockRestore(); schedule.mockRestore(); },
+  };
+}
 
 function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
   const tools = new Map();
@@ -588,6 +613,7 @@ test("/autoresearch start without a goal shows usage", async () => {
 
 test("upstream owns compaction while active autoresearch rehydrates from disk afterward", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-native-compact-"));
+  const timer = recoveryTimer();
   try {
     await writeSameCwdLog(cwd);
     const nativeHarness = createHarness({ cwd });
@@ -601,7 +627,9 @@ test("upstream owns compaction while active autoresearch rehydrates from disk af
     await nativeHarness.handlers.get("session_compact")?.({
       compactionEntry: { details: { kind: "openai-codex-native-compaction" } },
     }, nativeHarness.ctx);
-    await new Promise((resolve) => setTimeout(resolve, 850));
+    assert.equal(nativeHarness.sentMessages.length, 0);
+    timer.fire();
+    timer.assertCanceled();
 
     assert.equal(nativeHarness.sentMessages.length, 1);
     assert.match(nativeHarness.sentMessages[0].content, /Re-read \.auto\/prompt\.md/);
@@ -617,6 +645,7 @@ test("upstream owns compaction while active autoresearch rehydrates from disk af
     assert.equal(fallback, undefined);
     await fallbackHarness.handlers.get("session_shutdown")?.({}, fallbackHarness.ctx);
   } finally {
+    timer.restore();
     await rm(cwd, { recursive: true, force: true });
   }
 });
@@ -642,16 +671,19 @@ test("native tools follow autoresearch activation and pause", async () => {
 for (const continuation of ["agent_start", "session_compact_failed", "session_shutdown"]) {
   test(`${continuation} cancels pending compaction recovery`, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-recovery-"));
+    const timer = recoveryTimer();
     const harness = createHarness({ cwd });
     try {
       await writeSameCwdLog(cwd);
       await harness.handlers.get("session_start")({}, harness.ctx);
       await harness.handlers.get("session_compact")({}, harness.ctx);
       await harness.handlers.get(continuation)({}, harness.ctx);
-      await new Promise((resolve) => setTimeout(resolve, 850));
+      timer.assertCanceled();
+      timer.fire(); // Even a late callback must not send canceled recovery.
       assert.deepEqual(harness.sentMessages, []);
       await harness.handlers.get("session_shutdown")({}, harness.ctx);
     } finally {
+      timer.restore();
       await rm(cwd, { recursive: true, force: true });
     }
   });

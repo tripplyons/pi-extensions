@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,16 +11,24 @@ import { Workers } from "./worker.ts";
 import { resumeDelays } from "./error-resume.ts";
 import { health } from "./coordination.ts";
 
-async function fixture(check: (h: ReturnType<typeof harness>, store: SwarmStore, root: string) => Promise<void>) {
+async function fixture(check: (h: ReturnType<typeof harness>, store: SwarmStore, root: string) => Promise<void>, pollMs = 1000) {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-coordination-ui-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness(); h.ctx.isIdle = () => false;
-  install(h.pi);
-  try { await check(h, new SwarmStore(join(root, "swarm")), root); }
-  finally {
-    await h.emit("session_shutdown");
-    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
-    await rm(root, { recursive: true, force: true });
+  // Keep real async I/O and polling, but avoid one second per state transition.
+  const setInterval = globalThis.setInterval;
+  const interval = spyOn(globalThis, "setInterval").mockImplementation(((callback: any, ms: number, ...args: any[]) =>
+    setInterval(callback, ms === 1000 ? pollMs : ms, ...args)) as typeof setInterval);
+  try {
+    install(h.pi);
+    await check(h, new SwarmStore(join(root, "swarm")), root);
+  } finally {
+    try { await h.emit("session_shutdown"); }
+    finally {
+      interval.mockRestore();
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   }
 }
 
@@ -60,14 +68,14 @@ test("overdue direct-child backlog steers the parent once and preserves independ
   expect(reminderStatuses.at(-1)).toContain("queued");
   const queue = (await h.call("swarm_reviews", {})).details;
   expect(queue[0].reminder).toMatchObject({ state: "queued", queuedAt: expect.any(String) });
-  await new Promise(resolve => setTimeout(resolve, 1100));
-  expect(reminders()).toHaveLength(1);
+  // Cadence and queued-message deduplication are covered by review-reminders.test.ts.
   await h.emit("message_end", { message: { ...reminders()[0].message, role: "custom" } });
   const inspected = (await h.call("swarm_reviews", { nodeId: workers[0].id })).details;
   expect(inspected.reminder).toMatchObject({ state: "delivered", deliveredAt: expect.any(String), scheduledAt: expect.any(String) });
-  await new Promise(resolve => setTimeout(resolve, 1100));
-  expect(reminders()).toHaveLength(1);
+  const deliveredDeadline = Date.now() + 3000;
+  while (!reminderStatuses.at(-1)?.includes("delivered") && Date.now() < deliveredDeadline) await new Promise(resolve => setTimeout(resolve, 25));
   expect(reminderStatuses.at(-1)).toContain("delivered");
+  expect(reminders()).toHaveLength(1);
   const node = (await store.read(identity.run)).nodes[workers[0].id];
   expect(node.handoff?.status).toBe("awaiting-parent"); expect(node.status).toBe("review");
   expect(node.delivery?.[0].reviewed).toBeUndefined(); expect(node.delivery?.[0].tested).toBeUndefined();
@@ -75,12 +83,24 @@ test("overdue direct-child backlog steers the parent once and preserves independ
   const clearDeadline = Date.now() + 3000;
   while (statuses.at(-1) !== undefined && Date.now() < clearDeadline) await new Promise(resolve => setTimeout(resolve, 25));
   expect(statuses.at(-1)).toBeUndefined(); expect(reminders()).toHaveLength(1);
-}));
+}, 10));
 
 test("health warnings steer the direct parent's agent once per episode, not the user", () => fixture(async (h, store, root) => {
   const alive = Workers.prototype.alive, notices: string[] = [];
+  const realNow = Date.now;
+  let offset = 0, polls = 0, healthChecks = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+  h.ctx.ui.setStatus = (key: string) => { if (key === "swarm-review-reminder") polls++; };
+  const nextHealthCheck = async () => {
+    const previous = polls, previousChecks = healthChecks;
+    offset += 10_001;
+    const deadline = performance.now() + 3000;
+    while ((polls === previous || healthChecks === previousChecks) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(polls).toBeGreaterThan(previous);
+    expect(healthChecks).toBeGreaterThan(previousChecks);
+  };
   let live = true;
-  Workers.prototype.alive = async () => live;
+  Workers.prototype.alive = async () => { healthChecks++; return live; };
   h.ctx.ui.notify = (text: string) => notices.push(text);
   try {
   h.ctx.cwd = root; await h.command("swarm:start", "Objective");
@@ -92,29 +112,27 @@ test("health warnings steer the direct parent's agent once per episode, not the 
   const alerts = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-health-alert");
   const wakes: any[] = [];
   h.pi.events.on("pi:swarm-activity", (event: unknown) => wakes.push(event));
-  const deadline = Date.now() + 3000;
-  while (!alerts().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+  await nextHealthCheck();
   expect(alerts()).toHaveLength(1);
   expect(alerts()[0].message.content).toContain(`Quiet (${quiet.id}) is quiet-no-job`);
   expect(alerts()[0].message.content).toContain("owns no active jobs");
   expect(alerts()[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
   expect(wakes).toEqual([{ kind: "health-alert" }]);
-  await new Promise(resolve => setTimeout(resolve, 1100));
+  await nextHealthCheck();
   expect(alerts()).toHaveLength(1);
   const nested = await store.reserve(identity.run, identity.node, "Parent", "Task");
   await store.update(identity.run, state => { Object.assign(state.nodes[nested.id], { status: "running", session, started: new Date().toISOString() }); });
   const grandchild = await store.reserve(identity.run, nested.id, "Grandchild", "Task");
   await store.update(identity.run, state => { Object.assign(state.nodes[grandchild.id], { status: "running", session, started: old }); });
   live = false;
-  const missing = Date.now() + 12_000;
-  while (alerts().length < 3 && Date.now() < missing) await new Promise(resolve => setTimeout(resolve, 50));
-  await new Promise(resolve => setTimeout(resolve, 500));
+  await nextHealthCheck();
+  await nextHealthCheck(); // A second health pass must not repeat either warning.
   expect(alerts().map(entry => [entry.message.details.nodeId, entry.message.details.warning])).toEqual([
     [quiet.id, "quiet-no-job"], [quiet.id, "worker pane missing"], [nested.id, "worker pane missing"],
   ]);
   expect(notices.filter(text => text.includes("quiet") || text.includes("pane"))).toEqual([]);
-  } finally { Workers.prototype.alive = alive; }
-}), 20_000);
+  } finally { Workers.prototype.alive = alive; clock.mockRestore(); }
+}, 10));
 
 test("checkpoint tool ends the worker turn and gates jobs until an explicit barrier release", () => fixture(async (h, store, root) => {
   const run = await store.create("parent-session", root, "Objective"), worker = await store.reserve(run.id, run.root, "Worker", "Task");

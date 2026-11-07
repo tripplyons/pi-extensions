@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
 import install from "./index.ts";
 
@@ -103,15 +103,30 @@ test("web previews show arguments and actual content, including legacy results",
 test("progress reports provider and timeout while executing, then stops", () => withScript(async () => {
   const h = setup();
   const updates: any[] = [];
-  h.pi.exec = async () => {
-    expect(updates[0].content[0].text).toContain("Extracting with openai-codex");
-    await new Promise(resolve => setTimeout(resolve, 1100));
-    return { stdout: "page", stderr: "", code: 0, killed: false };
-  };
-  await h.tools.get("web_extract").execute("id", { url: "https://pi.dev" }, undefined, (value: any) => updates.push(value));
-  expect(updates.length).toBeGreaterThanOrEqual(2);
-  expect(updates.at(-1).content[0].text).toContain("1s elapsed, 30s timeout");
-  const count = updates.length;
-  await new Promise(resolve => setTimeout(resolve, 1100));
-  expect(updates).toHaveLength(count);
+  let tick!: () => void;
+  const timer = { unref() {} } as ReturnType<typeof setInterval>;
+  const clock = spyOn(Date, "now").mockReturnValue(0);
+  const interval = spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+    tick = callback;
+    return timer;
+  }) as typeof setInterval);
+  const clear = spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+  try {
+    h.pi.exec = async () => {
+      expect(updates).toHaveLength(1);
+      expect(updates[0].content[0].text).toContain("Extracting with openai-codex, 0s elapsed");
+      clock.mockReturnValue(1000);
+      tick();
+      expect(updates).toHaveLength(2);
+      expect(updates[1].content[0].text).toContain("1s elapsed, 30s timeout");
+      return { stdout: "page", stderr: "", code: 0, killed: false };
+    };
+    await h.tools.get("web_extract").execute("id", { url: "https://pi.dev" }, undefined, (value: any) => updates.push(value));
+    expect(interval).toHaveBeenCalledWith(expect.any(Function), 1000);
+    expect(clear).toHaveBeenCalledWith(timer);
+  } finally {
+    clear.mockRestore();
+    interval.mockRestore();
+    clock.mockRestore();
+  }
 }));

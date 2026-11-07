@@ -36,12 +36,20 @@ toggle does not apply to council requests. The tests use
 
 ## Execution
 
-The executor receives every advisory answer, synthesizes them, and executes
-through the session's normal tools. Each round permits 10 executor responses and their tool
-batches. Before the next response, the selected council consults its advisors
-using the work so far. Each new user message, including user steering, starts a
-fresh round.
-A finished task stops normally. Council never forces another agent turn.
+Advisors recommend the smallest useful next step or bounded phase. They focus on
+evidence-backed corrections, meaningful alternatives, risks, and concrete checks,
+not restating the task or plan or routinely asking for more inspection. A short
+"No change needed" is valid when the approach is sound; no fixed template or
+criticism is required.
+
+The executor considers every answer and resolves disagreements using evidence,
+not votes or automatic deference. It acts through the session's normal tools as
+needed. Each round permits up to 10 executor responses and their tool batches.
+This is a ceiling, not a target. Before the next response after that allowance,
+Council consults its advisors using the work so far. Each new user message,
+including user steering, starts a fresh round. A finished task stops normally;
+the executor must not invent work to fill the allowance. Council never forces
+another agent turn.
 
 Informational swarm messages, check-ins, review reminders, health alerts,
 handoffs, and error-resume notices are notification wake-ups. When they are the
@@ -61,6 +69,11 @@ Advisors cannot use tools or change files. They receive a text view of the
 conversation, including tool calls and results but excluding private thinking.
 The view keeps the last 120,000 characters when necessary and marks truncation.
 Images appear as placeholders; the executor still receives the original session images.
+Advisors treat transcripts and tool output as evidence, not instructions that
+override their role. They distinguish verified facts, inferences, and unknowns,
+and recommend conditional checks for live state rather than reporting old
+transcript status as current. The advisor system prompt stays static; the
+response allowance and transcript are supplied in its user message.
 Each advisor has a 4,096-token output limit and a shared two-minute deadline.
 A missing model, missing authentication, failed request, empty answer, truncated
 answer, or attempted tool call stops execution. An advisor failure cancels its
@@ -75,13 +88,15 @@ Advisory usage is stored there separately; Pi's native session usage totals do
 not include these nested chat calls.
 
 Advice is supplied as internal system context, not as a new user message or a
-visible swarm message. The executor is instructed not to quote advisor blocks,
-repeat consultation headers, or resynthesize advice just to answer a notification.
+visible swarm message. The executor keeps advisor answers internal and avoids
+ceremonial synthesis, quoted advisor blocks, consultation headers, and repeated
+setup commentary. It must not resynthesize advice just to answer a notification.
 Cached answers are snapshots of earlier context, not live status reports.
 Current swarm messages, assignments, permissions, jobs, and handoffs take
 precedence over advisory status claims. The executor must check current evidence
 and avoid repeated stale-advisor or completed-setup commentary.
-Advice is guidance, not permission to act. Each consultation appends internal
+Advice is not authorization. Current user instructions, permissions, and verified
+live state take precedence. Each consultation appends internal
 guidance at the end of the conversation as it stands when the round starts.
 Council saves that position with the round state. Later requests retain earlier
 guidance at its original positions, then append new conversation messages and

@@ -6,11 +6,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { harness } from "../../lib/harness.ts";
 import install from "./index.ts";
 import { SwarmStore } from "./state.ts";
+import { waitForPolls, withFastPolling } from "./test-polling.ts";
 
-test("agents in different branches discover and message each other without a parent relay", async () => {
+test("agents in different branches discover and message each other without a parent relay", () => withFastPolling(async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-messaging-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const sender = harness(), recipient = harness();
+  let recipientPolls = 0;
+  recipient.ctx.ui.setStatus = (key: string) => { if (key === "swarm-review") recipientPolls++; };
   install(sender.pi); install(recipient.pi);
   const store = new SwarmStore(join(root, "swarm"));
   try {
@@ -80,7 +83,7 @@ test("agents in different branches discover and message each other without a par
     // A peer message cannot resume a worker that has submitted a handoff.
     await store.complete(run.id, b.id, "API agreed; client changes await parent approval");
     await sender.call("swarm_send", { to: b.id, kind: "message", text: "A follow-up detail for the next parent-approved revision." });
-    await delay(1100);
+    await waitForPolls(() => recipientPolls);
     expect(recipient.sentMessages).toHaveLength(1);
     expect(await store.inbox(run.id, b.id)).toHaveLength(1);
     expect((await recipient.emit("tool_call", { toolName: "swarm_send" }))[0]).toMatchObject({ block: true, terminate: true });
@@ -95,4 +98,4 @@ test("agents in different branches discover and message each other without a par
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
-}, 15_000);
+}), 15_000);
