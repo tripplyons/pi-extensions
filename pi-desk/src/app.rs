@@ -1093,6 +1093,7 @@ impl App {
                     action,
                     text_editor::Action::Click(_) | text_editor::Action::Drag(_)
                 );
+                self.clear_block(crate::vim::Target::Reply);
                 self.reply_history.edit(&mut self.reply, action);
                 self.after_edit(crate::vim::Target::Reply, clicked);
                 Task::none()
@@ -1103,10 +1104,11 @@ impl App {
                     return Task::none();
                 };
                 if let Some((content, history, vim)) = self.vim_box(target) {
+                    vim.clear_block(content);
                     let mut buffer = crate::vim::Buffer::read(content);
                     history.checkpoint(content);
                     vim.put(&mut buffer, &text, after, count);
-                    crate::vim::write(content, &buffer, None);
+                    crate::vim::write(content, &buffer, vim.selection(&buffer));
                 }
                 Task::none()
             }
@@ -1342,6 +1344,7 @@ impl App {
                     action,
                     text_editor::Action::Click(_) | text_editor::Action::Drag(_)
                 );
+                self.clear_block(crate::vim::Target::Composer);
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     // Working in the editor again ends project search.
                     composer.project_search = None;
@@ -1351,6 +1354,7 @@ impl App {
                 Task::none()
             }
             Message::ComposerCommand(command) => {
+                self.clear_block(crate::vim::Target::Composer);
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     composer.history.command(&mut composer.content, command);
                 }
@@ -1667,8 +1671,17 @@ impl App {
         }
     }
 
+    /// Removes the normal-mode block cursor before an ordinary editor action,
+    /// so the action starts from the cursor.
+    fn clear_block(&mut self, target: crate::vim::Target) {
+        if let Some((content, _, vim)) = self.vim_box(target) {
+            vim.clear_block(content);
+        }
+    }
+
     /// Keeps vim state in step after an ordinary edit, click, or drag.
     fn after_edit(&mut self, target: crate::vim::Target, clicked: bool) {
+        let vim_mode = self.desk.state.settings.vim_mode;
         if let Some((content, _, vim)) = self.vim_box(target) {
             vim.interrupt();
             if clicked && vim.mode != crate::vim::Mode::Insert {
@@ -1677,6 +1690,9 @@ impl App {
                 if content.selection().is_none() {
                     crate::vim::write(content, &buffer, None);
                 }
+            }
+            if vim_mode {
+                vim.show_block(content);
             }
         }
     }
@@ -1687,6 +1703,7 @@ impl App {
         let Some((content, history, vim)) = self.vim_box(target) else {
             return Task::none();
         };
+        vim.clear_block(content);
         let before = content.text();
         let mut buffer = Buffer::read(content);
         let outcome = match (vim.mode, input) {
@@ -1748,9 +1765,12 @@ impl App {
         let paste = text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(
             format!("{} ", quote_path(path)),
         )));
+        self.clear_block(crate::vim::Target::Composer);
+        self.clear_block(crate::vim::Target::Reply);
         match &mut self.overlay {
             Some(Overlay::Composer(composer)) => {
                 composer.history.edit(&mut composer.content, paste);
+                self.after_edit(crate::vim::Target::Composer, false);
                 return operation::focus(COMPOSER_ID);
             }
             Some(_) => return Task::none(),
@@ -1763,6 +1783,7 @@ impl App {
             self.replying = true;
         }
         self.reply_history.edit(&mut self.reply, paste);
+        self.after_edit(crate::vim::Target::Reply, false);
         self.focus_reply()
     }
 

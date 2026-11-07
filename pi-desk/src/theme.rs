@@ -359,3 +359,19 @@ pub fn editor(_: &Theme, status: text_editor::Status) -> text_editor::Style {
         selection: Color { a: 0.35, ..ACCENT },
     }
 }
+
+/// Shades the character under the vim normal-mode cursor more strongly than a
+/// visual selection, so it reads as a block cursor.
+pub fn vim_editor(normal: bool) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style {
+    move |theme, status| {
+        let style = editor(theme, status);
+        if normal {
+            text_editor::Style {
+                selection: Color { a: 0.5, ..ACCENT },
+                ..style
+            }
+        } else {
+            style
+        }
+    }
+}

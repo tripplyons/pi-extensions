@@ -45,7 +45,9 @@ fn reply_editor<'a>(app: &'a App, placeholder: &'static str) -> Element<'a, Mess
         .height(110)
         .padding(10)
         .size(theme::size::BODY)
-        .style(theme::editor)
+        .style(theme::vim_editor(
+            vim && app.reply_vim.mode == crate::vim::Mode::Normal,
+        ))
         .key_binding(move |press| {
             let usual = |press: text_editor::KeyPress| match press.key.as_ref() {
                 Key::Named(Named::Enter) if !press.modifiers.shift() => {

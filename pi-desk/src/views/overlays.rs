@@ -108,7 +108,9 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 .height(180)
                 .padding(12)
                 .size(theme::size::BODY)
-                .style(theme::editor)
+                .style(theme::vim_editor(
+                    vim && composer.vim.mode == crate::vim::Mode::Normal,
+                ))
                 .key_binding(move |press| {
                     let usual = |press: text_editor::KeyPress| match press.key.as_ref() {
                         Key::Named(Named::Enter) if press.modifiers.command() => {

@@ -378,19 +378,53 @@ impl Vim {
         self.typed = 0;
     }
 
-    /// The selection to draw in visual mode, as (anchor, cursor).
+    /// The selection to draw, as (anchor, cursor). In normal mode it covers the
+    /// character under the cursor, so the cursor shows as a block. The editor's
+    /// caret stays on that character, which keeps [`Buffer::read`] correct.
+    /// Empty lines and the end of the text have no character and get `None`.
     pub fn selection(&self, buffer: &Buffer) -> Option<(usize, usize)> {
         let (low, high) = (self.anchor.min(self.head), self.anchor.max(self.head));
         let (start, end) = match self.mode {
             Mode::Visual => (low, (high + 1).min(buffer.len())),
             Mode::VisualLine => (buffer.line_start(low), buffer.line_end(high)),
-            _ => return None,
+            Mode::Normal => {
+                return buffer
+                    .chars
+                    .get(buffer.cursor)
+                    .filter(|c| **c != '\n')
+                    .map(|_| (buffer.cursor + 1, buffer.cursor));
+            }
+            Mode::Insert => return None,
         };
         Some(if self.head < self.anchor {
             (end, start)
         } else {
             (start, end)
         })
+    }
+
+    /// Removes the normal-mode block from `content`, so an ordinary edit lands
+    /// at the cursor instead of replacing the character. Keeps other selections.
+    pub fn clear_block(&self, content: &mut Content) {
+        if self.mode != Mode::Normal || content.selection().is_none() {
+            return;
+        }
+        let buffer = Buffer::read(content);
+        let Some((anchor, _)) = self.selection(&buffer) else {
+            return;
+        };
+        let cursor = content.cursor();
+        if cursor.selection == Some(position(&buffer, anchor)) {
+            write(content, &buffer, None);
+        }
+    }
+
+    /// Draws the normal-mode block unless `content` holds another selection.
+    pub fn show_block(&self, content: &mut Content) {
+        if self.mode == Mode::Normal && content.selection().is_none() {
+            let buffer = Buffer::read(content);
+            write(content, &buffer, self.selection(&buffer));
+        }
     }
 
     /// Clears pending keys and settles the cursor after undo, redo, or a click.

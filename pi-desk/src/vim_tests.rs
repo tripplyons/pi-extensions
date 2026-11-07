@@ -262,3 +262,51 @@ fn bindings_route_keys_by_mode() {
         Some(Binding::Custom(Message::CancelReply))
     ));
 }
+
+#[test]
+fn normal_mode_draws_the_cursor_as_a_block() {
+    let vim = Vim {
+        mode: Mode::Normal,
+        ..Vim::default()
+    };
+    let buffer = Buffer::new("é🙂\n\nx", 1);
+    assert_eq!(vim.selection(&buffer), Some((2, 1)));
+    // An empty line and the end of the text have no character to cover.
+    assert_eq!(vim.selection(&Buffer::new("é🙂\n\nx", 3)), None);
+    assert_eq!(vim.selection(&Buffer::new("é🙂\n\nx", 5)), None);
+    assert_eq!(vim.selection(&Buffer::new("", 0)), None);
+
+    let mut content = Content::with_text("é🙂\n\nx");
+    write(&mut content, &buffer, vim.selection(&buffer));
+    assert_eq!(content.selection().as_deref(), Some("🙂"));
+    assert_eq!(Buffer::read(&content).cursor, 1);
+}
+
+#[test]
+fn clearing_the_block_keeps_other_selections() {
+    let vim = Vim {
+        mode: Mode::Normal,
+        ..Vim::default()
+    };
+    let mut content = Content::with_text("abc");
+    vim.show_block(&mut content);
+    assert_eq!(content.selection().as_deref(), Some("a"));
+    vim.clear_block(&mut content);
+    assert_eq!(content.selection(), None);
+    assert_eq!(Buffer::read(&content).cursor, 0);
+
+    // A selection the user made, such as select-all, stays.
+    content.perform(text_editor::Action::SelectAll);
+    vim.clear_block(&mut content);
+    assert_eq!(content.selection().as_deref(), Some("abc"));
+    vim.show_block(&mut content);
+    assert_eq!(content.selection().as_deref(), Some("abc"));
+}
+
+#[test]
+fn insert_mode_has_no_block() {
+    let vim = Vim::default();
+    let mut content = Content::with_text("abc");
+    vim.show_block(&mut content);
+    assert_eq!(content.selection(), None);
+}
