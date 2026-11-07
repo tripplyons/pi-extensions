@@ -26,7 +26,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [evidence-preserving-reducer](extensions/evidence-preserving-reducer) | Long build and test logs reduced by GPT 6 Luna to receipts with verified quotes |
 | [openai-subscription](extensions/openai-subscription) | ChatGPT-only OpenAI auth, billing guard, and native retry classification for interrupted responses |
 | [hide-empty-editor](extensions/hide-empty-editor) | Borderless, tinted input with no reserved blank rows; hidden while empty |
-| [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; visible narration and a context footer with session and background activity |
+| [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; one-row thinking while collapsed; visible narration and a context footer with session and background activity |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
 | [usage](extensions/usage) | `/usage` plan windows for Claude bridge and legacy Codex, a ChatGPT usage link, and API cost |

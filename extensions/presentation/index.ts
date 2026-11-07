@@ -1,7 +1,7 @@
 import { registerCompactToolRenderers } from "./tool-renderers.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
-import { installHiddenThinkingBlocks } from "./thinking-blocks.ts";
+import { installCompactThinkingBlocks } from "./thinking-blocks.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
@@ -37,6 +37,7 @@ export default function presentation(pi: ExtensionAPI) {
   let restoreToolSpacing: (() => void) | undefined;
   let restoreUserMessages: (() => void) | undefined;
   let restoreThinkingBlocks: (() => void) | undefined;
+  let ui: ExtensionContext["ui"] | undefined;
   let disposeFooter: (() => void) | undefined;
   let setRunning: ((running: boolean) => void) | undefined;
   let resetBackground: (() => void) | undefined;
@@ -44,9 +45,10 @@ export default function presentation(pi: ExtensionAPI) {
     disposeFooter?.();
     if (!ctx.hasUI) return;
     ctx.ui.setToolsExpanded(false);
+    ui = ctx.ui;
     if (ctx.mode === "tui") {
       restoreUserMessages ??= installCompactUserMessages();
-      restoreThinkingBlocks ??= installHiddenThinkingBlocks();
+      restoreThinkingBlocks ??= installCompactThinkingBlocks(() => ui?.theme);
       restoreToolSpacing ??= installCompactToolSpacing();
     }
     ctx.ui.setWorkingIndicator({ frames: [] });

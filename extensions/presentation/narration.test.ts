@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { AssistantMessageComponent, ToolExecutionComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { Container, stripTerminalSequences, Text } from "@earendil-works/pi-tui";
-import { installHiddenThinkingBlocks } from "./thinking-blocks.ts";
+import { installCompactThinkingBlocks } from "./thinking-blocks.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
 
 function varint(value: number): number[] {
@@ -39,7 +39,7 @@ test("narration renders as normal assistant Markdown before tools without changi
   view.updateContent(input);
   const expected = component([prose(block.thinking), toolCall]).render(60);
   expect(plain(view).join("\n")).toContain("Thinking...");
-  const restore = installHiddenThinkingBlocks();
+  const restore = installCompactThinkingBlocks();
   try {
     expect(view.render(60)).toEqual(expected);
     view.invalidate();
@@ -54,25 +54,25 @@ test("narration renders as normal assistant Markdown before tools without changi
 });
 
 test("live updates reveal narration only after its complete marker arrives", () => {
-  const restore = installHiddenThinkingBlocks();
+  const restore = installCompactThinkingBlocks();
   try {
     const block = thinking("Answer between tools");
     const input = message([block]);
     const view = component([]);
     view.updateContent(input, true);
-    expect(plain(view)).toEqual([]);
+    expect(plain(view)).toEqual(["", " Answer between tools"]);
     block.thinkingSignature = signature().slice(0, 12);
     view.updateContent(input, true);
-    expect(plain(view)).toEqual([]);
+    expect(plain(view)).toEqual(["", " Answer between tools"]);
     block.thinkingSignature = signature();
     view.updateContent(input, true);
     expect(plain(view)).toEqual(plain(component([prose(block.thinking)])));
     block.thinking += " with more detail.";
     input.content.push(thinking(), toolCall);
     view.updateContent(input, true);
-    expect(plain(view)).toEqual(plain(component([prose(block.thinking), toolCall])));
+    expect(plain(view)).toEqual(plain(component([prose(block.thinking), thinking(), toolCall])));
     view.invalidate();
-    expect(plain(view).join("\n")).not.toContain("private reasoning");
+    expect(plain(view).at(-1)).toBe(" private reasoning");
     expect(input.content[0]).toBe(block);
     expect(block.type).toBe("thinking");
     expect(block.thinkingSignature).toBe(signature());
@@ -90,38 +90,31 @@ test("narration becomes visible between compact tool calls during a streaming tu
   chat.addChild(call("before"));
   chat.addChild(view);
   chat.addChild(call("after"));
-  const restoreThinking = installHiddenThinkingBlocks();
+  const restoreThinking = installCompactThinkingBlocks();
   const restoreSpacing = installCompactToolSpacing();
   const rows = () => chat.render(60).map(line => stripTerminalSequences(line).trim());
   try {
     view.updateContent(input, true);
-    expect(rows()).toEqual(["", "before", "after"]);
+    expect(rows()).toEqual(["", "before", "", "Answer between tools", "", "after"]);
     block.thinkingSignature = signature();
     view.updateContent(input, true);
-    expect(rows()).toEqual(["", "before", "", "Answer between tools", "", "after"]);
+    expect(rows()).toEqual(["", "before", "", "private reasoning", "", "Answer between tools", "", "after"]);
     chat.invalidate();
-    expect(rows()).toEqual(["", "before", "", "Answer between tools", "", "after"]);
+    expect(rows()).toEqual(["", "before", "", "private reasoning", "", "Answer between tools", "", "after"]);
   } finally { restoreSpacing(); restoreThinking(); }
 });
 
-test("narration splits thinking runs but keeps genuine thinking hidden or natively expanded", () => {
-  const content = [prose("Opening"), thinking("first reasoning"), narration("Public reply"), thinking("last reasoning"), prose("Closing")];
+test("narration splits thinking runs into compact or natively expanded thinking", () => {
+  const content = [prose("Opening"), thinking("first a\nfirst b"), narration("Public reply"), thinking("last a\nlast b"), prose("Closing")];
   const expanded = component([content[0], content[1], prose("Public reply"), content[3], content[4]], false).render(60);
-  const restore = installHiddenThinkingBlocks();
+  const restore = installCompactThinkingBlocks();
   try {
-    const view = component(content);
-    expect(plain(view)).toEqual(plain(component([prose("Opening"), prose("Public reply"), prose("Closing")])));
-    view.setHideThinkingBlock(false);
+    const view = component(content) as AssistantMessageComponent & { setExpanded(expanded: boolean): void };
+    expect(plain(view)).toEqual(["", " Opening", " first b", "", " Public reply", " last b", "", " Closing"]);
+    view.setExpanded(true);
     expect(view.render(60)).toEqual(expanded);
-    for (const text of ["first reasoning", "last reasoning"]) {
-      const rows = plain(view);
-      expect(view.handleMouse({ type: "click", button: "left", x: 1, y: rows.findIndex(row => row.includes(text)),
-        screenX: 1, screenY: 1, width: 60, height: rows.length,
-        shift: false, alt: false, ctrl: false })?.handled).toBe(true);
-      expect(plain(view).join("\n")).not.toContain(text);
-      expect(plain(view).join("\n")).toContain("Public reply");
-    }
-    expect(plain(view)).toEqual(plain(component([prose("Opening"), prose("Public reply"), prose("Closing")])));
+    view.setExpanded(false);
+    expect(plain(view)).toEqual(["", " Opening", " first b", "", " Public reply", " last b", "", " Closing"]);
   } finally { restore(); }
 });
 
@@ -142,19 +135,19 @@ test("unknown, malformed, and incomplete signatures remain ordinary thinking", (
     signature().slice(0, -8), `!${signature()}`, `${signature()}!`,
     `${signature().replace(/=+$/, "")}===`,
   ];
-  const restore = installHiddenThinkingBlocks();
+  const restore = installCompactThinkingBlocks();
   try {
     for (const marker of signatures) {
       const view = component([thinking("private reasoning", marker)]);
-      expect(plain(view)).toEqual([]);
+      expect(plain(view)).toEqual(["", " private reasoning"]);
       view.setHideThinkingBlock(false);
-      expect(plain(view).join("\n")).toContain("private reasoning");
+      expect(plain(view)).toEqual(["", " private reasoning"]);
     }
   } finally { restore(); }
 });
 
 test("padded and unpadded binary signature envelopes display narration", () => {
-  const restore = installHiddenThinkingBlocks();
+  const restore = installCompactThinkingBlocks();
   try {
     const padded = signature("narration", 4, Buffer.alloc(257, 7));
     expect(padded.endsWith("=")).toBe(true);
@@ -169,7 +162,7 @@ test("narration preserves failure notices and native rendering returns when the 
   const view = component([narration()], false);
   const native = view.render(60);
   let live: AssistantMessageComponent;
-  const restore = installHiddenThinkingBlocks();
+  const restore = installCompactThinkingBlocks();
   try {
     live = component([narration()], false);
     expect(live.render(60)).toEqual(component([prose(narration().thinking)], false).render(60));

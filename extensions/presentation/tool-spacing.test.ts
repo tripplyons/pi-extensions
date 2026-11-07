@@ -3,7 +3,7 @@ import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent
 import { Container, stripTerminalSequences, Text } from "@earendil-works/pi-tui";
 import { compactToolRenderers } from "./tool-renderers.ts";
 import { installCompactToolSpacing } from "./tool-spacing.ts";
-import { installHiddenThinkingBlocks } from "./thinking-blocks.ts";
+import { installCompactThinkingBlocks } from "./thinking-blocks.ts";
 import { installCompactUserMessages } from "./user-messages.ts";
 
 test("tool shells remove the separator and preserve output spacing", () => {
@@ -112,7 +112,7 @@ test("clicking the first compact row still expands tools in either shell", () =>
   expect(ToolExecutionComponent.prototype.handleMouse).toBe(originalMouse);
 });
 
-test("visible messages start new tool groups while hidden thinking and empty messages do not", () => {
+test("visible messages and compact thinking start new tool groups while empty messages do not", () => {
   initTheme();
   const chat = new Container();
   const hidden = new AssistantMessageComponent({ role: "assistant", content: [{ type: "thinking", thinking: "reasoning" }], stopReason: "stop" } as any, true);
@@ -129,16 +129,17 @@ test("visible messages start new tool groups while hidden thinking and empty mes
   chat.addChild(call("call4"));
   chat.addChild(call("call5"));
   const originalContainer = Container.prototype.render;
-  const restoreThinking = installHiddenThinkingBlocks();
+  const restoreThinking = installCompactThinkingBlocks();
   const restoreUser = installCompactUserMessages();
   const restore = installCompactToolSpacing();
   const rows = () => chat.render(60).map(line => stripTerminalSequences(line).trim());
   try {
-    expect(rows()).toEqual(["question", "", "call1", "call2", "call3", "", "explanation", "", "call4", "call5"]);
+    const grouped = ["question", "", "call1", "call2", "", "reasoning", "", "call3", "", "explanation", "", "call4", "call5"];
+    expect(rows()).toEqual(grouped);
     hidden.setHideThinkingBlock(false);
-    expect(rows()).toEqual(["question", "", "call1", "call2", "", "reasoning", "", "call3", "", "explanation", "", "call4", "call5"]);
+    expect(rows()).toEqual(grouped);
     hidden.setHideThinkingBlock(true);
-    expect(rows()).toEqual(["question", "", "call1", "call2", "call3", "", "explanation", "", "call4", "call5"]);
+    expect(rows()).toEqual(grouped);
   } finally { restore(); restoreThinking(); restoreUser(); }
   expect(Container.prototype.render).toBe(originalContainer);
 });

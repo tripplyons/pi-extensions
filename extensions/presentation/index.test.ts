@@ -43,7 +43,7 @@ test("hides the native working indicator and shows the footer spinner while busy
   expect(visibility).toEqual([false, false, true]);
 });
 
-test("TUI lifecycle removes tool separators and hidden thinking markers, then restores native rendering", async () => {
+test("TUI lifecycle removes tool separators and compacts thinking, then restores native rendering", async () => {
   initTheme();
   const h = harness();
   h.ctx.mode = "tui";
@@ -56,10 +56,10 @@ test("TUI lifecycle removes tool separators and hidden thinking markers, then re
   install(h.pi);
   try {
     await h.emit("session_start");
-    expect(thinking.render(60)).toEqual([]);
+    expect(thinking.render(60).map(line => stripTerminalSequences(line).trimEnd())).toEqual(["", " reasoning"]);
     expect(tool.render(60)).toHaveLength(1);
     await h.emit("session_start", { reason: "resume" });
-    expect(thinking.render(60)).toEqual([]);
+    expect(thinking.render(60).map(line => stripTerminalSequences(line).trimEnd())).toEqual(["", " reasoning"]);
     expect(tool.render(60)).toHaveLength(1);
   } finally { await h.emit("session_shutdown"); }
   expect(thinking.render(60).map(stripTerminalSequences)).toEqual(original);
