@@ -50,6 +50,29 @@ test("a task completion wakes sleep with its notice and replaces the separate co
   expect((await h.call("task_query", { task_id: other.id })).details.status).toBe("running");
 }));
 
+test("a read batched with sleep cannot leave the next sleep waiting on a finished task", () => fixture(async (h, start) => {
+  const { id, process } = await start("build");
+  process.emit("compiled\n");
+  // Batched calls run at once: the read lands before the task finishes.
+  const sleeping = h.call("sleep", { seconds: 1800 });
+  expect((await h.call("task_output", { task_id: id, offset: 0 })).details).toMatchObject({ status: "running", output: "compiled\n" });
+  process.emit("installed\n"); process.finish();
+  expect(await promptly(sleeping)).toMatchObject({ details: { woke: "task", completed: [{ task_id: id, status: "succeeded", unread_bytes: 10 }] } });
+  // The agent saw "running" and sleeps again; it hears about the unread tail at once.
+  expect(await promptly(h.call("sleep", { seconds: 1800 }))).toMatchObject({ details: { woke: "unread", completed: [], unread: [{ task_id: id, status: "succeeded", unread_bytes: 10 }] } });
+  // One reminder only: a deliberate later sleep waits as asked.
+  expect((await h.call("sleep", { seconds: 1 })).details.woke).toBe("timeout");
+}));
+
+test("a sleep after the reported output was read waits normally", () => fixture(async (h, start) => {
+  const { id, process } = await start("quick");
+  const sleeping = h.call("sleep", { seconds: 1800 });
+  process.emit("done\n"); process.finish();
+  expect(await promptly(sleeping)).toMatchObject({ details: { woke: "task", completed: [{ task_id: id, unread_bytes: 5 }] } });
+  expect((await h.call("task_output", { task_id: id })).details.output).toBe("done\n");
+  expect((await h.call("sleep", { seconds: 1 })).details.woke).toBe("timeout");
+}));
+
 test("a completion that arrived before sleep returns immediately", () => fixture(async (h, start) => {
   const { id, process } = await start("quick");
   process.finish();

@@ -54,6 +54,8 @@ async function fileProgress(path: string) {
 export class Tasks {
   private running = new Map<string, Running>();
   private cursors = new Map<string, number>();
+  /** The furthest byte each session has read of each task, by cursor or explicit offset. */
+  private readTo = new Map<string, number>();
   private completion = new Map<string, "pending" | "observed" | "notified">();
   private completions = new EventEmitter();
   onComplete(listener: (id: string) => void) {
@@ -74,6 +76,10 @@ export class Tasks {
   fullyRead(id: string, sessionId: string) {
     const cursor = this.cursors.get(JSON.stringify([sessionId, id]));
     try { return cursor !== undefined && cursor >= statSync(this.path(id, "output")).size; } catch { return false; }
+  }
+  /** Bytes of the task's output this session has not read yet. */
+  unreadBytes(id: string, sessionId: string) {
+    try { return Math.max(0, statSync(this.path(id, "output")).size - (this.readTo.get(JSON.stringify([sessionId, id])) ?? 0)); } catch { return 0; }
   }
   /** Final status with its exit code; a zero-exit pipeline may hide an earlier failure. */
   completionNotice(id: string) {
@@ -214,6 +220,7 @@ export class Tasks {
       const length = outputLength(buffer.subarray(0, bytesRead), bytesRead === buffer.length || !terminal(status));
       const next = start + length;
       if (offset === undefined) this.cursors.set(cursor, next);
+      this.readTo.set(cursor, Math.max(this.readTo.get(cursor) ?? 0, next));
       return { task_id: id, status, output: buffer.subarray(0, length).toString("utf8"), next_offset: next };
     } finally { await file.close(); }
   }
@@ -259,6 +266,11 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   let shuttingDown = false;
   let notificationTimer: ReturnType<typeof setTimeout> | undefined;
   const notifications = new Set<string>();
+  // Completions delivered to the conversation whose output may still be unread.
+  // A task_output batched with sleep runs at once, so it can read a task just
+  // before it finishes; the next sleep then reminds once instead of waiting on
+  // a task that already ended.
+  const reported = new Set<string>();
   // Steering releases only the current waits. It must not cancel their processes
   // or make later waits yield to a message Pi has already delivered.
   type Wake = "steering" | "swarm" | "task";
@@ -317,7 +329,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
       return;
     }
     const content = pending.map(id => tasks.completionNotice(id)).join("\n");
-    for (const id of pending) { notifications.delete(id); tasks.acknowledge(id, "notified"); }
+    for (const id of pending) { notifications.delete(id); tasks.acknowledge(id, "notified"); reported.add(id); }
     // One steering message wakes the conversation for the whole batch.
     pi.sendMessage({ customType: "pi-task-completed", content: `${content}\nUse task_output to inspect the results before claiming success.`, display: true }, { triggerTurn: true, deliverAs: "steer" });
   }
@@ -355,15 +367,22 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     },
   });
   pi.registerTool({ name: "sleep", label: "sleep", renderCall: toolCall("sleep"), renderResult,
-    description: `Wait without polling. Returns early when the user steers, a swarm message, alert or check-in arrives, or a background task on this branch finishes; otherwise returns after seconds (1-${maxSleepSeconds}) with a progress snapshot of running tasks. The result names the wake reason and includes completion notices, which replace a separate completion turn. Read finished output with task_output before claiming success. Sleeping never stops or extends a task. Silence in a snapshot does not prove that a process is stuck.`,
+    description: `Wait without polling. Returns early when the user steers, a swarm message, alert or check-in arrives, or a background task on this branch finishes; otherwise returns after seconds (1-${maxSleepSeconds}) with a progress snapshot of running tasks. The result names the wake reason and includes completion notices, which replace a separate completion turn. Read finished output with task_output before claiming success; do not call task_output in the same batch as sleep, because batched calls run at once and the read happens before the task finishes. A sleep after a reported completion whose output is still unread returns at once with woke "unread". Sleeping never stops or extends a task. Silence in a snapshot does not prove that a process is stuck.`,
     parameters: Type.Object({ seconds: Type.Integer({ minimum: 1, maximum: maxSleepSeconds, description: "Longest wait in seconds. The call returns sooner on a wake event." }) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); signal?.throwIfAborted(); current = ctx;
       if (!Number.isSafeInteger(args.seconds) || args.seconds < 1 || args.seconds > maxSleepSeconds) throw new Error(`seconds must be an integer between 1 and ${maxSleepSeconds}`);
       const started = Date.now();
+      const session = ctx.sessionManager.getSessionId();
       const ready = () => { const owned = new Set(ids(ctx)); return [...notifications].filter(id => owned.has(id)); };
-      let reason: Wake | "timeout" = "task";
-      if (!ready().length) {
+      // Remind once about reported tasks whose output is still unread, so a
+      // read that raced the completion cannot leave this sleep waiting on nothing.
+      const owned = new Set(ids(ctx));
+      const unread = [...reported].filter(id => owned.has(id) && tasks.unreadBytes(id, session) > 0);
+      for (const id of [...reported]) if (owned.has(id)) reported.delete(id);
+      let reason: Wake | "timeout" | "unread" = "task";
+      if (unread.length && !ready().length) reason = "unread";
+      else if (!ready().length) {
         try {
           reason = await new Promise<Wake | "timeout">((resolve, reject) => {
             const done = () => { clearTimeout(timer); sleepers.delete(finish); signal?.removeEventListener("abort", abort); };
@@ -380,10 +399,14 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
         }
       }
       const finished = ready();
-      for (const id of finished) { notifications.delete(id); tasks.acknowledge(id, "notified"); }
+      for (const id of finished) { notifications.delete(id); tasks.acknowledge(id, "notified"); reported.add(id); }
       const completed = finished.map(id => {
         const task = tasks.query(id);
-        return { task_id: id, status: task.status, exit_code: task.exit_code ?? null, notice: tasks.completionNotice(id) };
+        return { task_id: id, status: task.status, exit_code: task.exit_code ?? null, unread_bytes: tasks.unreadBytes(id, session), notice: tasks.completionNotice(id) };
+      });
+      const reminders = reason !== "unread" ? undefined : unread.map(id => {
+        const task = tasks.query(id);
+        return { task_id: id, status: task.status, exit_code: task.exit_code ?? null, unread_bytes: tasks.unreadBytes(id, session) };
       });
       const running = reason !== "timeout" ? undefined : await Promise.all(tasks.background(ids(ctx)).map(async ({ taskId }) => {
         const { task_id, command, status, elapsed_seconds, output_bytes, output_silence_seconds, deadline_remaining_seconds, recent_output } = await tasks.progress(taskId);
@@ -392,8 +415,9 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
       const message = reason === "steering" ? "New user input is waiting. Read and handle it."
         : reason === "swarm" ? "A swarm message is waiting. Read and handle it."
         : reason === "task" ? "Use task_output to inspect the results before claiming success."
+        : reason === "unread" ? "These tasks already finished, but their output was not read to the end. Read it with task_output; nothing is left to wait for."
         : running?.length ? "Sleep finished. Report progress from the snapshot, or sleep again." : "Sleep finished. No background tasks are running on this branch.";
-      return result({ woke: reason, slept_seconds: Math.round((Date.now() - started) / 100) / 10, completed, ...(running ? { running } : {}), message });
+      return result({ woke: reason, slept_seconds: Math.round((Date.now() - started) / 100) / 10, completed, ...(reminders ? { unread: reminders } : {}), ...(running ? { running } : {}), message });
     },
   });
   const definitions = [

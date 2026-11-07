@@ -69,6 +69,13 @@ also start a separate turn. Read the output with `task_output` before you claim
 success. If a completion is already waiting when `sleep` starts, it returns at
 once.
 
+Each notice also gives `unread_bytes`, the output this session has not read
+yet. Do not call `task_output` in the same batch as `sleep`. Batched calls run
+at the same time, so the read can happen just before the task finishes and
+report `running`. If a later `sleep` starts while a reported task still has
+unread output, it returns at once with the reason `unread` and lists those
+tasks. It reminds only once per task, so the next sleep waits as asked.
+
 If no event arrives before `seconds` elapses, the result reports `timeout` and
 a progress snapshot for each running task on the branch. A snapshot holds the
 elapsed time, captured output bytes, seconds since the last output, remaining
