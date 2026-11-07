@@ -28,7 +28,7 @@ test("steering promotes foreground Bash without canceling its process or changin
   const reports: any[] = [];
   h.pi.events.on("t3:background-tasks", report => { reports.push(report); });
   const controller = new AbortController();
-  const reply = h.call("bash", { command: "controlled", timeout: 240, foreground_wait_seconds: 300 }, controller.signal);
+  const reply = h.call("bash", { command: "controlled", timeout: 240 }, controller.signal);
   const process = await started;
   const id = h.entries.find(entry => entry.customType === taskKey)!.data;
   const before = (await h.call("task_query", { task_id: id })).details;
@@ -43,7 +43,7 @@ test("steering promotes foreground Bash without canceling its process or changin
 }));
 
 test.each(["message", "instruction"])("a swarm %s promotes foreground Bash without canceling its process or changing its deadline", kind => fixture(async (h, started) => {
-  const reply = h.call("bash", { command: "controlled", timeout: 240, foreground_wait_seconds: 300 });
+  const reply = h.call("bash", { command: "controlled", timeout: 240 });
   const process = await started;
   const id = h.entries.find(entry => entry.customType === taskKey)!.data;
   const before = (await h.call("task_query", { task_id: id })).details;
@@ -55,28 +55,22 @@ test.each(["message", "instruction"])("a swarm %s promotes foreground Bash witho
   expect((await h.call("task_output", { task_id: id })).details.output).toBe("same process\n");
 }));
 
-test("swarm delivery releases output waits without losing cursors or releasing later waits", () => fixture(async (h, started) => {
+test("swarm delivery wakes sleep without stopping the task or waking later sleeps", () => fixture(async (h, started) => {
   const id = (await h.call("bash", { command: "controlled", run_in_background: true })).details.task_id;
   const process = await started;
-  process.emit("before");
-  expect((await h.call("task_output", { task_id: id })).details.next_offset).toBe(6);
-  const waits = [h.call("task_output", { task_id: id, wait_ms: 300_000 }), h.call("task_output", { task_id: id, offset: 6, wait_ms: 300_000 })];
+  const sleeping = h.call("sleep", { seconds: 1800 });
   await sleep(30);
   h.pi.events.emit("pi:swarm-activity", { kind: "instruction" });
-  for (const wait of waits) expect(await promptly(wait)).toMatchObject({ details: { status: "running", output: "", next_offset: 6 } });
+  expect(await promptly(sleeping)).toMatchObject({ details: { woke: "swarm", completed: [] } });
   expect(process.signal?.aborted).toBe(false);
-  const next = h.call("task_output", { task_id: id, wait_ms: 300_000 });
+  const next = h.call("sleep", { seconds: 1800 });
   expect(await Promise.race([next, sleep(30).then(() => "still waiting")])).toBe("still waiting");
-  process.emit("after");
-  expect(await promptly(next)).toMatchObject({ details: { status: "running", output: "after", next_offset: 11 } });
-  // A delivery during asynchronous read setup must also release that read.
-  const again = h.call("task_output", { task_id: id, wait_ms: 300_000 });
-  h.pi.events.emit("pi:swarm-activity", { kind: "message" });
-  expect(await promptly(again)).toMatchObject({ details: { status: "running", output: "", next_offset: 11 } });
+  process.emit("done"); process.finish();
+  expect(await promptly(next)).toMatchObject({ details: { woke: "task", completed: [{ task_id: id, status: "succeeded" }] } });
 }));
 
 test("follow-up and idle input do not promote foreground Bash", () => fixture(async (h, started) => {
-  const reply = h.call("bash", { command: "controlled", foreground_wait_seconds: 300 });
+  const reply = h.call("bash", { command: "controlled" });
   const process = await started;
   await h.emit("input", { text: "later", source: "interactive", streamingBehavior: "followUp" });
   await h.emit("input", { text: "idle", source: "interactive" });
@@ -85,33 +79,25 @@ test("follow-up and idle input do not promote foreground Bash", () => fixture(as
   expect(await promptly(reply)).toMatchObject({ content: [{ type: "text", text: "native result\n" }] });
 }));
 
-test("steering releases all output waits, preserves cursors, and does not release later waits", () => fixture(async (h, started) => {
+test("steering wakes every sleep and promotes foreground Bash, but follow-up input does not", () => fixture(async (h, started) => {
   const id = (await h.call("bash", { command: "controlled", run_in_background: true })).details.task_id;
   const process = await started;
-  process.emit("before");
-  expect((await h.call("task_output", { task_id: id })).details.next_offset).toBe(6);
-  const waits = [h.call("task_output", { task_id: id, wait_ms: 300_000 }), h.call("task_output", { task_id: id, offset: 6, wait_ms: 300_000 })];
+  const sleeps = [h.call("sleep", { seconds: 1800 }), h.call("sleep", { seconds: 1800 })];
   await sleep(30);
   await h.emit("input", { text: "later", source: "rpc", streamingBehavior: "followUp" });
-  expect(await Promise.race([Promise.all(waits), sleep(30).then(() => "still waiting")])).toBe("still waiting");
+  expect(await Promise.race([Promise.all(sleeps), sleep(30).then(() => "still waiting")])).toBe("still waiting");
   await h.emit("input", { text: "now", source: "rpc", streamingBehavior: "steer" });
-  for (const wait of waits) expect(await promptly(wait)).toMatchObject({ details: { status: "running", output: "", next_offset: 6 } });
+  for (const reply of sleeps) expect(await promptly(reply)).toMatchObject({ details: { woke: "steering", completed: [] } });
   expect(process.signal?.aborted).toBe(false);
-  const next = h.call("task_output", { task_id: id, wait_ms: 300_000 });
-  expect(await Promise.race([next, sleep(30).then(() => "still waiting")])).toBe("still waiting");
-  process.emit("after");
-  expect(await promptly(next)).toMatchObject({ details: { status: "running", output: "after", next_offset: 11 } });
-  const again = h.call("task_output", { task_id: id, wait_ms: 300_000 });
-  await h.emit("input", { text: "again", source: "interactive", streamingBehavior: "steer" });
-  expect(await promptly(again)).toMatchObject({ details: { status: "running", output: "", next_offset: 11 } });
+  expect((await h.call("task_query", { task_id: id })).details.status).toBe("running");
 }));
 
-test("steering during output setup yields without acknowledging future completion", () => fixture(async (h, started) => {
+test("a sleep woken by steering does not acknowledge a later completion", () => fixture(async (h, started) => {
   const id = (await h.call("bash", { command: "controlled", run_in_background: true })).details.task_id;
   const process = await started;
-  const reply = h.call("task_output", { task_id: id, wait_ms: 300_000 });
+  const reply = h.call("sleep", { seconds: 1800 });
   await h.emit("input", { text: "now", source: "interactive", streamingBehavior: "steer" });
-  expect(await promptly(reply)).toMatchObject({ details: { status: "running", output: "", next_offset: 0 } });
+  expect(await promptly(reply)).toMatchObject({ details: { woke: "steering", completed: [] } });
   process.emit("finished"); process.finish();
   await sleep(30);
   h.ctx.isIdle = () => true;
@@ -125,7 +111,7 @@ test("a task whose output was already read reports its exit quietly instead of w
   const id = (await h.call("bash", { command: "swift build 2>&1 | tail -40", run_in_background: true })).details.task_id;
   const process = await started;
   process.emit("error: Build failed\n");
-  expect(await promptly(h.call("task_output", { task_id: id, wait_ms: 300_000 }))).toMatchObject({ details: { status: "running", output: "error: Build failed\n" } });
+  expect(await h.call("task_output", { task_id: id })).toMatchObject({ details: { status: "running", output: "error: Build failed\n" } });
   // The process exits after the last read, while Pi is still busy.
   process.finish();
   await sleep(30);
@@ -141,7 +127,7 @@ test("unread output still wakes the conversation, with the exit code", () => fix
   const id = (await h.call("bash", { command: "make", run_in_background: true })).details.task_id;
   const process = await started;
   process.emit("seen\n");
-  await promptly(h.call("task_output", { task_id: id, wait_ms: 300_000 }));
+  await h.call("task_output", { task_id: id });
   process.emit("unseen\n"); process.finish();
   await sleep(30);
   expect(h.sentMessages).toHaveLength(0);

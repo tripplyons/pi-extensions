@@ -10,7 +10,7 @@ import { Workers } from "./worker.ts";
 
 // Exercise real inbox polling and delivery. Only the external process and pane
 // checks are mocked; no workers, shell commands, or live services are started.
-test.each(["bash", "task_output"])("swarm inbox steering releases a pending %s wait without stopping its process", async tool => {
+test.each(["bash", "sleep"])("swarm inbox steering releases a pending %s wait without stopping its process", async tool => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-task-steering-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = root;
@@ -37,13 +37,13 @@ test.each(["bash", "task_output"])("swarm inbox steering releases a pending %s w
     let id: string;
     let waiting: Promise<any>;
     if (tool === "bash") {
-      waiting = h.call("bash", { command: "controlled", timeout: 240, foreground_wait_seconds: 300 });
+      waiting = h.call("bash", { command: "controlled", timeout: 240 });
       await started;
       id = h.entries.find(entry => entry.customType === taskKey)!.data;
     } else {
       id = (await h.call("bash", { command: "controlled", timeout: 240, run_in_background: true })).details.task_id;
       await started;
-      waiting = h.call("task_output", { task_id: id, wait_ms: 300_000 });
+      waiting = h.call("sleep", { seconds: 1800 });
     }
     const before = (await h.call("task_query", { task_id: id })).details;
     await store.send(identity.run, child.id, identity.node, "message", "Inspect my result now.");
@@ -52,7 +52,7 @@ test.each(["bash", "task_output"])("swarm inbox steering releases a pending %s w
       waiting,
       new Promise(resolve => { timer = setTimeout(() => resolve("still waiting"), 3500); }),
     ]).finally(() => clearTimeout(timer));
-    expect(reply).toMatchObject({ details: { task_id: id, status: tool === "bash" ? "auto_promoted" : "running" } });
+    expect(reply).toMatchObject({ details: tool === "bash" ? { task_id: id, status: "auto_promoted" } : { woke: "swarm", completed: [] } });
     expect(processSignal?.aborted).toBe(false);
     expect((await h.call("task_query", { task_id: id })).details).toMatchObject({ status: "running", deadline_at: before.deadline_at });
     expect(h.sentMessages.find(item => item.message.customType === "swarm-message")).toMatchObject({

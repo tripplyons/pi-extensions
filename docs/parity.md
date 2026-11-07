@@ -17,7 +17,7 @@ registration or documentation. This list tracks deliverables, not completion.
 | Goals | Explicit creation, user controls, persistence, elapsed/tokens, automatic continuation, full-objective verification | Implemented; unit tested; runtime audit pending |
 | Overseer | Terminal OSC glow, lifecycle and input waits | Owned by the separate Overseer integration; not bundled here |
 | Presentation | Compact display, status/footer, identity/title, tool visibility | Implemented; formatting tests; TTY audit pending |
-| Shell/background | Managed Bash, deadlines, branch-owned tasks and completion notifications; legacy shell/sleep tools removed | Unit and process tests; swarm retains its internal tmux runner |
+| Shell/background | Managed Bash with 5-second promotion, deadlines, branch-owned tasks, completion notifications, and a `sleep` wait woken by steering, swarm messages, or task completion; legacy shell tools removed | Unit and process tests; swarm retains its internal tmux runner |
 | Files/images | Native Pi read/edit/write/grep/find/ls and image admission | Native codemode integration tests |
 | Swarm | User activation, worker tree/depth, worktrees and dirty choices, durable tasks, messages, observe/restart/review/stop/cleanup | Git isolation, durable state, messaging permissions and review tested; orchestration pending |
 | Compaction | Native Pi 1.0 compaction and model context windows; /threshold retired | Native behavior; live provider audit pending |

@@ -46,9 +46,13 @@ test("overdue direct-child backlog steers the parent once and preserves independ
     if (key === "swarm-review-reminder") reminderStatuses.push(text);
   };
   const reminders = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-review-reminder");
+  const wakes: any[] = [];
+  h.pi.events.on("pi:swarm-activity", (event: unknown) => wakes.push(event));
   const deadline = Date.now() + 4000;
   while (!reminders().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
   expect(reminders()).toHaveLength(1);
+  // Sleeping parents wake for the reminder instead of waiting out the sleep.
+  expect(wakes).toContainEqual({ kind: "review-reminder" });
   expect(reminders()[0]).toMatchObject({ options: { triggerTurn: true, deliverAs: "steer" }, message: { details: { owner: identity.node, pending: 4, overdue: 4, integrated: 1 } } });
   expect(reminders()[0].message.content).toContain("1 more");
   expect(reminders()[0].message.content).toContain("code integration recorded, handoff undecided");
@@ -86,12 +90,15 @@ test("health warnings steer the direct parent's agent once per episode, not the 
   const old = new Date(Date.now() - 600_000).toISOString();
   await store.update(identity.run, state => { Object.assign(state.nodes[quiet.id], { status: "running", session, started: old }); });
   const alerts = () => h.sentMessages.filter(entry => entry.message.customType === "swarm-health-alert");
+  const wakes: any[] = [];
+  h.pi.events.on("pi:swarm-activity", (event: unknown) => wakes.push(event));
   const deadline = Date.now() + 3000;
   while (!alerts().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
   expect(alerts()).toHaveLength(1);
   expect(alerts()[0].message.content).toContain(`Quiet (${quiet.id}) is quiet-no-job`);
   expect(alerts()[0].message.content).toContain("owns no active jobs");
   expect(alerts()[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+  expect(wakes).toEqual([{ kind: "health-alert" }]);
   await new Promise(resolve => setTimeout(resolve, 1100));
   expect(alerts()).toHaveLength(1);
   const nested = await store.reserve(identity.run, identity.node, "Parent", "Task");
@@ -120,7 +127,7 @@ test("checkpoint tool ends the worker turn and gates jobs until an explicit barr
   expect(checkpoint.terminate).toBe(true);
   for (const toolName of ["bash", "write", "edit", "swarm_spawn", "swarm_complete"]) expect((await h.emit("tool_call", { toolName }))[0]).toMatchObject({ block: true, terminate: true, reason: expect.stringContaining("checkpoint hold") });
   expect((await h.emit("tool_call", { toolName: "bash", input: { command: "date" } }))).toEqual([undefined]);
-  for (const toolName of ["codemode", "swarm_task", "read", "grep", "find", "ls", "compress", "search_context", "acp_status", "acp_cache", "decompress", "task_watch", "complain"]) {
+  for (const toolName of ["codemode", "swarm_task", "read", "grep", "find", "ls", "compress", "search_context", "acp_status", "acp_cache", "decompress", "sleep", "complain"]) {
     expect(await h.emit("tool_call", { toolName, input: {} })).toEqual([undefined]);
     expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("checkpoint-hold");
   }
@@ -143,7 +150,7 @@ test("permission waits permit read-only inspection and housekeeping without rele
     expect(typeof task.currentAssignment.generation).toBe("number");
     expect(task.node.observedAssignment.generation).toBe(task.currentAssignment.generation);
     expect((await store.read(run.id)).nodes[worker.id].observedAssignment?.generation).toBe(task.currentAssignment.generation);
-    for (const toolName of ["codemode", "read", "grep", "find", "ls", "swarm_task", "swarm_send", "swarm_board", "swarm_complete", "swarm_observe", "task_query", "task_output", "task_stop", "task_watch", "complain", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
+    for (const toolName of ["codemode", "read", "grep", "find", "ls", "swarm_task", "swarm_send", "swarm_board", "swarm_complete", "swarm_observe", "task_query", "task_output", "task_stop", "sleep", "complain", "compress", "search_context", "acp_status", "acp_cache", "decompress"]) {
       expect(await h.emit("tool_call", { toolName, input: {} })).toEqual([undefined]);
       expect((await store.read(run.id)).nodes[worker.id].permission).toEqual(before);
     }

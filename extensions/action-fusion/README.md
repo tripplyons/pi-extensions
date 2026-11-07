@@ -25,11 +25,12 @@ If it is unavailable, the call fails before changing the file. Both `edit` and
 `write` use the same managed execution path, including job ownership records,
 completion notifications, and steering support.
 
-Commands return a task ID after 15 seconds rather than blocking the worker.
-These results use `[then_run:running]`, not a success marker. Follow the task
-with `task_output`, `task_query`, or `task_stop`; do not rerun it. Swarm health
-includes these commands in the worker's owned jobs. The default deadline is
-120 seconds, with a maximum of 300 seconds. Promotion does not extend it.
+A command still running after 5 seconds returns a task ID rather than blocking
+the worker. These results use `[then_run:running]`, not a success marker. Wait
+for the task with `sleep` and follow it with `task_output`, `task_query`, or
+`task_stop`; do not rerun it. Swarm health includes these commands in the
+worker's owned jobs. The default deadline is 1800 seconds. Promotion does not
+extend it.
 
 The [evidence-preserving reducer](../evidence-preserving-reducer) can shorten a
 long command log in a fused result.

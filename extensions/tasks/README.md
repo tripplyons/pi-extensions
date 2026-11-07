@@ -1,35 +1,21 @@
 # Background tasks
 
-Adds managed background execution to Pi's native Bash implementation. Foreground
-commands default to a 120-second execution deadline and allow up to 300 seconds.
-By default, after 15 seconds a foreground command returns a task ID without
-restarting its process or deadline. Set `foreground_wait_seconds` (an integer
-from 0 to 300) to override that wait for a call. Zero promotes immediately.
-This option does not change `timeout`, and `run_in_background: true` ignores it.
-Foreground `timeout` values above 300 are capped at 300 seconds, even if the
-command later auto-promotes. For a longer deadline, start with
-`run_in_background: true`, for example:
+Adds managed background execution to Pi's native Bash implementation. If a
+command is still running after 5 seconds, Bash returns a task ID for the same
+process. User steering or a delivered swarm message returns it sooner. The
+process, its output, and its deadline do not change. Queued follow-up messages
+do not affect the 5-second wait.
+
+Every command has a 1800-second (30-minute) default deadline, whether it
+finishes in the foreground, is promoted, or starts in the background. Set
+`timeout` in seconds for a different deadline, for example:
 
 ```text
-bash command="npm run build" run_in_background=true timeout=1800
+bash command="npm run build" timeout=3600
 ```
 
-For example, wait up to two minutes for a build with a five-minute deadline:
-
-```text
-bash command="npm run build" timeout=300 foreground_wait_seconds=120
-```
-
-If the command finishes before the wait expires, Bash returns its native result.
-Otherwise, it returns a task ID for the same process with the original deadline.
-A longer wait remains cancelable and cannot extend the execution deadline.
-User steering input or a delivered swarm inbox message during the foreground
-wait promotes the same command to a background task immediately. Pi can then
-handle the message without stopping the process or changing its deadline.
-Queued follow-up messages do not interrupt the wait.
-
-`run_in_background: true` starts a managed task immediately with a default
-30-minute deadline. Query, read, or stop it with `task_query`, `task_output`, and
+`run_in_background: true` returns the task ID immediately. Wait for a task
+with `sleep`, and query, read, or stop it with `task_query`, `task_output`, and
 `task_stop`. Expiry and stop terminate the process group. Nonzero exits fail the
 task, including Pi 1.0's non-throwing Bash results. The [Python tool](../python)
 uses this same runner for inline uv scripts and returns task IDs immediately.
@@ -58,33 +44,42 @@ or 50 KB and keeps UTF-8 characters intact. `next_offset` counts bytes actually
 returned, so the next read preserves unread output. Use `next_offset` for explicit
 reads instead of guessing a byte offset within a character.
 
-`task_output` accepts `wait_ms` (default 0, capped at 300,000 ms). It waits only
-when a live task has no unread bytes at the requested or automatic cursor.
-Unread output and terminal status return immediately. A silent live task can
-return empty output and an unchanged `next_offset` after the wait expires;
-that does not mean it skipped the wait. New output or completion wakes the read
-early. User steering input and delivered swarm inbox messages also release
-active reads with the current output, status, and cursor so Pi can handle the
-message. It does not stop the task or
-acknowledge a completion that has not happened. Follow-up messages do not release
-reads. `wait_ms` is not a minimum polling interval and does not stop the task.
-Values above 300,000 ms are accepted and capped. For a deliberate long wait, use
-`task_output task_id=<id> wait_ms=300000`.
+`task_output` reads without waiting. A read of a live task with no new output
+returns empty output and an unchanged `next_offset`.
 
-For a chatty task, add `wait_until_terminal=true` to wait through output chunks:
+## Wait with sleep
+
+`sleep` is the only wait. It takes `seconds`, from 1 to 1800, and returns early
+on the first of these events:
+
+- user steering input, reported as `steering`
+- a swarm inbox message, health alert, worker check-in, or review reminder,
+  reported as `swarm`
+- the end of any background task on the current branch, reported as `task`
+
+For example:
 
 ```text
-task_output task_id=<id> wait_ms=300000 wait_until_terminal=true
+sleep seconds=600
 ```
 
-This opt-in mode returns on completion, the `wait_ms` limit, or steering; cancellation
-aborts the read without stopping the task. It waits even if unread output already
-exists. The wait limit starts once and is not reset by output. Output is not
-consumed until the call returns, and normal size limits and cursor rules still
-apply. Read again to retrieve any remaining output. `wait_ms` still defaults to 0,
-so the flag alone does not wait. Waiting never extends the task deadline.
-Otherwise, let completion notifications resume the conversation instead of
-repeatedly polling a task.
+The result gives the wake reason, the time slept, and a completion notice for
+each finished task. Sleep counts those notices as delivered, so they do not
+also start a separate turn. Read the output with `task_output` before you claim
+success. If a completion is already waiting when `sleep` starts, it returns at
+once.
+
+If no event arrives before `seconds` elapses, the result reports `timeout` and
+a progress snapshot for each running task on the branch. A snapshot holds the
+elapsed time, captured output bytes, seconds since the last output, remaining
+deadline, and up to five recent output lines. It does not move the output
+cursor. Output silence does not prove that a process is stuck. To follow a log
+file that the command writes, read it with Bash, for example with `tail`.
+
+Sleep never stops a task or extends its deadline. Canceling a sleep leaves
+tasks running, and their completion notices arrive as usual. Follow-up messages
+do not wake a sleep. If the agent ends its turn instead of sleeping, an
+unobserved completion still starts a new turn.
 
 When run through T3 Code's Pi provider, live background tasks keep the thread
 marked as running after Pi's foreground turn ends. This includes explicit
@@ -119,62 +114,13 @@ task notes outside this repo. Verify remote cleanup with the provider's status
 command. Stop only resources started for the authorized task. Do not stop
 production resources or other users' resources.
 
-## Opt-in progress reports
-
-Use `task_watch` for a long task on the current branch:
-
-```text
-task_watch task_id=<id> interval_seconds=300 expected_seconds=900 silence_seconds=120
-```
-
-Reports show elapsed time, output bytes, bounded recent output, output silence,
-and remaining deadline. They do not move the output cursor or extend the deadline.
-For a finished task, elapsed time and output silence stop at `finished_at`, and
-the remaining deadline is null.
-`expected_seconds` is a user-supplied duration, not a measured ETA. Reports wait
-until Pi is idle. Every scheduled report wakes the conversation to check the task
-and give an evidence-based progress update. Expected-duration and output-silence
-warnings ask the agent to investigate, including when a warning persists across
-reports. Warning thresholds are optional; the default report interval is 300
-seconds and the maximum is 300.
-
-### Watch a local log file
-
-Add `log_path` when the command redirects output to a local file:
-
-```text
-task_watch task_id=<id> log_path=run.log interval_seconds=300 silence_seconds=120
-```
-
-Relative paths resolve against the task's original working directory, not the
-current session directory. The resolved path persists with the watch settings.
-Each report reopens the path, so truncation and log rotation do not leave the
-watch attached to an old file.
-
-Reports show the log's current size, modification time, time since modification,
-and up to 2 KB and five recent lines. Log data is separate from captured Bash
-output and does not change output cursors. Missing, unreadable, or nonregular
-files appear as unavailable in the report. The watch continues and retries on
-the next report.
-
-`silence_seconds` applies independently to captured output silence and the
-log's time since modification. Reports distinguish "captured output is silent"
-from "watched log is unchanged." Neither proves that the process is stuck.
-Modification time is a file signal, not proof of useful work.
-
-Watching reads local files into model context and session history. Select only
-logs suitable for that context. It does not fetch remote logs or watch files
-after the local task finishes.
-
-Watching is off unless requested. Disable it with `enabled: false`. Watch settings
-are branch-local session entries. Reload restores enabled watches for live tasks
-on that branch. Watching stops when the task finishes or the session shuts down.
-It never stops a process. The remaining deadline is unknown for legacy task
-records that did not save one.
+## Reload and storage
 
 Session replacement and /reload keep the process pool and rebind notifications.
 Reload also updates the runner methods without restarting managed tasks or
 resetting output cursors. Quit stops the pool. Abandoned records from a prior process become lost.
+The removed `task_watch` tool left `pi:task-watch` entries in older sessions.
+They stay in the session files, and this extension ignores them.
 
 Task metadata and output stay under the agent directory, outside this repo.
 The existing `minimax/tasks` storage path remains so old task records are readable.

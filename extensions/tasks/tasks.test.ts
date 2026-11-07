@@ -1,9 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { Tasks, backgroundTimeout, registerTaskTools, taskKey } from "./tasks.ts";
+import { Tasks, backgroundTimeout, promotionMs, registerTaskTools, taskKey } from "./tasks.ts";
 import { harness } from "../../lib/harness.ts";
 
 const roots: string[] = [];
@@ -19,8 +19,8 @@ async function setup(yieldMs = 10, operations?: BashOperations) {
   const tasks = new Tasks(root, operations, yieldMs); managers.push(tasks);
   return { root, tasks };
 }
-async function taskHarness(operations?: BashOperations) {
-  const { root, tasks } = await setup(10, operations);
+async function taskHarness(operations?: BashOperations, yieldMs = 10) {
+  const { root, tasks } = await setup(yieldMs, operations);
   const h = harness(); registrations.push(h);
   h.ctx.cwd = root; h.ctx.isIdle = () => false;
   registerTaskTools(h.pi, tasks);
@@ -35,6 +35,14 @@ async function settled(tasks: Tasks, id: string) {
   throw new Error("Task did not settle");
 }
 const ignore = () => {};
+async function outputArrives(tasks: Tasks, id: string) {
+  for (let i = 0; i < 200; i++) {
+    const { output } = await tasks.output(id, 0);
+    if (output) return output;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Task produced no output");
+}
 
 test("publishes live branch rosters for explicit and promoted tasks and clears on stop", async () => {
   const { h } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
@@ -78,65 +86,59 @@ test("completion publishes an empty roster while Pi is busy and foreground work 
   expect(h.sentMessages).toEqual([]);
 });
 
-test("foreground wait override returns native output instead of promoting at the default wait", async () => {
+test("commands that finish before promotion return native output with the default deadline", async () => {
   const { h, tasks } = await taskHarness({ exec: async (_command, _cwd, { onData }) => {
     await new Promise(resolve => setTimeout(resolve, 50));
     onData(Buffer.from("finished in foreground"));
     return { exitCode: 0 };
-  } });
-  const reply = await h.call("bash", { command: "controlled", timeout: 2, foreground_wait_seconds: 300 });
+  } }, 1000);
+  const reply = await h.call("bash", { command: "controlled" });
   expect(reply.content[0].text).toBe("finished in foreground");
   const id = h.entries.find(entry => entry.customType === taskKey).data;
   const record = tasks.query(id);
   expect(record.status).toBe("succeeded");
   const deadlineMs = Date.parse(record.deadline_at) - Date.parse(record.created_at);
-  expect(deadlineMs).toBeGreaterThanOrEqual(2000);
-  expect(deadlineMs).toBeLessThan(2100);
+  expect(deadlineMs).toBeGreaterThanOrEqual(1_800_000);
+  expect(deadlineMs).toBeLessThan(1_800_100);
   expect(h.sentMessages).toEqual([]);
 });
 
-test("zero foreground wait promotes without restarting or changing the deadline", async () => {
+test("promotion waits five seconds by default", async () => {
+  expect(promotionMs).toBe(5000);
+  const root = await mkdtemp(join(tmpdir(), "minimax-jobs-test-")); roots.push(root);
+  const tasks = new Tasks(root, { exec: async () => ({ exitCode: 0 }) }); managers.push(tasks);
+  const timer = spyOn(globalThis, "setTimeout");
+  try {
+    await tasks.run(root, { command: "quick" }, undefined, ignore, ignore);
+    expect(timer.mock.calls.some(call => call[1] === 5000)).toBe(true);
+  } finally { timer.mockRestore(); }
+});
+
+test("promoted foreground commands keep deadlines above 300 seconds", async () => {
   const { h, tasks } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
     await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     return { exitCode: 0 };
   } });
-  const reply = await h.call("bash", { command: "controlled", timeout: 2, foreground_wait_seconds: 0 });
+  const reply = await h.call("bash", { command: "controlled", timeout: 900 });
   expect(reply.details.status).toBe("auto_promoted");
   const record = tasks.query(reply.details.task_id);
   const deadlineMs = Date.parse(record.deadline_at) - Date.parse(record.created_at);
-  expect(deadlineMs).toBeGreaterThanOrEqual(2000);
-  expect(deadlineMs).toBeLessThan(2100);
+  expect(deadlineMs).toBeGreaterThanOrEqual(900_000);
+  expect(deadlineMs).toBeLessThan(900_100);
 });
 
-test("explicit background work ignores the foreground wait override", async () => {
-  const { h } = await taskHarness({ exec: async (_command, _cwd, { signal }) => {
-    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
-    return { exitCode: 0 };
-  } });
-  const reply = await h.call("bash", { command: "controlled", run_in_background: true, foreground_wait_seconds: 300 });
-  expect(reply.details.status).toBe("started");
+test("foreground deadlines apply before promotion", async () => {
+  const { h } = await taskHarness(undefined, 1000);
+  await expect(h.call("bash", { command: "sleep 10", timeout: 0.05 })).rejects.toThrow("timed out");
 });
 
-test("long foreground waits do not extend the execution deadline", async () => {
-  const { h } = await taskHarness();
-  await expect(h.call("bash", { command: "sleep 10", timeout: 0.05, foreground_wait_seconds: 300 })).rejects.toThrow("timed out");
-});
-
-test("long foreground waits remain cancelable", async () => {
-  const { h } = await taskHarness();
+test("foreground commands remain cancelable before promotion", async () => {
+  const { h } = await taskHarness(undefined, 1000);
   const controller = new AbortController();
-  const reply = h.call("bash", { command: "sleep 10", foreground_wait_seconds: 300 }, controller.signal);
+  const reply = h.call("bash", { command: "sleep 10" }, controller.signal);
   reply.catch(() => {});
   controller.abort();
   await expect(reply).rejects.toThrow();
-});
-
-test("invalid foreground waits are rejected before starting a task", async () => {
-  const { h } = await taskHarness();
-  for (const foreground_wait_seconds of [-1, 0.5, 301, NaN, Infinity]) {
-    await expect(h.call("bash", { command: "unused", foreground_wait_seconds })).rejects.toThrow("foreground_wait_seconds");
-  }
-  expect(h.entries.filter(entry => entry.customType === taskKey)).toEqual([]);
 });
 
 test("foreground promotion keeps one process, deadline, output and completion notification", async () => {
@@ -208,12 +210,20 @@ test("auto-promoted pipefail keeps pipeline failure status", async () => {
   expect(await settled(tasks, reply.details.task_id)).toMatchObject({ status: "failed", exit_code: 7 });
 });
 
-test("redirected logs report progress separately from captured output", async () => {
-  const { root, tasks } = await setup(1000); let id = "";
-  await tasks.run(root, { command: "printf 'log progress €\\n' > job.log" }, undefined, value => { id = value; }, ignore);
-  const progress = await tasks.progress(id, Date.now(), "job.log");
-  expect(progress).toMatchObject({ output_bytes: 0, recent_output: "", log: { path: join(root, "job.log"), bytes: 17, recent_output: "log progress €\n" } });
+test("progress reports the deadline and bounded output without consuming the output cursor", async () => {
+  const { root, tasks } = await setup(); let id = "";
+  await tasks.run(root, { command: "printf 'progress €\\n'; sleep 30", run_in_background: true, timeout: 60 }, undefined, value => { id = value; }, ignore);
+  await outputArrives(tasks, id);
+  const progress = await tasks.progress(id, Date.parse(tasks.query(id).created_at) + 10_000);
+  expect(progress).toMatchObject({ elapsed_seconds: 10, deadline_remaining_seconds: 50, output_bytes: 13, recent_output: "progress €\n" });
+  expect((await tasks.output(id)).output).toBe("progress €\n");
   expect((await tasks.output(id)).output).toBe("");
+  await tasks.stop(id);
+  const { created_at, finished_at } = tasks.query(id);
+  const finished = await tasks.progress(id, Date.parse(finished_at!) + 600_000);
+  expect(finished.elapsed_seconds).toBe(Math.floor((Date.parse(finished_at!) - Date.parse(created_at)) / 1000));
+  expect(finished.output_silence_seconds).toBeLessThan(5);
+  expect(finished.deadline_remaining_seconds).toBeNull();
 });
 
 test("large failed foreground output keeps native truncation and its full output path", async () => {
@@ -300,8 +310,7 @@ test("background survives launching turn abort; stop kills descendants and is id
   const controller = new AbortController();
   await tasks.run(root, { command: "sleep 30 & echo $!; wait", run_in_background: true }, controller.signal, value => { id = value; }, ignore);
   controller.abort();
-  const output = await tasks.output(id, 0, 30_001);
-  const pid = Number(output.output.trim()); expect(pid).toBeGreaterThan(0);
+  const pid = Number((await outputArrives(tasks, id)).trim()); expect(pid).toBeGreaterThan(0);
   expect(tasks.query(id).status).toBe("running");
   expect((await tasks.stop(id, "test stop")).status).toBe("canceled");
   expect(() => process.kill(pid, 0)).toThrow();
@@ -317,14 +326,14 @@ test("foreground abort remains attached before promotion", async () => {
   expect(tasks.query(id).status).toBe("canceled");
 });
 
-test("output is byte-bounded, explicit offsets do not move the cursor, wait can be aborted", async () => {
+test("output is byte-bounded and explicit offsets do not move the cursor", async () => {
   const { root, tasks } = await setup(); let id = "";
   await tasks.run(root, { command: "printf 'héllo'; sleep 30", run_in_background: true }, undefined, value => { id = value; }, ignore);
-  expect(await tasks.output(id, undefined, 1000)).toMatchObject({ output: "héllo", next_offset: 6 });
+  await outputArrives(tasks, id);
+  expect(await tasks.output(id, undefined)).toMatchObject({ output: "héllo", next_offset: 6 });
   expect(await tasks.output(id, 0)).toMatchObject({ output: "héllo", next_offset: 6 });
-  const controller = new AbortController();
-  const waiting = tasks.output(id, undefined, 30_000, controller.signal);
-  controller.abort(); await expect(waiting).rejects.toThrow();
+  const controller = new AbortController(); controller.abort();
+  await expect(tasks.output(id, undefined, controller.signal)).rejects.toThrow();
   expect(tasks.query(id).status).toBe("running");
   await tasks.stop(id);
   await tasks.run(root, { command: "head -c 60000 /dev/zero", run_in_background: true }, undefined, value => { id = value; }, ignore);
@@ -594,7 +603,8 @@ test("reload replaces pooled runner methods without restarting managed tasks", a
     const pools = globalThis as unknown as { [key: symbol]: Map<string, Tasks> };
     const tasks = pools[Symbol.for("tripp.pi.background-tasks")].get(root)!;
     const started = (await h.call("bash", { command: "printf before; sleep 0.2; printf after", run_in_background: true })).details;
-    expect((await tasks.output(started.task_id, undefined, 1000, undefined, h.ctx.sessionManager.getSessionId())).output).toBe("before");
+    await outputArrives(tasks, started.task_id);
+    expect((await tasks.output(started.task_id, undefined, undefined, h.ctx.sessionManager.getSessionId())).output).toBe("before");
     const stale = Object.create(Tasks.prototype);
     stale.run = () => { throw new Error("Old runner methods are still loaded"); };
     Object.setPrototypeOf(tasks, stale);

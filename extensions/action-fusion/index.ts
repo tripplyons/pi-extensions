@@ -32,9 +32,9 @@ const queueTails = new Map<string, Promise<void>>();
 function thenRunSchema(action: "edit" | "write") {
   return Type.Optional(Type.Object({
     command: Type.String({ description: "Bash command to run" }),
-    timeout: Type.Optional(Type.Number({ description: "Command deadline in seconds (default 120, maximum 300)" })),
+    timeout: Type.Optional(Type.Number({ description: "Command deadline in seconds (default 1800)" })),
   }, {
-    description: `Managed Bash command to run after the ${action} succeeds. Default deadline 120 seconds (maximum 300). Returns a task ID after 15 seconds; use task_output to follow it, do not rerun. Skipped if the ${action} fails. A non-zero exit keeps the ${action}. The file lock releases when this call returns, even if the command continues. Requires the tasks extension.`,
+    description: `Managed Bash command to run after the ${action} succeeds. Default deadline 1800 seconds. Returns a task ID if still running after 5 seconds; call sleep to wait and task_output to read it, do not rerun. Skipped if the ${action} fails. A non-zero exit keeps the ${action}. The file lock releases when this call returns, even if the command continues. Requires the tasks extension.`,
   }));
 }
 

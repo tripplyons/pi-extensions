@@ -51,7 +51,8 @@ if (launched.status !== "started" || !launched.task_id || !launched.script_path)
 text(launched);
 let output = "", finished = false;
 for (let i = 0; i < 10; i++) {
-  const part = JSON.parse(await tools.task_output({task_id: launched.task_id, wait_ms: 1000}));
+  await tools.sleep({seconds: 1});
+  const part = JSON.parse(await tools.task_output({task_id: launched.task_id}));
   output += part.output;
   if (part.status === "succeeded") { finished = true; break; }
   if (["failed", "canceled", "lost"].includes(part.status)) throw new Error(output);

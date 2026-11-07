@@ -131,6 +131,7 @@ export default function install(pi: ExtensionAPI) {
             content: `Swarm health alert: ${worker.name} (${worker.id}) is ${warning}; last signal ${snapshot.quietSeconds ?? "unknown"} seconds ago. ${advice} Report what you found and what you did. Quiet does not prove a stall; nothing was stopped or restarted automatically.`,
             display: true, details: { runId: run.id, nodeId: worker.id, warning, quietSeconds: snapshot.quietSeconds },
           }, { triggerTurn: true, deliverAs: "steer" });
+          pi.events.emit("pi:swarm-activity", { kind: "health-alert" });
         }
       }
       const awaiting = descendants(run, node.id).filter(child => child.status === "review");
@@ -150,12 +151,14 @@ export default function install(pi: ExtensionAPI) {
       if (checkin) pi.sendMessage({ customType: "swarm-worker-checkin", content: checkin.content, display: true,
         details: { runId: run.id, owner: node.id, queuedAt: checkin.queuedAt },
       }, { triggerTurn: true, deliverAs: "steer" });
+      if (checkin) pi.events.emit("pi:swarm-activity", { kind: "checkin" });
       const reminder = reviewReminders.next(run, node.id);
       if (reminder) {
         ctx.ui.notify("Swarm review backlog needs a parent decision. Use swarm_reviews; no automatic decisions.", "warning");
         pi.sendMessage({ customType: "swarm-review-reminder", content: reminder, display: true,
           details: { runId: run.id, owner: node.id, pending: queue.length, overdue, integrated, queuedAt: reviewReminders.snapshot(run, node.id).queuedAt },
         }, { triggerTurn: true, deliverAs: "steer" });
+        pi.events.emit("pi:swarm-activity", { kind: "review-reminder" });
       }
       const reminderState = reviewReminders.snapshot(run, node.id);
       ctx.ui.setStatus("swarm-review-reminder", reminderState.state === "idle" ? undefined :

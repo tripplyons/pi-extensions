@@ -3,10 +3,10 @@ const inspectionTools = new Set([
   "read", "grep", "find", "ls",
   "swarm_task", "swarm_tree", "swarm_models", "swarm_send", "swarm_board", "swarm_reload", "swarm_health", "swarm_reviews", "swarm_observe", "swarm_inspect",
   "session_search", "session_read",
-  "task_query", "task_output", "task_stop", "task_watch",
+  "task_query", "task_output", "task_stop", "sleep",
   "compress", "search_context", "acp_status", "acp_cache", "complain",
 ]);
-export const holdAllowance = "read, grep, find, ls, read-only Bash (one simple command such as git status, git log, git diff, date, ls or uptime; no redirection, chaining or background), swarm inspection and messages, swarm_board, session_search, session_read, task_query, task_output, task_stop, task_watch, complain, compress, search_context, acp_status, acp_cache, and decompress without toFile";
+export const holdAllowance = "read, grep, find, ls, read-only Bash (one simple command such as git status, git log, git diff, date, ls or uptime; no redirection, chaining or background), swarm inspection and messages, swarm_board, session_search, session_read, task_query, task_output, task_stop, sleep, complain, compress, search_context, acp_status, acp_cache, and decompress without toFile";
 
 // Commands that only read state. Each entry rejects options that write files or run other programs.
 const readOnlyCommands: Record<string, (args: string[]) => boolean> = {

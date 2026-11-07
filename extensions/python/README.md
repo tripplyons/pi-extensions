@@ -46,10 +46,10 @@ The command inherits the local environment and uv settings.
 The initial result contains `task_id` and `script_path`, not execution output or
 proof of success. Use the existing task tools:
 
+- `sleep` waits until the script or another task finishes, or a message arrives.
 - `task_output` reads bounded output, up to 2,000 lines or 50 KB per read.
 - `task_query` shows status and failure details.
 - `task_stop` stops the process tree.
-- `task_watch` enables progress reports, off by default.
 
 Do not rerun a script because the initial result has no output. Completion
 notifications, branch ownership, output cursors, deadlines, and stop behavior
