@@ -169,8 +169,8 @@ the task stays in Review with an error. No Git changes are made by that request;
 approve again to retry. Tasks with no changes need no model request or merge.
 
 The main window has a sidebar, task list, and detail pane. It opens on All tasks,
-which shows every project and status, including Later and Done. Board mode groups work by status.
-Lists and board columns group tasks as Needs you, Working, Queued, Later, and
+which shows every project and status, including Later and Done.
+Lists group tasks as Needs you, Working, Queued, Later, and
 Done. Within each group, the most recent activity comes first, regardless of
 project. Row ages use that same activity time. Working rows show the newest
 assistant text or thinking block from its start, as plain text cut to about two
@@ -184,13 +184,15 @@ Working to Inbox, its row stays listed until you select another task or change
 views. Changing views keeps the selected task if it belongs to the new view;
 otherwise the first row is selected. Focus mode ends when no task is selected,
 so it does not return on its own when a new task arrives. Heading labels and counts
-share one text baseline in both layouts. Live assistant text in the Transcript
+share one text baseline. Live assistant text in the Transcript
 renders as streaming Markdown: an emphasis or code span still being written
 draws styled, and existing lines update in place. Completed history, switching
 agents, and reflow from resize or zoom do not animate.
-Use Hide sidebar / Show sidebar in the list or board header to toggle navigation
+Use Hide sidebar / Show sidebar in the list header to toggle navigation
 without hiding the task list. These actions are also in the command palette.
-Focus mode hides the sidebar and list. Task summaries are always shown when available. Review previews put the outcome
+Focus mode slides the sidebar and list out past the left edge, and the detail
+pane widens to fill the window. The detail pane stays in place, so its
+transcript is not rebuilt. Task summaries are always shown when available. Review previews put the outcome
 and next action on separate lines rather than using dot separators. Task metadata
 uses separate rows so long branch names wrap without crowding status. Later snoozes a row until
 its due time; the Inbox count is the only attention indicator. There are no
@@ -199,7 +201,7 @@ system notifications or dock badges.
 ## Goals and swarms
 
 When a task's Pi session has an unfinished goal from the goal extension, its
-row and board card show a goal line with the objective and status, and the
+row shows a goal line with the objective and status, and the
 detail card shows a Goal block. Only active and paused goals are shown;
 complete and blocked goals are hidden. pi-desk reads the latest `pi:goal`
 entry in the session file and the goal extension's live status. A goal saved
@@ -290,7 +292,6 @@ Controls without shortcuts have no key chip.
 | Z | Undo |
 | D / T | Diff / Transcript |
 | F | Focus mode |
-| B | Board mode |
 | S | Hide / show sidebar |
 | Cmd+Plus or Cmd+= | Zoom in |
 | Cmd+Minus | Zoom out |

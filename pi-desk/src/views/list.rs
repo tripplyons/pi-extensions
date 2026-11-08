@@ -62,7 +62,7 @@ fn latest_message(app: &App, agent: &Agent) -> Option<String> {
 }
 
 /// Review previews separate the outcome from the next action instead of joining
-/// unrelated fields with punctuation. Shared by the list and board cards.
+/// unrelated fields with punctuation.
 pub fn preview(app: &App, agent: &Agent) -> El {
     let lines = 2;
     let mut column = col().key("preview").w_full().gap(2.0).child(
@@ -137,8 +137,7 @@ pub fn agents_chip(app: &App, agent: &Agent) -> Option<El> {
 }
 
 /// Title and age, preview, goal, then project, agents, and snooze time.
-/// Shared by list rows and board cards so both describe a task the same way.
-pub fn summary(app: &App, agent: &Agent) -> El {
+fn summary(app: &App, agent: &Agent) -> El {
     let project = app
         .desk
         .state
@@ -248,13 +247,7 @@ pub fn view(app: &App) -> El {
                 .shrink()
                 .truncate(),
         )
-        .child(super::sidebar_toggle(app))
-        .child(super::ghost(
-            "board-toggle",
-            "Board",
-            &[crate::icon::KeyPart::Text("B")],
-            Message::ToggleBoard,
-        ));
+        .child(super::sidebar_toggle(app));
 
     let body = if rows.is_empty() {
         empty("no-rows", hint, "")

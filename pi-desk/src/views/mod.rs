@@ -1,7 +1,6 @@
-//! Window layout: sidebar, row list, and detail pane, with focus mode, the
-//! board, and overlays on top.
+//! Window layout: sidebar, row list, and detail pane, with focus mode and
+//! overlays on top.
 
-pub mod board;
 mod card;
 mod detail;
 mod list;
@@ -13,7 +12,7 @@ use crate::app::{App, Message};
 use crate::icon::{Icon, KeyPart};
 use crate::model::Timestamp;
 use crate::theme::{self, P, size};
-use rune::{Color, Cx, El, ScrollSpec, Span, Transition, Tx, col, el, rich, row, text};
+use rune::{Color, Cx, El, ScrollSpec, Span, Spring, Transition, Tx, col, el, rich, row, text};
 
 thread_local! {
     /// Menus and popups built during a view, mounted above everything.
@@ -66,41 +65,14 @@ fn window(app: &App, insets: rune::ChromeInsets) -> El {
     // Without a drawn titlebar, as on Linux, the sidebar names the app.
     let titlebar = (insets.height > 0.0).then(|| titlebar(insets));
     let brand = titlebar.is_none();
-    let body = if app.focus && app.current().is_some() {
-        row()
-            .key("focus")
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .justify_center()
-            .child(
-                col()
-                    .key("focus-column")
-                    .w_full()
-                    .max_w(900.0)
-                    .h_full()
-                    .px(32.0)
-                    .py(24.0)
-                    .gap(16.0)
-                    .child(card::view(app))
-                    .child(detail::view(app)),
-            )
-    } else {
-        let mut panes = row().key("panes").w_full().grow(1.0).min_h(0.0);
-        if app.show_sidebar {
-            panes = panes
-                .child(sidebar::view(app, brand))
-                .child(vrule("sidebar-rule"));
-        }
-        if app.board {
-            panes.child(board::view(app))
-        } else {
-            panes
-                .child(list::view(app))
-                .child(vrule("list-rule"))
-                .child(detail::pane(app))
-        }
-    };
+    let body = row()
+        .key("panes")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .motion(NAVIGATION_SLIDE)
+        .child(navigation(app, brand))
+        .child(detail::pane(app));
     let mut page = col().key("page").w_full().h_full().fill(P.window);
     if let Some(error) = &app.error {
         page = page.child(
@@ -189,6 +161,40 @@ fn window(app: &App, insets: rune::ChromeInsets) -> El {
         );
     }
     window
+}
+
+/// How long focus mode takes to slide the navigation in or out.
+/// The detail pane widens on the same spring, so the two edges move together.
+const NAVIGATION_SLIDE: Spring = rune::tok::motion::DEFAULT;
+
+/// The sidebar and task list in a slot that focus mode closes. The slot's
+/// width springs to zero while its contents keep their width, pinned to its
+/// trailing edge and clipped, so they slide out past the window's edge. The
+/// detail pane stays mounted and only widens, so its transcript is not rebuilt.
+fn navigation(app: &App, brand: bool) -> El {
+    let mut contents = row().key("navigation-contents").h_full();
+    let mut width = list::WIDTH + 1.0;
+    if app.show_sidebar {
+        contents = contents
+            .child(sidebar::view(app, brand))
+            .child(vrule("sidebar-rule"));
+        width += sidebar::WIDTH + 1.0;
+    }
+    contents = contents
+        .child(list::view(app))
+        .child(vrule("list-rule"))
+        .w(width)
+        .pin(None, Some(0.0), Some(0.0), Some(0.0))
+        .motion(NAVIGATION_SLIDE);
+    let open = !(app.focus && app.current().is_some());
+    let slot = el()
+        .key("navigation")
+        .w(if open { width } else { 0.0 })
+        .h_full()
+        .motion(NAVIGATION_SLIDE)
+        .clip_soft(0.0)
+        .child(contents);
+    if open { slot } else { slot.a11y_hidden() }
 }
 
 /// A vertical hairline between panes.

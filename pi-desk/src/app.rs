@@ -245,7 +245,6 @@ pub enum Message {
     Show(View),
     Select(Id),
     Open(Id),
-    ToggleBoard,
     ToggleFocus,
     SetTab(Tab),
     ToggleSidebar,
@@ -346,7 +345,6 @@ pub struct App {
     supervisor: Option<supervisor::Handle>,
     backlog: Vec<Request>,
     pub view: View,
-    pub board: bool,
     pub focus: bool,
     pub selected: Option<Id>,
     pub tab: Tab,
@@ -509,7 +507,6 @@ impl App {
             supervisor: None,
             backlog: Vec::new(),
             view: View::All,
-            board: false,
             focus: false,
             selected: None,
             tab: Tab::Transcript,
@@ -697,11 +694,7 @@ impl App {
         } else {
             self.load_session(Some(id.clone()), None)
         };
-        let reveal = Task::ui(Ui::Reveal(if self.board {
-            crate::views::board::card_key(&id)
-        } else {
-            crate::views::row_key(&id)
-        }));
+        let reveal = Task::ui(Ui::Reveal(crate::views::row_key(&id)));
         Task::batch([transcript, self.load_diff(&id), models, reveal])
     }
 
@@ -999,16 +992,6 @@ impl App {
                 message: Message::ResetZoom,
             },
             PaletteCommand {
-                label: if self.board {
-                    "List view"
-                } else {
-                    "Board view"
-                }
-                .into(),
-                keys: &[KeyPart::Text("B")],
-                message: Message::ToggleBoard,
-            },
-            PaletteCommand {
                 label: if self.focus {
                     "Leave focus mode"
                 } else {
@@ -1252,24 +1235,12 @@ impl App {
             }
             Message::Select(id) => self.select(Some(id)),
             Message::Open(id) => {
-                self.board = false;
                 let task = self.select(Some(id));
                 self.focus = true;
                 task
             }
-            Message::ToggleBoard => {
-                self.board = !self.board;
-                self.focus = false;
-                match &self.selected {
-                    Some(id) if self.board => {
-                        Task::ui(Ui::Reveal(crate::views::board::card_key(id)))
-                    }
-                    _ => Task::none(),
-                }
-            }
             Message::ToggleFocus => {
                 self.focus = !self.focus && self.current().is_some();
-                self.board = false;
                 Task::none()
             }
             Message::SetTab(tab) => {
@@ -2390,8 +2361,6 @@ impl App {
                     self.replying = false;
                 } else if self.focus {
                     self.focus = false;
-                } else if self.board {
-                    self.board = false;
                 } else {
                     return None;
                 }

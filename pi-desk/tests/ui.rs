@@ -131,11 +131,10 @@ impl Desk {
 
     fn debug_state(&self) -> String {
         format!(
-            "{:?} {:?} {:?} {} {} {} {} {:?} {:?} {:?} {}",
+            "{:?} {:?} {:?} {} {} {} {:?} {:?} {:?} {}",
             self.view,
             self.selected,
             self.overlay.as_ref().map(std::mem::discriminant),
-            self.board,
             self.focus,
             self.show_sidebar,
             self.replying,
@@ -482,6 +481,35 @@ fn changing_views_keeps_a_task_that_matches_the_new_view() {
     let _ = app.update(Message::Show(View::Working));
     assert_eq!(app.selected.as_deref(), Some("agent-5"));
     assert_eq!(app.rows().len(), 1);
+}
+
+#[test]
+fn focus_mode_slides_the_task_list_out_and_keeps_the_detail_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let list = app.keyed("list").unwrap();
+    let detail = app.keyed("detail").unwrap();
+    assert!(app.shows("New task"));
+    app.key("f");
+    assert!(app.focus);
+    // Mid-slide, the list has moved part of the way out.
+    app.rt.invalidate();
+    app.rt.frame(0.0);
+    app.rt.frame(0.1);
+    let moving = app.rt.presented("list").unwrap().0;
+    assert!(moving[0] < list[0] && moving[0] > list[0] - 600.0, "{moving:?}");
+    let navigation = app.keyed("navigation").unwrap();
+    assert_eq!(navigation[2], 0.0);
+    let list_after = app.keyed("list").unwrap();
+    assert!(list_after[0] + list_after[2] <= 0.5, "{list_after:?}");
+    assert!(!app.shows("New task"));
+    let wide = app.keyed("detail").unwrap();
+    assert!(wide[0] < detail[0] && wide[2] > detail[2]);
+    app.key("f");
+    assert!(!app.focus);
+    assert_eq!(app.keyed("list").unwrap(), list);
+    assert_eq!(app.keyed("detail").unwrap(), detail);
+    assert!(app.shows("New task"));
 }
 
 #[test]
@@ -847,7 +875,7 @@ fn zoomed_layouts_reflow_at_the_scaled_window_viewport() {
     for _ in 0..2 {
         let _ = app.update(Message::ZoomIn);
     }
-    for label in ["Board", "Hide sidebar", "Did", "Guarded the nil session."] {
+    for label in ["Hide sidebar", "Did", "Guarded the nil session."] {
         app.bounds(label);
     }
     app.snapshot("zoom-120");
@@ -861,7 +889,7 @@ fn zoomed_layouts_reflow_at_the_scaled_window_viewport() {
     }
     // Use the existing sidebar toggle to leave more room at high zoom.
     app.key("s");
-    for label in ["Show sidebar", "Board", "Did", "Needs"] {
+    for label in ["Show sidebar", "Did", "Needs"] {
         let [x, _, w, _] = app.bounds(label);
         assert!(x + w <= SIZE.0 + 0.5, "{label} at {x} + {w}");
     }
@@ -872,14 +900,10 @@ fn zoomed_layouts_reflow_at_the_scaled_window_viewport() {
 fn existing_shortcuts_have_visible_control_and_overlay_hints() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    let label = app.bounds("Board");
-    let hint = app.bounds("B");
+    let label = app.bounds("Hide sidebar");
+    let hint = app.bounds("S");
     assert!(hint[0] >= label[0] + label[2]);
     assert!((hint[1] + hint[3] / 2.0 - label[1] - label[3] / 2.0).abs() < 6.0);
-    app.click("Board");
-    assert!(app.shows("List"));
-    assert!(app.shows("B"));
-    app.click("List");
 
     let _ = app.update(Message::OpenSettings);
     assert!(app.shows("Cancel"));
@@ -917,12 +941,6 @@ fn sidebar_shortcut_respects_typing_modifiers_and_overlays() {
     app.key("s");
     assert!(app.show_sidebar);
     assert_eq!(app.selected, selected);
-    app.key("b");
-    app.key("s");
-    assert!(app.board);
-    assert!(!app.show_sidebar);
-    app.key("s");
-    assert!(app.show_sidebar);
 
     let _ = app.update(Message::StartReply);
     app.press("s", Mods::default(), true);
@@ -956,7 +974,7 @@ fn sidebar_shortcut_respects_typing_modifiers_and_overlays() {
 }
 
 #[test]
-fn sidebar_can_be_hidden_and_restored_in_list_and_board() {
+fn sidebar_can_be_hidden_and_restored() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let selected = app.selected.clone();
@@ -969,18 +987,10 @@ fn sidebar_can_be_hidden_and_restored_in_list_and_board() {
     app.click("Show sidebar");
     assert!(app.show_sidebar);
     assert!(app.shows("New task"));
-    app.click("Board");
-    app.click("Hide sidebar");
-    assert!(!app.show_sidebar);
-    assert!(!app.shows("New task"));
-    app.snapshot("board-sidebar-hidden");
-    app.click("Show sidebar");
-    assert!(app.show_sidebar);
-    assert!(app.shows("New task"));
 }
 
 #[test]
-fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
+fn every_view_groups_by_status_and_latest_activity() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     for (id, status) in [
@@ -1038,31 +1048,6 @@ fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
     assert!(!app.shows("URGENT"));
     assert!(!app.shows("EVERYTHING ELSE"));
     app.snapshot_size("status-recency-list", (1440.0, 1500.0));
-    app.key("b");
-    let mut previous_x = None;
-    for (group, ids) in [
-        ("Needs you", vec![4, 2, 1, 3]),
-        ("Working", vec![11, 7]),
-        ("Queued", vec![5, 9]),
-        ("Later", vec![12, 8]),
-        ("Done", vec![10, 6]),
-    ] {
-        let heading = app.keyed(&format!("board-heading-{group}")).unwrap();
-        if let Some(x) = previous_x {
-            assert!(heading[0] > x);
-        }
-        previous_x = Some(heading[0]);
-        let mut previous_y = None;
-        for id in ids {
-            let title = format!("Task agent-{id}");
-            let bounds = app.bounds(&title);
-            if let Some(y) = previous_y {
-                assert!(bounds[1] > y, "{group}: {title}");
-            }
-            previous_y = Some(bounds[1]);
-        }
-    }
-    app.snapshot("status-recency-board");
 }
 
 #[test]
@@ -1691,19 +1676,11 @@ async fn the_composer_files_into_the_main_checkout_unless_worktree_is_checked() 
 }
 
 #[test]
-fn board_focus_palette_and_project_views_render() {
+fn focus_palette_and_project_views_render() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     app.key("b");
-    assert!(app.board);
-    for column in ["Queued", "Needs you", "Done"] {
-        assert!(
-            app.keyed(&format!("board-heading-{column}")).is_some(),
-            "{column:?} column"
-        );
-    }
-    app.snapshot("board");
-    app.key("b");
+    assert!(!app.commands().iter().any(|command| command.label.contains("Board")));
     app.key("f");
     assert!(app.focus);
     app.snapshot("focus");

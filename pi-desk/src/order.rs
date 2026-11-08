@@ -5,7 +5,7 @@ use crate::model::{Agent, OutboxKind, State, Status, Timestamp};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-/// Shared list groups and board columns, in display order.
+/// List groups, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DisplayGroup {
     NeedsYou,
