@@ -142,6 +142,33 @@ fn main_checkout_diffs_from_its_start_and_commits_only_on_its_branch() {
 }
 
 #[test]
+fn main_checkout_diffs_from_its_start_after_a_reset_to_unrelated_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let start = desk_git::head(&repo).unwrap();
+    // As when an agent resets the branch onto a fork's upstream root.
+    git(&repo, &["checkout", "--quiet", "--orphan", "upstream"]);
+    git(&repo, &["rm", "-r", "--quiet", "--cached", "."]);
+    git(&repo, &["clean", "-fdq"]);
+    std::fs::write(repo.join("upstream.txt"), "upstream\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "Upstream root"]);
+    let upstream = desk_git::head(&repo).unwrap();
+    git(&repo, &["checkout", "--quiet", "main"]);
+    git(&repo, &["reset", "--quiet", "--hard", &upstream]);
+
+    let paths: Vec<String> = desk_git::parse_diff(&desk_git::diff(&repo, &start).unwrap())
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert!(paths.contains(&"upstream.txt".to_string()), "{paths:?}");
+
+    // A missing start still fails, with git's message rather than nothing.
+    let error = desk_git::diff(&repo, "0123456789abcdef0123456789abcdef01234567").unwrap_err();
+    assert!(error.starts_with("git merge-base: ") && error.len() > 16, "{error}");
+}
+
+#[test]
 fn main_checkout_works_before_the_first_commit() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("empty");

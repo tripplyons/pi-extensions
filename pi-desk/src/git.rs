@@ -27,11 +27,11 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
             .to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "git {}: {}",
-            args.first().unwrap_or(&""),
-            stderr.trim()
-        ))
+        let detail = match stderr.trim() {
+            "" => format!("failed ({})", output.status),
+            text => text.to_string(),
+        };
+        Err(format!("git {}: {detail}", args.first().unwrap_or(&"")))
     }
 }
 
@@ -147,13 +147,14 @@ pub fn commit_all(worktree: &Path, message: &str) -> Result<bool, String> {
 /// The branch's changes against where it left `base`, including uncommitted
 /// and untracked files.
 /// A `base` of the empty tree, or a branch with no commits, diffs every
-/// file as added.
+/// file as added. When `base` and HEAD share no history, as after a
+/// `git reset` onto another root, the diff compares against `base` itself.
 pub fn diff(worktree: &Path, base: &str) -> Result<String, String> {
     let empty = empty_tree(worktree)?;
     let merge_base = if base == empty || is_unborn(worktree)? {
         empty
     } else {
-        git(worktree, &["merge-base", base, "HEAD"])?
+        merge_base_or(worktree, base)?
     };
     let mut text = git(
         worktree,
@@ -181,6 +182,24 @@ pub fn diff(worktree: &Path, base: &str) -> Result<String, String> {
         text.push_str(&String::from_utf8_lossy(&output.stdout));
     }
     Ok(text)
+}
+
+/// The merge base of `base` and HEAD, or `base` when they share no history.
+/// `git merge-base` exits 1 with no output for unrelated histories.
+fn merge_base_or(worktree: &Path, base: &str) -> Result<String, String> {
+    let output = run(worktree, &["merge-base", base, "HEAD"])?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    if output.status.code() == Some(1) && output.stderr.is_empty() {
+        return Ok(base.to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = match stderr.trim() {
+        "" => format!("failed ({})", output.status),
+        text => text.to_string(),
+    };
+    Err(format!("git merge-base: {detail}"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -117,7 +117,9 @@ the app does not reset them.
    becomes one task, titled from its first line; a list stays one task. Submit
    with Cmd+Enter. Tasks use the project's current branch as their base. Use worktree starts unchecked each
    time New task opens; Cmd+E toggles it. Unchecked tasks work in the project's checkout and
-   record its HEAD commit; the task diff is everything since that commit. Check
+   record its HEAD commit; the task diff is everything since that commit. If
+   the agent resets the branch onto unrelated history, such as a fork's
+   upstream, the diff compares directly against that commit. Check
    it to give the task its own worktree and `pi-desk/` branch. A repository
    with no commits yet, as after `git init`, works for unchecked tasks: the diff
    shows every file as added, and approval makes the first commit. Worktree
