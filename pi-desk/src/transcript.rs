@@ -6,6 +6,7 @@ use crate::text::one_line;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::Arc;
 
 const OUTPUT_LIMIT: usize = 6000;
 
@@ -29,6 +30,19 @@ impl AssistantBlock {
     }
 }
 
+/// An image a tool returned, such as a `read` of a PNG, still encoded.
+#[derive(Clone)]
+pub struct ToolImage {
+    pub mime: String,
+    pub bytes: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for ToolImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ToolImage({}, {} bytes)", self.mime, self.bytes.len())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Entry {
     User {
@@ -45,6 +59,7 @@ pub enum Entry {
         name: String,
         preview: String,
         output: String,
+        images: Vec<ToolImage>,
         is_error: bool,
         running: bool,
     },
@@ -104,6 +119,33 @@ fn output_of(result: &Value) -> String {
     }
 }
 
+/// The base64 image blocks of a tool result, decoded. Blocks that fail to
+/// decode are left out.
+fn images_of(result: &Value) -> Vec<ToolImage> {
+    use base64::Engine;
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+        .filter_map(|block| {
+            let data = block.get("data").and_then(Value::as_str)?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .ok()?;
+            Some(ToolImage {
+                mime: block
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                bytes: bytes.into(),
+            })
+        })
+        .collect()
+}
+
 impl Transcript {
     pub fn note(&mut self, text: impl Into<String>) {
         self.entries.push(Entry::Note { text: text.into() });
@@ -119,6 +161,7 @@ impl Transcript {
             name: name.to_string(),
             preview: preview(name, args),
             output: String::new(),
+            images: Vec::new(),
             is_error: false,
             running: true,
         });
@@ -127,6 +170,7 @@ impl Transcript {
     fn finish_tool(&mut self, id: &str, result: &Value, failed: bool) {
         if let Some(Entry::Tool {
             output,
+            images,
             is_error,
             running,
             ..
@@ -136,6 +180,7 @@ impl Transcript {
             .and_then(|index| self.entries.get_mut(*index))
         {
             *output = output_of(result);
+            *images = images_of(result);
             *is_error = failed;
             *running = false;
         }
@@ -480,6 +525,26 @@ mod tests {
             ]
         );
         assert_eq!(transcript.last_error.as_deref(), Some("overloaded"));
+    }
+
+    #[test]
+    fn tool_results_keep_their_images() {
+        let messages = [
+            json!({"role":"assistant","content":[{"type":"toolCall","id":"a","name":"read","arguments":{"path":"a.png"}}],"stopReason":"toolUse"}),
+            json!({"role":"toolResult","toolCallId":"a","toolName":"read","content":[
+                {"type":"text","text":"Read image file [image/png]"},
+                {"type":"image","data":"iVBORw==","mimeType":"image/png"},
+                {"type":"image","data":"not base64!","mimeType":"image/png"}
+            ],"isError":false}),
+        ];
+        let transcript = Transcript::from_messages(messages.iter());
+        let Entry::Tool { output, images, .. } = &transcript.entries[0] else {
+            panic!("expected a tool entry");
+        };
+        assert_eq!(output, "Read image file [image/png]");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].mime, "image/png");
+        assert_eq!(&images[0].bytes[..], b"\x89PNG");
     }
 
     #[test]

@@ -131,7 +131,7 @@ impl Desk {
 
     fn debug_state(&self) -> String {
         format!(
-            "{:?} {:?} {:?} {} {} {} {:?} {:?} {:?} {}",
+            "{:?} {:?} {:?} {} {} {} {:?} {:?} {:?} {:?} {}",
             self.view,
             self.selected,
             self.overlay.as_ref().map(std::mem::discriminant),
@@ -139,6 +139,7 @@ impl Desk {
             self.show_sidebar,
             self.replying,
             self.expanded_thinking,
+            self.expanded,
             self.menu,
             self.pending.len(),
             self.desk.state.agents.iter().map(|agent| format!("{:?}{:?}", agent.status, agent.question)).collect::<String>()
@@ -1199,6 +1200,55 @@ fn thinking_is_one_line_by_default_and_expands_independently() {
     );
     assert!(!app.shows(&thinking));
     assert!(!app.expanded_thinking.contains(&("agent-1".into(), 0, 2)));
+}
+
+#[test]
+fn expanding_a_read_of_an_image_shows_the_image() {
+    use base64::Engine;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+    app.selected = Some("agent-4".into());
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, 40, 20);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = [220, 60, 40, 255].repeat(40 * 20);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    let messages = [
+        json!({"role":"assistant","content":[{"type":"toolCall","id":"r1","name":"read","arguments":{"path":"shot.png"}}],"stopReason":"toolUse"}),
+        json!({"role":"toolResult","toolCallId":"r1","toolName":"read","content":[
+            {"type":"text","text":"Read image file [image/png]"},
+            {"type":"image","data":data,"mimeType":"image/png"}
+        ],"isError":false}),
+    ];
+    app.desk.transcripts.insert(
+        "agent-4".into(),
+        pi_desk::transcript::Transcript::from_messages(messages.iter()),
+    );
+    let label = "Image the tool returned";
+    assert!(!app.shows(label));
+    let head = app.bounds("shot.png");
+    app.click("shot.png");
+    // Decoding runs on the cache's worker. The shown element holds the same
+    // handle, so wait on it, then lay out again.
+    let picture = app.images.as_ref().unwrap().load(png_bytes.clone());
+    picture.wait().unwrap();
+    app.snapshot("tool-image-expanded");
+    let [_, _, width, height] = app.bounds(label);
+    assert_eq!((width, height), (40.0, 20.0));
+    // Expanding must not scroll the row's header away.
+    assert_eq!(app.bounds("shot.png"), head);
+    app.click("shot.png");
+    assert!(!app.shows(label));
 }
 
 #[test]

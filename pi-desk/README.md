@@ -143,6 +143,8 @@ the app does not reset them.
    near the visible area. Thinking blocks in live and saved transcripts default to a single
    collapsed row labeled "Thinking" with a truncated preview. Click a row to
    show or hide its full text; streaming updates do not expand it automatically.
+   Expanding a tool call that returned an image, such as a `read` of a PNG,
+   shows the image under its text output, up to 480 by 360 points.
    Context compaction adds transcript notes and keeps the task Working through
    the interruption and continuation. Pi-desk confirms Pi is idle before moving
    a task to review or reporting an abort. Use the command palette to open the

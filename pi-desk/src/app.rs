@@ -383,6 +383,9 @@ pub struct App {
     ui: Vec<Ui>,
     /// The field that a focus-less accessor edits when its box is gone.
     scratch: TextEdit,
+    /// Decodes tool-result images off the UI thread. Set by the window's
+    /// setup hook, so headless views show a placeholder instead.
+    pub images: Option<rune::ImageCache>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -539,6 +542,7 @@ impl App {
             inbox: Inbox::default(),
             ui: Vec::new(),
             scratch: TextEdit::new(""),
+            images: None,
         };
         // Selecting the first task reads its transcript and diff in the
         // background; that work must start, or the task stays loading.
@@ -2634,6 +2638,7 @@ fn quote_path(path: &std::path::Path) -> String {
 
 /// The window's `setup` hook: starts the supervisor.
 pub fn window_setup(app: &mut App, waker: rune::Waker) {
+    app.images = Some(rune::ImageCache::new(waker.clone()));
     app.inbox.set_waker(waker);
     // The supervisor owns Pi processes; its events arrive like any message.
     let outbox = app.inbox.outbox();

@@ -5,8 +5,8 @@ use crate::highlight::SHOWN_LINES;
 use crate::icon::{Icon, KeyPart};
 use crate::model::Status;
 use crate::theme::{self, P, size};
-use crate::transcript::{AssistantBlock, Entry};
-use rune::{Color, El, GrowthSpec, ScrollSpec, Span, col, el, rich, row, text};
+use crate::transcript::{AssistantBlock, Entry, ToolImage};
+use rune::{Color, El, GrowthSpec, ScrollSpec, Span, SurfaceFit, col, el, rich, row, text};
 use rune_kit::Markdown;
 
 /// The right pane in list layout: the card above its tabs.
@@ -287,6 +287,7 @@ fn entry_row(app: &App, id: &str, index: usize) -> El {
             name,
             preview,
             output,
+            images,
             is_error,
             running,
         } => {
@@ -330,6 +331,14 @@ fn entry_row(app: &App, id: &str, index: usize) -> El {
                     .key("output"),
                 );
             }
+            if open {
+                for (image_index, image) in images.iter().enumerate() {
+                    column = column.child(
+                        panel(col().child(tool_image(app, image)))
+                            .key(format!("image-{image_index}")),
+                    );
+                }
+            }
             column
         }
         Entry::Note { text: note } => faint(note.as_str()).wrap(),
@@ -338,6 +347,45 @@ fn entry_row(app: &App, id: &str, index: usize) -> El {
         .w_full()
         .pt(if index == 0 { 0.0 } else { 12.0 })
         .child(element)
+}
+
+/// The largest box a tool-result image draws in, in points.
+const TOOL_IMAGE_BOX: (f32, f32) = (480.0, 360.0);
+
+/// A tool-result image at one point per pixel, scaled down to fit
+/// `TOOL_IMAGE_BOX` and narrow panes. The element holds the image's pixels
+/// from the first frame, which keeps the decode in the cache.
+///
+/// The size is explicit because a transcript row measured with an aspect
+/// ratio scrolls the transcript when it expands.
+fn tool_image(app: &App, image: &ToolImage) -> El {
+    let note = |text: String| faint(text).wrap();
+    let Some(cache) = app.images.as_ref() else {
+        return note(format!("Image ({})", image.mime));
+    };
+    let picture = cache.load_mime(image.bytes.clone(), &image.mime, 512.0, 2.0);
+    if let Some(error) = picture.error() {
+        return note(format!("Could not show the image: {error}"));
+    }
+    let element = el()
+        .role("image")
+        .pixels_fit(picture.pixels(), SurfaceFit::Fit);
+    let Some([width, height]) = picture.size() else {
+        return element.size(0.0, 0.0);
+    };
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+    let scale = (TOOL_IMAGE_BOX.0 / width)
+        .min(TOOL_IMAGE_BOX.1 / height)
+        .min(1.0);
+    // In a row, the image narrows with the pane and letterboxes.
+    row().w_full().child(
+        element
+            .label("Image the tool returned")
+            .size(width * scale, height * scale)
+            .shrink()
+            .min_w(0.0)
+            .radius(4.0),
+    )
 }
 
 fn diff_view(app: &App, id: &str) -> El {

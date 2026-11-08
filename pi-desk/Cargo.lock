@@ -2374,6 +2374,7 @@ dependencies = [
 name = "pi-desk"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "futures",
  "png 0.17.16",
