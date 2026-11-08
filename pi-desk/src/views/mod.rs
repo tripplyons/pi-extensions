@@ -163,38 +163,56 @@ fn window(app: &App, insets: rune::ChromeInsets) -> El {
     window
 }
 
-/// How long focus mode takes to slide the navigation in or out.
-/// The detail pane widens on the same spring, so the two edges move together.
+/// How long the sidebar and task list take to slide in or out.
+/// Neighboring panes resize on the same spring, so the edges move together.
 const NAVIGATION_SLIDE: Spring = rune::tok::motion::DEFAULT;
 
-/// The sidebar and task list in a slot that focus mode closes. The slot's
-/// width springs to zero while its contents keep their width, pinned to its
-/// trailing edge and clipped, so they slide out past the window's edge. The
-/// detail pane stays mounted and only widens, so its transcript is not rebuilt.
-fn navigation(app: &App, brand: bool) -> El {
-    let mut contents = row().key("navigation-contents").h_full();
-    let mut width = list::WIDTH + 1.0;
-    if app.show_sidebar {
-        contents = contents
-            .child(sidebar::view(app, brand))
-            .child(vrule("sidebar-rule"));
-        width += sidebar::WIDTH + 1.0;
-    }
-    contents = contents
-        .child(list::view(app))
-        .child(vrule("list-rule"))
+/// A slot whose width springs between `width` and zero while `contents` keep
+/// their width, pinned to its trailing edge and clipped, so they slide out
+/// past its leading edge instead of fading or reflowing.
+fn sliding(key: &str, open: bool, width: f32, contents: El) -> El {
+    let contents = contents
         .w(width)
         .pin(None, Some(0.0), Some(0.0), Some(0.0))
         .motion(NAVIGATION_SLIDE);
-    let open = !(app.focus && app.current().is_some());
     let slot = el()
-        .key("navigation")
+        .key(key)
         .w(if open { width } else { 0.0 })
         .h_full()
         .motion(NAVIGATION_SLIDE)
         .clip_soft(0.0)
         .child(contents);
     if open { slot } else { slot.a11y_hidden() }
+}
+
+/// The sidebar and task list. S slides the sidebar out from behind the list;
+/// focus mode slides both out past the window's edge. The sidebar stays
+/// mounted while hidden, and the detail pane only widens, so neither is
+/// rebuilt and the transcript keeps its place.
+fn navigation(app: &App, brand: bool) -> El {
+    let sidebar_width = sidebar::WIDTH + 1.0;
+    let sidebar = sliding(
+        "sidebar-slot",
+        app.show_sidebar,
+        sidebar_width,
+        row()
+            .key("sidebar-contents")
+            .h_full()
+            .child(sidebar::view(app, brand))
+            .child(vrule("sidebar-rule")),
+    );
+    let mut width = list::WIDTH + 1.0;
+    if app.show_sidebar {
+        width += sidebar_width;
+    }
+    let contents = row()
+        .key("navigation-contents")
+        .h_full()
+        .child(sidebar)
+        .child(list::view(app))
+        .child(vrule("list-rule"));
+    let open = !(app.focus && app.current().is_some());
+    sliding("navigation", open, width, contents)
 }
 
 /// A vertical hairline between panes.

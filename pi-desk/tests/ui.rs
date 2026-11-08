@@ -513,6 +513,38 @@ fn focus_mode_slides_the_task_list_out_and_keeps_the_detail_pane() {
 }
 
 #[test]
+fn the_sidebar_slides_out_behind_the_list_and_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let sidebar = app.keyed("sidebar").unwrap();
+    let list = app.keyed("list").unwrap();
+    let detail = app.keyed("detail").unwrap();
+    app.key("s");
+    assert!(!app.show_sidebar);
+    // Mid-slide, the sidebar and list have moved part of the way left.
+    app.rt.invalidate();
+    app.rt.frame(0.0);
+    app.rt.frame(0.1);
+    let moving = app.rt.presented("sidebar").unwrap().0;
+    assert!(moving[0] < sidebar[0] && moving[0] > sidebar[0] - sidebar[2], "{moving:?}");
+    let moving_list = app.rt.presented("list").unwrap().0;
+    assert!(moving_list[0] < list[0] && moving_list[0] > 0.0, "{moving_list:?}");
+    assert_eq!(app.keyed("sidebar-slot").unwrap()[2], 0.0);
+    let hidden = app.keyed("sidebar").unwrap();
+    assert!(hidden[0] + hidden[2] <= 0.5, "{hidden:?}");
+    assert!(!app.shows("New task"));
+    assert!(app.keyed("list").unwrap()[0] <= 0.5);
+    let wide = app.keyed("detail").unwrap();
+    assert!(wide[0] < detail[0] && wide[2] > detail[2]);
+    app.key("s");
+    assert!(app.show_sidebar);
+    assert_eq!(app.keyed("sidebar").unwrap(), sidebar);
+    assert_eq!(app.keyed("list").unwrap(), list);
+    assert_eq!(app.keyed("detail").unwrap(), detail);
+    assert!(app.shows("New task"));
+}
+
+#[test]
 fn discard_keeps_the_focused_task_selected() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());

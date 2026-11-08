@@ -188,8 +188,8 @@ share one text baseline. Live assistant text in the Transcript
 renders as streaming Markdown: an emphasis or code span still being written
 draws styled, and existing lines update in place. Completed history, switching
 agents, and reflow from resize or zoom do not animate.
-Use Hide sidebar / Show sidebar in the list header to toggle navigation
-without hiding the task list. These actions are also in the command palette.
+Use Hide sidebar / Show sidebar in the list header to slide navigation out
+behind the task list or back in. These actions are also in the command palette.
 Focus mode slides the sidebar and list out past the left edge, and the detail
 pane widens to fill the window. The detail pane stays in place, so its
 transcript is not rebuilt. Task summaries are always shown when available. Review previews put the outcome
