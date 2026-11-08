@@ -52,6 +52,31 @@ pub fn head(repo: &Path) -> Result<String, String> {
     git(repo, &["rev-parse", "--verify", "HEAD"])
 }
 
+/// True when the current branch has no commits yet, as after `git init`.
+pub fn is_unborn(repo: &Path) -> Result<bool, String> {
+    if git(repo, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+        return Ok(false);
+    }
+    // Fails when HEAD is not a symbolic ref or the repo is unreadable.
+    git(repo, &["symbolic-ref", "--quiet", "HEAD"])?;
+    Ok(true)
+}
+
+/// The empty tree's object id, in the repository's hash format.
+pub fn empty_tree(repo: &Path) -> Result<String, String> {
+    git(repo, &["hash-object", "-t", "tree", "/dev/null"])
+}
+
+/// Where a main-checkout task starts: the HEAD commit, or the empty tree
+/// when the branch has no commits yet.
+pub fn start_point(repo: &Path) -> Result<String, String> {
+    if is_unborn(repo)? {
+        empty_tree(repo)
+    } else {
+        head(repo)
+    }
+}
+
 /// Adds a worktree on `branch`, creating the branch from `base` if needed.
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -121,8 +146,15 @@ pub fn commit_all(worktree: &Path, message: &str) -> Result<bool, String> {
 
 /// The branch's changes against where it left `base`, including uncommitted
 /// and untracked files.
+/// A `base` of the empty tree, or a branch with no commits, diffs every
+/// file as added.
 pub fn diff(worktree: &Path, base: &str) -> Result<String, String> {
-    let merge_base = git(worktree, &["merge-base", base, "HEAD"])?;
+    let empty = empty_tree(worktree)?;
+    let merge_base = if base == empty || is_unborn(worktree)? {
+        empty
+    } else {
+        git(worktree, &["merge-base", base, "HEAD"])?
+    };
     let mut text = git(
         worktree,
         &[

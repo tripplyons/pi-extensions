@@ -118,7 +118,10 @@ the app does not reset them.
    with Cmd+Enter. Tasks use the project's current branch as their base. Use worktree starts unchecked each
    time New task opens; Cmd+E toggles it. Unchecked tasks work in the project's checkout and
    record its HEAD commit; the task diff is everything since that commit. Check
-   it to give the task its own worktree and `pi-desk/` branch.
+   it to give the task its own worktree and `pi-desk/` branch. A repository
+   with no commits yet, as after `git init`, works for unchecked tasks: the diff
+   shows every file as added, and approval makes the first commit. Worktree
+   tasks need a first commit.
 3. Four agents run at once by default. Settings lets you change the slot limit.
    Scheduling uses project order, then replies before new work, then oldest
    queued task first. Display order does not change scheduling. Priority is not

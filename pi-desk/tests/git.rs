@@ -142,6 +142,54 @@ fn main_checkout_diffs_from_its_start_and_commits_only_on_its_branch() {
 }
 
 #[test]
+fn main_checkout_works_before_the_first_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("empty");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "--quiet", "-b", "main"]);
+    for (key, value) in [
+        ("user.name", "pi-desk test"),
+        ("user.email", "test@example.invalid"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ] {
+        git(&repo, &["config", key, value]);
+    }
+    assert!(desk_git::is_unborn(&repo).unwrap());
+    assert_eq!(desk_git::current_branch(&repo).unwrap(), "main");
+    let start = desk_git::start_point(&repo).unwrap();
+    assert_eq!(start, desk_git::empty_tree(&repo).unwrap());
+
+    std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+    git(&repo, &["add", "staged.txt"]);
+    std::fs::write(repo.join("new.txt"), "untracked\n").unwrap();
+    let summary: Vec<(String, usize, usize)> =
+        desk_git::parse_diff(&desk_git::diff(&repo, &start).unwrap())
+            .into_iter()
+            .map(|file| (file.path, file.added, file.removed))
+            .collect();
+    assert_eq!(
+        summary,
+        [("staged.txt".into(), 1, 0), ("new.txt".into(), 1, 0)]
+    );
+
+    let Merge::Merged { commit } = desk_git::commit_checkout(&repo, "main", "First").unwrap()
+    else {
+        panic!("expected a commit")
+    };
+    assert_eq!(commit, desk_git::head(&repo).unwrap());
+    assert!(!desk_git::is_unborn(&repo).unwrap());
+    assert_eq!(git(&repo, &["rev-list", "--count", "main"]), "1");
+    // A task filed before the first commit still diffs from the empty tree.
+    let paths: Vec<String> = desk_git::parse_diff(&desk_git::diff(&repo, &start).unwrap())
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(paths, ["new.txt", "staged.txt"]);
+    assert_eq!(desk_git::start_point(&repo).unwrap(), commit);
+}
+
+#[test]
 fn add_worktree_reuses_a_kept_branch_and_recreates_a_deleted_one() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());

@@ -1354,8 +1354,8 @@ impl App {
                     .map(|agent| (&agent.status, &agent.workspace))
                 {
                     Some((Status::Done { .. }, Workspace::Main { checkout, .. })) => {
-                        match git::head(checkout) {
-                            Ok(head) => Some(head),
+                        match git::start_point(checkout) {
+                            Ok(start) => Some(start),
                             Err(error) => {
                                 self.error = Some(error);
                                 return Task::none();
@@ -2165,9 +2165,22 @@ impl App {
             }
         };
         let isolation = if composer.use_worktree {
-            Isolation::Worktree
+            match git::is_unborn(&project.path) {
+                Ok(false) => Isolation::Worktree,
+                Ok(true) => {
+                    composer.error = Some(format!(
+                        "{} has no commits yet; make a first commit or uncheck Use worktree",
+                        project.path.display()
+                    ));
+                    return Task::none();
+                }
+                Err(error) => {
+                    composer.error = Some(error);
+                    return Task::none();
+                }
+            }
         } else {
-            match git::head(&project.path) {
+            match git::start_point(&project.path) {
                 Ok(start) => Isolation::Main { start },
                 Err(error) => {
                     composer.error = Some(error);
