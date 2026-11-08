@@ -1246,7 +1246,10 @@ fn diff_and_transcript_tabs_render_content() {
 
     app.key("d");
     let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1,2 @@\n-fn main() {}\n+fn main() {\n+    println!(\"hello\");\n";
-    let _ = app.update(Message::DiffLoaded(id, Ok(diff.into())));
+    let _ = app.update(Message::DiffLoaded(
+        id,
+        Ok(pi_desk::app::LoadedDiff::parse(diff, None)),
+    ));
     assert!(app.shows("src/main.rs"));
     let line = app.keyed("diff-line-0").expect("diff code must be shown");
     assert!(line[2] > 80.0, "diff line collapsed: {line:?}");
@@ -1972,4 +1975,137 @@ async fn remaining_shortcuts_switch_tabs_answer_by_number_and_file_with_command_
     assert!(app.overlay.is_none());
     assert_eq!(app.desk.state.agents.len(), before + 1);
     assert_eq!(app.desk.state.agents[before].title, "Tidy the logs");
+}
+
+#[test]
+fn a_press_below_the_last_line_focuses_a_text_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.desk.state.settings.vim_mode = false;
+    let _ = app.update(Message::Select("agent-4".into()));
+    app.key("r");
+    app.reply = rune::TextEdit::new("one line");
+    app.render();
+    assert!(!app.reply.focused);
+    let [x, y, _, h] = app.keyed("reply").expect("the reply field is shown");
+    // The box is four lines tall; the text takes one.
+    let (px, py) = (x + 40.0, y + h + 30.0);
+    app.rt.pointer_move(px, py);
+    app.rt.pointer_down(px, py);
+    app.rt.pointer_up(px, py);
+    app.render();
+    assert!(
+        app.reply.focused,
+        "a press below the text must focus the reply"
+    );
+    let (caret, _) = app.reply.range();
+    assert!(
+        caret > 0,
+        "the caret goes to the last line, not the start: {caret}"
+    );
+
+    app.key("escape");
+    app.rt.state.send(Message::NewTask);
+    app.render();
+    if let Some(Overlay::Composer(composer)) = &mut app.overlay {
+        composer.content = rune::TextEdit::new("first");
+    }
+    app.render();
+    let [x, y, _, h] = app.keyed("composer").expect("the composer field is shown");
+    let (px, py) = (x + 40.0, y + h + 60.0);
+    app.rt.pointer_move(px, py);
+    app.rt.pointer_down(px, py);
+    app.rt.pointer_up(px, py);
+    app.render();
+    let Some(Overlay::Composer(composer)) = &app.overlay else {
+        panic!("the composer closed");
+    };
+    assert!(
+        composer.content.focused,
+        "a press below the text must focus the composer"
+    );
+    assert!(composer.content.range().0 > 0);
+}
+
+#[test]
+fn the_titlebar_band_keeps_content_clear_of_the_window_controls() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    assert!(
+        app.shows("pi-desk"),
+        "without a titlebar the sidebar names the app"
+    );
+    let mut insets = rune::ChromeInsets::default();
+    insets.leading = 76.0;
+    insets.height = pi_desk::views::TITLEBAR;
+    app.rt.set_chrome_insets(insets);
+    let title = app.bounds("pi-desk");
+    assert!(
+        title[0] >= insets.leading,
+        "the title clears the traffic lights: {title:?}"
+    );
+    assert!(
+        title[1] + title[3] <= insets.height,
+        "the title sits in the band: {title:?}"
+    );
+    let sidebar = app.keyed("sidebar").expect("the sidebar is shown");
+    assert!(
+        sidebar[1] >= insets.height,
+        "the sidebar starts below the band: {sidebar:?}"
+    );
+    let named = app
+        .elements()
+        .into_iter()
+        .filter(|element| element.text.as_deref() == Some("pi-desk") && !element.exiting)
+        .count();
+    assert_eq!(named, 1, "the sidebar drops its own name under a titlebar");
+    for (show, key) in [(false, "sidebar-toggle"), (true, "sidebar-toggle")] {
+        app.show_sidebar = show;
+        let toggle = app.keyed(key).expect("the sidebar toggle is shown");
+        assert!(
+            toggle[1] >= insets.height,
+            "{key} sits below the band: {toggle:?}"
+        );
+    }
+    app.snapshot("titlebar");
+}
+
+#[test]
+fn long_transcripts_build_only_the_rows_near_the_bottom() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let id = app.selected.clone().unwrap();
+    let messages: Vec<serde_json::Value> = (0..600)
+        .map(|n| {
+            serde_json::json!({"role": "assistant", "content": [
+                {"type": "text", "text": format!("Message number {n}")}
+            ]})
+        })
+        .collect();
+    app.desk.transcripts.insert(
+        id.clone(),
+        pi_desk::transcript::Transcript::from_messages(messages.iter()),
+    );
+    app.tab = pi_desk::app::Tab::Transcript;
+    assert!(
+        app.shows("Message number 599"),
+        "the transcript opens at its end"
+    );
+    let built = app
+        .elements()
+        .into_iter()
+        .filter(|element| {
+            element
+                .text
+                .as_deref()
+                .is_some_and(|text| text.starts_with("Message number"))
+        })
+        .count();
+    assert!(built < 200, "{built} of 600 rows were built");
+}
+
+#[test]
+fn mono_spans_use_the_platform_monospace() {
+    // Markdown inline code asks for the mono family, as code blocks do.
+    assert_eq!(pi_desk::app::spec().families, ("Inter", "ui-monospace"));
 }

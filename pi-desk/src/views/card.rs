@@ -48,12 +48,15 @@ pub fn editor(field: El, normal_mode: bool, min_lines: usize, max_lines: usize) 
                 P.selection
             },
         );
+    // The textbox role sends a press anywhere in the frame, including the
+    // empty lines below the text, to the field.
     col()
         .w_full()
         .padding(10.0)
         .radius(8.0)
         .fill(P.window)
         .border(1.0, P.border)
+        .role("textbox")
         .child(auto_grow(field, min_lines, max_lines))
 }
 

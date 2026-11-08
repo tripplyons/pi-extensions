@@ -91,6 +91,7 @@ fn framed(field: El) -> El {
         .radius(8.0)
         .fill(P.window)
         .border(1.0, P.border)
+        .role("textbox")
         .child(field)
 }
 

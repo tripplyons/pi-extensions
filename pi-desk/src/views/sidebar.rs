@@ -42,7 +42,9 @@ fn item(app: &App, key: &str, name: &str, count: Option<usize>, view: View) -> E
     selectable(line, selected)
 }
 
-pub fn view(app: &App) -> El {
+/// The sidebar. `brand` names the app at the top, for windows without a
+/// drawn titlebar.
+pub fn view(app: &App, brand: bool) -> El {
     let state = &app.desk.state;
     let dragging = app.dragging.as_ref();
 
@@ -228,23 +230,26 @@ pub fn view(app: &App) -> El {
                 .child(keys(&[COMMAND, KeyPart::Text("K")])),
         );
 
-    col()
+    let mut sidebar = col()
         .key("sidebar")
         .w(WIDTH)
         .h_full()
         .px(10.0)
-        .pt(16.0)
+        .pt(if brand { 16.0 } else { 12.0 })
         .pb(12.0)
         .gap(10.0)
-        .fill(P.sidebar)
-        .child(
+        .fill(P.sidebar);
+    if brand {
+        sidebar = sidebar.child(
             row()
                 .key("brand")
                 .px(10.0)
                 .h(24.0)
                 .center_y()
                 .child(strong("pi-desk", size::BODY, P.text)),
-        )
+        );
+    }
+    sidebar
         .child(nav)
         .child(el().key("nav-gap").h(8.0))
         .child(header)

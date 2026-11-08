@@ -1553,20 +1553,19 @@ impl Desk {
         }
     }
 
-    /// Loads a transcript for a row without a live process.
-    pub fn load_transcript(&mut self, id: &str) {
+    /// The session file to read for a task whose transcript is not loaded.
+    pub fn unloaded_transcript(&self, id: &str) -> Option<std::path::PathBuf> {
         if self.transcripts.contains_key(id) {
-            return;
+            return None;
         }
-        let Some(file) = self
-            .state
-            .agent(id)
-            .and_then(|agent| agent.session_file.clone())
-        else {
-            return;
-        };
-        if let Ok(transcript) = Transcript::from_session_file(&file) {
-            self.transcripts.insert(id.to_string(), transcript);
+        self.state.agent(id)?.session_file.clone()
+    }
+
+    /// Keeps a transcript read from the session file, unless the agent's
+    /// own events or messages filled one in while the file was read.
+    pub fn transcript_read(&mut self, id: &str, transcript: Transcript) {
+        if self.state.agent(id).is_some() {
+            self.transcripts.entry(id.to_string()).or_insert(transcript);
         }
     }
 }

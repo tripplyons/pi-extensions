@@ -165,133 +165,31 @@ fn transcript(app: &App, id: &str) -> El {
         .get(id)
         .filter(|transcript| !transcript.entries.is_empty())
     else {
+        if app.reading_transcript(id) {
+            return empty("reading-transcript", "Loading…", "");
+        }
         return empty(
             "no-transcript",
             "No transcript yet",
             "It appears once the agent starts.",
         );
     };
-    let working = app
-        .current()
-        .is_some_and(|agent| agent.status == Status::Working);
-    let style = theme::markdown();
-    let mut entries = col().key("entries").w_full().gap(12.0).px(4.0).py(14.0);
-    let last = transcript.entries.len() - 1;
-    for (index, entry) in transcript.entries.iter().enumerate() {
-        let element = match entry {
-            Entry::User { text: message } => panel(
-                col()
-                    .gap(4.0)
-                    .child(faint("You"))
-                    .child(label(message.as_str(), size::BODY, P.text).wrap().selectable(true)),
-            ),
-            Entry::Assistant {
-                id: message_id,
-                blocks,
-                error,
-                ..
-            } => {
-                let mut content = col().w_full().gap(6.0);
-                for (block_index, block) in blocks {
-                    let block_key = format!("b{block_index}");
-                    match block {
-                        AssistantBlock::Text { text } => {
-                            let live = working && index == last;
-                            content = content.child(
-                                Markdown::new(text.as_str())
-                                    .streaming(live)
-                                    .selectable(true)
-                                    .render(&style)
-                                    .key(block_key)
-                                    .w_full(),
-                            );
-                        }
-                        AssistantBlock::Thinking { text: thinking } => {
-                            let open = app.expanded_thinking.contains(&(
-                                id.to_string(),
-                                *message_id,
-                                *block_index,
-                            ));
-                            content = content.child(disclosure(
-                                block_key.clone(),
-                                open,
-                                vec![
-                                    label("Thinking", size::CAPTION, P.muted),
-                                    label(crate::text::one_line(thinking, 110), size::CAPTION, P.faint)
-                                        .grow(1.0)
-                                        .shrink()
-                                        .truncate(),
-                                ],
-                                Message::ToggleThinking(id.to_string(), *message_id, *block_index),
-                            ));
-                            if open && !thinking.is_empty() {
-                                content = content.child(
-                                    panel(
-                                        label(thinking.as_str(), size::CONTROL, P.muted)
-                                            .wrap()
-                                            .selectable(true),
-                                    )
-                                    .key(format!("{block_key}-open")),
-                                );
-                            }
-                        }
-                    }
-                }
-                if let Some(error) = error {
-                    content = content.child(
-                        label(error.as_str(), size::CONTROL, P.red)
-                            .wrap()
-                            .key("error"),
-                    );
-                }
-                content
-            }
-            Entry::Tool {
-                id: tool,
-                name,
-                preview,
-                output,
-                is_error,
-                running,
-            } => {
-                let open = app.expanded.contains(tool);
-                let state = if *running {
-                    "…"
-                } else if *is_error {
-                    "failed"
-                } else {
-                    ""
-                };
-                let head = disclosure(
-                    "head".into(),
-                    open,
-                    vec![
-                        mono(name.as_str(), size::CAPTION, P.accent),
-                        mono(crate::text::one_line(preview, 110), size::CAPTION, P.muted)
-                            .grow(1.0)
-                            .shrink()
-                            .truncate(),
-                        label(state, size::CAPTION, if *is_error { P.red } else { P.faint }),
-                    ],
-                    Message::ToggleTool(tool.clone()),
-                );
-                let mut column = col().w_full().gap(4.0).child(head);
-                if open && !output.is_empty() {
-                    column = column.child(
-                        panel(
-                            mono(output.as_str(), size::CAPTION, if *is_error { P.red } else { P.text })
-                                .wrap_anywhere()
-                                .selectable(true),
-                        )
-                        .key("output"),
-                    );
-                }
-                column
-            }
-            Entry::Note { text: note } => faint(note.as_str()).wrap(),
-        };
-        entries = entries.child(element.key(format!("entry-{index}")));
-    }
+    // Long sessions have thousands of entries. Only the rows near the
+    // viewport are built and laid out, so rebuilding for each streamed
+    // update stays cheap.
+    let task = id.to_string();
+    let entries = col()
+        .key("entries")
+        .w_full()
+        .px(4.0)
+        .py(14.0)
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            transcript.entries.len(),
+            48.0,
+            |_: &App, index| format!("entry-{index}").into(),
+            move |app: &App, index| entry_row(app, &task, index),
+        );
     col()
         .key(format!("transcript-{id}"))
         .w_full()
@@ -300,6 +198,146 @@ fn transcript(app: &App, id: &str) -> El {
         .scroll(ScrollSpec { stick_bottom: true })
         .scroll_edge_fade(12.0)
         .child(entries)
+}
+
+/// One transcript entry, with the gap above it.
+fn entry_row(app: &App, id: &str, index: usize) -> El {
+    let Some(transcript) = app.desk.transcripts.get(id) else {
+        return el();
+    };
+    let Some(entry) = transcript.entries.get(index) else {
+        return el();
+    };
+    let working = app
+        .current()
+        .is_some_and(|agent| agent.status == Status::Working);
+    let style = theme::markdown();
+    let last = transcript.entries.len() - 1;
+    let element = match entry {
+        Entry::User { text: message } => panel(
+            col().gap(4.0).child(faint("You")).child(
+                label(message.as_str(), size::BODY, P.text)
+                    .wrap()
+                    .selectable(true),
+            ),
+        ),
+        Entry::Assistant {
+            id: message_id,
+            blocks,
+            error,
+            ..
+        } => {
+            let mut content = col().w_full().gap(6.0);
+            for (block_index, block) in blocks {
+                let block_key = format!("b{block_index}");
+                match block {
+                    AssistantBlock::Text { text } => {
+                        let live = working && index == last;
+                        content = content.child(
+                            Markdown::new(text.as_str())
+                                .streaming(live)
+                                .selectable(true)
+                                .render(&style)
+                                .key(block_key)
+                                .w_full(),
+                        );
+                    }
+                    AssistantBlock::Thinking { text: thinking } => {
+                        let open = app.expanded_thinking.contains(&(
+                            id.to_string(),
+                            *message_id,
+                            *block_index,
+                        ));
+                        content = content.child(disclosure(
+                            block_key.clone(),
+                            open,
+                            vec![
+                                label("Thinking", size::CAPTION, P.muted),
+                                label(crate::text::one_line(thinking, 110), size::CAPTION, P.faint)
+                                    .grow(1.0)
+                                    .shrink()
+                                    .truncate(),
+                            ],
+                            Message::ToggleThinking(id.to_string(), *message_id, *block_index),
+                        ));
+                        if open && !thinking.is_empty() {
+                            content = content.child(
+                                panel(
+                                    label(thinking.as_str(), size::CONTROL, P.muted)
+                                        .wrap()
+                                        .selectable(true),
+                                )
+                                .key(format!("{block_key}-open")),
+                            );
+                        }
+                    }
+                }
+            }
+            if let Some(error) = error {
+                content = content.child(
+                    label(error.as_str(), size::CONTROL, P.red)
+                        .wrap()
+                        .key("error"),
+                );
+            }
+            content
+        }
+        Entry::Tool {
+            id: tool,
+            name,
+            preview,
+            output,
+            is_error,
+            running,
+        } => {
+            let open = app.expanded.contains(tool);
+            let state = if *running {
+                "…"
+            } else if *is_error {
+                "failed"
+            } else {
+                ""
+            };
+            let head = disclosure(
+                "head".into(),
+                open,
+                vec![
+                    mono(name.as_str(), size::CAPTION, P.accent),
+                    mono(crate::text::one_line(preview, 110), size::CAPTION, P.muted)
+                        .grow(1.0)
+                        .shrink()
+                        .truncate(),
+                    label(
+                        state,
+                        size::CAPTION,
+                        if *is_error { P.red } else { P.faint },
+                    ),
+                ],
+                Message::ToggleTool(tool.clone()),
+            );
+            let mut column = col().w_full().gap(4.0).child(head);
+            if open && !output.is_empty() {
+                column = column.child(
+                    panel(
+                        mono(
+                            output.as_str(),
+                            size::CAPTION,
+                            if *is_error { P.red } else { P.text },
+                        )
+                        .wrap_anywhere()
+                        .selectable(true),
+                    )
+                    .key("output"),
+                );
+            }
+            column
+        }
+        Entry::Note { text: note } => faint(note.as_str()).wrap(),
+    };
+    col()
+        .w_full()
+        .pt(if index == 0 { 0.0 } else { 12.0 })
+        .child(element)
 }
 
 fn diff_view(app: &App, id: &str) -> El {
@@ -348,7 +386,7 @@ fn diff_view(app: &App, id: &str) -> El {
     }
     let selected = diff.selected.min(files.len() - 1);
     let file = &files[selected];
-    let colors = diff.colors.get(selected);
+    let colors = diff.colors.get(&selected);
     let mut lines = Vec::new();
     for (index, line) in file.lines.iter().enumerate().take(SHOWN_LINES) {
         let (background, prefix, base) = match line.kind {

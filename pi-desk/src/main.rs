@@ -2,7 +2,11 @@
 
 fn main() {
     extend_path();
-    rune::App::new(pi_desk::app::spec()).run();
+    // The view draws the titlebar band, so the traffic lights sit in it
+    // instead of over the sidebar.
+    rune::App::new(pi_desk::app::spec())
+        .titlebar(rune::Titlebar::new(pi_desk::views::TITLEBAR))
+        .run();
 }
 
 /// Apps started from Finder get a minimal PATH. Add the usual places for

@@ -8,8 +8,10 @@ switching terminals.
 
 Panels, controls, selections, and primary buttons use neutral grays. Errors,
 red/green diffs, and subdued syntax colors keep semantic cues visible.
-Interface text uses Inter, which Rune bundles; code, paths, and branch names use
-the platform monospace (SF Mono on macOS). A 12/13/14/16/18 px scale separates
+Interface text uses Inter, which Rune bundles; code, including inline code in
+Markdown, paths, and branch names use the platform monospace (SF Mono on macOS).
+On macOS, the window draws a 32 px titlebar band that holds the traffic lights
+and the app name; drag it to move the window. A 12/13/14/16/18 px scale separates
 captions, controls, body text, headings, and titles. Disclosure chevrons, drag
 handles, goal and swarm markers, and modifier and arrow keys are bundled
 [Lucide](https://lucide.dev) SVG icons tinted with theme colors.
@@ -131,7 +133,11 @@ the app does not reset them.
    the open New task box or reply. With neither open, the drop starts a reply
    to the selected task. Paths with spaces are single-quoted.
 5. Inspect the live Transcript or the highlighted Diff, including untracked
-   files. Thinking blocks in live and saved transcripts default to a single
+   files. Session files and diffs are read, parsed, and highlighted off the
+   interface thread, so J/K stays responsive on large tasks. Only the file
+   shown in the Diff tab gets syntax colors, and colors are kept for files that
+   did not change since the last load. The Transcript builds only the entries
+   near the visible area. Thinking blocks in live and saved transcripts default to a single
    collapsed row labeled "Thinking" with a truncated preview. Click a row to
    show or hide its full text; streaming updates do not expand it automatically.
    Context compaction adds transcript notes and keeps the task Working through
@@ -217,6 +223,7 @@ the agent and leave the checkout's files unchanged. Undo is not a way to reverse
 
 ## Keys
 
+A press anywhere in a text box, including below its last line, focuses it.
 Text boxes support macOS word navigation and deletion with Option, line
 navigation and deletion with Cmd, Cmd+Up/Down for document navigation, and
 Shift variants for selection. Clipboard shortcuts and Cmd+A select all work as

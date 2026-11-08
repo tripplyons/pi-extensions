@@ -129,20 +129,79 @@ pub enum Overlay {
     ConfirmDiscard(Id),
 }
 
+/// Syntax colors for the shown lines of one diff file.
+pub type FileColors = Arc<Vec<crate::highlight::Spans>>;
+
 pub struct DiffState {
-    pub files: Result<Vec<FileDiff>, String>,
-    pub colors: Vec<Vec<crate::highlight::Spans>>,
+    pub files: Result<Arc<Vec<FileDiff>>, String>,
+    /// Syntax colors by file index. Only files shown in the Diff tab get
+    /// colors, computed off the UI thread.
+    pub colors: HashMap<usize, FileColors>,
     pub selected: usize,
     pub loading: bool,
+    /// The file index being highlighted off the UI thread.
+    highlighting: Option<usize>,
 }
 
 impl Default for DiffState {
     fn default() -> Self {
         DiffState {
-            files: Ok(Vec::new()),
-            colors: Vec::new(),
+            files: Ok(Arc::default()),
+            colors: HashMap::new(),
             selected: 0,
             loading: false,
+            highlighting: None,
+        }
+    }
+}
+
+/// A diff's files and the colors computed for them so far.
+pub type DiffColors = (Arc<Vec<FileDiff>>, HashMap<usize, FileColors>);
+
+/// A diff parsed off the UI thread.
+#[derive(Debug, Clone)]
+pub struct LoadedDiff {
+    pub files: Arc<Vec<FileDiff>>,
+    /// Colors kept from the previous load for files that did not change.
+    pub colors: HashMap<usize, FileColors>,
+}
+
+impl LoadedDiff {
+    /// Parses `text`. When the files match `previous`, its files and colors
+    /// are kept as they are, so nothing is parsed or highlighted again.
+    pub fn parse(text: &str, previous: Option<DiffColors>) -> LoadedDiff {
+        let files = git::parse_diff(text);
+        let Some((old_files, old_colors)) = previous else {
+            return LoadedDiff {
+                files: Arc::new(files),
+                colors: HashMap::new(),
+            };
+        };
+        if *old_files == files {
+            return LoadedDiff {
+                files: old_files,
+                colors: old_colors,
+            };
+        }
+        let old_index: HashMap<&str, usize> = old_files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| (file.path.as_str(), index))
+            .collect();
+        let colors = files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, file)| {
+                let old = *old_index.get(file.path.as_str())?;
+                (old_files[old].lines == file.lines)
+                    .then(|| old_colors.get(&old).cloned())
+                    .flatten()
+                    .map(|colors| (index, colors))
+            })
+            .collect();
+        LoadedDiff {
+            files: Arc::new(files),
+            colors,
         }
     }
 }
@@ -250,7 +309,16 @@ pub enum Message {
     HoverProject(usize),
     OpenTerminal,
     OpenEditor,
-    DiffLoaded(Id, Result<String, String>),
+    /// A transcript read from a task's session file off the UI thread.
+    TranscriptRead(Id, Option<Arc<crate::transcript::Transcript>>),
+    DiffLoaded(Id, Result<LoadedDiff, String>),
+    /// Syntax colors for file `index` of the diff `files`.
+    DiffHighlighted {
+        id: Id,
+        files: Arc<Vec<FileDiff>>,
+        index: usize,
+        colors: FileColors,
+    },
     SelectFile(usize),
     ToggleTool(String),
     ToggleThinking(String, usize, usize),
@@ -293,6 +361,8 @@ pub struct App {
     pub menu: Option<Menu>,
     pub pending: Vec<Pending>,
     pub diffs: HashMap<Id, DiffState>,
+    /// Tasks whose session file is being read for a transcript.
+    reading_transcripts: HashSet<Id>,
     pub sessions: HashMap<Id, SessionPicker>,
     next_session_request: u64,
     pub expanded: HashSet<String>,
@@ -453,6 +523,7 @@ impl App {
             menu: None,
             pending: Vec::new(),
             diffs: HashMap::new(),
+            reading_transcripts: HashSet::new(),
             sessions: HashMap::new(),
             next_session_request: 0,
             expanded: HashSet::new(),
@@ -610,7 +681,7 @@ impl App {
             self.focus = false;
             return Task::none();
         };
-        self.desk.load_transcript(&id);
+        let transcript = self.read_transcript(&id);
         let cached = self.sessions.get(&id).is_some_and(|picker| {
             (picker.options.is_some() || picker.loading)
                 && self.desk.state.agent(&id).is_some_and(|agent| {
@@ -628,7 +699,32 @@ impl App {
         } else {
             crate::views::row_key(&id)
         }));
-        Task::batch([self.load_diff(&id), models, reveal])
+        Task::batch([transcript, self.load_diff(&id), models, reveal])
+    }
+
+    /// Whether a task's transcript is still being read from its session file.
+    pub fn reading_transcript(&self, id: &str) -> bool {
+        self.reading_transcripts.contains(id)
+    }
+
+    /// Reads a task's transcript from its session file off the UI thread.
+    /// Session files of long tasks are tens of megabytes.
+    fn read_transcript(&mut self, id: &str) -> Task {
+        let Some(file) = self.desk.unloaded_transcript(id) else {
+            return Task::none();
+        };
+        if !self.reading_transcripts.insert(id.to_string()) {
+            return Task::none();
+        }
+        let id = id.to_string();
+        Task::perform(
+            blocking(move || {
+                crate::transcript::Transcript::from_session_file(&file)
+                    .ok()
+                    .map(Arc::new)
+            }),
+            move |transcript| Message::TranscriptRead(id.clone(), transcript),
+        )
     }
 
     fn row_ids(&self) -> Vec<Id> {
@@ -741,10 +837,57 @@ impl App {
             return Task::none();
         }
         entry.loading = true;
+        let previous = entry
+            .files
+            .as_ref()
+            .ok()
+            .map(|files| (files.clone(), entry.colors.clone()));
         let id = id.to_string();
+        // Large diffs take a second or more to parse and highlight, so none
+        // of that runs on the UI thread.
         Task::perform(
-            blocking(move || git::diff(&worktree, &base)),
+            blocking(move || {
+                git::diff(&worktree, &base).map(|text| LoadedDiff::parse(&text, previous))
+            }),
             move |result| Message::DiffLoaded(id.clone(), result),
+        )
+    }
+
+    /// Highlights the file shown in the Diff tab off the UI thread, once.
+    fn highlight_shown(&mut self) -> Task {
+        if self.tab != Tab::Diff {
+            return Task::none();
+        }
+        let Some(id) = self.selected.clone() else {
+            return Task::none();
+        };
+        let Some(state) = self.diffs.get_mut(&id) else {
+            return Task::none();
+        };
+        let Ok(files) = &state.files else {
+            return Task::none();
+        };
+        if files.is_empty() {
+            return Task::none();
+        }
+        let index = state.selected.min(files.len() - 1);
+        if state.colors.contains_key(&index) || state.highlighting == Some(index) {
+            return Task::none();
+        }
+        state.highlighting = Some(index);
+        let files = files.clone();
+        Task::perform(
+            blocking(move || {
+                let file = &files[index];
+                let colors = Arc::new(crate::highlight::diff_lines(&file.path, &file.lines));
+                (files, colors)
+            }),
+            move |(files, colors)| Message::DiffHighlighted {
+                id: id.clone(),
+                files: files.clone(),
+                index,
+                colors: colors.clone(),
+            },
         )
     }
 
@@ -1047,7 +1190,8 @@ impl App {
             }
         }
         let selection = self.ensure_selection();
-        Task::batch([task, selection])
+        let highlight = self.highlight_shown();
+        Task::batch([task, selection, highlight])
     }
 
     fn handle(&mut self, message: Message) -> Task {
@@ -1631,16 +1775,51 @@ impl App {
             Message::DiffLoaded(id, result) => {
                 let state = self.diffs.entry(id).or_default();
                 state.loading = false;
-                state.files = result.map(|text| git::parse_diff(&text));
-                state.colors = match &state.files {
-                    Ok(files) => files
-                        .iter()
-                        .map(|file| crate::highlight::diff_lines(&file.path, &file.lines))
-                        .collect(),
-                    Err(_) => Vec::new(),
-                };
-                if let Ok(files) = &state.files {
-                    state.selected = state.selected.min(files.len().saturating_sub(1));
+                match result {
+                    Ok(loaded) => {
+                        let same = state
+                            .files
+                            .as_ref()
+                            .is_ok_and(|files| Arc::ptr_eq(files, &loaded.files));
+                        if !same {
+                            // A highlight still running is for the old files.
+                            state.highlighting = None;
+                        }
+                        state.selected = state.selected.min(loaded.files.len().saturating_sub(1));
+                        state.files = Ok(loaded.files);
+                        state.colors = loaded.colors;
+                    }
+                    Err(error) => {
+                        state.files = Err(error);
+                        state.colors.clear();
+                        state.highlighting = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::TranscriptRead(id, transcript) => {
+                self.reading_transcripts.remove(&id);
+                if let Some(transcript) = transcript {
+                    let transcript =
+                        Arc::try_unwrap(transcript).unwrap_or_else(|shared| (*shared).clone());
+                    self.desk.transcript_read(&id, transcript);
+                }
+                Task::none()
+            }
+            Message::DiffHighlighted {
+                id,
+                files,
+                index,
+                colors,
+            } => {
+                if let Some(state) = self.diffs.get_mut(&id)
+                    && let Ok(current) = &state.files
+                    && Arc::ptr_eq(current, &files)
+                {
+                    state.colors.insert(index, colors);
+                    if state.highlighting == Some(index) {
+                        state.highlighting = None;
+                    }
                 }
                 Task::none()
             }
@@ -2504,8 +2683,58 @@ pub fn window_key(app: &mut App, event: &KeyEvent, tx: &mut Tx) -> bool {
 pub fn spec() -> rune::AppSpec<App> {
     let mut spec = rune::AppSpec::new("pi-desk", (1440.0, 900.0), App::boot, crate::views::root);
     spec.min_size = Some((760.0, 520.0));
+    // Mono spans, such as inline code in Markdown, use the platform
+    // monospace (SF Mono on macOS), as code blocks and paths do.
+    spec.families = ("Inter", "ui-monospace");
     spec.setup = Some(window_setup);
     spec.poll = Some(window_poll);
     spec.on_key = Some(window_key);
     spec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ONE: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-fn a() {}\n+fn a() { 1 }\n";
+    const TWO: &str = "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-fn b() {}\n+fn b() { 2 }\n";
+
+    fn colored(loaded: &LoadedDiff, index: usize) -> HashMap<usize, FileColors> {
+        let file = &loaded.files[index];
+        HashMap::from([(
+            index,
+            Arc::new(crate::highlight::diff_lines(&file.path, &file.lines)),
+        )])
+    }
+
+    #[test]
+    fn an_unchanged_diff_keeps_its_files_and_colors() {
+        let first = LoadedDiff::parse(ONE, None);
+        assert!(
+            first.colors.is_empty(),
+            "nothing is highlighted while parsing"
+        );
+        let colors = colored(&first, 0);
+        let again = LoadedDiff::parse(ONE, Some((first.files.clone(), colors.clone())));
+        assert!(Arc::ptr_eq(&again.files, &first.files));
+        assert!(Arc::ptr_eq(&again.colors[&0], &colors[&0]));
+    }
+
+    #[test]
+    fn a_changed_diff_keeps_colors_only_for_unchanged_files() {
+        let first = LoadedDiff::parse(ONE, None);
+        let colors = colored(&first, 0);
+        // a.rs moves to index 1 and is unchanged; b.rs is new.
+        let both = format!("{TWO}{ONE}");
+        let next = LoadedDiff::parse(&both, Some((first.files.clone(), colors.clone())));
+        assert_eq!(next.files.len(), 2);
+        assert!(Arc::ptr_eq(&next.colors[&1], &colors[&0]));
+        assert!(!next.colors.contains_key(&0));
+        let changed = ONE.replace("{ 1 }", "{ 3 }");
+        let edited = LoadedDiff::parse(&changed, Some((first.files.clone(), colors)));
+        assert!(
+            edited.colors.is_empty(),
+            "an edited file is highlighted again"
+        );
+    }
 }

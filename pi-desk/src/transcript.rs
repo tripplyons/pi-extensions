@@ -9,7 +9,7 @@ use std::path::Path;
 
 const OUTPUT_LIMIT: usize = 6000;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AssistantBlock {
     Text {
         text: String,
@@ -29,7 +29,7 @@ impl AssistantBlock {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Entry {
     User {
         text: String,
@@ -53,7 +53,7 @@ pub enum Entry {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Transcript {
     pub entries: Vec<Entry>,
     tools: HashMap<String, usize>,

@@ -35,14 +35,37 @@ pub fn send(message: Message) -> impl Fn(&mut App, &mut Tx) + 'static {
     move |app: &mut App, tx: &mut Tx| app.dispatch(message.clone(), tx)
 }
 
-pub fn root(app: &App, _cx: &mut Cx<App>) -> El {
+/// The height of the band the window's own controls sit in, such as the
+/// macOS traffic lights. The app draws it in place of the native titlebar.
+pub const TITLEBAR: f32 = 32.0;
+
+pub fn root(app: &App, cx: &mut Cx<App>) -> El {
     LAYER.with(|layer| layer.borrow_mut().clear());
-    let window = window(app);
+    let window = window(app, cx.chrome_insets());
     let layer = LAYER.with(|layer| std::mem::take(&mut *layer.borrow_mut()));
     rune_kit::root(window, layer)
 }
 
-fn window(app: &App) -> El {
+/// The band across the top of the window under the window's own controls:
+/// it moves the window and names the app beside the traffic lights.
+fn titlebar(insets: rune::ChromeInsets) -> El {
+    row()
+        .key("titlebar")
+        .w_full()
+        .h(insets.height)
+        .pl(insets.leading + 12.0)
+        .pr(insets.trailing + 12.0)
+        .center_y()
+        .fill(P.sidebar)
+        .border_sides([0.0, 0.0, 1.0, 0.0], P.border_soft)
+        .window_drag()
+        .child(strong("pi-desk", size::CONTROL, P.muted))
+}
+
+fn window(app: &App, insets: rune::ChromeInsets) -> El {
+    // Without a drawn titlebar, as on Linux, the sidebar names the app.
+    let titlebar = (insets.height > 0.0).then(|| titlebar(insets));
+    let brand = titlebar.is_none();
     let body = if app.focus && app.current().is_some() {
         row()
             .key("focus")
@@ -65,7 +88,9 @@ fn window(app: &App) -> El {
     } else {
         let mut panes = row().key("panes").w_full().grow(1.0).min_h(0.0);
         if app.show_sidebar {
-            panes = panes.child(sidebar::view(app)).child(vrule("sidebar-rule"));
+            panes = panes
+                .child(sidebar::view(app, brand))
+                .child(vrule("sidebar-rule"));
         }
         if app.board {
             panes.child(board::view(app))
@@ -111,23 +136,34 @@ fn window(app: &App) -> El {
             .absolute(0.0, 0.0),
         _ => page,
     };
-    let mut window = el()
-        .key("window")
+    // The viewport is the area below the titlebar, which zoom does not scale.
+    let content = el()
+        .key("content")
         .w_full()
-        .h_full()
-        .fill(P.window)
+        .grow(1.0)
+        .min_h(0.0)
         .on_layout(|app: &mut App, rect: [f32; 4]| {
             let size = (rect[2], rect[3]);
             if app.viewport != Some(size) {
                 app.viewport = Some(size);
             }
         })
+        .child(page);
+    let mut frame = col().key("frame").w_full().h_full();
+    if let Some(titlebar) = titlebar {
+        frame = frame.child(titlebar);
+    }
+    let mut window = el()
+        .key("window")
+        .w_full()
+        .h_full()
+        .fill(P.window)
         .on_drop_files(|app: &mut App, paths: &[std::path::PathBuf], tx: &mut Tx| {
             for path in paths {
                 app.dispatch(Message::FileDropped(path.clone()), tx);
             }
         })
-        .child(page);
+        .child(frame.child(content));
     if let Some(bar) = status_bar(app) {
         window = window.child(
             row()
