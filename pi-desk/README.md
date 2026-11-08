@@ -1,23 +1,18 @@
 # pi-desk
 
-Text origins snap to physical pixels after display and UI scaling, using the
-same rule as Overseer. Both iced renderer backends use
-[local patches](vendor/README.md). Interface text and Markdown share a native
-sans family (San Francisco on macOS, Segoe UI on Windows, system sans on Linux).
-A shared 12/13/14/16/18 px scale separates captions, controls, body text, headings,
-and titles. Semibold marks hierarchy; code, paths, and key hints use monospace.
-Disclosure chevrons, drag handles, and modifier and arrow keys are bundled
-[Lucide](https://lucide.dev) SVG icons tinted with theme colors.
-Secondary text stays readable against the neutral dark panels.
+A Rust desktop inbox for parallel Pi coding agents, built with
+[Rune](https://github.com/anomalyco/rune). Each task runs in the project's own
+checkout, or in its own git worktree when you check Use worktree. Questions and
+completed work enter your Inbox; answer, review the diff, and merge without
+switching terminals.
 
-A Rust/iced desktop inbox for parallel Pi coding agents. Each task runs in the
-project's own checkout, or in its own git worktree when you check Use worktree.
-Questions and completed work enter your Inbox; answer, review
-the diff, and merge without switching terminals. Panels, controls, selections,
-and dark primary buttons use neutral grays. Errors, red/green diffs, and subdued
-syntax colors keep semantic cues visible. Scrollbar tracks are
-transparent so panel backgrounds stay unchanged; only the thumb is colored,
-with the usual hover and drag feedback.
+Panels, controls, selections, and primary buttons use neutral grays. Errors,
+red/green diffs, and subdued syntax colors keep semantic cues visible.
+Interface text uses Inter, which Rune bundles; code, paths, and branch names use
+the platform monospace (SF Mono on macOS). A 12/13/14/16/18 px scale separates
+captions, controls, body text, headings, and titles. Disclosure chevrons, drag
+handles, goal and swarm markers, and modifier and arrow keys are bundled
+[Lucide](https://lucide.dev) SVG icons tinted with theme colors.
 
 Inspired by [Agentbox](https://github.com/savannahfeder/agentbox). No Agentbox
 code or assets are included.
@@ -116,14 +111,12 @@ the app does not reset them.
 
 1. Click **+** beside Projects and choose a git repository. Check out the branch
    that new tasks should merge into, and configure git author identity first.
-2. Open **New task** with the regular outlined sidebar button or N. Plain text
-   creates one task; a list creates one task per
-   item, with a preview before filing. Submit with Cmd+Enter. Tasks use the
-   project's current branch as their base. Use worktree starts unchecked each
+2. Open **New task** with the outlined sidebar button or N. The whole text
+   becomes one task, titled from its first line; a list stays one task. Submit
+   with Cmd+Enter. Tasks use the project's current branch as their base. Use worktree starts unchecked each
    time New task opens; Cmd+E toggles it. Unchecked tasks work in the project's checkout and
    record its HEAD commit; the task diff is everything since that commit. Check
-   it to give each task its own worktree and `pi-desk/` branch. Model and effort apply to every task
-   in the submitted list; each task can be changed independently afterward.
+   it to give the task its own worktree and `pi-desk/` branch.
 3. Four agents run at once by default. Settings lets you change the slot limit.
    Scheduling uses project order, then replies before new work, then oldest
    queued task first. Display order does not change scheduling. Priority is not
@@ -185,15 +178,10 @@ Working to Inbox, its row stays listed until you select another task or change
 views. Changing views keeps the selected task if it belongs to the new view;
 otherwise the first row is selected. Focus mode ends when no task is selected,
 so it does not return on its own when a new task arrives. Heading labels and counts
-share one text baseline in both layouts. List and board previews slide upward over
-180 ms when their text changes, with smooth height changes for wrapped text and
-the review's Needs line. Rapid streaming updates are combined into the latest
-pending preview rather than queued. Live assistant text in the Transcript and
-working text in the focused card reveal each new visible line once, with a
-6 px entrance over 180 ms. Wrapped lines enter too; tokens on existing lines
-update in place without restarting the animation or queuing stale text.
-Markdown formatting and links remain available. Completed history, switching
-agents, and reflow from resize or zoom do not replay line entrances.
+share one text baseline in both layouts. Live assistant text in the Transcript
+renders as streaming Markdown: an emphasis or code span still being written
+draws styled, and existing lines update in place. Completed history, switching
+agents, and reflow from resize or zoom do not animate.
 Use Hide sidebar / Show sidebar in the list or board header to toggle navigation
 without hiding the task list. These actions are also in the command palette.
 Focus mode hides the sidebar and list. Task summaries are always shown when available. Review previews put the outcome
@@ -201,6 +189,25 @@ and next action on separate lines rather than using dot separators. Task metadat
 uses separate rows so long branch names wrap without crowding status. Later snoozes a row until
 its due time; the Inbox count is the only attention indicator. There are no
 system notifications or dock badges.
+
+## Goals and swarms
+
+When a task's Pi session has an unfinished goal from the goal extension, its
+row and board card show a goal line with the objective and status, and the
+detail card shows a Goal block. Only active and paused goals are shown;
+complete and blocked goals are hidden. pi-desk reads the latest `pi:goal`
+entry in the session file and the goal extension's live status. A goal saved
+as active is shown as Paused while no running agent reports it.
+
+When a task is the root of a swarm run (its Pi session is the run's root
+session), the row shows an "N agents" chip with the number of unfinished
+workers, and the detail card lists each worker's name, status, activity, and
+model, indented under its parent. pi-desk reads `swarm/*/run.json` in the Pi
+agent directory every 2 seconds, off the interface thread, and only while tasks
+exist. Only starting, running, and review workers are listed; accepted,
+rejected, stopped, and failed workers are not.
+
+## Undo
 
 Merge, discard, and mark-done actions have a five-second undo window. The
 selected task stays listed during the window; other views omit it. Discard
@@ -210,10 +217,10 @@ the agent and leave the checkout's files unchanged. Undo is not a way to reverse
 
 ## Keys
 
-The New task composer supports macOS word navigation and deletion with Option,
-line navigation and deletion with Cmd, Cmd+Up/Down for document navigation,
-and Shift variants for selection. Clipboard shortcuts and Cmd+A select all work
-as usual. Cmd+Z undoes composer edits; Cmd+Shift+Z redoes them. Cmd+E toggles Use
+Text boxes support macOS word navigation and deletion with Option, line
+navigation and deletion with Cmd, Cmd+Up/Down for document navigation, and
+Shift variants for selection. Clipboard shortcuts and Cmd+A select all work as
+usual. Cmd+Z undoes edits; Cmd+Shift+Z redoes them. Cmd+E toggles Use
 worktree. Cmd+P opens a project search below the project selector. Type any
 letters of a project name in order, for example "pxt" for pi-extensions; the
 closest matches come first. Up/Down moves, Enter or a click chooses, and Escape
@@ -326,11 +333,11 @@ npm test
 
 Tests use temporary repositories and a fake Pi process for compaction and
 continuation, question, restart, reply, review, merge, conflict, and cleanup
-behavior. UI tests use iced's supported `iced_test::Simulator` to inspect widgets,
-click choices, and render
-headless screenshots. No macOS screen-recording permission is needed. Fresh
-screenshots are written under `pi-desk/target/tmp/ui/`; these are review artifacts,
-not pixel-regression baselines.
+behavior. UI tests run the app in Rune's headless runtime to inspect the
+element tree, click controls, type keys, and render screenshots on a headless
+GPU. No macOS screen-recording permission is needed. Fresh screenshots are
+written under `pi-desk/target/tmp/ui/` at 2x scale; these are review
+artifacts, not pixel-regression baselines.
 
 The opt-in smoke test uses the installed Pi, default model, and real credentials:
 
@@ -341,6 +348,3 @@ cargo test --manifest-path pi-desk/Cargo.toml --test end_to_end \
 
 It runs one task in a disposable repository, answers a real `ask_user` question,
 then merges and removes its worktree. It is excluded from `npm test`.
-
-The current iced/wgpu dependency tree includes `block 0.1.6`, which emits a Rust
-future-incompatibility warning on macOS. Builds and tests currently pass.

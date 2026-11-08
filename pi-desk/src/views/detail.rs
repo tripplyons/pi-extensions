@@ -1,65 +1,91 @@
-use super::{card, empty, faint, icon, key};
+use super::{card, empty, faint, hrule, icon, keys, label, mono, primary, send, vrule};
 use crate::app::{App, Message, Tab};
 use crate::git::LineKind;
-use crate::icon::Icon;
-use crate::theme::{
-    self, ACCENT, ADDED_BG, FAINT, GREEN, MONO, MUTED, RAISED, RED, REMOVED_BG, TEXT,
-};
-use crate::transcript::{AssistantBlock, Entry};
-use iced::widget::{
-    Space, button, column, container, markdown, rich_text, row, rule, scrollable, span, text,
-};
-use iced::{Alignment, Color, Element, Fill, Length};
-
 use crate::highlight::SHOWN_LINES;
+use crate::icon::{Icon, KeyPart};
+use crate::model::Status;
+use crate::theme::{self, P, size};
+use crate::transcript::{AssistantBlock, Entry};
+use rune::{Color, El, GrowthSpec, ScrollSpec, Span, col, el, rich, row, text};
+use rune_kit::Markdown;
 
 /// The right pane in list layout: the card above its tabs.
-pub fn pane(app: &App) -> Element<'_, Message> {
-    let content: Element<'_, Message> = if app.desk.state.projects.is_empty() {
-        container(
-            column![
-                text("Add a project to start")
-                    .size(theme::size::HEADING)
-                    .color(MUTED),
-                faint("pi-desk runs each task as a Pi agent in your checkout or in its own git worktree."),
-                button(text("Add project").size(theme::size::CONTROL))
-                    .style(theme::primary)
-                    .padding([6, 12])
-                    .on_press(Message::AddProject),
-            ]
-            .spacing(10)
-            .align_x(Alignment::Center),
-        )
-        .center(Fill)
-        .into()
+pub fn pane(app: &App) -> El {
+    let content = if app.desk.state.projects.is_empty() {
+        col()
+            .key("welcome")
+            .w_full()
+            .grow(1.0)
+            .center()
+            .gap(10.0)
+            .child(label("Add a project to start", size::HEADING, P.muted))
+            .child(faint(
+                "pi-desk runs each task as a Pi agent in your checkout or in its own git worktree.",
+            ))
+            .child(primary(
+                "welcome-add-project",
+                "Add project",
+                &[],
+                Some(Message::AddProject),
+                false,
+            ))
     } else if app.current().is_some() {
-        column![card::view(app), view(app)].spacing(16).into()
+        col()
+            .key("detail-stack")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .gap(16.0)
+            .child(card::view(app))
+            .child(view(app))
     } else {
-        empty("Nothing selected", "Choose a row, or press N to file work.")
+        empty(
+            "nothing-selected",
+            "Nothing selected",
+            "Choose a row, or press N to file work.",
+        )
     };
-    container(content)
-        .padding(20)
-        .width(Fill)
-        .height(Fill)
-        .into()
+    col()
+        .key("detail")
+        .grow(1.0)
+        .shrink()
+        .h_full()
+        .min_w(0.0)
+        .padding(20.0)
+        .child(content)
 }
 
-fn tab<'a>(label: String, hint: &'a str, active: bool, message: Message) -> Element<'a, Message> {
-    button(
-        row![text(label).size(theme::size::CONTROL), key(hint)]
-            .spacing(6)
-            .align_y(Alignment::Center),
-    )
-    .style(theme::tab(active))
-    .padding([6, 4])
-    .on_press(message)
-    .into()
+fn tab(key: &str, name: String, hint: &'static str, active: bool, message: Message) -> El {
+    col()
+        .key(key)
+        .gap(6.0)
+        .label(name.clone())
+        .role("tab")
+        .on_press_tx(send(message))
+        .child(
+            row()
+                .gap(6.0)
+                .center_y()
+                .px(4.0)
+                .pt(6.0)
+                .child(
+                    text(name)
+                        .font(theme::medium(size::CONTROL))
+                        .color(if active { P.text } else { P.muted }),
+                )
+                .child(keys(&[KeyPart::Text(hint)])),
+        )
+        .child(el().h(2.0).w_full().radius(1.0).fill(if active {
+            P.accent
+        } else {
+            Color::TRANSPARENT
+        }))
 }
 
 /// Tabs and their content below the card.
-pub fn view(app: &App) -> Element<'_, Message> {
+pub fn view(app: &App) -> El {
     let Some(agent) = app.current() else {
-        return Space::new().into();
+        return el();
     };
     let diff = app.diffs.get(&agent.id);
     let counts = diff
@@ -71,112 +97,114 @@ pub fn view(app: &App) -> Element<'_, Message> {
             format!("Diff  +{added} -{removed}")
         })
         .unwrap_or_else(|| "Diff".into());
-    let underline = |active: bool| {
-        container(Space::new())
-            .width(Fill)
-            .height(2)
-            .style(theme::fill(if active {
-                ACCENT
-            } else {
-                Color::TRANSPARENT
-            }))
-    };
     let transcript_active = app.tab == Tab::Transcript;
-    let tabs = row![
-        column![
-            tab(
-                "Transcript".into(),
-                "T",
-                transcript_active,
-                Message::SetTab(Tab::Transcript)
-            ),
-            underline(transcript_active)
-        ]
-        .width(Length::Shrink),
-        column![
-            tab(counts, "D", !transcript_active, Message::SetTab(Tab::Diff)),
-            underline(!transcript_active)
-        ]
-        .width(Length::Shrink),
-    ]
-    .spacing(14)
-    .align_y(Alignment::Center);
+    let tabs = row()
+        .key("tabs")
+        .gap(16.0)
+        .child(tab(
+            "tab-transcript",
+            "Transcript".into(),
+            "T",
+            transcript_active,
+            Message::SetTab(Tab::Transcript),
+        ))
+        .child(tab(
+            "tab-diff",
+            counts,
+            "D",
+            !transcript_active,
+            Message::SetTab(Tab::Diff),
+        ));
 
     let content = match app.tab {
         Tab::Transcript => transcript(app, &agent.id),
         Tab::Diff => diff_view(app, &agent.id),
     };
-    column![tabs, rule::horizontal(1).style(super::divider), content]
-        .spacing(0)
-        .height(Fill)
-        .into()
+    col()
+        .key("tabbed")
+        .w_full()
+        .grow(1.0)
+        // Keep room for the tabs and some content; the card scrolls instead.
+        .min_h(180.0)
+        .child(tabs)
+        .child(hrule("tabs-rule"))
+        .child(content)
 }
 
-pub(super) fn markdown_settings() -> markdown::Settings {
-    let mut style = markdown::Style::from_palette(theme::theme().palette());
-    style.font = theme::SANS;
-    style.inline_code_font = MONO;
-    style.code_block_font = MONO;
-    style.link_color = TEXT;
-    style.inline_code_color = TEXT;
-    style.inline_code_highlight = markdown::Highlight {
-        background: RAISED.into(),
-        border: iced::Border {
-            radius: 3.0.into(),
-            ..iced::Border::default()
-        },
-    };
-    let mut settings = markdown::Settings::with_text_size(theme::size::BODY, style);
-    settings.h1_size = theme::size::TITLE.into();
-    settings.h2_size = theme::size::HEADING.into();
-    settings.h3_size = theme::size::BODY.into();
-    settings.h4_size = theme::size::BODY.into();
-    settings.h5_size = theme::size::BODY.into();
-    settings.h6_size = theme::size::BODY.into();
-    settings.code_size = theme::size::CONTROL.into();
-    settings
+fn panel(content: El) -> El {
+    content
+        .w_full()
+        .padding(12.0)
+        .radius(8.0)
+        .fill(P.surface)
+        .border(1.0, P.border_soft)
 }
 
-fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
-    let Some(transcript) = app.desk.transcripts.get(id) else {
-        return empty("No transcript yet", "It appears once the agent starts.");
+fn disclosure(key: String, open: bool, parts: Vec<El>, message: Message) -> El {
+    super::selectable(
+        row()
+            .key(key)
+            .w_full()
+            .h(26.0)
+            .px(6.0)
+            .gap(8.0)
+            .center_y()
+            .role("button")
+            .on_press_tx(send(message))
+            .child(icon(Icon::disclosure(open), size::CAPTION, P.faint))
+            .children(parts),
+        false,
+    )
+    .radius(6.0)
+}
+
+fn transcript(app: &App, id: &str) -> El {
+    let Some(transcript) = app
+        .desk
+        .transcripts
+        .get(id)
+        .filter(|transcript| !transcript.entries.is_empty())
+    else {
+        return empty(
+            "no-transcript",
+            "No transcript yet",
+            "It appears once the agent starts.",
+        );
     };
-    if transcript.entries.is_empty() {
-        return empty("No transcript yet", "It appears once the agent starts.");
-    }
-    let mut entries = column![].spacing(12).padding([14, 4]);
-    for entry in &transcript.entries {
-        let element: Element<'a, Message> = match entry {
-            Entry::User { text: message } => container(
-                column![faint("You"), text(message.as_str()).size(theme::size::BODY)].spacing(4),
-            )
-            .padding(12)
-            .width(Fill)
-            .style(theme::panel)
-            .into(),
+    let working = app
+        .current()
+        .is_some_and(|agent| agent.status == Status::Working);
+    let style = theme::markdown();
+    let mut entries = col().key("entries").w_full().gap(12.0).px(4.0).py(14.0);
+    let last = transcript.entries.len() - 1;
+    for (index, entry) in transcript.entries.iter().enumerate() {
+        let element = match entry {
+            Entry::User { text: message } => panel(
+                col()
+                    .gap(4.0)
+                    .child(faint("You"))
+                    .child(label(message.as_str(), size::BODY, P.text).wrap().selectable(true)),
+            ),
             Entry::Assistant {
                 id: message_id,
                 blocks,
                 error,
                 ..
             } => {
-                let mut content = column![].spacing(6);
+                let mut content = col().w_full().gap(6.0);
                 for (block_index, block) in blocks {
+                    let block_key = format!("b{block_index}");
                     match block {
-                        AssistantBlock::Text { text, markdown } => {
-                            if app
-                                .current()
-                                .is_some_and(|agent| agent.status == crate::model::Status::Working)
-                                && std::ptr::eq(entry, transcript.entries.last().unwrap())
-                            {
-                                content = content.push(super::live_text::LiveText::new(
-                                    format!("{id}:{message_id}:{block_index}"),
-                                    text.clone(),
-                                    true,
-                                ));
-                            } else {
-                                content = content.push(super::live_text::markdown_view(markdown));
-                            }
+                        AssistantBlock::Text { text } => {
+                            let live = working && index == last;
+                            content = content.child(
+                                Markdown::new(text.as_str())
+                                    .streaming(live)
+                                    .selectable(true)
+                                    .render(&style)
+                                    .key(block_key)
+                                    .w_full(),
+                            );
                         }
                         AssistantBlock::Thinking { text: thinking } => {
                             let open = app.expanded_thinking.contains(&(
@@ -184,58 +212,49 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                                 *message_id,
                                 *block_index,
                             ));
-                            let head = button(
-                                row![
-                                    icon(Icon::disclosure(open), theme::size::CAPTION, FAINT),
-                                    text("Thinking").size(theme::size::CAPTION).color(MUTED),
-                                    text(crate::text::one_line(thinking, 110))
-                                        .size(theme::size::CAPTION)
-                                        .color(FAINT)
-                                        .wrapping(text::Wrapping::None)
-                                        .width(Fill),
-                                ]
-                                .spacing(8)
-                                .align_y(Alignment::Center),
-                            )
-                            .width(Fill)
-                            .padding([3, 6])
-                            .style(theme::row(false))
-                            .on_press(Message::ToggleThinking(
-                                id.to_string(),
-                                *message_id,
-                                *block_index,
+                            content = content.child(disclosure(
+                                block_key.clone(),
+                                open,
+                                vec![
+                                    label("Thinking", size::CAPTION, P.muted),
+                                    label(crate::text::one_line(thinking, 110), size::CAPTION, P.faint)
+                                        .grow(1.0)
+                                        .shrink()
+                                        .truncate(),
+                                ],
+                                Message::ToggleThinking(id.to_string(), *message_id, *block_index),
                             ));
-                            content = content.push(head);
                             if open && !thinking.is_empty() {
-                                content = content.push(
-                                    container(
-                                        text(thinking.as_str())
-                                            .size(theme::size::CONTROL)
-                                            .color(MUTED),
+                                content = content.child(
+                                    panel(
+                                        label(thinking.as_str(), size::CONTROL, P.muted)
+                                            .wrap()
+                                            .selectable(true),
                                     )
-                                    .padding(10)
-                                    .width(Fill)
-                                    .style(theme::panel),
+                                    .key(format!("{block_key}-open")),
                                 );
                             }
                         }
                     }
                 }
                 if let Some(error) = error {
-                    content =
-                        content.push(text(error.as_str()).size(theme::size::CONTROL).color(RED));
+                    content = content.child(
+                        label(error.as_str(), size::CONTROL, P.red)
+                            .wrap()
+                            .key("error"),
+                    );
                 }
-                content.into()
+                content
             }
             Entry::Tool {
-                id,
+                id: tool,
                 name,
                 preview,
                 output,
                 is_error,
                 running,
             } => {
-                let open = app.expanded.contains(id);
+                let open = app.expanded.contains(tool);
                 let state = if *running {
                     "…"
                 } else if *is_error {
@@ -243,69 +262,55 @@ fn transcript<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                 } else {
                     ""
                 };
-                let head = button(
-                    row![
-                        icon(Icon::disclosure(open), theme::size::CAPTION, FAINT),
-                        text(name.as_str())
-                            .size(theme::size::CAPTION)
-                            .font(MONO)
-                            .color(ACCENT),
-                        text(crate::text::one_line(preview, 110))
-                            .size(theme::size::CAPTION)
-                            .font(MONO)
-                            .color(MUTED)
-                            .width(Fill),
-                        text(state).size(theme::size::CAPTION).color(if *is_error {
-                            RED
-                        } else {
-                            FAINT
-                        }),
-                    ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                )
-                .width(Fill)
-                .padding([3, 6])
-                .style(theme::row(false))
-                .on_press(Message::ToggleTool(id.clone()));
+                let head = disclosure(
+                    "head".into(),
+                    open,
+                    vec![
+                        mono(name.as_str(), size::CAPTION, P.accent),
+                        mono(crate::text::one_line(preview, 110), size::CAPTION, P.muted)
+                            .grow(1.0)
+                            .shrink()
+                            .truncate(),
+                        label(state, size::CAPTION, if *is_error { P.red } else { P.faint }),
+                    ],
+                    Message::ToggleTool(tool.clone()),
+                );
+                let mut column = col().w_full().gap(4.0).child(head);
                 if open && !output.is_empty() {
-                    column![
-                        head,
-                        container(
-                            text(output.as_str())
-                                .size(theme::size::CAPTION)
-                                .font(MONO)
-                                .color(if *is_error { RED } else { TEXT })
+                    column = column.child(
+                        panel(
+                            mono(output.as_str(), size::CAPTION, if *is_error { P.red } else { P.text })
+                                .wrap_anywhere()
+                                .selectable(true),
                         )
-                        .padding(10)
-                        .width(Fill)
-                        .style(theme::panel)
-                    ]
-                    .spacing(4)
-                    .into()
-                } else {
-                    head.into()
+                        .key("output"),
+                    );
                 }
+                column
             }
-            Entry::Note { text: note } => faint(note.as_str()).into(),
+            Entry::Note { text: note } => faint(note.as_str()).wrap(),
         };
-        entries = entries.push(element);
+        entries = entries.child(element.key(format!("entry-{index}")));
     }
-    scrollable(entries)
-        .style(theme::scrollbar)
-        .anchor_bottom()
-        .height(Fill)
-        .into()
+    col()
+        .key(format!("transcript-{id}"))
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll_edge_fade(12.0)
+        .child(entries)
 }
 
-fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
+fn diff_view(app: &App, id: &str) -> El {
     let Some(diff) = app.diffs.get(id) else {
-        return empty("No diff", "The worktree has not been created yet.");
+        return empty("no-diff", "No diff", "The worktree has not been created yet.");
     };
     let files = match &diff.files {
-        Err(error) => return empty("Could not read the diff", error.as_str()),
+        Err(error) => return empty("diff-error", "Could not read the diff", error),
         Ok(files) if files.is_empty() => {
             return empty(
+                "no-changes",
                 if diff.loading {
                     "Loading…"
                 } else {
@@ -316,94 +321,117 @@ fn diff_view<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         }
         Ok(files) => files,
     };
-    let mut list = column![].spacing(1);
+    let mut list = col().key("files").w_full().gap(1.0).py(8.0).pr(8.0);
     for (index, file) in files.iter().enumerate() {
-        list = list.push(
-            button(
-                row![
-                    text(file.path.as_str())
-                        .size(theme::size::CAPTION)
-                        .font(MONO)
-                        .width(Fill),
-                    text(format!("+{}", file.added))
-                        .size(theme::size::CAPTION)
-                        .color(GREEN),
-                    text(format!("-{}", file.removed))
-                        .size(theme::size::CAPTION)
-                        .color(RED),
-                ]
-                .spacing(6),
-            )
-            .width(Fill)
-            .padding([4, 8])
-            .style(theme::row(index == diff.selected))
-            .on_press(Message::SelectFile(index)),
-        );
+        list = list.child(super::selectable(
+            row()
+                .key(format!("file-{index}"))
+                .w_full()
+                .h(26.0)
+                .px(8.0)
+                .gap(6.0)
+                .center_y()
+                .role("button")
+                .label(file.path.as_str())
+                .on_press_tx(send(Message::SelectFile(index)))
+                .child(
+                    mono(file.path.as_str(), size::CAPTION, P.text)
+                        .grow(1.0)
+                        .shrink()
+                        .truncate_head(),
+                )
+                .child(label(format!("+{}", file.added), size::CAPTION, P.green))
+                .child(label(format!("-{}", file.removed), size::CAPTION, P.red)),
+            index == diff.selected,
+        )
+        .radius(6.0));
     }
-    let file = &files[diff.selected.min(files.len() - 1)];
-    let colors = diff.colors.get(diff.selected);
-    let mut lines = column![];
+    let selected = diff.selected.min(files.len() - 1);
+    let file = &files[selected];
+    let colors = diff.colors.get(selected);
+    let mut lines = Vec::new();
     for (index, line) in file.lines.iter().enumerate().take(SHOWN_LINES) {
         let (background, prefix, base) = match line.kind {
-            LineKind::Added => (ADDED_BG, "+", GREEN),
-            LineKind::Removed => (REMOVED_BG, "-", RED),
-            LineKind::Context => (Color::TRANSPARENT, " ", TEXT),
-            LineKind::Hunk => (Color { a: 0.08, ..ACCENT }, "", ACCENT),
-            LineKind::Meta => (Color::TRANSPARENT, "", FAINT),
+            LineKind::Added => (P.added_bg, "+", P.green),
+            LineKind::Removed => (P.removed_bg, "-", P.red),
+            LineKind::Context => (Color::TRANSPARENT, " ", P.text),
+            LineKind::Hunk => (P.hunk_bg, "", P.accent),
+            LineKind::Meta => (Color::TRANSPARENT, "", P.faint),
         };
-        let mut spans: Vec<text::Span<'_, ()>> =
-            vec![span(prefix.to_string()).color(base).font(MONO)];
+        let content = format!("{prefix}{}", line.text);
+        let offset = prefix.len();
+        let mut spans = vec![Span::new(0, offset).color(base)];
         match colors
             .and_then(|colors| colors.get(index))
             .filter(|spans| !spans.is_empty())
         {
-            Some(colored) => {
-                for (range, color) in colored {
-                    let piece = line.text.get(range.clone()).unwrap_or_default().to_string();
-                    spans.push(span(piece).color(color.unwrap_or(TEXT)).font(MONO));
-                }
-            }
-            None => spans.push(
-                span(line.text.clone())
-                    .color(if line.kind == LineKind::Context {
-                        TEXT
-                    } else {
-                        base
-                    })
-                    .font(MONO),
-            ),
+            Some(colored) => spans.extend(colored.iter().map(|(range, color)| {
+                Span::new(range.start + offset, range.end + offset).color(color.unwrap_or(P.text))
+            })),
+            None => spans.push(Span::new(offset, content.len()).color(
+                if line.kind == LineKind::Context {
+                    P.text
+                } else {
+                    base
+                },
+            )),
         }
-        lines = lines.push(
-            container(rich_text(spans).size(theme::size::CAPTION))
-                .id(format!("diff-line-{index}"))
-                .padding([0, 10])
-                .style(theme::fill(background)),
+        lines.push(
+            row()
+                .key(format!("diff-line-{index}"))
+                .w_full()
+                .px(12.0)
+                .fill(background)
+                .child(
+                    rich(content, spans)
+                        .font(theme::mono(size::CAPTION))
+                        .color(P.text)
+                        .wrap_anywhere()
+                        .shrink(),
+                ),
         );
     }
     if file.lines.len() > SHOWN_LINES {
-        lines = lines.push(
-            container(faint(format!(
+        lines.push(
+            faint(format!(
                 "{} more lines. Open the editor to see the rest.",
                 file.lines.len() - SHOWN_LINES
-            )))
-            .padding(10),
+            ))
+            .key("more-lines")
+            .padding(10.0),
         );
     }
-    row![
-        scrollable(list)
-            .style(theme::scrollbar)
-            .width(240)
-            .height(Fill),
-        rule::vertical(1).style(super::divider),
-        scrollable(lines.padding([8, 0]))
-            .style(theme::scrollbar)
-            .direction(scrollable::Direction::Both {
-                vertical: Default::default(),
-                horizontal: Default::default()
-            })
-            .width(Fill)
-            .height(Fill),
-    ]
-    .height(Fill)
-    .into()
+    row()
+        .key(format!("diff-{id}"))
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(
+            col()
+                .key("files-scroll")
+                .w(240.0)
+                .h_full()
+                .scroll(ScrollSpec { stick_bottom: false })
+                .child(list),
+        )
+        .child(vrule("files-rule"))
+        .child(
+            col()
+                .key(format!("lines-{selected}"))
+                .grow(1.0)
+                .shrink()
+                .min_w(0.0)
+                .h_full()
+                .scroll(ScrollSpec { stick_bottom: false })
+                .scroll_edge_fade(12.0)
+                .child(
+                    col()
+                        .key("lines")
+                        .w_full()
+                        .py(8.0)
+                        .growth(GrowthSpec::default())
+                        .virtualize(17.0)
+                        .children(lines),
+                ),
+        )
 }

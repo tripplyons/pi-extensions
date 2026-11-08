@@ -25,6 +25,11 @@ pub enum Incoming {
         error: Option<String>,
     },
     NamingFinished,
+    /// An extension's footer status: `text` is `None` when it clears.
+    Status {
+        key: String,
+        text: Option<String>,
+    },
     AgentStart,
     AgentSettled {
         aborted: bool,
@@ -181,6 +186,13 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
         {
             Incoming::NamingFinished
         }
+        "extension_ui_request" if string(&record, "method") == "setStatus" => Incoming::Status {
+            key: string(&record, "statusKey"),
+            text: record
+                .get("statusText")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
         "extension_ui_request" => Incoming::Ui(UiRequest {
             id: string(&record, "id"),
             method: string(&record, "method"),
@@ -294,6 +306,22 @@ mod tests {
             Incoming::AgentSettled { aborted: false }
         );
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn parses_extension_statuses() {
+        assert_eq!(
+            parse(r#"{"type":"extension_ui_request","id":"s1","method":"setStatus","statusKey":"goal","statusText":"goal"}"#).unwrap(),
+            Incoming::Status { key: "goal".into(), text: Some("goal".into()) }
+        );
+        assert_eq!(
+            parse(r#"{"type":"extension_ui_request","id":"s2","method":"setStatus","statusKey":"goal"}"#).unwrap(),
+            Incoming::Status { key: "goal".into(), text: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"extension_ui_request","id":"s3","method":"setStatus","statusKey":"auto-rename"}"#).unwrap(),
+            Incoming::NamingFinished
+        );
     }
 
     #[test]

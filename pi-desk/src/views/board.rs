@@ -1,21 +1,24 @@
-use super::{list::summary, stable_column::StableColumn};
+use super::{counted_heading, list::summary, send};
 use crate::app::{App, Message, View};
 use crate::model::Agent;
 use crate::order;
-use crate::theme::{self, BOLD};
-use iced::advanced::widget::{Id, Operation, operate, operation};
-use iced::widget::{Space, button, column, container, row, scrollable, text};
-use iced::{Alignment, Element, Fill, Rectangle, Task, Vector};
+use crate::theme::{self, P, size};
+use rune::{El, ScrollSpec, col, row};
+
+/// The key of a task's board card, for scrolling it into view.
+pub fn card_key(agent: &str) -> String {
+    format!("board-card-{agent}")
+}
 
 /// Columns for the current scope: every project, or the selected one.
-pub fn view(app: &App) -> Element<'_, Message> {
+pub fn view(app: &App) -> El {
     let state = &app.desk.state;
     let scope = |agent: &&Agent| match &app.view {
         View::Project(id) => &agent.project_id == id,
         _ => true,
     };
     let at = app.now;
-    let mut board = row![].spacing(12);
+    let mut board = row().key("columns").w_full().grow(1.0).min_h(0.0).gap(12.0);
     for group in order::DisplayGroup::ALL {
         let name = group.label();
         let mut agents: Vec<&Agent> = state
@@ -37,300 +40,80 @@ pub fn view(app: &App) -> Element<'_, Message> {
             agents.truncate(30);
             agents.extend(kept);
         }
-        let mut cards = StableColumn::new(8.0);
+        let mut cards = col().key("cards").w_full().gap(8.0).pb(4.0);
         for agent in agents.iter() {
             let selected = app.selected.as_deref() == Some(agent.id.as_str());
-            cards = cards.push(
-                agent.id.clone(),
-                container(
-                    button(summary(app, agent, 40))
-                        .width(Fill)
-                        .padding([9, 12])
-                        .style(theme::board_card(selected))
-                        .on_press(Message::Open(agent.id.clone())),
+            cards = cards.child(
+                col()
+                    .key(card_key(&agent.id))
+                    .w_full()
+                    .px(12.0)
+                    .py(10.0)
+                    .radius(8.0)
+                    .fill(if selected { P.selected } else { P.raised })
+                    .border(1.0, if selected { P.border_strong } else { P.border })
+                    .hover(P.hover)
+                    .press(P.press)
+                    .motion(theme::SNAPPY)
+                    .role("button")
+                    .label(agent.title.as_str())
+                    .on_press_tx(send(Message::Open(agent.id.clone())))
+                    .child(summary(app, agent)),
+            );
+        }
+        board = board.child(
+            col()
+                .key(format!("board-column-{name}"))
+                .grow(1.0)
+                .shrink()
+                .min_w(0.0)
+                .h_full()
+                .padding(8.0)
+                .gap(8.0)
+                .radius(10.0)
+                .fill(P.surface)
+                .border(1.0, P.border_soft)
+                .child(
+                    counted_heading(name, agents.len(), size::CONTROL)
+                        .key(format!("board-heading-{name}"))
+                        .px(4.0)
+                        .py(4.0),
                 )
-                .id(card_id(&agent.id))
-                .width(Fill),
-            );
-        }
-        board = board.push(
-            container(
-                column![
-                    container(super::counted_heading(
-                        name,
-                        agents.len(),
-                        theme::size::CONTROL
-                    ))
-                    .id(format!("board-heading-{name}"))
-                    .padding([4, 4]),
-                    scrollable(cards)
-                        .id(format!("board-column-{name}"))
-                        .style(theme::scrollbar)
-                        .height(Fill),
-                ]
-                .spacing(8),
-            )
-            .width(Fill)
-            .height(Fill)
-            .padding(8)
-            .style(theme::board_column),
+                .child(
+                    col()
+                        .key("scroll")
+                        .w_full()
+                        .grow(1.0)
+                        .min_h(0.0)
+                        .scroll(ScrollSpec { stick_bottom: false })
+                        .scroll_edge_fade(10.0)
+                        .child(cards),
+                ),
         );
     }
 
-    let header = row![
-        text("Board").size(theme::size::TITLE).font(BOLD),
-        Space::new().width(Fill),
-        super::sidebar_toggle(app),
-        button(
-            row![text("List").size(theme::size::CAPTION), super::key("B")]
-                .spacing(6)
-                .align_y(Alignment::Center),
-        )
-        .style(theme::ghost)
-        .padding([3, 8])
-        .on_press(Message::ToggleBoard),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    container(column![header, board].spacing(14))
-        .padding([16, 20])
-        .width(Fill)
-        .height(Fill)
-        .into()
-}
-
-fn card_id(agent: &str) -> Id {
-    Id::from(format!("board-card-{agent}"))
-}
-
-/// Scrolls the column that holds a task's card just far enough to show the
-/// whole card, so keyboard selection never moves off screen.
-pub fn reveal<T: Send + 'static>(agent: &str) -> Task<T> {
-    operate(Reveal {
-        card: card_id(agent),
-        column: None,
-        scroll: None,
-    })
-}
-
-/// A column's scroll geometry as the operation last saw it.
-struct Column {
-    id: Option<Id>,
-    viewport: Rectangle,
-    content: Rectangle,
-    offset: f32,
-}
-
-struct Reveal {
-    card: Id,
-    /// Columns are siblings and each one is visited before its cards, so the
-    /// latest column is the one that holds the card.
-    column: Option<Column>,
-    scroll: Option<(Id, f32)>,
-}
-
-impl<T: Send + 'static> Operation<T> for Reveal {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
-        if self.scroll.is_none() {
-            operate(self);
-        }
-    }
-
-    fn scrollable(
-        &mut self,
-        id: Option<&Id>,
-        viewport: Rectangle,
-        content: Rectangle,
-        translation: Vector,
-        _state: &mut dyn operation::Scrollable,
-    ) {
-        self.column = Some(Column {
-            id: id.cloned(),
-            viewport,
-            content,
-            offset: translation.y,
-        });
-    }
-
-    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
-        if id != Some(&self.card) {
-            return;
-        }
-        let Some(column) = &self.column else { return };
-        let Some(column_id) = &column.id else { return };
-        if let Some(offset) = revealed_offset(column, bounds) {
-            self.scroll = Some((column_id.clone(), offset));
-        }
-    }
-
-    fn finish(&self) -> operation::Outcome<T> {
-        match &self.scroll {
-            Some((id, y)) => operation::Outcome::Chain(Box::new(operation::scrollable::scroll_to(
-                id.clone(),
-                operation::scrollable::AbsoluteOffset {
-                    x: None,
-                    y: Some(*y),
-                },
-            ))),
-            None => operation::Outcome::None,
-        }
-    }
-}
-
-/// The smallest scroll offset change that shows the whole card, if it is not
-/// already shown. A card taller than the column shows its top.
-fn revealed_offset(column: &Column, card: Rectangle) -> Option<f32> {
-    let top = card.y - column.content.y;
-    let bottom = top + card.height;
-    if top < column.offset {
-        Some(top)
-    } else if bottom > column.offset + column.viewport.height {
-        Some((bottom - column.viewport.height).min(top))
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use iced::advanced::renderer::Headless;
-    use iced::advanced::widget::Tree;
-    use iced::advanced::{Layout, layout};
-    use iced::{Font, Pixels, Renderer, Size, Theme};
-
-    const CARD: f32 = 100.0;
-    const VIEWPORT: f32 = 250.0;
-
-    struct Board {
-        element: Element<'static, (), Theme, Renderer>,
-        tree: Tree,
-        node: layout::Node,
-        renderer: Renderer,
-    }
-
-    impl Board {
-        async fn new() -> Self {
-            let renderer =
-                <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("tiny-skia"))
-                    .await
-                    .expect("headless renderer");
-            let mut cards = iced::widget::Column::new().spacing(10);
-            for i in 0..10 {
-                cards = cards.push(
-                    container(Space::new().height(CARD))
-                        .id(card_id(&format!("a{i}")))
-                        .width(Fill),
-                );
-            }
-            let mut element: Element<'static, (), Theme, Renderer> = scrollable(cards)
-                .id("board-column-Inbox")
-                .height(VIEWPORT)
-                .into();
-            let mut tree = Tree::new(&element);
-            let node = element.as_widget_mut().layout(
-                &mut tree,
-                &renderer,
-                &layout::Limits::new(Size::ZERO, Size::new(200.0, 1000.0)),
-            );
-            Self {
-                element,
-                tree,
-                node,
-                renderer,
-            }
-        }
-
-        fn run(&mut self, mut operation: Box<dyn Operation>) {
-            loop {
-                self.element.as_widget_mut().operate(
-                    &mut self.tree,
-                    Layout::new(&self.node),
-                    &self.renderer,
-                    operation.as_mut(),
-                );
-                match operation.finish() {
-                    operation::Outcome::Chain(next) => operation = next,
-                    _ => return,
-                }
-            }
-        }
-
-        fn reveal(&mut self, agent: &str) {
-            self.run(Box::new(Reveal {
-                card: card_id(agent),
-                column: None,
-                scroll: None,
-            }));
-        }
-
-        /// The card's top and bottom relative to the column's visible area.
-        fn shown(&mut self, agent: &str) -> (f32, f32) {
-            let mut measure = Measure {
-                card: card_id(agent),
-                origin: 0.0,
-                found: None,
-            };
-            self.element.as_widget_mut().operate(
-                &mut self.tree,
-                Layout::new(&self.node),
-                &self.renderer,
-                &mut measure,
-            );
-            measure.found.expect("card")
-        }
-    }
-
-    struct Measure {
-        card: Id,
-        origin: f32,
-        found: Option<(f32, f32)>,
-    }
-
-    impl Operation for Measure {
-        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-            operate(self);
-        }
-
-        fn scrollable(
-            &mut self,
-            _: Option<&Id>,
-            viewport: Rectangle,
-            _: Rectangle,
-            translation: Vector,
-            _: &mut dyn operation::Scrollable,
-        ) {
-            self.origin = viewport.y + translation.y;
-        }
-
-        fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
-            if id == Some(&self.card) {
-                let top = bounds.y - self.origin;
-                self.found = Some((top, top + bounds.height));
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn reveal_scrolls_a_column_just_enough_to_show_the_card() {
-        let mut board = Board::new().await;
-        assert!(board.shown("a5").1 > VIEWPORT);
-
-        board.reveal("a5");
-        assert_eq!(
-            board.shown("a5").1,
-            VIEWPORT,
-            "bottom aligns when moving down"
-        );
-
-        board.reveal("a4");
-        assert_eq!(
-            board.shown("a5").1,
-            VIEWPORT,
-            "a shown card keeps the scroll"
-        );
-
-        board.reveal("a1");
-        assert_eq!(board.shown("a1").0, 0.0, "top aligns when moving up");
-    }
+    let header = row()
+        .key("board-header")
+        .w_full()
+        .gap(8.0)
+        .center_y()
+        .child(super::strong("Board", size::TITLE, P.text).grow(1.0))
+        .child(super::sidebar_toggle(app))
+        .child(super::ghost(
+            "list-toggle",
+            "List",
+            &[crate::icon::KeyPart::Text("B")],
+            Message::ToggleBoard,
+        ));
+    col()
+        .key("board")
+        .grow(1.0)
+        .shrink()
+        .min_w(0.0)
+        .h_full()
+        .px(20.0)
+        .py(16.0)
+        .gap(14.0)
+        .child(header)
+        .child(board)
 }

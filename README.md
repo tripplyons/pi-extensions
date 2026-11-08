@@ -56,9 +56,9 @@ extensions. Existing sessions and archive files are not deleted.
 
 Implementation and runtime audits are ongoing.
 
-[pi-desk](pi-desk) is a separate Rust/iced desktop inbox for Pi agents in the
+[pi-desk](pi-desk) is a separate Rust desktop inbox, built with Rune, for Pi agents in the
 project checkout or optional git worktrees, with an All tasks view, a collapsible sidebar (S), and session-only UI
-zoom. The reply and task boxes have Vim-style editing with a configurable
+zoom. Tasks show unfinished goals and their active swarm agents. The reply and task boxes have Vim-style editing with a configurable
 escape sequence (`jk` by default). Per-task model and effort selectors support live changes. Task titles
 follow Pi session names, including auto-generated names that arrive while the agent is working.
 Before merging, it asks Pi for a commit message from the final diff and summary.

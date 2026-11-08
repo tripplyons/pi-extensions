@@ -1,6 +1,6 @@
 //! The agent lifecycle, independent of the window. Methods change state and
 //! return [`Effect`]s (process requests and git jobs) for the app to run, so
-//! the whole flow can be tested without iced, Pi, or git.
+//! the whole flow can be tested without a window, Pi, or git.
 
 use crate::compose::Draft;
 use crate::git::Merge;
@@ -153,6 +153,8 @@ struct Runtime {
     busy: Option<Busy>,
     /// An idle check that arrived during a settings change, with its error.
     deferred_idle: Option<Option<String>>,
+    /// The goal extension's status is set: the session's goal is active.
+    goal: bool,
 }
 
 impl Runtime {
@@ -264,6 +266,13 @@ impl Desk {
 
     pub fn busy(&self, id: &str) -> Option<Busy> {
         self.runtime.get(id).and_then(|runtime| runtime.busy)
+    }
+
+    /// Whether the task's live Pi process reports an active goal.
+    pub fn goal_active(&self, id: &str) -> bool {
+        self.runtime
+            .get(id)
+            .is_some_and(|runtime| runtime.live && runtime.goal)
     }
 
     pub fn running(&self) -> usize {
@@ -612,6 +621,11 @@ impl Desk {
             }
             Incoming::NamingFinished => {
                 return vec![send(id, rpc::command(SYNC, "get_state"))];
+            }
+            Incoming::Status { key, text } => {
+                if key == "goal" {
+                    self.rt(id).goal = text.is_some();
+                }
             }
             Incoming::AgentStart => {
                 self.rt(id).streaming = true;
@@ -978,6 +992,7 @@ impl Desk {
         }
         let runtime = self.rt(id);
         runtime.live = false;
+        runtime.goal = false;
         runtime.streaming = false;
         runtime.pending.clear();
         runtime.deferred_idle = None;

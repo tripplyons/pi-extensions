@@ -6,20 +6,18 @@ description = "A desktop inbox for parallel Pi agents, each in its own git workt
 publish = false
 
 [dependencies]
-iced = { version = "0.14", features = ["tokio", "markdown", "highlighter", "advanced", "svg"] }
-tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "time"] }
+# Rune is pre-release. Pin a revision of its `dev` branch, which is never rewritten.
+rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["native-file-dialog"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["markdown"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "rt-multi-thread", "macros", "time"] }
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7"] }
-rfd = "0.17"
-
-# Keep text origins on physical pixels after display and UI scaling.
-[patch.crates-io]
-iced_wgpu = { path = "vendor/iced_wgpu" }
-iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 
 [dev-dependencies]
 tempfile = "3"
-iced_test = "0.14"
+png = "0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

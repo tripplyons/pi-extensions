@@ -1,32 +1,265 @@
-//! Headless UI tests with iced_test's simulator. They check what the window
-//! shows and what clicks and keys do. Snapshots are written to Cargo's test
+//! Headless UI tests with Rune's runtime. They check what the window shows
+//! and what clicks and keys do. Snapshots are written to Cargo's test
 //! temporary directory for visual review; they are not compared.
 
 mod common;
 
-use iced::keyboard::{Key, Modifiers, key::Named};
-use iced_test::simulator::Simulator;
 use pi_desk::app::{App, Message, Overlay, View};
 use pi_desk::icon::KeyPart;
 use pi_desk::model::*;
 use pi_desk::store::Store;
+use rune::{ElementInfo, Env, Key, KeyEvent, Mods, Runtime};
 use std::path::PathBuf;
 
 const SIZE: (f32, f32) = (1440.0, 900.0);
+/// Snapshots render at Retina scale for review.
+const SCALE: f32 = 2.0;
 
-/// Execute iced tasks through its runtime interface, with fake Pi as the only
-/// external model boundary. Focus operations don't need a window in these tests.
-async fn finish_task(app: &mut App, task: iced::Task<Message>) {
-    use iced::futures::StreamExt;
-    let mut tasks = vec![task];
-    while let Some(task) = tasks.pop() {
-        if let Some(mut stream) = iced_test::runtime::task::into_stream(task) {
-            while let Some(action) = stream.next().await {
-                if let iced_test::runtime::Action::Output(message) = action {
-                    tasks.push(app.update(message));
-                }
-            }
+/// The app inside a headless Rune window. Derefs to the app, so tests read
+/// and change state directly, then render to check what the window shows.
+struct Desk {
+    rt: Runtime<App>,
+}
+
+impl std::ops::Deref for Desk {
+    type Target = App;
+    fn deref(&self) -> &App {
+        &self.rt.state
+    }
+}
+
+impl std::ops::DerefMut for Desk {
+    fn deref_mut(&mut self) -> &mut App {
+        &mut self.rt.state
+    }
+}
+
+impl Desk {
+    fn new(app: App) -> Desk {
+        let mut rt = Runtime::new(app, pi_desk::views::root, SIZE, Env::new(true, SCALE));
+        rt.on_key = Some(pi_desk::app::window_key);
+        let mut desk = Desk { rt };
+        desk.render();
+        desk
+    }
+
+    fn resize(&mut self, size: (f32, f32)) {
+        self.rt.set_viewport(size, SCALE);
+        self.render();
+    }
+
+    /// Lays out the current state with every animation landed.
+    fn render(&mut self) {
+        self.rt.invalidate();
+        self.rt.frame(0.0);
+        self.rt.settle_all();
+        self.rt.frame(1.0);
+        // The viewport is read in the first layout; zoom needs a second.
+        self.rt.invalidate();
+        self.rt.frame(1.0);
+        self.rt.settle_all();
+        self.rt.frame(1.0);
+    }
+
+    fn elements(&mut self) -> Vec<ElementInfo> {
+        self.render();
+        self.rt.elements()
+    }
+
+    /// The shown element whose text is `text`, else whose label is.
+    fn find(&mut self, text: &str) -> Option<ElementInfo> {
+        let (w, h) = self.rt.viewport;
+        let shown: Vec<ElementInfo> = self
+            .elements()
+            .into_iter()
+            .filter(|element| {
+                let [x, y, width, height] = element.rect;
+                !element.exiting
+                    && element.opacity > 0.0
+                    && width > 0.0
+                    && height > 0.0
+                    && x < w
+                    && y < h
+                    && x + width > 0.0
+                    && y + height > 0.0
+            })
+            .collect();
+        let by_text = shown
+            .iter()
+            .find(|element| element.text.as_deref() == Some(text));
+        by_text
+            .or_else(|| {
+                shown.iter().find(|element| {
+                    element.text.is_none() && element.label.as_deref() == Some(text)
+                })
+            })
+            .cloned()
+    }
+
+    fn shows(&mut self, text: &str) -> bool {
+        self.find(text).is_some()
+    }
+
+    /// The window rect `[x, y, w, h]` of the shown element with this text.
+    fn bounds(&mut self, text: &str) -> [f32; 4] {
+        self.find(text)
+            .unwrap_or_else(|| panic!("{text:?} is not shown"))
+            .rect
+    }
+
+    /// The window rect of the element with this key or key path.
+    fn keyed(&mut self, key: &str) -> Option<[f32; 4]> {
+        self.render();
+        self.rt.presented(key).map(|(rect, _)| rect)
+    }
+
+    /// Clicks the middle of the shown element with this text.
+    fn click(&mut self, text: &str) {
+        let [x, y, w, h] = self.bounds(text);
+        let (x, y) = (x + w / 2.0, y + h / 2.0);
+        let before = format!("{:?}", self.debug_state());
+        self.rt.pointer_move(x, y);
+        self.rt.pointer_down(x, y);
+        self.rt.pointer_up(x, y);
+        self.rt.frame(0.0);
+        assert_ne!(
+            before,
+            format!("{:?}", self.debug_state()),
+            "clicking {text:?} did nothing"
+        );
+    }
+
+    fn debug_state(&self) -> String {
+        format!(
+            "{:?} {:?} {:?} {} {} {} {} {:?} {:?} {:?} {}",
+            self.view,
+            self.selected,
+            self.overlay.as_ref().map(std::mem::discriminant),
+            self.board,
+            self.focus,
+            self.show_sidebar,
+            self.replying,
+            self.expanded_thinking,
+            self.menu,
+            self.pending.len(),
+            self.desk.state.agents.iter().map(|agent| format!("{:?}{:?}", agent.status, agent.question)).collect::<String>()
+                + &format!("{:?}", match &self.overlay {
+                    Some(Overlay::Composer(composer)) => Some(composer.use_worktree),
+                    _ => None,
+                }),
+        )
+    }
+
+    /// A key at the window, as though nothing had focus.
+    fn key(&mut self, name: &str) {
+        self.press(name, Mods::default(), false);
+    }
+
+    fn press(&mut self, name: &str, mods: Mods, captured: bool) {
+        let event = key_event(name, mods);
+        if let Some(task) = self.rt.state.on_key(&event, captured) {
+            self.rt.state.start(task);
         }
+    }
+
+    /// Runs started work until no future is left, delivering its messages.
+    async fn settle(&mut self) {
+        loop {
+            while let Some(message) = self.inbox.try_recv() {
+                self.send(message);
+            }
+            if !self.inbox.busy() {
+                if let Some(message) = self.inbox.try_recv() {
+                    self.send(message);
+                    continue;
+                }
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn finish(&mut self, task: pi_desk::task::Task) {
+        self.start(task);
+        self.settle().await;
+    }
+
+    fn snapshot(&mut self, name: &str) {
+        self.render();
+        let (w, h) = self.rt.viewport;
+        let size = ((w * SCALE) as u32, (h * SCALE) as u32);
+        let pixels = render_rt(&mut self.rt, size);
+        let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui");
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = std::fs::File::create(directory.join(format!("{name}.png"))).unwrap();
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), size.0, size.1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+
+    fn snapshot_size(&mut self, name: &str, size: (f32, f32)) {
+        let old = self.rt.viewport;
+        self.resize(size);
+        self.snapshot(name);
+        self.resize(old);
+    }
+}
+
+fn render_rt(rt: &mut Runtime<App>, size: (u32, u32)) -> Vec<u8> {
+    use rune::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
+    thread_local! {
+        static GPU: Gpu = Gpu::headless();
+    }
+    GPU.with(|gpu| {
+        let format = if rt.srgb_blend() {
+            OFFSCREEN_FORMAT.remove_srgb_suffix()
+        } else {
+            OFFSCREEN_FORMAT
+        };
+        let mut renderer = Renderer::new(&gpu.device, format);
+        renderer.set_srgb_blend(rt.srgb_blend());
+        let target = Offscreen::with_format(&gpu.device, size.0, size.1, format);
+        // Each snapshot uses a new renderer, so upload every glyph again.
+        rt.text.atlas.invalidate();
+        renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
+        renderer.prepare_surfaces(&gpu.device, &gpu.queue, &rt.surfaces, size);
+        renderer.prepare(
+            &gpu.device,
+            &gpu.queue,
+            &mut rt.text.atlas,
+            &rt.instances,
+            size,
+        );
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        renderer.draw(&mut encoder, &target.view, rt.clear_color());
+        target.copy(&mut encoder);
+        renderer.submit(&gpu.queue, encoder);
+        target.read(&gpu.device)
+    })
+}
+
+fn key_event(name: &str, mods: Mods) -> KeyEvent {
+    let key = match name {
+        "enter" => Key::Enter,
+        "escape" | "Escape" => Key::Escape,
+        "down" => Key::Down,
+        "up" => Key::Up,
+        other if mods.cmd => Key::Command(other.chars().next().unwrap()),
+        other => Key::Text(other.into()),
+    };
+    KeyEvent { key, mods }
+}
+
+fn command() -> Mods {
+    Mods {
+        cmd: true,
+        logo: cfg!(target_os = "macos"),
+        ..Mods::default()
     }
 }
 
@@ -65,7 +298,7 @@ fn agent(
 }
 
 /// Saved state with one row in each interesting status.
-fn seeded(dir: &std::path::Path) -> App {
+fn seeded(dir: &std::path::Path) -> Desk {
     let repo = common::repo(dir);
     let mut question = agent(
         1,
@@ -166,7 +399,10 @@ fn seeded(dir: &std::path::Path) -> App {
     };
     let store = Store::new(dir.join("state"));
     store.save(&state).unwrap();
-    App::new(store, common::fake_pi())
+    let mut app = App::new(store, common::fake_pi());
+    // Point swarm reads at an empty directory instead of the user's runs.
+    app.swarm_dir = dir.join("swarm");
+    Desk::new(app)
 }
 
 #[test]
@@ -236,7 +472,7 @@ fn a_held_row_leaves_when_the_user_navigates() {
 fn changing_views_keeps_a_task_that_matches_the_new_view() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "j");
+    app.key("j");
     assert_eq!(app.selected.as_deref(), Some("agent-1"));
     let _ = app.update(Message::Show(View::All));
     assert_eq!(app.selected.as_deref(), Some("agent-1"));
@@ -263,7 +499,7 @@ fn discard_keeps_the_focused_task_selected() {
     assert!(app.rows().iter().any(|row| row.id == "agent-5"));
     // Other views don't count or list the task during its undo window.
     assert_eq!(app.count(&View::Working), 0);
-    key(&mut app, "z");
+    app.key("z");
     assert!(app.pending.is_empty());
     assert_eq!(app.selected.as_deref(), Some("agent-5"));
 }
@@ -280,48 +516,41 @@ fn the_app_opens_on_all_tasks() {
 fn command_p_fuzzy_searches_projects_in_the_composer() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "n");
+    app.key("n");
     let composer = |app: &App| match &app.overlay {
         Some(Overlay::Composer(composer)) => {
             (composer.project.clone(), composer.project_search.is_some())
         }
         _ => panic!("the composer should be open"),
     };
-    let command_p = |app: &mut App| {
-        let _ = app.update(Message::Key {
-            key: Key::Character("p".into()),
-            modifiers: Modifiers::COMMAND,
-            captured: false,
-        });
-    };
     assert_eq!(composer(&app), (Some("p2".into()), false));
 
     // Letters in order pick the project; Enter chooses the best match.
-    command_p(&mut app);
+    app.press("p", command(), false);
     assert_eq!(composer(&app), (Some("p2".into()), true));
     let _ = app.update(Message::ComposerProjectQuery("AI".into()));
     assert_eq!(app.project_matches(), vec!["p1".to_string()]);
-    key(&mut app, "enter");
+    app.key("enter");
     assert_eq!(composer(&app), (Some("p1".into()), false));
 
     // Escape leaves the search but keeps the composer open.
-    command_p(&mut app);
+    app.press("p", command(), false);
     let _ = app.update(Message::ComposerProjectQuery("zzz".into()));
     assert!(app.project_matches().is_empty());
-    assert!(ui(&app).find("No matching projects").is_ok());
-    key(&mut app, "enter");
-    key(&mut app, "escape");
+    assert!(app.shows("No matching projects"));
+    app.key("enter");
+    app.key("escape");
     assert_eq!(composer(&app), (Some("p1".into()), false));
 
     // An empty query lists every project in sidebar order.
-    command_p(&mut app);
+    app.press("p", command(), false);
     assert_eq!(
         app.project_matches(),
         vec!["p1".to_string(), "p2".to_string()]
     );
     let _ = app.update(Message::ComposerProjectPick(1));
     assert_eq!(composer(&app), (Some("p2".into()), false));
-    key(&mut app, "escape");
+    app.key("escape");
     assert!(app.overlay.is_none());
 }
 
@@ -329,26 +558,26 @@ fn command_p_fuzzy_searches_projects_in_the_composer() {
 fn command_e_toggles_use_worktree_in_the_composer() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "n");
+    app.key("n");
     let use_worktree = |app: &App| match &app.overlay {
         Some(Overlay::Composer(composer)) => composer.use_worktree,
         _ => panic!("the composer should be open"),
     };
     assert!(!use_worktree(&app));
-    let press = |app: &mut App, modifiers| {
-        let _ = app.update(Message::Key {
-            key: Key::Character("e".into()),
-            modifiers,
-            captured: false,
-        });
-    };
-    press(&mut app, Modifiers::COMMAND);
+    app.press("e", command(), false);
     assert!(use_worktree(&app));
     // Shifted or plain E leaves it alone.
-    press(&mut app, Modifiers::COMMAND | Modifiers::SHIFT);
-    press(&mut app, Modifiers::empty());
+    app.press(
+        "e",
+        Mods {
+            shift: true,
+            ..command()
+        },
+        false,
+    );
+    app.press("e", Mods::default(), false);
     assert!(use_worktree(&app));
-    press(&mut app, Modifiers::COMMAND);
+    app.press("e", command(), false);
     assert!(!use_worktree(&app));
 }
 
@@ -357,10 +586,10 @@ fn a_reply_brings_a_done_task_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let _ = app.update(Message::Select("agent-6".into()));
-    assert!(ui(&app).find("Reply").is_ok());
-    key(&mut app, "r");
+    assert!(app.shows("Reply"));
+    app.key("r");
     assert!(app.replying);
-    app.reply = iced::widget::text_editor::Content::with_text("Rename the tests too");
+    app.reply = rune::TextEdit::new("Rename the tests too");
     let _ = app.update(Message::SendReply);
     let agent = app.desk.state.agent("agent-6").unwrap();
     assert!(!agent.status.is_done(), "{:?}", agent.status);
@@ -380,73 +609,8 @@ fn working_rows_show_the_start_of_the_latest_message() {
         "agent-5".into(),
         pi_desk::transcript::Transcript::from_messages(messages.iter()),
     );
-    let mut ui = ui(&app);
-    assert!(
-        ui.find("Checking the release script. Then the changelog.")
-            .is_ok()
-    );
-    assert!(ui.find("Older reply").is_err());
-}
-
-fn ui(app: &App) -> Simulator<'_, Message> {
-    // iced applies application scale by reducing the logical window viewport.
-    let size = (SIZE.0 / app.scale_factor(), SIZE.1 / app.scale_factor());
-    Simulator::with_size(pi_desk::theme::settings(), size, app.view())
-}
-
-fn snapshot(app: &App, name: &str) {
-    snapshot_size(app, name, SIZE);
-}
-
-fn snapshot_size(app: &App, name: &str, size: (f32, f32)) {
-    // Match the logical viewport used by iced at this application zoom level.
-    let size = (size.0 / app.scale_factor(), size.1 / app.scale_factor());
-    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui");
-    // matches_image adds the renderer name, as in `inbox-wgpu.png`. Remove the
-    // last run's file so this writes a fresh image instead of comparing.
-    if let Ok(entries) = std::fs::read_dir(&directory) {
-        for entry in entries.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&format!("{name}-"))
-            {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-    let path = directory.join(format!("{name}.png"));
-    let shot = Simulator::with_size(pi_desk::theme::settings(), size, app.view())
-        .snapshot(&pi_desk::theme::theme())
-        .unwrap();
-    assert!(shot.matches_image(&path).unwrap());
-}
-
-fn key(app: &mut App, name: &str) {
-    let key = match name {
-        "enter" => Key::Named(Named::Enter),
-        "escape" => Key::Named(Named::Escape),
-        "down" => Key::Named(Named::ArrowDown),
-        other => Key::Character(other.into()),
-    };
-    let _ = app.update(Message::Key {
-        key,
-        modifiers: Modifiers::empty(),
-        captured: false,
-    });
-}
-
-fn click(app: &mut App, label: &str) {
-    let messages: Vec<Message> = {
-        let mut ui = ui(app);
-        ui.click(label)
-            .unwrap_or_else(|error| panic!("no {label:?}: {error:?}"));
-        ui.into_messages().collect()
-    };
-    assert!(!messages.is_empty(), "clicking {label:?} did nothing");
-    for message in messages {
-        let _ = app.update(message);
-    }
+    assert!(app.shows("Checking the release script. Then the changelog."));
+    assert!(!app.shows("Older reply"));
 }
 
 #[test]
@@ -466,26 +630,22 @@ fn long_task_branches_wrap_in_a_narrow_pane() {
         *saved = branch.into();
     }
     let size = (760.0, 900.0);
-    let mut rendered = Simulator::with_size(pi_desk::theme::settings(), size, app.view());
-    let branch = rendered.find(branch).unwrap().visible_bounds().unwrap();
-    assert!(
-        branch.height > 20.0,
-        "long branches must wrap rather than clip"
-    );
-    assert!(branch.x + branch.width <= size.0);
-    snapshot_size(&app, "narrow-card", size);
+    app.resize(size);
+    let [x, _, w, h] = app.bounds(branch);
+    assert!(x + w <= size.0, "long branches must stay inside the pane");
+    assert!(h > 20.0, "long branches wrap instead of truncating: {h}");
+    app.snapshot("narrow-card");
 }
 
 #[test]
 fn summaries_stay_visible_and_detail_tabs_have_no_extra_actions() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "s"); // The old summary shortcut must no longer hide it.
-    let mut rendered = ui(&app);
-    rendered.find("Did").unwrap();
-    rendered.find("Guarded the nil session.").unwrap();
-    rendered.find("Needs").unwrap();
-    rendered.find("Needs: Review and merge").unwrap();
+    app.key("s"); // The old summary shortcut must no longer hide it.
+    app.key("s");
+    for text in ["Did", "Guarded the nil session.", "Needs", "Needs: Review and merge"] {
+        assert!(app.shows(text), "{text:?} should be shown");
+    }
     for label in [
         "Hide summary",
         "Show summary",
@@ -493,47 +653,25 @@ fn summaries_stay_visible_and_detail_tabs_have_no_extra_actions() {
         "Terminal",
         "Editor",
     ] {
-        assert!(rendered.find(label).is_err(), "unexpected {label} control");
+        assert!(!app.shows(label), "unexpected {label} control");
     }
-    snapshot(&app, "always-summary");
+    app.snapshot("always-summary");
 }
 
 #[test]
 fn text_rows_align_and_wrapped_summaries_keep_their_first_line_alignment() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    {
-        let mut rendered = ui(&app);
-        // The label and count are spans in one paragraph, not separate text widgets.
-        let heading = rendered
-            .find(iced_test::selector::id("task-list-heading"))
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
-        assert!((heading.height - 24.0).abs() < 0.01);
-        // List rows show the title without a status dot.
-        assert!(
-            rendered
-                .find(iced_test::selector::id("task-status-agent-4"))
-                .is_err()
-        );
-        assert!(rendered.find("Fix the login crash").is_ok());
-        let did = rendered.find("Did").unwrap().visible_bounds().unwrap();
-        let value = rendered
-            .find(iced_test::selector::id("summary-value-Did"))
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
-        assert_eq!(did.y, value.y);
-        assert_eq!(did.height, value.height);
-        let needs = rendered.find("Needs").unwrap().visible_bounds().unwrap();
-        let value = rendered
-            .find(iced_test::selector::id("summary-value-Needs"))
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
-        assert_eq!(needs.y, value.y);
-        assert_eq!(needs.height, value.height);
+    // The label and count are spans in one paragraph, not separate texts.
+    let heading = app.keyed("task-list-heading").unwrap();
+    assert!((heading[3] - 24.0).abs() < 0.01, "{heading:?}");
+    assert!(app.shows("All tasks 6"));
+    assert!(app.shows("Fix the login crash"));
+    for name in ["Did", "Needs"] {
+        let label = app.bounds(name);
+        let value = app.keyed(&format!("summary-value-{name}")).unwrap();
+        assert_eq!(label[1], value[1]);
+        assert_eq!(label[3], value[3]);
     }
     let did = "Guarded the nil session, added a regression test, and checked that retries retain their work. ".repeat(3);
     app.desk
@@ -547,19 +685,15 @@ fn text_rows_align_and_wrapped_summaries_keep_their_first_line_alignment() {
         .unwrap()
         .did = did.clone();
     app.show_sidebar = false;
-    let mut rendered = Simulator::with_size(pi_desk::theme::settings(), (760.0, 900.0), app.view());
-    let label = rendered.find("Did").unwrap().visible_bounds().unwrap();
-    let value = rendered
-        .find(did.as_str())
-        .unwrap()
-        .visible_bounds()
-        .unwrap();
-    assert_eq!(label.y, value.y);
-    assert!((label.height - 20.0).abs() < 0.01);
-    assert!(value.height > label.height);
-    let needs = rendered.find("Needs").unwrap().visible_bounds().unwrap();
-    assert!(needs.y >= value.y + value.height);
-    snapshot_size(&app, "aligned-wrapped-summary", (760.0, 900.0));
+    app.resize((760.0, 900.0));
+    let label = app.bounds("Did");
+    let value = app.bounds(&did);
+    assert_eq!(label[1], value[1]);
+    assert!((label[3] - 21.0).abs() < 0.01, "{label:?}");
+    assert!(value[3] > label[3]);
+    let needs = app.bounds("Needs");
+    assert!(needs[1] >= value[1] + value[3]);
+    app.snapshot("aligned-wrapped-summary");
 }
 
 #[test]
@@ -569,14 +703,18 @@ fn a_dropped_file_types_its_path_into_the_reply() {
     let _ = app.update(Message::Select("agent-4".into()));
     assert!(!app.replying);
     // With no box open, a drop starts a reply to the selected task.
-    let _ = app.update(Message::FileDropped(PathBuf::from(
-        "/Users/me/Desktop/Screenshot 2026-11-03 at 10.00.00.png",
-    )));
+    app.rt.drop_files(
+        vec![PathBuf::from(
+            "/Users/me/Desktop/Screenshot 2026-11-03 at 10.00.00.png",
+        )],
+        Some((700.0, 400.0)),
+    );
+    app.render();
     assert!(app.replying);
     let _ = app.update(Message::FileDropped(PathBuf::from("/tmp/it's.png")));
     let _ = app.update(Message::FileDropped(PathBuf::from("/tmp/plain.png")));
     assert_eq!(
-        app.reply.text(),
+        app.reply.text,
         "'/Users/me/Desktop/Screenshot 2026-11-03 at 10.00.00.png' '/tmp/it'\\''s.png' /tmp/plain.png "
     );
 }
@@ -586,12 +724,12 @@ async fn a_dropped_file_types_its_path_into_the_task_composer() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     let _ = app.update(Message::FileDropped(PathBuf::from("/tmp/shot.png")));
     let Some(Overlay::Composer(composer)) = &app.overlay else {
         panic!("composer should stay open")
     };
-    assert_eq!(composer.content.text(), "/tmp/shot.png ");
+    assert_eq!(composer.content.text, "/tmp/shot.png ");
     assert!(!app.replying);
 }
 
@@ -608,15 +746,11 @@ fn done_heading_keeps_the_label_and_count_in_one_line_at_different_zoom_levels()
     }
     let _ = app.update(Message::Show(View::Done));
     assert_eq!(app.rows().len(), 3);
-    for name in ["done-heading", "done-heading-200"] {
-        let heading = ui(&app)
-            .find(iced_test::selector::id("task-list-heading"))
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
-        assert!((heading.height - 24.0).abs() < 0.01);
-        assert!(heading.width > 50.0);
-        snapshot(&app, name);
+    for (name, zoom) in [("done-heading", 1.0), ("done-heading-200", 2.0)] {
+        let heading = app.keyed("task-list-heading").unwrap();
+        assert!((heading[3] - 24.0 * zoom).abs() < 0.01, "{heading:?}");
+        assert!(heading[2] > 50.0);
+        app.snapshot(name);
         for _ in 0..10 {
             let _ = app.update(Message::ZoomIn);
         }
@@ -641,31 +775,29 @@ fn zoom_shortcuts_work_while_typing_and_in_overlays() {
         let _ = app.update(Message::CancelReply);
         let _ = app.update(action);
         let overlay = app.overlay.as_ref().map(std::mem::discriminant);
-        let reply = app.reply.text();
-        for (character, modifiers, expected) in [
-            ("=", Modifiers::COMMAND, 1.1),
-            ("+", Modifiers::COMMAND | Modifiers::SHIFT, 1.2),
-            ("-", Modifiers::COMMAND, 1.1),
-            ("0", Modifiers::COMMAND, 1.0),
+        let reply = app.reply.text.clone();
+        for (character, shift, expected) in [
+            ("=", false, 1.1),
+            ("+", true, 1.2),
+            ("-", false, 1.1),
+            ("0", false, 1.0),
         ] {
-            let _ = app.update(Message::Key {
-                key: Key::Character(character.into()),
-                modifiers,
-                captured: true,
-            });
+            app.press(character, Mods { shift, ..command() }, true);
             assert_eq!(app.scale_factor(), expected);
             assert_eq!(app.overlay.as_ref().map(std::mem::discriminant), overlay);
-            assert_eq!(app.reply.text(), reply);
+            assert_eq!(app.reply.text, reply);
             assert_eq!(app.selected, selected);
         }
     }
     let _ = app.update(Message::CloseOverlay);
-    for modifiers in [Modifiers::empty(), Modifiers::COMMAND | Modifiers::ALT] {
-        let _ = app.update(Message::Key {
-            key: Key::Character("=".into()),
-            modifiers,
-            captured: false,
-        });
+    for mods in [
+        Mods::default(),
+        Mods {
+            alt: true,
+            ..command()
+        },
+    ] {
+        app.press("=", mods, false);
         assert_eq!(app.scale_factor(), 1.0);
     }
 }
@@ -710,72 +842,69 @@ fn zoomed_layouts_reflow_at_the_scaled_window_viewport() {
     for _ in 0..3 {
         let _ = app.update(Message::ZoomOut);
     }
-    snapshot(&app, "zoom-70");
+    app.snapshot("zoom-70");
     let _ = app.update(Message::ResetZoom);
     for _ in 0..2 {
         let _ = app.update(Message::ZoomIn);
     }
     for label in ["Board", "Hide sidebar", "Did", "Guarded the nil session."] {
-        ui(&app).find(label).unwrap().visible_bounds().unwrap();
+        app.bounds(label);
     }
-    snapshot(&app, "zoom-120");
+    app.snapshot("zoom-120");
     let _ = app.update(Message::OpenPalette);
     let _ = app.update(Message::PaletteQuery("zoom".into()));
-    ui(&app).find("Zoom in (current: 120%)").unwrap();
-    snapshot(&app, "zoom-palette");
+    assert!(app.shows("Zoom in (current: 120%)"));
+    app.snapshot("zoom-palette");
     let _ = app.update(Message::CloseOverlay);
     for _ in 0..8 {
         let _ = app.update(Message::ZoomIn);
     }
     // Use the existing sidebar toggle to leave more room at high zoom.
-    key(&mut app, "s");
+    app.key("s");
     for label in ["Show sidebar", "Board", "Did", "Needs"] {
-        let bounds = ui(&app).find(label).unwrap().visible_bounds().unwrap();
-        assert!(bounds.x + bounds.width <= SIZE.0 / app.scale_factor());
+        let [x, _, w, _] = app.bounds(label);
+        assert!(x + w <= SIZE.0 + 0.5, "{label} at {x} + {w}");
     }
-    snapshot(&app, "zoom-200-sidebar-hidden");
+    app.snapshot("zoom-200-sidebar-hidden");
 }
 
 #[test]
 fn existing_shortcuts_have_visible_control_and_overlay_hints() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    {
-        let mut rendered = ui(&app);
-        let label = rendered.find("Board").unwrap().visible_bounds().unwrap();
-        let hint = rendered.find("B").unwrap().visible_bounds().unwrap();
-        assert!(hint.x >= label.x + label.width);
-        assert!((hint.y - label.y).abs() < 6.0);
-    }
-    click(&mut app, "Board");
-    ui(&app).find("List").unwrap();
-    ui(&app).find("B").unwrap();
-    click(&mut app, "List");
+    let label = app.bounds("Board");
+    let hint = app.bounds("B");
+    assert!(hint[0] >= label[0] + label[2]);
+    assert!((hint[1] + hint[3] / 2.0 - label[1] - label[3] / 2.0).abs() < 6.0);
+    app.click("Board");
+    assert!(app.shows("List"));
+    assert!(app.shows("B"));
+    app.click("List");
 
     let _ = app.update(Message::OpenSettings);
-    ui(&app).find("Cancel").unwrap();
-    ui(&app).find("Esc").unwrap();
-    snapshot(&app, "settings-shortcuts");
-    key(&mut app, "escape");
+    assert!(app.shows("Cancel"));
+    assert!(app.shows("Esc"));
+    app.snapshot("settings-shortcuts");
+    app.key("escape");
     assert!(app.overlay.is_none());
 
-    key(&mut app, "l");
+    app.key("l");
     for label in ["Enter", "apply typed time", "Esc", "cancel"] {
-        ui(&app).find(label).unwrap();
+        assert!(app.shows(label), "{label:?}");
     }
-    key(&mut app, "escape");
+    app.key("escape");
     let _ = app.update(Message::OpenPalette);
     for label in ["/", "navigate", "Enter", "run", "Esc", "close"] {
-        ui(&app).find(label).unwrap();
+        assert!(app.shows(label), "{label:?}");
     }
-    key(&mut app, "escape");
-    key(&mut app, "n");
-    ui(&app).find("File task").unwrap();
-    ui(&app).find("Esc").unwrap();
-    key(&mut app, "escape");
-    key(&mut app, "x");
-    ui(&app).find("X").unwrap();
-    ui(&app).find("Enter").unwrap();
+    app.key("escape");
+    app.key("n");
+    assert!(app.shows("File task"));
+    assert!(app.shows("Esc"));
+    app.key("escape");
+    app.key("x");
+    assert!(app.shows("X"));
+    assert!(app.shows("Enter"));
 }
 
 #[test]
@@ -783,39 +912,44 @@ fn sidebar_shortcut_respects_typing_modifiers_and_overlays() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let selected = app.selected.clone();
-    key(&mut app, "s");
+    app.key("s");
     assert!(!app.show_sidebar);
-    key(&mut app, "s");
+    app.key("s");
     assert!(app.show_sidebar);
     assert_eq!(app.selected, selected);
-    key(&mut app, "b");
-    key(&mut app, "s");
+    app.key("b");
+    app.key("s");
     assert!(app.board);
     assert!(!app.show_sidebar);
-    key(&mut app, "s");
+    app.key("s");
     assert!(app.show_sidebar);
 
     let _ = app.update(Message::StartReply);
-    let _ = app.update(Message::Key {
-        key: Key::Character("s".into()),
-        modifiers: Modifiers::empty(),
-        captured: true,
-    });
+    app.press("s", Mods::default(), true);
     assert!(app.show_sidebar, "typing must not toggle the sidebar");
     let _ = app.update(Message::CancelReply);
-    for modifiers in [Modifiers::CTRL, Modifiers::ALT, Modifiers::LOGO] {
-        let _ = app.update(Message::Key {
-            key: Key::Character("s".into()),
-            modifiers,
-            captured: false,
-        });
+    for mods in [
+        Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+        Mods {
+            alt: true,
+            ..Mods::default()
+        },
+        Mods {
+            logo: true,
+            ..Mods::default()
+        },
+    ] {
+        app.press("s", mods, false);
         assert!(app.show_sidebar, "modified S must not toggle the sidebar");
     }
     let _ = app.update(Message::OpenPalette);
-    key(&mut app, "s");
+    app.key("s");
     assert!(app.show_sidebar, "overlays own character input");
     assert!(app.overlay.is_some());
-    key(&mut app, "Escape");
+    app.key("Escape");
     assert!(app.commands().iter().any(|command| {
         command.label == "Hide sidebar" && command.keys == [KeyPart::Text("S")]
     }));
@@ -826,23 +960,23 @@ fn sidebar_can_be_hidden_and_restored_in_list_and_board() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let selected = app.selected.clone();
-    click(&mut app, "Hide sidebar");
+    app.click("Hide sidebar");
     assert!(!app.show_sidebar);
     assert_eq!(app.selected, selected);
-    assert!(ui(&app).find("New task").is_err());
-    ui(&app).find("Show sidebar").unwrap();
-    snapshot(&app, "sidebar-hidden");
-    click(&mut app, "Show sidebar");
+    assert!(!app.shows("New task"));
+    assert!(app.shows("Show sidebar"));
+    app.snapshot("sidebar-hidden");
+    app.click("Show sidebar");
     assert!(app.show_sidebar);
-    ui(&app).find("New task").unwrap();
-    click(&mut app, "Board");
-    click(&mut app, "Hide sidebar");
+    assert!(app.shows("New task"));
+    app.click("Board");
+    app.click("Hide sidebar");
     assert!(!app.show_sidebar);
-    assert!(ui(&app).find("New task").is_err());
-    snapshot(&app, "board-sidebar-hidden");
-    click(&mut app, "Show sidebar");
+    assert!(!app.shows("New task"));
+    app.snapshot("board-sidebar-hidden");
+    app.click("Show sidebar");
     assert!(app.show_sidebar);
-    ui(&app).find("New task").unwrap();
+    assert!(app.shows("New task"));
 }
 
 #[test]
@@ -900,14 +1034,11 @@ fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
     }
     let _ = app.update(Message::Show(View::All));
     // The age beside the newest row must use activity, not the stale inbox time.
-    let mut list = ui(&app);
-    list.find("2m").unwrap();
-    assert!(list.find("URGENT").is_err());
-    assert!(list.find("EVERYTHING ELSE").is_err());
-    drop(list);
-    snapshot_size(&app, "status-recency-list", (1440.0, 1500.0));
-    key(&mut app, "b");
-    let mut board = ui(&app);
+    assert!(app.shows("2m"));
+    assert!(!app.shows("URGENT"));
+    assert!(!app.shows("EVERYTHING ELSE"));
+    app.snapshot_size("status-recency-list", (1440.0, 1500.0));
+    app.key("b");
     let mut previous_x = None;
     for (group, ids) in [
         ("Needs you", vec![4, 2, 1, 3]),
@@ -916,31 +1047,22 @@ fn every_view_groups_by_status_and_latest_activity_including_board_columns() {
         ("Later", vec![12, 8]),
         ("Done", vec![10, 6]),
     ] {
-        let heading = board
-            .find(iced_test::selector::id(format!("board-heading-{group}")))
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
+        let heading = app.keyed(&format!("board-heading-{group}")).unwrap();
         if let Some(x) = previous_x {
-            assert!(heading.x > x);
+            assert!(heading[0] > x);
         }
-        previous_x = Some(heading.x);
+        previous_x = Some(heading[0]);
         let mut previous_y = None;
         for id in ids {
             let title = format!("Task agent-{id}");
-            let bounds = board
-                .find(title.as_str())
-                .unwrap()
-                .visible_bounds()
-                .unwrap();
+            let bounds = app.bounds(&title);
             if let Some(y) = previous_y {
-                assert!(bounds.y > y, "{group}: {title}");
+                assert!(bounds[1] > y, "{group}: {title}");
             }
-            previous_y = Some(bounds.y);
+            previous_y = Some(bounds[1]);
         }
     }
-    drop(board);
-    snapshot(&app, "status-recency-board");
+    app.snapshot("status-recency-board");
 }
 
 #[test]
@@ -967,7 +1089,7 @@ fn all_tasks_includes_every_project_status_and_snoozed_task() {
     app.desk.state.agents.push(snoozed);
     // Start from a project so the global view must clear the project filter.
     let _ = app.update(Message::Show(View::Project("p1".into())));
-    click(&mut app, "All tasks");
+    app.click("All tasks");
     assert_eq!(app.view, View::All);
     let rows = app.rows();
     assert_eq!(rows.len(), 8);
@@ -981,14 +1103,14 @@ fn all_tasks_includes_every_project_status_and_snoozed_task() {
         "Rename the config module",
         "Update the README badges",
     ] {
-        ui(&app).find(title).unwrap();
+        assert!(app.shows(title), "{title:?}");
     }
     assert!(
         app.commands()
             .iter()
             .any(|command| command.label == "Show all tasks")
     );
-    snapshot(&app, "all-tasks");
+    app.snapshot("all-tasks");
 }
 
 #[test]
@@ -1033,27 +1155,23 @@ fn thinking_is_one_line_by_default_and_expands_independently() {
     );
     assert!(app.expanded_thinking.is_empty());
     for width in [760.0, 1440.0] {
-        let mut rendered =
-            Simulator::with_size(pi_desk::theme::settings(), (width, 900.0), app.view());
-        let bounds = rendered
-            .find(preview.as_str())
-            .unwrap()
-            .visible_bounds()
-            .unwrap();
+        app.resize((width, 900.0));
+        let bounds = app.bounds(&preview);
         assert!(
-            bounds.height <= 18.0,
+            bounds[3] <= 18.0,
             "thinking preview must not wrap: {bounds:?}"
         );
-        assert!(rendered.find(thinking.as_str()).is_err());
+        assert!(!app.shows(&thinking));
     }
-    snapshot_size(&app, "thinking-collapsed-narrow", (760.0, 900.0));
-    click(&mut app, &preview);
-    ui(&app).find(thinking.as_str()).unwrap();
+    app.snapshot_size("thinking-collapsed-narrow", (760.0, 900.0));
+    app.resize(SIZE);
+    app.click(&preview);
+    assert!(app.shows(&thinking));
     assert_eq!(app.expanded_thinking.len(), 1);
-    click(&mut app, "An independent second block");
+    app.click("An independent second block");
     assert_eq!(app.expanded_thinking.len(), 2);
-    click(&mut app, &preview);
-    assert!(ui(&app).find(thinking.as_str()).is_err());
+    app.click(&preview);
+    assert!(!app.shows(&thinking));
     assert_eq!(app.expanded_thinking.len(), 1);
 
     // Identical entry/block indices in another task must still start collapsed.
@@ -1062,7 +1180,7 @@ fn thinking_is_one_line_by_default_and_expands_independently() {
         "agent-1".into(),
         pi_desk::transcript::Transcript::from_messages(messages.iter()),
     );
-    assert!(ui(&app).find(thinking.as_str()).is_err());
+    assert!(!app.shows(&thinking));
     assert!(!app.expanded_thinking.contains(&("agent-1".into(), 0, 2)));
 }
 
@@ -1081,9 +1199,9 @@ fn thinking_stays_collapsed_during_streaming_and_keeps_explicit_expansion() {
         transcript.apply(&pi_desk::rpc::parse(&record.to_string()).unwrap());
     }
     app.desk.transcripts.insert("agent-4".into(), transcript);
-    assert!(ui(&app).find(thinking.as_str()).is_err());
-    click(&mut app, "Thinking");
-    ui(&app).find(thinking.as_str()).unwrap();
+    assert!(!app.shows(&thinking));
+    app.click("Thinking");
+    assert!(app.shows(&thinking));
     let completed = format!("{thinking}Final detail.");
     let final_message =
         json!({"role":"assistant","content":[{"type":"thinking","thinking":completed}]});
@@ -1096,17 +1214,17 @@ fn thinking_stays_collapsed_during_streaming_and_keeps_explicit_expansion() {
             .get_mut("agent-4")
             .unwrap()
             .apply(&pi_desk::rpc::parse(&record.to_string()).unwrap());
-        ui(&app).find(completed.as_str()).unwrap();
+        assert!(app.shows(&completed));
         assert_eq!(app.expanded_thinking.len(), 1);
     }
-    click(&mut app, "Thinking");
-    assert!(ui(&app).find(completed.as_str()).is_err());
+    app.click("Thinking");
+    assert!(!app.shows(&completed));
     assert!(app.expanded_thinking.is_empty());
     app.desk.transcripts.insert(
         "agent-4".into(),
         pi_desk::transcript::Transcript::from_messages([&final_message]),
     );
-    assert!(ui(&app).find(completed.as_str()).is_err());
+    assert!(!app.shows(&completed));
 }
 
 #[test]
@@ -1122,19 +1240,18 @@ fn diff_and_transcript_tabs_render_content() {
         id.clone(),
         pi_desk::transcript::Transcript::from_messages(messages.iter()),
     );
-    assert!(ui(&app).find("Fix the crash").is_ok());
-    snapshot(&app, "transcript");
+    assert!(app.shows("Fix the crash"));
+    assert!(app.shows("Added a session guard."));
+    app.snapshot("transcript");
 
-    key(&mut app, "d");
+    app.key("d");
     let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1,2 @@\n-fn main() {}\n+fn main() {\n+    println!(\"hello\");\n";
     let _ = app.update(Message::DiffLoaded(id, Ok(diff.into())));
-    assert!(ui(&app).find("src/main.rs").is_ok());
-    let line = ui(&app)
-        .find(iced_test::selector::id("diff-line-0"))
-        .unwrap();
-    let visible = line.visible_bounds().expect("diff code must be visible");
-    assert!(visible.width > 80.0, "diff line collapsed: {visible:?}");
-    snapshot(&app, "diff");
+    assert!(app.shows("src/main.rs"));
+    let line = app.keyed("diff-line-0").expect("diff code must be shown");
+    assert!(line[2] > 80.0, "diff line collapsed: {line:?}");
+    assert!(app.shows("+    println!(\"hello\");"));
+    app.snapshot("diff");
 }
 
 #[test]
@@ -1150,7 +1267,7 @@ fn rich_transcript_typography_uses_the_same_layout_live_and_completed() {
         id.clone(),
         pi_desk::transcript::Transcript::from_messages([&message]),
     );
-    snapshot_size(&app, "typography-completed", (1100.0, 1300.0));
+    app.snapshot_size("typography-completed", (1100.0, 1300.0));
     app.desk
         .state
         .agents
@@ -1158,7 +1275,7 @@ fn rich_transcript_typography_uses_the_same_layout_live_and_completed() {
         .find(|agent| agent.id == id)
         .unwrap()
         .status = Status::Working;
-    snapshot_size(&app, "typography-streaming", (1100.0, 1300.0));
+    app.snapshot_size("typography-streaming", (1100.0, 1300.0));
 }
 
 #[test]
@@ -1182,35 +1299,28 @@ fn the_inbox_puts_latest_activity_first_and_opens_the_first_card() {
     );
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
     assert_eq!(app.count(&View::Inbox), 4);
-    let mut ui = ui(&app);
-    assert!(
-        ui.find(iced_test::selector::id("task-group-Needs you"))
-            .is_ok()
-    );
+    assert!(app.keyed("task-group-Needs you").is_some());
     for text in [
         "Merge",
         "Send back with a reply",
         "Guarded the nil session.",
         "Transcript",
     ] {
-        assert!(ui.find(text).is_ok(), "{text:?} should be visible");
+        assert!(app.shows(text), "{text:?} should be visible");
     }
-    snapshot(&app, "inbox");
+    app.snapshot("inbox");
 }
 
 #[test]
 fn question_cards_show_numbered_choices_and_a_click_answers() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "j");
+    app.key("j");
     assert_eq!(app.selected.as_deref(), Some("agent-1"));
-    {
-        let mut ui = ui(&app);
-        assert!(ui.find("recommended").is_ok());
-        assert!(ui.find("Make it configurable").is_ok());
-    }
-    snapshot(&app, "question");
-    click(&mut app, "512 entries");
+    assert!(app.shows("recommended"));
+    assert!(app.shows("Make it configurable"));
+    app.snapshot("question");
+    app.click("512 entries");
     let agent = app.desk.state.agent("agent-1").unwrap();
     assert!(agent.question.is_none());
     // The process is gone, so the answer waits as a prompt for the next run.
@@ -1230,7 +1340,7 @@ fn answering_in_all_tasks_keeps_the_selected_thread() {
         if app.selected.as_deref() == Some("agent-1") {
             break;
         }
-        key(&mut app, "j");
+        app.key("j");
     }
     assert_eq!(app.selected.as_deref(), Some("agent-1"));
     let _ = app.update(Message::Choose(0));
@@ -1242,16 +1352,16 @@ fn answering_in_all_tasks_keeps_the_selected_thread() {
 fn later_snoozes_and_undo_restores() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "l");
+    app.key("l");
     assert!(matches!(app.overlay, Some(Overlay::Later(_))));
-    snapshot(&app, "later");
-    key(&mut app, "3");
+    app.snapshot("later");
+    app.key("3");
     assert!(app.overlay.is_none());
     assert!(app.desk.state.agent("agent-4").unwrap().snoozed(now()));
     // The snoozed task stays selected and listed.
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
     assert!(app.rows().iter().any(|row| row.id == "agent-4"));
-    key(&mut app, "z");
+    app.key("z");
     assert!(!app.desk.state.agent("agent-4").unwrap().snoozed(now()));
 }
 
@@ -1259,26 +1369,23 @@ fn later_snoozes_and_undo_restores() {
 fn merge_and_discard_wait_out_an_undo_window() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "e");
+    app.key("e");
     assert_eq!(app.pending.len(), 1);
     // The task stays selected and listed while the merge waits.
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
     assert!(app.rows().iter().any(|row| row.id == "agent-4"));
-    {
-        let mut ui = ui(&app);
-        assert!(ui.find("Undo").is_ok());
-    }
-    snapshot(&app, "undo-bar");
-    key(&mut app, "z");
+    assert!(app.shows("Undo"));
+    app.snapshot("undo-bar");
+    app.key("z");
     assert!(app.pending.is_empty());
     assert_eq!(app.selected.as_deref(), Some("agent-4"));
 
-    key(&mut app, "x");
+    app.key("x");
     assert!(matches!(app.overlay, Some(Overlay::ConfirmDiscard(_))));
-    snapshot(&app, "discard");
-    key(&mut app, "enter");
+    app.snapshot("discard");
+    app.key("enter");
     assert_eq!(app.pending.len(), 1);
-    key(&mut app, "z");
+    app.key("z");
     assert!(app.pending.is_empty());
     assert_eq!(
         app.desk.state.agent("agent-4").unwrap().status,
@@ -1292,19 +1399,16 @@ async fn switching_tasks_reuses_models_and_refresh_keeps_selectors_visible() {
     let mut app = seeded(dir.path());
     let target = Some("agent-4".to_string());
     let task = app.update(Message::RefreshSession(target.clone()));
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     let _ = app.update(Message::Select("agent-2".into()));
     let _ = app.update(Message::Select("agent-4".into()));
     assert!(!app.session_picker(&target).unwrap().loading);
     let task = app.update(Message::RefreshSession(target.clone()));
     assert!(app.session_picker(&target).unwrap().loading);
-    {
-        let mut rendered = ui(&app);
-        assert!(rendered.find("Model").is_ok());
-        assert!(rendered.find("Effort").is_ok());
-        assert!(rendered.find("Refreshing…").is_ok());
-    }
-    finish_task(&mut app, task).await;
+    assert!(app.shows("Model"));
+    assert!(app.shows("Effort"));
+    assert!(app.shows("Refreshing…"));
+    app.finish(task).await;
     app.desk
         .state
         .agents
@@ -1324,13 +1428,10 @@ async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_de
     let mut app = seeded(dir.path());
     let target = Some("agent-4".to_string());
     let task = app.update(Message::RefreshSession(target.clone()));
-    finish_task(&mut app, task).await;
-    {
-        let mut rendered = ui(&app);
-        assert!(rendered.find("Model").is_ok());
-        assert!(rendered.find("Effort").is_ok());
-        assert!(rendered.find("Urgent").is_err());
-    }
+    app.finish(task).await;
+    assert!(app.shows("Model"));
+    assert!(app.shows("Effort"));
+    assert!(!app.shows("Urgent"));
     assert!(
         app.commands()
             .iter()
@@ -1341,7 +1442,7 @@ async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_de
         id: "plain".into(),
     };
     let task = app.update(Message::SessionModel(target.clone(), plain.clone()));
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     let picker = app.session_picker(&target).unwrap();
     assert_eq!(picker.options.as_ref().unwrap().levels, ["off"]);
     assert_eq!(picker.settings.effort.as_deref(), Some("off"));
@@ -1374,8 +1475,21 @@ async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_de
         provider: "fake".into(),
         id: "reasoning".into(),
     };
-    let task = app.update(Message::SessionModel(target.clone(), reasoning.clone()));
-    finish_task(&mut app, task).await;
+    // Choose the model the way the window does: open the menu, then pick.
+    app.click("fake/plain");
+    assert!(app.menu.is_some());
+    app.click("fake/reasoning");
+    app.settle().await;
+    assert!(app.menu.is_none());
+    assert_eq!(
+        app.desk
+            .state
+            .agent("agent-4")
+            .unwrap()
+            .session_settings
+            .model,
+        Some(reasoning.clone())
+    );
     let _ = app.update(Message::SessionEffort(target.clone(), "max".into()));
     assert_eq!(
         app.desk
@@ -1392,10 +1506,10 @@ async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_de
         saved.agent("agent-4").unwrap().session_settings,
         app.desk.state.agent("agent-4").unwrap().session_settings
     );
-    snapshot(&app, "session-selectors");
+    app.snapshot("session-selectors");
 
     let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     let picker = app.session_picker(&None).unwrap();
     assert_eq!(picker.settings.model, Some(reasoning));
     assert_eq!(picker.settings.effort.as_deref(), Some("medium"));
@@ -1403,14 +1517,15 @@ async fn session_selectors_use_pi_levels_save_per_task_and_reset_new_tasks_to_de
     let Some(Overlay::Composer(composer)) = &mut app.overlay else {
         panic!();
     };
-    composer.content = iced::widget::text_editor::Content::with_text("- First task\n- Second task");
+    composer.content = rune::TextEdit::new("Fix the first thing");
     let before = app.desk.state.agents.len();
     let _ = app.update(Message::ComposerSubmit);
+    assert_eq!(app.desk.state.agents.len(), before + 1);
     for agent in &app.desk.state.agents[before..] {
         assert_eq!(agent.session_settings.effort.as_deref(), Some("high"));
     }
     let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     assert_eq!(
         app.session_picker(&None)
             .unwrap()
@@ -1439,7 +1554,7 @@ async fn an_unavailable_saved_model_can_be_replaced_using_the_available_choices(
         .unwrap()
         .session_settings = saved.clone();
     let task = app.update(Message::RefreshSession(target.clone()));
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     let picker = app.session_picker(&target).unwrap();
     assert_eq!(picker.settings, saved);
     assert!(picker.error.as_ref().unwrap().contains("unavailable"));
@@ -1450,7 +1565,7 @@ async fn an_unavailable_saved_model_can_be_replaced_using_the_available_choices(
         id: "plain".into(),
     };
     let task = app.update(Message::SessionModel(target.clone(), replacement.clone()));
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     assert!(app.session_picker(&target).unwrap().error.is_none());
     assert_eq!(
         app.desk
@@ -1479,14 +1594,14 @@ async fn stale_discovery_does_not_overwrite_a_new_composer_or_its_selection() {
     let mut app = seeded(dir.path());
     let stale = app.update(Message::NewTask);
     let current = app.update(Message::NewTask);
-    finish_task(&mut app, current).await;
+    app.finish(current).await;
     let model = ModelChoice {
         provider: "fake".into(),
         id: "plain".into(),
     };
     let task = app.update(Message::SessionModel(None, model.clone()));
-    finish_task(&mut app, task).await;
-    finish_task(&mut app, stale).await;
+    app.finish(task).await;
+    app.finish(stale).await;
     assert_eq!(
         app.session_picker(&None).unwrap().settings.model,
         Some(model)
@@ -1501,77 +1616,64 @@ async fn stale_discovery_does_not_overwrite_a_new_composer_or_its_selection() {
     );
     let task = app.update(Message::RefreshSession(None));
     let _ = app.update(Message::CloseOverlay);
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
     assert!(app.overlay.is_none());
 }
 
 #[tokio::test]
-async fn the_composer_previews_a_list_and_files_one_task_per_item() {
+async fn the_composer_files_the_whole_text_as_one_task() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
+    app.finish(task).await;
+    let text = "In the API:\n- Add retries\n- Log slow queries\n- Remove the dead flag";
     let Some(Overlay::Composer(composer)) = &mut app.overlay else {
         panic!("composer should open")
     };
-    composer.content = iced::widget::text_editor::Content::with_text(
-        "In the API:\n- Add retries\n- Log slow queries\n- Remove the dead flag",
-    );
-    {
-        let mut ui = ui(&app);
-        assert!(ui.find("Files 3 tasks, one agent each:").is_ok());
-        assert!(ui.find("Works in the main checkout on main").is_ok());
-    }
-    click(&mut app, "Use worktree");
-    assert!(ui(&app).find("Merges into main").is_ok());
-    snapshot(&app, "composer");
+    composer.content = rune::TextEdit::new(text);
+    assert!(app.shows("Files one task: In the API:"));
+    assert!(app.shows("Works in the main checkout on main"));
+    assert!(!app.shows("Files 3 tasks, one agent each:"));
+    app.click("Use worktree");
+    assert!(app.shows("Merges into main"));
+    app.snapshot("composer");
     let before = app.desk.state.agents.len();
-    let _ = app.update(Message::ComposerSubmit);
+    app.click("File task");
     assert!(app.overlay.is_none());
-    let filed: Vec<&Agent> = app.desk.state.agents[before..].iter().collect();
-    assert!(
-        filed
-            .iter()
-            .all(|agent| matches!(agent.workspace, Workspace::Worktree { .. }))
-    );
-    assert_eq!(
-        filed
-            .iter()
-            .map(|agent| agent.title.as_str())
-            .collect::<Vec<_>>(),
-        ["Add retries", "Log slow queries", "Remove the dead flag"]
-    );
-    assert!(
-        filed
-            .iter()
-            .all(|agent| agent.prompt.starts_with("In the API:") && agent.base_branch == "main")
-    );
+    let filed = &app.desk.state.agents[before..];
+    assert_eq!(filed.len(), 1, "a list must not split into tasks");
+    assert!(matches!(filed[0].workspace, Workspace::Worktree { .. }));
+    assert_eq!(filed[0].title, "In the API:");
+    assert_eq!(filed[0].prompt, text);
+    assert_eq!(filed[0].base_branch, "main");
 }
 
 #[tokio::test]
 async fn the_composer_files_into_the_main_checkout_unless_worktree_is_checked() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
-    let Some(Overlay::Composer(composer)) = &mut app.overlay else {
-        panic!("composer should open")
-    };
-    assert!(!composer.use_worktree);
-    composer.content = iced::widget::text_editor::Content::with_text("- First\n- Second");
-    let project = app
+    let project = app.desk.state.projects[0].path.clone();
+    let head = pi_desk::git::head(&project).unwrap();
+    for title in ["First", "Second"] {
+        let task = app.update(Message::NewTask);
+        app.finish(task).await;
+        let Some(Overlay::Composer(composer)) = &mut app.overlay else {
+            panic!("composer should open")
+        };
+        // A fresh composer starts unchecked.
+        assert!(!composer.use_worktree);
+        composer.content = rune::TextEdit::new(title);
+        let _ = app.update(Message::ComposerSubmit);
+    }
+    let filed: Vec<&Agent> = app
         .desk
         .state
-        .project(composer.project.as_ref().unwrap())
-        .unwrap()
-        .path
-        .clone();
-    let head = pi_desk::git::head(&project).unwrap();
-    let before = app.desk.state.agents.len();
-    let _ = app.update(Message::ComposerSubmit);
-    let filed = &app.desk.state.agents[before..];
+        .agents
+        .iter()
+        .filter(|agent| matches!(agent.title.as_str(), "First" | "Second"))
+        .collect();
     assert_eq!(filed.len(), 2);
-    for agent in filed {
+    for agent in &filed {
         assert_eq!(
             agent.workspace,
             Workspace::Main {
@@ -1583,45 +1685,29 @@ async fn the_composer_files_into_the_main_checkout_unless_worktree_is_checked() 
     // The checkout holds one task at a time, so only the first starts.
     assert_eq!(filed[0].status, Status::Working);
     assert_eq!(filed[1].status, Status::Queued);
-
-    // A fresh composer starts unchecked again.
-    let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
-    let Some(Overlay::Composer(composer)) = &app.overlay else {
-        panic!("composer should open")
-    };
-    assert!(!composer.use_worktree);
 }
 
 #[test]
 fn board_focus_palette_and_project_views_render() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
-    key(&mut app, "b");
+    app.key("b");
     assert!(app.board);
-    {
-        let mut ui = ui(&app);
-        for column in ["Queued", "Needs you", "Done"] {
-            assert!(
-                ui.find(iced_test::selector::id(format!("board-heading-{column}")))
-                    .is_ok(),
-                "{column:?} column"
-            );
-        }
+    for column in ["Queued", "Needs you", "Done"] {
+        assert!(
+            app.keyed(&format!("board-heading-{column}")).is_some(),
+            "{column:?} column"
+        );
     }
-    snapshot(&app, "board");
-    key(&mut app, "b");
-    key(&mut app, "f");
+    app.snapshot("board");
+    app.key("b");
+    app.key("f");
     assert!(app.focus);
-    snapshot(&app, "focus");
-    key(&mut app, "escape");
+    app.snapshot("focus");
+    app.key("escape");
     assert!(!app.focus);
 
-    let _ = app.update(Message::Key {
-        key: Key::Character("k".into()),
-        modifiers: Modifiers::COMMAND,
-        captured: false,
-    });
+    app.press("k", command(), false);
     let _ = app.update(Message::PaletteQuery("transcript".into()));
     let labels: Vec<String> = app
         .palette_matches()
@@ -1629,8 +1715,8 @@ fn board_focus_palette_and_project_views_render() {
         .map(|command| command.label)
         .collect();
     assert_eq!(labels, ["Show transcript"]);
-    snapshot(&app, "palette");
-    key(&mut app, "escape");
+    app.snapshot("palette");
+    app.key("escape");
 
     let _ = app.update(Message::Show(View::Project("p2".into())));
     let titles: Vec<&str> = app
@@ -1639,13 +1725,16 @@ fn board_focus_palette_and_project_views_render() {
         .map(|agent| agent.title.as_str())
         .collect();
     assert_eq!(titles, ["Fix the login crash", "Update the README badges"]);
-    let _ = app.update(Message::Key {
-        key: Key::Named(Named::ArrowUp),
-        modifiers: Modifiers::ALT,
-        captured: false,
-    });
+    app.press(
+        "up",
+        Mods {
+            alt: true,
+            ..Mods::default()
+        },
+        false,
+    );
     assert_eq!(app.desk.state.projects[0].id, "p2");
-    snapshot(&app, "project");
+    app.snapshot("project");
 }
 
 fn vim_type(app: &mut App, target: pi_desk::vim::Target, keys: &str) {
@@ -1664,51 +1753,69 @@ fn vim_reply_leaves_insert_on_jk_and_undoes_one_insert_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let _ = app.update(Message::Select("agent-4".into()));
-    key(&mut app, "r");
+    app.key("r");
     assert_eq!(app.reply_vim.mode, Mode::Insert);
-    assert!(ui(&app).find("-- INSERT --").is_ok());
+    assert!(app.shows("-- INSERT --"));
     vim_type(&mut app, Target::Reply, "hello worldjk");
-    assert_eq!(app.reply.text(), "hello world");
+    assert_eq!(app.reply.text, "hello world");
     assert_eq!(app.reply_vim.mode, Mode::Normal);
-    assert!(ui(&app).find("-- NORMAL --").is_ok());
+    assert!(app.shows("-- NORMAL --"));
     vim_type(&mut app, Target::Reply, "bdw");
-    assert_eq!(app.reply.text(), "hello ");
+    assert_eq!(app.reply.text, "hello ");
     vim_type(&mut app, Target::Reply, "Athere\x1b");
-    assert_eq!(app.reply.text(), "hello there");
+    assert_eq!(app.reply.text, "hello there");
     vim_type(&mut app, Target::Reply, "u");
-    assert_eq!(app.reply.text(), "hello ");
+    assert_eq!(app.reply.text, "hello ");
     vim_type(&mut app, Target::Reply, "u");
-    assert_eq!(app.reply.text(), "hello world");
+    assert_eq!(app.reply.text, "hello world");
     vim_type(&mut app, Target::Reply, "u");
-    assert_eq!(app.reply.text(), "");
+    assert_eq!(app.reply.text, "");
     let _ = app.update(Message::Vim(Target::Reply, pi_desk::vim::Input::Redo));
-    assert_eq!(app.reply.text(), "hello world");
+    assert_eq!(app.reply.text, "hello world");
+}
+
+#[test]
+fn typing_in_the_reply_box_goes_through_the_focused_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.desk.state.settings.vim_mode = false;
+    let _ = app.update(Message::Select("agent-4".into()));
+    app.key("r");
+    app.render();
+    for c in ["o", "k"] {
+        app.rt.key(key_event(c, Mods::default()));
+    }
+    app.render();
+    assert_eq!(app.reply.text, "ok");
+    // Window shortcuts don't fire while typing.
+    assert!(app.show_sidebar);
+    app.rt.key(key_event("enter", Mods::default()));
+    app.render();
+    assert!(!app.replying);
+    assert_eq!(app.reply.text, "");
 }
 
 #[tokio::test]
 async fn vim_escape_leaves_insert_before_it_closes_the_composer() {
-    use pi_desk::vim::{Mode, Target};
+    use pi_desk::vim::Mode;
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let task = app.update(Message::NewTask);
-    finish_task(&mut app, task).await;
-    vim_type(&mut app, Target::Composer, "fix it\x1b");
-    // The focused editor captured Escape, so the window handler leaves the composer open.
-    let _ = app.update(Message::Key {
-        key: Key::Named(Named::Escape),
-        modifiers: Modifiers::empty(),
-        captured: true,
-    });
+    app.finish(task).await;
+    app.render();
+    for c in ["f", "i", "x"] {
+        app.rt.key(key_event(c, Mods::default()));
+    }
+    // The focused box takes Escape first: it leaves insert mode.
+    app.rt.key(key_event("escape", Mods::default()));
+    app.render();
     let Some(Overlay::Composer(composer)) = &app.overlay else {
         panic!("composer should stay open")
     };
     assert_eq!(composer.vim.mode, Mode::Normal);
-    assert_eq!(composer.content.text(), "fix it");
-    let _ = app.update(Message::Key {
-        key: Key::Named(Named::Escape),
-        modifiers: Modifiers::empty(),
-        captured: false,
-    });
+    assert_eq!(composer.content.text, "fix");
+    app.rt.key(key_event("escape", Mods::default()));
+    app.render();
     assert!(app.overlay.is_none());
 }
 
@@ -1717,11 +1824,7 @@ fn vim_settings_save_and_reject_long_escape_sequences() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     let _ = app.update(Message::OpenSettings);
-    assert!(
-        ui(&app)
-            .find("Vim mode in the reply and task boxes")
-            .is_ok()
-    );
+    assert!(app.shows("Vim mode in the reply and task boxes"));
     let _ = app.update(Message::SettingsVimEscape("jj kk".into()));
     let _ = app.update(Message::SaveSettings);
     assert!(app.overlay.is_some());
@@ -1731,4 +1834,142 @@ fn vim_settings_save_and_reject_long_escape_sequences() {
     assert!(app.overlay.is_none());
     assert_eq!(app.desk.state.settings.vim_escape, "kj");
     assert!(!app.desk.state.settings.vim_mode);
+}
+
+/// Writes a session file with a `pi:goal` entry for `agent`.
+fn goal_session(dir: &std::path::Path, app: &mut App, agent: &str, status: &str) {
+    let file = dir.join(format!("{agent}.jsonl"));
+    let goal = serde_json::json!({
+        "type": "custom",
+        "customType": "pi:goal",
+        "data": {"objective": "Ship the release with green CI", "status": status, "createdAt": 1, "elapsedMs": 0, "tokens": 0, "continuations": 0}
+    });
+    std::fs::write(&file, format!("{{\"type\":\"session\"}}\n{goal}\n")).unwrap();
+    app.desk.state.agent_mut(agent).unwrap().session_file = Some(file);
+}
+
+#[tokio::test]
+async fn goals_show_on_rows_and_in_the_detail_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    goal_session(dir.path(), &mut app, "agent-4", "active");
+    goal_session(dir.path(), &mut app, "agent-2", "complete");
+    let task = app.watch();
+    app.finish(task).await;
+    let _ = app.update(Message::Select("agent-4".into()));
+    // No live process reports the goal, so the saved active goal is paused.
+    assert!(app.shows("Goal"));
+    assert!(app.shows("Ship the release with green CI"));
+    assert!(app.shows("Paused"));
+    assert!(app.keyed("goal").is_some());
+    assert!(app.keyed("goal-line-agent-4").is_some());
+    // Finished goals are not shown.
+    assert!(app.keyed("goal-line-agent-2").is_none());
+    app.snapshot("goal");
+
+    // A live status from the goal extension makes it active.
+    use pi_desk::{desk::Effect, supervisor::Event};
+    let effects = app.desk.schedule(now());
+    let _ = effects;
+    let _ = app.update(Message::StartReply);
+    app.reply = rune::TextEdit::new("Keep going");
+    let effects = app.desk.reply("agent-4", "Keep going");
+    let generation = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Spawn(spawn) if spawn.agent == "agent-4" => Some(spawn.generation),
+            _ => None,
+        })
+        .expect("the reply starts the agent");
+    let _ = app.update(Message::Supervisor(Event::Lines {
+        agent: "agent-4".into(),
+        generation,
+        lines: vec![r#"{"type":"extension_ui_request","id":"s1","method":"setStatus","statusKey":"goal","statusText":"goal"}"#.into()],
+    }));
+    assert!(app.desk.goal_active("agent-4"));
+    assert_eq!(
+        app.goal("agent-4").unwrap().status,
+        pi_desk::goal::GoalStatus::Active
+    );
+    assert!(app.shows("Active"));
+}
+
+#[tokio::test]
+async fn swarm_roots_list_their_active_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let run = app.swarm_dir.join("run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    let node = |id: &str, parent: Option<&str>, name: &str, depth: u32, status: &str, session: &str| {
+        serde_json::json!({
+            "id": id, "parent": parent, "name": name, "depth": depth, "status": status,
+            "session": session, "current": {"model": "anthropic/claude-sonnet-5-5"},
+            "activity": {"status": "working"}
+        })
+    };
+    let nodes = serde_json::json!({
+        "root": "root",
+        "nodes": {
+            "root": node("root", None, "root", 0, "running", "session-4"),
+            "a": node("a", Some("root"), "parser", 1, "running", "s-a"),
+            "b": node("b", Some("a"), "parser-tests", 2, "review", "s-b"),
+            "c": node("c", Some("root"), "docs", 1, "complete", "s-c"),
+        }
+    });
+    std::fs::write(run.join("run.json"), nodes.to_string()).unwrap();
+    let task = app.watch();
+    app.finish(task).await;
+    assert_eq!(app.workers("agent-4").len(), 2);
+    let _ = app.update(Message::Select("agent-4".into()));
+    assert!(app.shows("2 agents"));
+    assert!(app.shows("Swarm"));
+    assert!(app.shows("parser"));
+    assert!(app.shows("parser-tests"));
+    assert!(!app.shows("docs"), "finished workers are not listed");
+    // Children sit further right than their parents.
+    let parent = app.keyed("worker-a").unwrap();
+    let child = app.keyed("worker-b").unwrap();
+    assert!(child[1] > parent[1]);
+    assert!(app.bounds("parser-tests")[0] > app.bounds("parser")[0]);
+    app.snapshot("swarm");
+}
+
+#[test]
+fn an_empty_app_shows_the_welcome_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = Desk::new(App::new(Store::new(dir.path().join("state")), common::fake_pi()));
+    assert!(app.desk.state.projects.is_empty());
+    for text in ["Add a project to start", "Add project", "New task", "All tasks"] {
+        assert!(app.shows(text), "{text:?} should be shown");
+    }
+    app.snapshot("empty");
+}
+
+#[tokio::test]
+async fn remaining_shortcuts_switch_tabs_answer_by_number_and_file_with_command_enter() {
+    use pi_desk::app::Tab;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    app.key("d");
+    assert_eq!(app.tab, Tab::Diff);
+    app.key("t");
+    assert_eq!(app.tab, Tab::Transcript);
+
+    // A number picks that choice on a question card.
+    app.key("j");
+    assert_eq!(app.selected.as_deref(), Some("agent-1"));
+    app.key("3");
+    assert!(app.desk.state.agent("agent-1").unwrap().question.is_none());
+
+    let task = app.update(Message::NewTask);
+    app.finish(task).await;
+    let Some(Overlay::Composer(composer)) = &mut app.overlay else {
+        panic!("composer should open")
+    };
+    composer.content = rune::TextEdit::new("Tidy the logs");
+    let before = app.desk.state.agents.len();
+    app.press("enter", command(), true);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.desk.state.agents.len(), before + 1);
+    assert_eq!(app.desk.state.agents[before].title, "Tidy the logs");
 }

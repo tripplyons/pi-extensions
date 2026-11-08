@@ -1,156 +1,254 @@
-use super::{faint, icon, key, keys};
+use super::{faint, icon, keys, label, selectable, send, strong};
 use crate::app::{App, Message, View};
 use crate::icon::{COMMAND, Icon, KeyPart};
-use crate::theme::{self, ACCENT, BOLD, FAINT, MUTED};
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
-use iced::{Alignment, Element, Fill, mouse};
+use crate::theme::{self, P, size};
+use rune::{Color, Cursor, Drag, El, Phase, Tx, col, el, row, text};
 
-fn item<'a>(app: &App, label: &'a str, count: Option<usize>, view: View) -> Element<'a, Message> {
+pub const WIDTH: f32 = 228.0;
+/// The height of one project row, for turning a drag into a place.
+const PROJECT_PITCH: f32 = 30.0;
+
+fn item(app: &App, key: &str, name: &str, count: Option<usize>, view: View) -> El {
     let selected = app.view == view;
-    let count: Element<'a, Message> = match count {
-        Some(count) if count > 0 => text(count.to_string())
-            .size(theme::size::CAPTION)
-            .color(if selected { ACCENT } else { MUTED })
-            .into(),
-        _ => Space::new().into(),
-    };
-    button(
-        row![text(label).size(theme::size::CONTROL).width(Fill), count].align_y(Alignment::Center),
-    )
-    .width(Fill)
-    .padding([6, 10])
-    .style(theme::row(selected))
-    .on_press(Message::Show(view))
-    .into()
+    let mut line = row()
+        .key(key)
+        .w_full()
+        .h(30.0)
+        .px(10.0)
+        .center_y()
+        .gap(8.0)
+        .label(name)
+        .role("button")
+        .on_press_tx(send(Message::Show(view)))
+        .child(
+            text(name)
+                .font(if selected {
+                    theme::medium(size::CONTROL)
+                } else {
+                    theme::sans(size::CONTROL)
+                })
+                .color(if selected { P.text } else { P.muted })
+                .grow(1.0)
+                .shrink()
+                .truncate(),
+        );
+    if let Some(count) = count.filter(|count| *count > 0) {
+        line = line.child(label(
+            count.to_string(),
+            size::CAPTION,
+            if selected { P.accent } else { P.faint },
+        ));
+    }
+    selectable(line, selected)
 }
 
-pub fn view(app: &App) -> Element<'_, Message> {
+pub fn view(app: &App) -> El {
     let state = &app.desk.state;
+    let dragging = app.dragging.as_ref();
 
-    let mut projects = column![].spacing(1);
-    let target = app.dragging.as_ref().and_then(|(_, target)| *target);
+    let mut projects = col().key("projects").w_full().gap(0.0);
     for (index, project) in state.projects.iter().enumerate() {
-        let active = app.count(&View::Project(project.id.clone()));
-        let selected = app.view == View::Project(project.id.clone());
-        let handle =
-            mouse_area(container(icon(Icon::Grip, theme::size::CAPTION, FAINT)).padding([6, 4]))
-                .interaction(mouse::Interaction::Grab)
-                .on_press(Message::DragProject(project.id.clone()));
-        let label = button(
-            row![
-                text(project.name.as_str())
-                    .size(theme::size::CONTROL)
-                    .width(Fill),
-                if active > 0 {
-                    text(active.to_string())
-                        .size(theme::size::CAPTION)
-                        .color(MUTED)
-                } else {
-                    text("")
-                },
-            ]
-            .align_y(Alignment::Center),
-        )
-        .width(Fill)
-        .padding([6, 8])
-        .style(theme::row(selected))
-        .on_press(Message::Show(View::Project(project.id.clone())));
-        let marker = container(Space::new())
-            .width(Fill)
-            .height(2)
-            .style(theme::fill(if target == Some(index) {
-                ACCENT
+        let view = View::Project(project.id.clone());
+        let active = app.count(&view);
+        let selected = app.view == view;
+        let from = dragging
+            .and_then(|(id, _)| state.projects.iter().position(|p| &p.id == id));
+        let target = dragging.and_then(|(_, target)| *target);
+        let marker = |above: bool| {
+            let on = target == Some(index)
+                && from.is_some_and(|from| from != index && (from > index) == above);
+            el().h(2.0)
+                .w_full()
+                .radius(1.0)
+                .fill(if on { P.accent } else { Color::TRANSPARENT })
+        };
+        let id = project.id.clone();
+        let handle = row()
+            .key("grip")
+            .w(18.0)
+            .h_full()
+            .center()
+            .cursor(if dragging.is_some() {
+                Cursor::Grabbing
             } else {
-                iced::Color::TRANSPARENT
-            }));
-        projects = projects.push(column![
-            marker,
-            mouse_area(row![handle, label].align_y(Alignment::Center))
-                .on_enter(Message::HoverProject(index))
-        ]);
+                Cursor::Grab
+            })
+            .label("Reorder")
+            .on_drag(move |app: &mut App, drag: &mut Drag, tx: &mut Tx| match drag.phase {
+                Phase::Down => app.dispatch(Message::DragProject(id.clone()), tx),
+                Phase::Move => {
+                    let count = app.desk.state.projects.len() as isize;
+                    let steps = (drag.dy / PROJECT_PITCH).round() as isize;
+                    let target = (index as isize + steps).clamp(0, count - 1) as usize;
+                    app.dispatch(Message::HoverProject(target), tx);
+                }
+                Phase::Up => app.dispatch(Message::MouseReleased, tx),
+            })
+            .child(icon(Icon::Grip, size::CAPTION, P.faint));
+        let mut line = row()
+            .key("row")
+            .w_full()
+            .h(PROJECT_PITCH - 4.0)
+            .pr(10.0)
+            .center_y()
+            .gap(4.0)
+            .label(project.name.as_str())
+            .role("button")
+            .on_press_tx(send(Message::Show(view)))
+            .child(handle)
+            .child(
+                text(project.name.as_str())
+                    .font(if selected {
+                        theme::medium(size::CONTROL)
+                    } else {
+                        theme::sans(size::CONTROL)
+                    })
+                    .color(if selected { P.text } else { P.muted })
+                    .grow(1.0)
+                    .shrink()
+                    .truncate(),
+            );
+        if active > 0 {
+            line = line.child(label(active.to_string(), size::CAPTION, P.faint));
+        }
+        projects = projects.child(
+            col()
+                .key(format!("project-{}", project.id))
+                .w_full()
+                .child(marker(true).key("above"))
+                .child(selectable(line, selected))
+                .child(marker(false).key("below")),
+        );
     }
     if state.projects.is_empty() {
-        projects = projects.push(
-            container(faint("Add a git repository to file work in it.").size(theme::size::CAPTION))
-                .padding([4, 10]),
+        projects = projects.child(
+            faint("Add a git repository to file work in it.")
+                .key("no-projects")
+                .wrap()
+                .px(10.0)
+                .py(4.0),
         );
     }
 
-    let nav = column![
-        item(app, "All tasks", None, View::All),
-        item(app, "Inbox", Some(app.count(&View::Inbox)), View::Inbox),
-        item(
+    let nav = col()
+        .key("nav")
+        .w_full()
+        .gap(1.0)
+        .child(item(app, "nav-all", "All tasks", None, View::All))
+        .child(item(app, "nav-inbox", "Inbox", Some(app.count(&View::Inbox)), View::Inbox))
+        .child(item(
             app,
+            "nav-working",
             "Working",
             Some(app.count(&View::Working)),
-            View::Working
-        ),
-        item(app, "Later", Some(app.count(&View::Later)), View::Later),
-        item(app, "Done", None, View::Done),
-    ]
-    .spacing(1);
+            View::Working,
+        ))
+        .child(item(app, "nav-later", "Later", Some(app.count(&View::Later)), View::Later))
+        .child(item(app, "nav-done", "Done", None, View::Done));
 
-    let header = row![
-        text("Projects")
-            .size(theme::size::CAPTION)
-            .font(BOLD)
-            .width(Fill),
-        button(text("+").size(theme::size::BODY).color(MUTED))
-            .padding([0, 8])
-            .style(theme::row(false))
-            .on_press(Message::AddProject),
-    ]
-    .align_y(Alignment::Center)
-    .padding([0, 4]);
-
-    let footer = column![
-        button(
-            row![
-                text("New task").size(theme::size::CONTROL).width(Fill),
-                key("N")
-            ]
-            .align_y(Alignment::Center)
+    let header = row()
+        .key("projects-header")
+        .w_full()
+        .pl(10.0)
+        .center_y()
+        .child(
+            text("PROJECTS")
+                .font(theme::medium(size::CAPTION - 1.0).tracking(0.6))
+                .color(P.faint)
+                .grow(1.0),
         )
-        .width(Fill)
-        .padding([8, 10])
-        .style(theme::ghost)
-        .on_press(Message::NewTask),
-        row![
-            button(text("Settings").size(theme::size::CAPTION))
-                .style(theme::row(false))
-                .padding([4, 8])
-                .on_press(Message::OpenSettings),
-            Space::new().width(Fill),
-            button(
-                row![
-                    text("Commands").size(theme::size::CAPTION).color(MUTED),
-                    keys(&[COMMAND, KeyPart::Text("K")])
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center)
-            )
-            .style(theme::row(false))
-            .padding([4, 6])
-            .on_press(Message::OpenPalette),
-        ]
-        .align_y(Alignment::Center),
-    ]
-    .spacing(8);
+        .child(
+            row()
+                .key("add-project")
+                .w(24.0)
+                .h(24.0)
+                .center()
+                .radius(6.0)
+                .hover(P.hover)
+                .press(P.press)
+                .label("Add project")
+                .role("button")
+                .on_press_tx(send(Message::AddProject))
+                .child(icon(Icon::Plus, 14.0, P.muted)),
+        );
 
-    container(
-        column![
-            container(text("pi-desk").font(BOLD).size(theme::size::BODY)).padding([2, 10]),
-            nav,
-            Space::new().height(14),
-            header,
-            scrollable(projects).style(theme::scrollbar).height(Fill),
-            footer,
-        ]
-        .spacing(8),
-    )
-    .width(220)
-    .height(Fill)
-    .padding([16, 10])
-    .style(theme::sidebar)
-    .into()
+    let new_task = row()
+        .key("new-task")
+        .w_full()
+        .h(34.0)
+        .px(10.0)
+        .gap(8.0)
+        .center_y()
+        .radius(8.0)
+        .fill(P.raised)
+        .border(1.0, P.border)
+        .hover(P.hover)
+        .press(P.press)
+        .motion(theme::SNAPPY)
+        .label("New task")
+        .role("button")
+        .on_press_tx(send(Message::NewTask))
+        .child(icon(Icon::Plus, 14.0, P.text))
+        .child(label("New task", size::CONTROL, P.text).grow(1.0))
+        .child(keys(&[KeyPart::Text("N")]));
+
+    let footer = row()
+        .key("footer")
+        .w_full()
+        .center_y()
+        .justify_between()
+        .child(
+            row()
+                .key("settings")
+                .px(8.0)
+                .h(28.0)
+                .center_y()
+                .radius(6.0)
+                .hover(P.hover)
+                .press(P.press)
+                .label("Settings")
+                .role("button")
+                .on_press_tx(send(Message::OpenSettings))
+                .child(label("Settings", size::CAPTION, P.muted)),
+        )
+        .child(
+            row()
+                .key("commands")
+                .gap(6.0)
+                .center_y()
+                .px(8.0)
+                .h(28.0)
+                .radius(6.0)
+                .hover(P.hover)
+                .press(P.press)
+                .label("Commands")
+                .role("button")
+                .on_press_tx(send(Message::OpenPalette))
+                .child(label("Commands", size::CAPTION, P.muted))
+                .child(keys(&[COMMAND, KeyPart::Text("K")])),
+        );
+
+    col()
+        .key("sidebar")
+        .w(WIDTH)
+        .h_full()
+        .px(10.0)
+        .pt(16.0)
+        .pb(12.0)
+        .gap(10.0)
+        .fill(P.sidebar)
+        .child(
+            row()
+                .key("brand")
+                .px(10.0)
+                .h(24.0)
+                .center_y()
+                .child(strong("pi-desk", size::BODY, P.text)),
+        )
+        .child(nav)
+        .child(el().key("nav-gap").h(8.0))
+        .child(header)
+        .child(super::scroller("projects-scroll", projects))
+        .child(new_task)
+        .child(footer)
 }

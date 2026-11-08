@@ -5,7 +5,7 @@
 mod common;
 
 use common::{fake_pi, git, repo};
-use iced::futures::StreamExt;
+use futures::StreamExt;
 use pi_desk::compose::Draft;
 use pi_desk::desk::{Desk, Effect, Isolation};
 use pi_desk::model::{ModelChoice, Outcome, SessionSettings, State, Status};
@@ -15,7 +15,7 @@ use std::time::Duration;
 struct Harness {
     desk: Desk,
     handle: Handle,
-    events: std::pin::Pin<Box<dyn iced::futures::Stream<Item = Event> + Send>>,
+    events: std::pin::Pin<Box<dyn futures::Stream<Item = Event> + Send>>,
 }
 
 impl Harness {
@@ -132,7 +132,7 @@ async fn start(state: State, worktrees: std::path::PathBuf) -> Harness {
 }
 
 async fn start_with(state: State, worktrees: std::path::PathBuf, pi: String) -> Harness {
-    let mut events: std::pin::Pin<Box<dyn iced::futures::Stream<Item = Event> + Send>> =
+    let mut events: std::pin::Pin<Box<dyn futures::Stream<Item = Event> + Send>> =
         Box::pin(supervisor::run());
     let Some(Event::Ready(handle)) = events.next().await else {
         panic!("supervisor did not start")

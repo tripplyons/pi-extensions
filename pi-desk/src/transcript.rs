@@ -3,7 +3,6 @@
 
 use crate::rpc::{self, Incoming};
 use crate::text::one_line;
-use iced::widget::markdown;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -14,7 +13,6 @@ const OUTPUT_LIMIT: usize = 6000;
 pub enum AssistantBlock {
     Text {
         text: String,
-        markdown: markdown::Content,
     },
     Thinking {
         text: String,
@@ -26,10 +24,7 @@ impl AssistantBlock {
         if thinking {
             Self::Thinking { text }
         } else {
-            Self::Text {
-                markdown: markdown::Content::parse(&text),
-                text,
-            }
+            Self::Text { text }
         }
     }
 }
@@ -171,10 +166,7 @@ impl Transcript {
             *block = AssistantBlock::new(thinking, value.to_string());
         } else {
             match block {
-                AssistantBlock::Text { text, markdown } => {
-                    text.push_str(value);
-                    markdown.push_str(value);
-                }
+                AssistantBlock::Text { text } => text.push_str(value),
                 AssistantBlock::Thinking { text } => text.push_str(value),
             }
         }

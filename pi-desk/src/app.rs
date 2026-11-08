@@ -1,29 +1,29 @@
-//! The iced application: window state, messages, and the update loop. Agent
-//! logic lives in [`Desk`]; this module turns its effects into processes and
-//! git jobs, and turns input into desk actions.
+//! Window state, messages, and the update loop. Agent logic lives in
+//! [`Desk`]; this module turns its effects into processes and git jobs, and
+//! turns input into desk actions. [`spec`] wires it into a Rune window.
 
 use crate::desk::{Desk, Effect, Isolation};
 use crate::git::{self, FileDiff, Merge};
+use crate::goal::{self, Goal};
 use crate::icon::{ALT, COMMAND, Icon, KeyPart};
 use crate::later;
 use crate::model::*;
 use crate::order;
 use crate::store::Store;
 use crate::supervisor::{self, Request};
+use crate::swarm::{self, Worker};
+use crate::task::{Inbox, Task, Ui};
+use crate::vim::Target;
 use crate::{commit_message, compose};
-use iced::keyboard::{self, Key, Modifiers, key::Named};
-use iced::widget::{operation, text_editor};
-use iced::{Element, Subscription, Task, event, time};
+use rune::{Key, KeyEvent, TextEdit, Tx};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
-pub const REPLY_ID: &str = "reply";
-pub const PALETTE_ID: &str = "palette";
-pub const LATER_ID: &str = "later";
-pub const COMPOSER_ID: &str = "composer";
-pub const PROJECT_SEARCH_ID: &str = "project-search";
+/// How often goals and swarm workers are read again while tasks exist.
+pub const WATCH_EVERY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -75,16 +75,18 @@ pub struct Composer {
     /// Off: tasks work in the project's own checkout.
     pub use_worktree: bool,
     pub session: SessionPicker,
-    pub content: text_editor::Content,
+    pub content: TextEdit,
     pub vim: crate::vim::Vim,
     pub error: Option<String>,
     /// Open while Cmd+P fuzzy project search is shown.
     pub project_search: Option<ProjectSearch>,
+    /// The project menu is open.
+    pub picking_project: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct ProjectSearch {
-    pub query: String,
+    pub query: TextEdit,
     /// Index into [`App::project_matches`].
     pub selected: usize,
 }
@@ -100,22 +102,22 @@ pub struct SessionPicker {
 }
 
 pub struct Palette {
-    pub query: String,
+    pub query: TextEdit,
     pub selected: usize,
 }
 
 pub struct LaterPicker {
     pub agent: Id,
-    pub custom: String,
+    pub custom: TextEdit,
     pub error: Option<String>,
 }
 
 pub struct SettingsForm {
-    pub slots: String,
-    pub terminal: String,
-    pub editor: String,
+    pub slots: TextEdit,
+    pub terminal: TextEdit,
+    pub editor: TextEdit,
     pub vim_mode: bool,
-    pub vim_escape: String,
+    pub vim_escape: TextEdit,
     pub error: Option<String>,
 }
 
@@ -145,15 +147,39 @@ impl Default for DiffState {
     }
 }
 
+/// Which model menu is open: a task's, or the composer's (`None`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Menu {
+    Model(Option<Id>),
+    Effort(Option<Id>),
+}
+
+/// What the last background read found for one task.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Watched {
+    /// The latest saved goal, whatever its status.
+    pub goal: Option<Goal>,
+    pub workers: Vec<Worker>,
+}
+
+/// One task as the background read needs it.
+#[derive(Debug, Clone)]
+pub struct WatchItem {
+    pub id: Id,
+    pub session: String,
+    pub file: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Supervisor(supervisor::Event),
     Tick,
+    /// A key the focused field passed on, or any key with nothing focused.
     Key {
-        key: Key,
-        modifiers: Modifiers,
+        event: KeyEvent,
         captured: bool,
     },
+    /// The project drag ended.
     MouseReleased,
     /// A file dragged onto the window, such as a screenshot.
     FileDropped(PathBuf),
@@ -172,18 +198,24 @@ pub enum Message {
     Answer(usize),
     Approve,
     StartReply,
-    ReplyEdit(text_editor::Action),
-    Vim(crate::vim::Target, crate::vim::Input),
+    /// The reply box's text changed in the field itself.
+    ReplyEdited,
+    Vim(Target, crate::vim::Input),
     /// Clipboard text for a vim put: after the cursor, and how many times.
-    VimPut(crate::vim::Target, bool, usize, Option<String>),
+    VimPut(Target, bool, usize, Option<String>),
+    /// Undo or redo in a vim-mode box (true is undo).
+    VimHistory(Target, bool),
     SendReply,
     CancelReply,
     NewTask,
     ComposerProject(Id),
+    ComposerProjectMenu,
     ComposerProjectSearch,
     ComposerProjectQuery(String),
     /// Pick the match at this index in [`App::project_matches`].
     ComposerProjectPick(usize),
+    ToggleMenu(Menu),
+    CloseMenu,
     SessionModel(Option<Id>, ModelChoice),
     SessionEffort(Option<Id>, String),
     RefreshSession(Option<Id>),
@@ -193,8 +225,8 @@ pub enum Message {
         bool,
         Result<crate::models::Options, String>,
     ),
-    ComposerEdit(text_editor::Action),
-    ComposerCommand(crate::composer_edit::Command),
+    /// The composer's text changed in the field itself.
+    ComposerEdited,
     ComposerSubmit,
     ComposerWorktree(bool),
     CloseOverlay,
@@ -226,6 +258,8 @@ pub enum Message {
     CommitMessageGenerated(Id, Result<Option<String>, String>),
     Merged(Id, Result<Merge, String>),
     Removed(Id, Outcome, Result<(), String>),
+    /// Goals and swarm workers read off the UI thread, by task.
+    Watched(HashMap<Id, Watched>),
     OpenSettings,
     SettingsSlots(String),
     SettingsTerminal(String),
@@ -252,10 +286,11 @@ pub struct App {
     // Window-only preference. Never written to saved state.
     zoom_percent: u16,
     pub replying: bool,
-    pub reply: text_editor::Content,
+    pub reply: TextEdit,
     reply_history: crate::composer_edit::History,
     pub reply_vim: crate::vim::Vim,
     pub overlay: Option<Overlay>,
+    pub menu: Option<Menu>,
     pub pending: Vec<Pending>,
     pub diffs: HashMap<Id, DiffState>,
     pub sessions: HashMap<Id, SessionPicker>,
@@ -267,6 +302,19 @@ pub struct App {
     pub error: Option<String>,
     pub dragging: Option<(Id, Option<usize>)>,
     pub now: Timestamp,
+    /// Where the swarm extension keeps its runs.
+    pub swarm_dir: PathBuf,
+    pub watched: HashMap<Id, Watched>,
+    followers: Arc<Mutex<HashMap<Id, goal::Follower>>>,
+    watching: bool,
+    last_watch: Option<Instant>,
+    last_tick: Instant,
+    /// The window's size in points, as last laid out.
+    pub viewport: Option<(f32, f32)>,
+    pub inbox: Inbox,
+    ui: Vec<Ui>,
+    /// The field that a focus-less accessor edits when its box is gone.
+    scratch: TextEdit,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -335,14 +383,43 @@ pub fn choices(agent: &Agent) -> Vec<Choice> {
     }
 }
 
+/// The text a plain key types, without Command or Control.
+fn typed(event: &KeyEvent) -> Option<&str> {
+    match &event.key {
+        Key::Text(text) if !event.mods.cmd && !event.mods.ctrl => Some(text.as_str()),
+        _ => None,
+    }
+}
+
+/// The character typed with the primary shortcut modifier.
+pub fn command_char(event: &KeyEvent) -> Option<char> {
+    match &event.key {
+        Key::Command(c) => Some(c.to_ascii_lowercase()),
+        Key::Text(text) if event.mods.cmd => text.chars().next().map(|c| c.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+fn edit_text(edit: &mut TextEdit, value: String) {
+    if edit.text != value {
+        edit.replace_text(value);
+    }
+}
+
+fn focused(text: &str) -> TextEdit {
+    let mut edit = TextEdit::new(text);
+    edit.focused = true;
+    edit
+}
+
 impl App {
-    pub fn boot() -> (App, Task<Message>) {
+    pub fn boot() -> App {
         let pi = std::env::var("PI_DESK_PI").unwrap_or_else(|_| "pi".into());
-        (App::new(Store::default_location(), pi), Task::none())
+        App::new(Store::default_location(), pi)
     }
 
     /// Loads saved state from `store`. Agents start once the supervisor
-    /// subscription reports ready.
+    /// reports ready.
     pub fn new(store: Store, pi: impl Into<String>) -> App {
         let (state, error) = match store.load() {
             Ok(state) => (state, None),
@@ -369,10 +446,11 @@ impl App {
             show_sidebar: true,
             zoom_percent: 100,
             replying: false,
-            reply: text_editor::Content::new(),
+            reply: TextEdit::new(""),
             reply_history: Default::default(),
             reply_vim: Default::default(),
             overlay: None,
+            menu: None,
             pending: Vec::new(),
             diffs: HashMap::new(),
             sessions: HashMap::new(),
@@ -383,50 +461,67 @@ impl App {
             error,
             dragging: None,
             now: now(),
+            swarm_dir: crate::store::agent_dir().join("swarm"),
+            watched: HashMap::new(),
+            followers: Arc::default(),
+            watching: false,
+            last_watch: None,
+            last_tick: Instant::now(),
+            viewport: None,
+            inbox: Inbox::default(),
+            ui: Vec::new(),
+            scratch: TextEdit::new(""),
         };
         let _ = app.ensure_selection();
         app
     }
 
-    /// Additional UI scale, multiplied by the display scale by iced.
+    /// Additional UI scale on top of the display's.
     pub fn scale_factor(&self) -> f32 {
         f32::from(self.zoom_percent) / 100.0
     }
 
-    pub fn title(&self) -> String {
-        "pi-desk".into()
+    /// The goal to show for a task: active or paused, never finished.
+    pub fn goal(&self, id: &str) -> Option<Goal> {
+        goal::shown(
+            self.watched.get(id).and_then(|watched| watched.goal.as_ref()),
+            self.desk.goal_active(id),
+        )
     }
 
-    pub fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![
-            Subscription::run(supervisor::run).map(Message::Supervisor),
-            event::listen_with(|event, status, _| match event {
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                    Some(Message::Key {
-                        key,
-                        modifiers,
-                        captured: status == event::Status::Captured,
-                    })
-                }
-                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
-                    iced::mouse::Button::Left,
-                )) => Some(Message::MouseReleased),
-                iced::Event::Window(iced::window::Event::FileDropped(path)) => {
-                    Some(Message::FileDropped(path))
-                }
-                _ => None,
-            }),
-        ];
-        let fast = !self.pending.is_empty() || self.toast.is_some();
-        subscriptions.push(
-            time::every(if fast {
-                Duration::from_millis(250)
-            } else {
-                Duration::from_secs(15)
+    /// The task's active swarm workers, nested depth first.
+    pub fn workers(&self, id: &str) -> &[Worker] {
+        self.watched
+            .get(id)
+            .map(|watched| watched.workers.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// Reads every task's goal and swarm workers off the UI thread. Returns
+    /// nothing while a read is running or no task exists.
+    pub fn watch(&mut self) -> Task {
+        if self.watching || self.desk.state.agents.is_empty() {
+            return Task::none();
+        }
+        self.watching = true;
+        self.last_watch = Some(Instant::now());
+        let items: Vec<WatchItem> = self
+            .desk
+            .state
+            .agents
+            .iter()
+            .map(|agent| WatchItem {
+                id: agent.id.clone(),
+                session: agent.session_id.clone(),
+                file: agent.session_file.clone(),
             })
-            .map(|_| Message::Tick),
-        );
-        Subscription::batch(subscriptions)
+            .collect();
+        let dir = self.swarm_dir.clone();
+        let followers = self.followers.clone();
+        Task::perform(
+            blocking(move || read_watched(&dir, &items, &followers)),
+            Message::Watched,
+        )
     }
 
     /// Rows of the current view, in display order. The selected task keeps
@@ -489,7 +584,7 @@ impl App {
         self.desk.state.agent(id)
     }
 
-    fn ensure_selection(&mut self) -> Task<Message> {
+    fn ensure_selection(&mut self) -> Task {
         let rows = self.rows();
         let keep = self
             .selected
@@ -504,7 +599,7 @@ impl App {
         Task::none()
     }
 
-    fn select(&mut self, id: Option<Id>) -> Task<Message> {
+    fn select(&mut self, id: Option<Id>) -> Task {
         if self.selected == id {
             return Task::none();
         }
@@ -528,11 +623,11 @@ impl App {
         } else {
             self.load_session(Some(id.clone()), None)
         };
-        let reveal = if self.board {
-            crate::views::board::reveal(&id)
+        let reveal = Task::ui(Ui::Reveal(if self.board {
+            crate::views::board::card_key(&id)
         } else {
-            Task::none()
-        };
+            crate::views::row_key(&id)
+        }));
         Task::batch([self.load_diff(&id), models, reveal])
     }
 
@@ -540,7 +635,7 @@ impl App {
         self.rows().iter().map(|agent| agent.id.clone()).collect()
     }
 
-    fn move_selection(&mut self, delta: isize) -> Task<Message> {
+    fn move_selection(&mut self, delta: isize) -> Task {
         let rows = self.row_ids();
         if rows.is_empty() {
             return Task::none();
@@ -563,7 +658,7 @@ impl App {
         }
     }
 
-    fn run(&mut self, effects: Vec<Effect>) -> Task<Message> {
+    fn run(&mut self, effects: Vec<Effect>) -> Task {
         let mut tasks = Vec::new();
         for effect in effects {
             match effect {
@@ -630,7 +725,7 @@ impl App {
         Task::batch(tasks)
     }
 
-    fn load_diff(&mut self, id: &str) -> Task<Message> {
+    fn load_diff(&mut self, id: &str) -> Task {
         let Some(agent) = self.desk.state.agent(id) else {
             return Task::none();
         };
@@ -653,7 +748,7 @@ impl App {
         )
     }
 
-    fn defer(&mut self, action: Deferred) -> Task<Message> {
+    fn defer(&mut self, action: Deferred) -> Task {
         let Some(agent) = self.current() else {
             return Task::none();
         };
@@ -671,7 +766,7 @@ impl App {
 
     /// Runs an action. The selected task stays selected whatever its new
     /// status; its row stays listed in the current view. A new action replaces any deferred one still waiting on the task.
-    fn act(&mut self, id: &str, action: impl FnOnce(&mut Desk) -> Vec<Effect>) -> Task<Message> {
+    fn act(&mut self, id: &str, action: impl FnOnce(&mut Desk) -> Vec<Effect>) -> Task {
         self.pending.retain(|pending| pending.id != id);
         let effects = action(&mut self.desk);
         self.run(effects)
@@ -891,7 +986,7 @@ impl App {
         let Some(Overlay::Palette(palette)) = &self.overlay else {
             return Vec::new();
         };
-        let query = palette.query.to_lowercase();
+        let query = palette.query.text.to_lowercase();
         self.commands()
             .into_iter()
             .filter(|command| {
@@ -913,7 +1008,7 @@ impl App {
         };
         let projects = &self.desk.state.projects;
         crate::fuzzy::rank(
-            &search.query,
+            &search.query.text,
             projects.iter().map(|project| project.name.as_str()),
         )
         .into_iter()
@@ -921,7 +1016,7 @@ impl App {
         .collect()
     }
 
-    pub fn update(&mut self, message: Message) -> Task<Message> {
+    pub fn update(&mut self, message: Message) -> Task {
         let task = self.handle(message);
         // Readback is authoritative. In particular, don't leave a rejected or
         // clamped selection displayed as though Pi accepted it.
@@ -955,11 +1050,12 @@ impl App {
         Task::batch([task, selection])
     }
 
-    fn handle(&mut self, message: Message) -> Task<Message> {
+    fn handle(&mut self, message: Message) -> Task {
         match message {
             Message::Supervisor(event) => self.on_supervisor(event),
             Message::Tick => {
                 self.now = now();
+                self.last_tick = Instant::now();
                 if self
                     .toast
                     .as_ref()
@@ -985,11 +1081,7 @@ impl App {
                 effects.extend(self.desk.schedule(self.now));
                 self.run(effects)
             }
-            Message::Key {
-                key,
-                modifiers,
-                captured,
-            } => self.on_key(key, modifiers, captured),
+            Message::Key { event, captured } => self.on_key(&event, captured).unwrap_or_default(),
             Message::MouseReleased => {
                 if let Some((id, Some(target))) = self.dragging.take() {
                     self.desk.place_project(&id, target);
@@ -1022,7 +1114,9 @@ impl App {
                 self.board = !self.board;
                 self.focus = false;
                 match &self.selected {
-                    Some(id) if self.board => crate::views::board::reveal(id),
+                    Some(id) if self.board => {
+                        Task::ui(Ui::Reveal(crate::views::board::card_key(id)))
+                    }
                     _ => Task::none(),
                 }
             }
@@ -1085,17 +1179,16 @@ impl App {
                 }
                 self.replying = true;
                 self.reply_vim = crate::vim::Vim::new(self.reply_history.depth());
-                self.focus_reply()
+                self.reply_history.sync(&self.reply);
+                self.reply.focused = true;
+                if self.desk.state.settings.vim_mode {
+                    self.reply_vim.show_block(&mut self.reply);
+                }
+                Task::none()
             }
             Message::FileDropped(path) => self.insert_path(&path),
-            Message::ReplyEdit(action) => {
-                let clicked = matches!(
-                    action,
-                    text_editor::Action::Click(_) | text_editor::Action::Drag(_)
-                );
-                self.clear_block(crate::vim::Target::Reply);
-                self.reply_history.edit(&mut self.reply, action);
-                self.after_edit(crate::vim::Target::Reply, clicked);
+            Message::ReplyEdited => {
+                self.after_edit(Target::Reply);
                 Task::none()
             }
             Message::Vim(target, input) => self.vim_key(target, input),
@@ -1109,11 +1202,27 @@ impl App {
                     history.checkpoint(content);
                     vim.put(&mut buffer, &text, after, count);
                     crate::vim::write(content, &buffer, vim.selection(&buffer));
+                    history.sync(content);
+                }
+                Task::none()
+            }
+            Message::VimHistory(target, undo) => {
+                if let Some((content, history, vim)) = self.vim_box(target) {
+                    vim.clear_block(content);
+                    if undo {
+                        history.undo(content);
+                    } else {
+                        history.redo(content);
+                    }
+                    let mut buffer = crate::vim::Buffer::read(content);
+                    vim.settle(&mut buffer);
+                    crate::vim::write(content, &buffer, vim.selection(&buffer));
+                    history.sync(content);
                 }
                 Task::none()
             }
             Message::SendReply => {
-                let text = self.reply.text();
+                let text = self.reply.text.clone();
                 let Some(id) = self.selected.clone() else {
                     return Task::none();
                 };
@@ -1137,7 +1246,7 @@ impl App {
                     }
                     _ => None,
                 };
-                self.reply = text_editor::Content::new();
+                self.reply = TextEdit::new("");
                 self.reply_history = Default::default();
                 self.reply_vim = Default::default();
                 self.replying = false;
@@ -1148,6 +1257,7 @@ impl App {
             }
             Message::CancelReply => {
                 self.replying = false;
+                self.reply.focused = false;
                 Task::none()
             }
             Message::NewTask => {
@@ -1168,18 +1278,23 @@ impl App {
                         }),
                 };
                 let base = self.base_branch(project.as_deref());
+                let content = focused("");
+                let mut history = crate::composer_edit::History::default();
+                history.sync(&content);
                 self.overlay = Some(Overlay::Composer(Composer {
-                    history: Default::default(),
+                    history,
                     project,
                     base,
                     use_worktree: false,
                     session: SessionPicker::default(),
-                    content: text_editor::Content::new(),
+                    content,
                     vim: crate::vim::Vim::new(0),
                     error: None,
                     project_search: None,
+                    picking_project: false,
                 }));
-                Task::batch([operation::focus(COMPOSER_ID), self.load_session(None, None)])
+                self.menu = None;
+                self.load_session(None, None)
             }
             Message::ComposerProject(id) => {
                 let base = self.base_branch(Some(&id));
@@ -1187,8 +1302,15 @@ impl App {
                     composer.project = Some(id);
                     composer.base = base;
                     composer.session = SessionPicker::default();
+                    composer.picking_project = false;
                 }
                 self.load_session(None, None)
+            }
+            Message::ComposerProjectMenu => {
+                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    composer.picking_project = !composer.picking_project;
+                }
+                Task::none()
             }
             Message::ComposerProjectSearch => {
                 let Some(Overlay::Composer(composer)) = &self.overlay else {
@@ -1203,18 +1325,20 @@ impl App {
                     .position(|project| Some(&project.id) == current.as_ref())
                     .unwrap_or(0);
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+                    composer.content.focused = false;
+                    composer.picking_project = false;
                     composer.project_search = Some(ProjectSearch {
-                        query: String::new(),
+                        query: focused(""),
                         selected,
                     });
                 }
-                operation::focus(PROJECT_SEARCH_ID)
+                Task::none()
             }
             Message::ComposerProjectQuery(query) => {
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay
                     && let Some(search) = &mut composer.project_search
                 {
-                    search.query = query;
+                    edit_text(&mut search.query, query);
                     search.selected = 0;
                 }
                 Task::none()
@@ -1225,14 +1349,25 @@ impl App {
                 };
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     composer.project_search = None;
+                    composer.content.focused = true;
                 }
-                Task::batch([
-                    self.handle(Message::ComposerProject(id)),
-                    operation::focus(COMPOSER_ID),
-                ])
+                self.handle(Message::ComposerProject(id))
+            }
+            Message::ToggleMenu(menu) => {
+                self.menu = if self.menu.as_ref() == Some(&menu) {
+                    None
+                } else {
+                    Some(menu)
+                };
+                Task::none()
+            }
+            Message::CloseMenu => {
+                self.menu = None;
+                Task::none()
             }
             Message::RefreshSession(target) => self.load_session(target, None),
             Message::SessionModel(target, model) => {
+                self.menu = None;
                 let Some(picker) = self.session_picker(&target) else {
                     return Task::none();
                 };
@@ -1249,6 +1384,7 @@ impl App {
                 self.load_session(target, Some(settings))
             }
             Message::SessionEffort(target, effort) => {
+                self.menu = None;
                 let Some(picker) = self.session_picker(&target) else {
                     return Task::none();
                 };
@@ -1339,26 +1475,13 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ComposerEdit(action) => {
-                let clicked = matches!(
-                    action,
-                    text_editor::Action::Click(_) | text_editor::Action::Drag(_)
-                );
-                self.clear_block(crate::vim::Target::Composer);
+            Message::ComposerEdited => {
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
                     // Working in the editor again ends project search.
                     composer.project_search = None;
-                    composer.history.edit(&mut composer.content, action);
+                    composer.error = None;
                 }
-                self.after_edit(crate::vim::Target::Composer, clicked);
-                Task::none()
-            }
-            Message::ComposerCommand(command) => {
-                self.clear_block(crate::vim::Target::Composer);
-                if let Some(Overlay::Composer(composer)) = &mut self.overlay {
-                    composer.history.command(&mut composer.content, command);
-                }
-                self.after_edit(crate::vim::Target::Composer, false);
+                self.after_edit(Target::Composer);
                 Task::none()
             }
             Message::ComposerSubmit => self.submit_composer(),
@@ -1370,18 +1493,20 @@ impl App {
             }
             Message::CloseOverlay => {
                 self.overlay = None;
+                self.menu = None;
                 Task::none()
             }
             Message::OpenPalette => {
+                self.menu = None;
                 self.overlay = Some(Overlay::Palette(Palette {
-                    query: String::new(),
+                    query: focused(""),
                     selected: 0,
                 }));
-                operation::focus(PALETTE_ID)
+                Task::none()
             }
             Message::PaletteQuery(query) => {
                 if let Some(Overlay::Palette(palette)) = &mut self.overlay {
-                    palette.query = query;
+                    edit_text(&mut palette.query, query);
                     palette.selected = 0;
                 }
                 Task::none()
@@ -1399,7 +1524,7 @@ impl App {
                 };
                 self.overlay = Some(Overlay::Later(LaterPicker {
                     agent: agent.id.clone(),
-                    custom: String::new(),
+                    custom: TextEdit::new(""),
                     error: None,
                 }));
                 Task::none()
@@ -1409,7 +1534,7 @@ impl App {
             }
             Message::LaterCustom(text) => {
                 if let Some(Overlay::Later(picker)) = &mut self.overlay {
-                    picker.custom = text;
+                    edit_text(&mut picker.custom, text);
                     picker.error = None;
                 }
                 Task::none()
@@ -1418,7 +1543,7 @@ impl App {
                 let Some(Overlay::Later(picker)) = &mut self.overlay else {
                     return Task::none();
                 };
-                match later::parse(&picker.custom, chrono::Local::now()) {
+                match later::parse(&picker.custom.text, chrono::Local::now()) {
                     Some(until) => self.snooze(until.timestamp()),
                     None => {
                         picker.error = Some(
@@ -1470,16 +1595,7 @@ impl App {
                     Task::none()
                 }
             }
-            Message::AddProject => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .set_title("Choose a git repository")
-                        .pick_folder()
-                        .await
-                        .map(|folder| folder.path().to_path_buf())
-                },
-                Message::ProjectPicked,
-            ),
+            Message::AddProject => Task::ui(Ui::PickFolder),
             Message::ProjectPicked(Some(path)) => match self.desk.add_project(&path) {
                 Ok(id) => self.handle(Message::Show(View::Project(id))),
                 Err(error) => {
@@ -1570,29 +1686,44 @@ impl App {
                 self.diffs.remove(&id);
                 self.run(effects)
             }
+            Message::Watched(found) => {
+                self.watching = false;
+                self.watched = found;
+                Task::none()
+            }
             Message::OpenSettings => {
                 let settings = &self.desk.state.settings;
                 self.overlay = Some(Overlay::Settings(SettingsForm {
-                    slots: settings.slots.to_string(),
-                    terminal: settings.terminal_command.clone(),
-                    editor: settings.editor_command.clone(),
+                    slots: TextEdit::new(settings.slots.to_string()),
+                    terminal: TextEdit::new(settings.terminal_command.clone()),
+                    editor: TextEdit::new(settings.editor_command.clone()),
                     vim_mode: settings.vim_mode,
-                    vim_escape: settings.vim_escape.clone(),
+                    vim_escape: TextEdit::new(settings.vim_escape.clone()),
                     error: None,
                 }));
+                self.menu = None;
                 Task::none()
             }
-            Message::SettingsSlots(value) => self.edit_settings(|form| form.slots = value),
-            Message::SettingsTerminal(value) => self.edit_settings(|form| form.terminal = value),
-            Message::SettingsEditor(value) => self.edit_settings(|form| form.editor = value),
+            Message::SettingsSlots(value) => {
+                self.edit_settings(|form| edit_text(&mut form.slots, value))
+            }
+            Message::SettingsTerminal(value) => {
+                self.edit_settings(|form| edit_text(&mut form.terminal, value))
+            }
+            Message::SettingsEditor(value) => {
+                self.edit_settings(|form| edit_text(&mut form.editor, value))
+            }
             Message::SettingsVim(on) => self.edit_settings(|form| form.vim_mode = on),
-            Message::SettingsVimEscape(value) => self.edit_settings(|form| form.vim_escape = value),
+            Message::SettingsVimEscape(value) => {
+                self.edit_settings(|form| edit_text(&mut form.vim_escape, value))
+            }
             Message::SaveSettings => {
                 let Some(Overlay::Settings(form)) = &mut self.overlay else {
                     return Task::none();
                 };
                 let Some(slots) = form
                     .slots
+                    .text
                     .trim()
                     .parse::<usize>()
                     .ok()
@@ -1601,7 +1732,7 @@ impl App {
                     form.error = Some("Running agents must be a number from 1 to 64".into());
                     return Task::none();
                 };
-                let vim_escape = form.vim_escape.trim().to_string();
+                let vim_escape = form.vim_escape.text.trim().to_string();
                 if vim_escape.chars().count() > 4 || vim_escape.chars().any(char::is_whitespace) {
                     form.error =
                         Some("The escape sequence must be up to 4 keys with no spaces".into());
@@ -1609,8 +1740,8 @@ impl App {
                 }
                 let settings = Settings {
                     slots,
-                    terminal_command: form.terminal.trim().to_string(),
-                    editor_command: form.editor.trim().to_string(),
+                    terminal_command: form.terminal.text.trim().to_string(),
+                    editor_command: form.editor.text.trim().to_string(),
                     vim_mode: form.vim_mode,
                     vim_escape,
                 };
@@ -1637,7 +1768,7 @@ impl App {
         git::current_branch(&project.path)
     }
 
-    fn edit_settings(&mut self, change: impl FnOnce(&mut SettingsForm)) -> Task<Message> {
+    fn edit_settings(&mut self, change: impl FnOnce(&mut SettingsForm)) -> Task {
         if let Some(Overlay::Settings(form)) = &mut self.overlay {
             change(form);
             form.error = None;
@@ -1645,22 +1776,22 @@ impl App {
         Task::none()
     }
 
-    /// The editor, its undo history, and its vim state for `target`.
+    /// The box, its vim undo history, and its vim state for `target`.
     fn vim_box(
         &mut self,
-        target: crate::vim::Target,
+        target: Target,
     ) -> Option<(
-        &mut text_editor::Content,
+        &mut TextEdit,
         &mut crate::composer_edit::History,
         &mut crate::vim::Vim,
     )> {
         match target {
-            crate::vim::Target::Reply => Some((
+            Target::Reply => Some((
                 &mut self.reply,
                 &mut self.reply_history,
                 &mut self.reply_vim,
             )),
-            crate::vim::Target::Composer => match &mut self.overlay {
+            Target::Composer => match &mut self.overlay {
                 Some(Overlay::Composer(composer)) => Some((
                     &mut composer.content,
                     &mut composer.history,
@@ -1671,40 +1802,28 @@ impl App {
         }
     }
 
-    /// Removes the normal-mode block cursor before an ordinary editor action,
-    /// so the action starts from the cursor.
-    fn clear_block(&mut self, target: crate::vim::Target) {
-        if let Some((content, _, vim)) = self.vim_box(target) {
-            vim.clear_block(content);
-        }
-    }
-
-    /// Keeps vim state in step after an ordinary edit, click, or drag.
-    fn after_edit(&mut self, target: crate::vim::Target, clicked: bool) {
+    /// Keeps vim state in step after the field changed its own text.
+    fn after_edit(&mut self, target: Target) {
         let vim_mode = self.desk.state.settings.vim_mode;
-        if let Some((content, _, vim)) = self.vim_box(target) {
+        if let Some((content, history, vim)) = self.vim_box(target) {
+            history.observe(content);
             vim.interrupt();
-            if clicked && vim.mode != crate::vim::Mode::Insert {
-                let mut buffer = crate::vim::Buffer::read(content);
-                vim.settle(&mut buffer);
-                if content.selection().is_none() {
-                    crate::vim::write(content, &buffer, None);
-                }
-            }
             if vim_mode {
                 vim.show_block(content);
             }
         }
     }
 
-    fn vim_key(&mut self, target: crate::vim::Target, input: crate::vim::Input) -> Task<Message> {
+    fn vim_key(&mut self, target: Target, input: crate::vim::Input) -> Task {
         use crate::vim::{Buffer, Input, Mode};
         let sequence = self.desk.state.settings.vim_escape.clone();
         let Some((content, history, vim)) = self.vim_box(target) else {
             return Task::none();
         };
         vim.clear_block(content);
-        let before = content.text();
+        // Changes the field made since the last key, such as a paste.
+        history.observe(content);
+        let before = content.text.clone();
         let mut buffer = Buffer::read(content);
         let outcome = match (vim.mode, input) {
             (Mode::Insert, Input::Char(c)) => {
@@ -1713,10 +1832,7 @@ impl App {
             (_, input) => vim.handle(&mut buffer, input),
         };
         if let Some(c) = outcome.insert {
-            history.edit(
-                content,
-                text_editor::Action::Edit(text_editor::Edit::Insert(c)),
-            );
+            history.insert(content, &c.to_string());
             return Task::none();
         }
         if outcome.entered_insert {
@@ -1727,67 +1843,63 @@ impl App {
         }
         let mut task = Task::none();
         if outcome.undo > 0 || outcome.redo > 0 {
-            let (command, count) = if outcome.undo > 0 {
-                (crate::composer_edit::Command::Undo, outcome.undo)
-            } else {
-                (crate::composer_edit::Command::Redo, outcome.redo)
-            };
-            for _ in 0..count {
-                history.command(content, command.clone());
+            for _ in 0..outcome.undo.max(outcome.redo) {
+                if outcome.undo > 0 {
+                    history.undo(content);
+                } else {
+                    history.redo(content);
+                }
             }
             buffer = Buffer::read(content);
             vim.settle(&mut buffer);
         }
         let selection = vim.selection(&buffer);
         crate::vim::write(content, &buffer, selection);
+        history.sync(content);
         if outcome.left_insert
             && let Some(mark) = vim.insert_mark.take()
         {
             history.collapse(mark, content);
         }
         if let Some(yank) = outcome.yank {
-            task = iced::clipboard::write(yank);
+            task = Task::ui(Ui::Copy(yank));
         }
         if let Some((after, count)) = outcome.put {
-            task = iced::clipboard::read()
-                .map(move |text| Message::VimPut(target, after, count, text));
+            task = Task::ui(Ui::Paste(Box::new(move |text| {
+                Message::VimPut(target, after, count, text)
+            })));
         }
         task
     }
 
-    fn focus_reply(&self) -> Task<Message> {
-        operation::focus(REPLY_ID)
-    }
-
     /// Types a dropped file's path at the cursor of the open task composer or
     /// reply. With neither open, it starts a reply to the selected task.
-    fn insert_path(&mut self, path: &std::path::Path) -> Task<Message> {
-        let paste = text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(
-            format!("{} ", quote_path(path)),
-        )));
-        self.clear_block(crate::vim::Target::Composer);
-        self.clear_block(crate::vim::Target::Reply);
-        match &mut self.overlay {
-            Some(Overlay::Composer(composer)) => {
-                composer.history.edit(&mut composer.content, paste);
-                self.after_edit(crate::vim::Target::Composer, false);
-                return operation::focus(COMPOSER_ID);
-            }
+    fn insert_path(&mut self, path: &std::path::Path) -> Task {
+        let text = format!("{} ", quote_path(path));
+        let target = match &self.overlay {
+            Some(Overlay::Composer(_)) => Target::Composer,
             Some(_) => return Task::none(),
-            None => {}
-        }
-        if !self.replying {
-            if self.current().is_none() {
-                return Task::none();
+            None => {
+                if !self.replying {
+                    if self.current().is_none() {
+                        return Task::none();
+                    }
+                    self.replying = true;
+                    self.reply_history.sync(&self.reply);
+                }
+                Target::Reply
             }
-            self.replying = true;
+        };
+        if let Some((content, history, vim)) = self.vim_box(target) {
+            vim.clear_block(content);
+            history.insert(content, &text);
+            content.focused = true;
         }
-        self.reply_history.edit(&mut self.reply, paste);
-        self.after_edit(crate::vim::Target::Reply, false);
-        self.focus_reply()
+        self.after_edit(target);
+        Task::none()
     }
 
-    fn snooze(&mut self, until: Timestamp) -> Task<Message> {
+    fn snooze(&mut self, until: Timestamp) -> Task {
         let Some(Overlay::Later(picker)) = self.overlay.take() else {
             return Task::none();
         };
@@ -1821,7 +1933,7 @@ impl App {
         &mut self,
         target: Option<Id>,
         change: Option<SessionSettings>,
-    ) -> Task<Message> {
+    ) -> Task {
         let (cwd, settings) = match &target {
             Some(id) => {
                 let Some(agent) = self.desk.state.agent(id) else {
@@ -1872,18 +1984,17 @@ impl App {
         )
     }
 
-    fn submit_composer(&mut self) -> Task<Message> {
+    fn submit_composer(&mut self) -> Task {
         let Some(Overlay::Composer(composer)) = &mut self.overlay else {
             return Task::none();
         };
         if composer.session.loading {
             return Task::none();
         }
-        let drafts = compose::split(&composer.content.text());
-        if drafts.is_empty() {
+        let Some(draft) = compose::draft(&composer.content.text) else {
             composer.error = Some("Describe the work first".into());
             return Task::none();
-        }
+        };
         let Some(project) = composer
             .project
             .clone()
@@ -1912,20 +2023,16 @@ impl App {
             }
         };
         let settings = composer.session.settings.clone();
-        let count = drafts.len();
         self.overlay = None;
+        self.menu = None;
         let effects = self
             .desk
-            .file(&project.id, &base, isolation, settings, drafts);
-        self.notify(if count == 1 {
-            "Filed 1 task".to_string()
-        } else {
-            format!("Filed {count} tasks")
-        });
-        self.run(effects)
+            .file(&project.id, &base, isolation, settings, vec![draft]);
+        self.notify("Filed the task");
+        Task::batch([self.run(effects), self.watch()])
     }
 
-    fn on_supervisor(&mut self, event: supervisor::Event) -> Task<Message> {
+    fn on_supervisor(&mut self, event: supervisor::Event) -> Task {
         match event {
             supervisor::Event::Ready(handle) => {
                 for request in self.backlog.drain(..) {
@@ -1984,158 +2091,367 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, key: Key, modifiers: Modifiers, captured: bool) -> Task<Message> {
-        let command = modifiers.command();
-        // Zoom is window-wide, even when an editor or overlay owns normal keys.
-        if command && !modifiers.alt() {
-            let zoom = match key.as_ref() {
-                Key::Character("=" | "+") => Some(Message::ZoomIn),
-                Key::Character("-") => Some(Message::ZoomOut),
-                Key::Character("0") => Some(Message::ResetZoom),
+    /// Window keys. `captured` means a focused field saw the key first and
+    /// passed it on. Returns `None` for keys the app leaves alone.
+    pub fn on_key(&mut self, event: &KeyEvent, captured: bool) -> Option<Task> {
+        let mods = event.mods;
+        let command = command_char(event);
+        // Zoom is window-wide, even when a box or overlay owns normal keys.
+        if !mods.alt {
+            let zoom = match command {
+                Some('=' | '+') => Some(Message::ZoomIn),
+                Some('-') => Some(Message::ZoomOut),
+                Some('0') => Some(Message::ResetZoom),
                 _ => None,
             };
             if let Some(message) = zoom {
-                return self.handle(message);
+                return Some(self.handle(message));
             }
+        }
+        if self.menu.is_some() && event.key == Key::Escape {
+            self.menu = None;
+            return Some(Task::none());
         }
         // Overlays first: Escape closes them, and they own arrows and Enter.
         if self.overlay.is_some() {
-            if key == Key::Named(Named::Escape) {
-                // Escape leaves project search first, then the composer.
-                if let Some(Overlay::Composer(composer)) = &mut self.overlay
-                    && composer.project_search.take().is_some()
-                {
-                    return operation::focus(COMPOSER_ID);
-                }
-            }
-            // A focused vim composer handles Escape itself: it leaves insert mode first.
-            let composer_owns_escape = captured
-                && self.desk.state.settings.vim_mode
-                && matches!(self.overlay, Some(Overlay::Composer(_)));
-            if key == Key::Named(Named::Escape) && !composer_owns_escape {
-                self.overlay = None;
-                return Task::none();
+            if event.key == Key::Escape {
+                return Some(self.escape_overlay());
             }
             let count = self.palette_matches().len();
             let project_count = self.project_matches().len();
+            let plain = !mods.cmd && !mods.alt && !mods.ctrl;
             match &mut self.overlay {
-                Some(Overlay::Palette(palette)) => match key {
-                    Key::Named(Named::ArrowDown) => {
+                Some(Overlay::Palette(palette)) => match event.key {
+                    Key::Down => {
                         palette.selected = (palette.selected + 1).min(count.saturating_sub(1))
                     }
-                    Key::Named(Named::ArrowUp) => {
-                        palette.selected = palette.selected.saturating_sub(1)
-                    }
-                    Key::Named(Named::Enter) => {
+                    Key::Up => palette.selected = palette.selected.saturating_sub(1),
+                    Key::Enter => {
                         let index = palette.selected;
-                        return self.handle(Message::PaletteRun(index));
+                        return Some(self.handle(Message::PaletteRun(index)));
                     }
-                    _ => {}
+                    _ => return None,
                 },
                 Some(Overlay::Later(_)) if !captured => {
-                    if let Key::Character(c) = &key {
-                        if let Some(preset) = c
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|n| later::Preset::ALL.get(n.wrapping_sub(1)))
-                        {
-                            return self.handle(Message::LaterPreset(*preset));
-                        }
+                    if let Some(preset) = typed(event)
+                        .and_then(|c| c.parse::<usize>().ok())
+                        .and_then(|n| later::Preset::ALL.get(n.wrapping_sub(1)))
+                    {
+                        return Some(self.handle(Message::LaterPreset(*preset)));
                     }
+                    return None;
                 }
                 Some(Overlay::Composer(Composer {
                     project_search: Some(search),
                     ..
-                })) if !command && !modifiers.alt() => match key {
-                    Key::Named(Named::ArrowDown) => {
+                })) if plain => match event.key {
+                    Key::Down => {
                         search.selected = (search.selected + 1).min(project_count.saturating_sub(1))
                     }
-                    Key::Named(Named::ArrowUp) => {
-                        search.selected = search.selected.saturating_sub(1)
-                    }
-                    Key::Named(Named::Enter) => {
+                    Key::Up => search.selected = search.selected.saturating_sub(1),
+                    Key::Enter => {
                         let index = search.selected;
-                        return self.handle(Message::ComposerProjectPick(index));
+                        return Some(self.handle(Message::ComposerProjectPick(index)));
                     }
-                    _ => {}
+                    _ => return None,
                 },
-                // The editor binds the same keys while it has focus.
-                Some(Overlay::Composer(composer))
-                    if !captured && command && !modifiers.shift() && !modifiers.alt() =>
-                {
-                    if key == Key::Character("e".into()) {
-                        composer.use_worktree = !composer.use_worktree;
-                    } else if key == Key::Character("p".into()) {
-                        return self.handle(Message::ComposerProjectSearch);
+                // The box binds the same keys while it has focus.
+                Some(Overlay::Composer(composer)) if !mods.shift && !mods.alt => {
+                    match command {
+                        Some('e') => composer.use_worktree = !composer.use_worktree,
+                        Some('p') => return Some(self.handle(Message::ComposerProjectSearch)),
+                        _ if event.key == Key::Enter && mods.cmd => {
+                            return Some(self.handle(Message::ComposerSubmit));
+                        }
+                        _ => return None,
                     }
                 }
                 Some(Overlay::ConfirmDiscard(_)) if !captured => {
-                    if key == Key::Named(Named::Enter) || key == Key::Character("x".into()) {
-                        return self.handle(Message::ConfirmDiscard);
+                    if event.key == Key::Enter || typed(event) == Some("x") {
+                        return Some(self.handle(Message::ConfirmDiscard));
                     }
+                    return None;
                 }
-                _ => {}
+                _ => return None,
             }
-            return Task::none();
+            return Some(Task::none());
         }
-        if command && key == Key::Character("k".into()) {
-            return self.handle(Message::OpenPalette);
+        if command == Some('k') {
+            return Some(self.handle(Message::OpenPalette));
         }
         if captured {
-            return Task::none();
+            return None;
         }
-        if modifiers.alt() {
-            if let View::Project(id) = &self.view {
-                let id = id.clone();
-                match key {
-                    Key::Named(Named::ArrowUp) => return self.handle(Message::MoveProject(id, -1)),
-                    Key::Named(Named::ArrowDown) => {
-                        return self.handle(Message::MoveProject(id, 1));
-                    }
-                    _ => {}
-                }
+        if mods.alt
+            && !mods.cmd
+            && let View::Project(id) = &self.view
+        {
+            let id = id.clone();
+            match event.key {
+                Key::Up => return Some(self.handle(Message::MoveProject(id, -1))),
+                Key::Down => return Some(self.handle(Message::MoveProject(id, 1))),
+                _ => {}
             }
         }
-        if command || modifiers.control() || modifiers.alt() {
-            return Task::none();
+        if mods.cmd || mods.ctrl || mods.alt || mods.logo {
+            return None;
         }
-        match key.as_ref() {
-            Key::Named(Named::ArrowDown) => self.move_selection(1),
-            Key::Named(Named::ArrowUp) => self.move_selection(-1),
-            Key::Named(Named::Enter) => match self.selected.clone() {
+        match &event.key {
+            Key::Down => Some(self.move_selection(1)),
+            Key::Up => Some(self.move_selection(-1)),
+            Key::Enter => Some(match self.selected.clone() {
                 Some(id) => self.handle(Message::Open(id)),
                 None => Task::none(),
-            },
-            Key::Named(Named::Escape) => {
+            }),
+            Key::Escape => {
                 if self.replying {
                     self.replying = false;
                 } else if self.focus {
                     self.focus = false;
                 } else if self.board {
                     self.board = false;
+                } else {
+                    return None;
                 }
-                Task::none()
+                Some(Task::none())
             }
-            Key::Character(c) => match c.to_lowercase().as_str() {
-                "j" => self.move_selection(1),
-                "k" => self.move_selection(-1),
+            Key::Text(c) => match c.to_lowercase().as_str() {
+                "j" => Some(self.move_selection(1)),
+                "k" => Some(self.move_selection(-1)),
                 letter => {
                     if let Some(message) = self.shortcut(letter) {
-                        return self.handle(message);
+                        return Some(self.handle(message));
                     }
                     match letter.parse::<usize>() {
-                        Ok(n) if (1..=9).contains(&n) => self.handle(Message::Choose(n - 1)),
-                        _ => Task::none(),
+                        Ok(n) if (1..=9).contains(&n) => Some(self.handle(Message::Choose(n - 1))),
+                        _ => None,
                     }
                 }
             },
-            _ => Task::none(),
+            _ => None,
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
-        crate::views::root(self)
+    /// Escape in an overlay: leaves project search first, then closes it.
+    fn escape_overlay(&mut self) -> Task {
+        if self.menu.take().is_some() {
+            return Task::none();
+        }
+        if let Some(Overlay::Composer(composer)) = &mut self.overlay {
+            if composer.picking_project {
+                composer.picking_project = false;
+                return Task::none();
+            }
+            if composer.project_search.take().is_some() {
+                composer.content.focused = true;
+                return Task::none();
+            }
+        }
+        self.overlay = None;
+        Task::none()
     }
+
+    /// A key in the reply box or the task composer, before the field edits.
+    /// Returns true when the app took it.
+    pub fn box_key(&mut self, target: Target, event: &KeyEvent) -> Option<Task> {
+        let vim_mode = self.desk.state.settings.vim_mode;
+        if vim_mode {
+            let sequence = self.desk.state.settings.vim_escape.clone();
+            let route = match target {
+                Target::Reply => crate::vim::route(event, target, &self.reply_vim, &sequence),
+                Target::Composer => match &self.overlay {
+                    Some(Overlay::Composer(composer)) => {
+                        crate::vim::route(event, target, &composer.vim, &sequence)
+                    }
+                    _ => return None,
+                },
+            };
+            match route {
+                crate::vim::Route::Vim(input) => {
+                    return Some(self.update(Message::Vim(target, input)));
+                }
+                crate::vim::Route::Ignore => return Some(Task::none()),
+                crate::vim::Route::Usual => {}
+            }
+            let mods = event.mods;
+            if command_char(event) == Some('z') && !mods.alt {
+                return Some(self.update(Message::VimHistory(target, !mods.shift)));
+            }
+        }
+        let mods = event.mods;
+        match target {
+            Target::Reply => match event.key {
+                Key::Enter if !mods.shift && !mods.alt && !mods.cmd => {
+                    Some(self.update(Message::SendReply))
+                }
+                Key::Escape => Some(self.update(Message::CancelReply)),
+                _ => None,
+            },
+            Target::Composer => {
+                if event.key == Key::Escape {
+                    return Some(self.update(Message::CloseOverlay));
+                }
+                if event.key == Key::Enter && mods.cmd {
+                    return Some(self.update(Message::ComposerSubmit));
+                }
+                if mods.shift || mods.alt {
+                    return None;
+                }
+                match command_char(event) {
+                    Some('e') => {
+                        let on = matches!(&self.overlay, Some(Overlay::Composer(c)) if !c.use_worktree);
+                        Some(self.update(Message::ComposerWorktree(on)))
+                    }
+                    Some('p') => Some(self.update(Message::ComposerProjectSearch)),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// Starts `task`: futures run on tokio and report back through the
+    /// inbox; window requests wait for a `Tx`.
+    pub fn start(&mut self, task: Task) {
+        for future in task.futures {
+            self.inbox.spawn(future);
+        }
+        self.ui.extend(task.ui);
+    }
+
+    /// Updates and starts the resulting work.
+    pub fn send(&mut self, message: Message) {
+        let task = self.update(message);
+        self.start(task);
+    }
+
+    /// [`App::send`] from a handler, applying window requests at once.
+    pub fn dispatch(&mut self, message: Message, tx: &mut Tx) {
+        self.send(message);
+        self.flush(tx);
+    }
+
+    /// Applies queued window requests.
+    pub fn flush(&mut self, tx: &mut Tx) {
+        for request in std::mem::take(&mut self.ui) {
+            match request {
+                Ui::Reveal(key) => tx.scroll_into_view(key),
+                Ui::Copy(text) => tx.copy(text),
+                Ui::Paste(make) => tx.read_clipboard(move |s: &mut App, content, tx| {
+                    let text = Some(content.text().to_string());
+                    s.dispatch(make(text), tx);
+                }),
+                Ui::PickFolder => tx.open_folder(
+                    rune::FileDialogOptions {
+                        title: "Choose a git repository".into(),
+                        ..Default::default()
+                    },
+                    |s: &mut App, result, tx| {
+                        let path = result.ok().flatten();
+                        s.dispatch(Message::ProjectPicked(path), tx);
+                    },
+                ),
+            }
+        }
+    }
+
+    /// Runs before every frame: delivers background messages and timers.
+    /// Returns whether state changed.
+    pub fn poll(&mut self, tx: &mut Tx) -> bool {
+        let mut changed = false;
+        while let Some(message) = self.inbox.try_recv() {
+            self.send(message);
+            changed = true;
+        }
+        let fast = !self.pending.is_empty() || self.toast.is_some();
+        let every = if fast {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(15)
+        };
+        if self.last_tick.elapsed() >= every {
+            self.send(Message::Tick);
+            changed = true;
+        }
+        let watch_due = self
+            .last_watch
+            .is_none_or(|at| at.elapsed() >= WATCH_EVERY);
+        if watch_due && !self.desk.state.agents.is_empty() {
+            let task = self.watch();
+            self.start(task);
+        }
+        tx.wake_after(every.saturating_sub(self.last_tick.elapsed()));
+        if !self.desk.state.agents.is_empty() {
+            let since = self.last_watch.map_or(Duration::ZERO, |at| at.elapsed());
+            tx.wake_after(WATCH_EVERY.saturating_sub(since).max(Duration::from_millis(50)));
+        }
+        if !self.ui.is_empty() {
+            self.flush(tx);
+            changed = true;
+        }
+        changed
+    }
+
+    /// The field an accessor edits, or a scratch field when its box closed.
+    pub fn field(&mut self, field: Field) -> &mut TextEdit {
+        let edit = match (field, &mut self.overlay) {
+            (Field::Reply, _) => Some(&mut self.reply),
+            (Field::Composer, Some(Overlay::Composer(composer))) => Some(&mut composer.content),
+            (Field::ProjectSearch, Some(Overlay::Composer(composer))) => composer
+                .project_search
+                .as_mut()
+                .map(|search| &mut search.query),
+            (Field::Palette, Some(Overlay::Palette(palette))) => Some(&mut palette.query),
+            (Field::Later, Some(Overlay::Later(picker))) => Some(&mut picker.custom),
+            (Field::Slots, Some(Overlay::Settings(form))) => Some(&mut form.slots),
+            (Field::Terminal, Some(Overlay::Settings(form))) => Some(&mut form.terminal),
+            (Field::Editor, Some(Overlay::Settings(form))) => Some(&mut form.editor),
+            (Field::VimEscape, Some(Overlay::Settings(form))) => Some(&mut form.vim_escape),
+            _ => None,
+        };
+        match edit {
+            Some(edit) => edit,
+            None => &mut self.scratch,
+        }
+    }
+}
+
+/// Text fields, for accessors that outlive their box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Reply,
+    Composer,
+    ProjectSearch,
+    Palette,
+    Later,
+    Slots,
+    Terminal,
+    Editor,
+    VimEscape,
+}
+
+/// Reads goals and swarm workers for `items`.
+pub fn read_watched(
+    swarm_dir: &std::path::Path,
+    items: &[WatchItem],
+    followers: &Mutex<HashMap<Id, goal::Follower>>,
+) -> HashMap<Id, Watched> {
+    let sessions: HashSet<String> = items.iter().map(|item| item.session.clone()).collect();
+    let mut workers = swarm::scan(swarm_dir, &sessions);
+    let mut followers = followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    followers.retain(|id, _| items.iter().any(|item| &item.id == id));
+    let mut found = HashMap::new();
+    for item in items {
+        let goal = item.file.as_ref().and_then(|file| {
+            let follower = followers.entry(item.id.clone()).or_default();
+            follower.read(file).ok()?;
+            follower.goal().cloned()
+        });
+        let workers = workers.remove(&item.session).unwrap_or_default();
+        if goal.is_some() || !workers.is_empty() {
+            found.insert(item.id.clone(), Watched { goal, workers });
+        }
+    }
+    found
 }
 
 /// A path as text an agent can read back unambiguously. Paths with spaces,
@@ -2150,4 +2466,46 @@ fn quote_path(path: &std::path::Path) -> String {
     } else {
         path.into_owned()
     }
+}
+
+/// The window's `setup` hook: starts the supervisor.
+pub fn window_setup(app: &mut App, waker: rune::Waker) {
+    app.inbox.set_waker(waker);
+    // The supervisor owns Pi processes; its events arrive like any message.
+    let outbox = app.inbox.outbox();
+    crate::task::handle().spawn(async move {
+        use futures::StreamExt;
+        let mut events = std::pin::pin!(supervisor::run());
+        while let Some(event) = events.next().await {
+            outbox.send(Message::Supervisor(event));
+        }
+    });
+}
+
+/// The window's `poll` hook.
+pub fn window_poll(app: &mut App, _clock: f64, tx: &mut Tx) -> bool {
+    app.poll(tx)
+}
+
+/// The window's `on_key` hook.
+pub fn window_key(app: &mut App, event: &KeyEvent, tx: &mut Tx) -> bool {
+    let captured = tx.focused().is_some();
+    match app.on_key(event, captured) {
+        Some(task) => {
+            app.start(task);
+            app.flush(tx);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The window: size, hooks, and the view.
+pub fn spec() -> rune::AppSpec<App> {
+    let mut spec = rune::AppSpec::new("pi-desk", (1440.0, 900.0), App::boot, crate::views::root);
+    spec.min_size = Some((760.0, 520.0));
+    spec.setup = Some(window_setup);
+    spec.poll = Some(window_poll);
+    spec.on_key = Some(window_key);
+    spec
 }

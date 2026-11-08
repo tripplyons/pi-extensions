@@ -5,9 +5,7 @@
 //! the result back. Yank and put use the system clipboard; text that ends in a
 //! newline pastes as whole lines.
 
-use crate::app::Message;
-use iced::keyboard::{Key, key::Named};
-use iced::widget::text_editor::{self, Binding, Content, Cursor, Position};
+use rune::{Key, KeyEvent, TextEdit};
 use std::time::{Duration, Instant};
 
 /// How long the escape sequence may pause between keys.
@@ -90,10 +88,10 @@ impl Buffer {
         self.chars.iter().collect()
     }
 
-    pub fn read(content: &Content) -> Self {
-        let text = content.text();
-        let cursor = index(&text, content.cursor().position);
-        Self::new(&text, cursor)
+    /// Reads a field, with the cursor at its selection focus.
+    pub fn read(edit: &TextEdit) -> Self {
+        let focus = floor_boundary(&edit.text, edit.focus);
+        Self::new(&edit.text, edit.text[..focus].chars().count())
     }
 
     fn len(&self) -> usize {
@@ -258,51 +256,54 @@ impl Buffer {
     }
 }
 
-/// Converts an editor position, whose column is a byte offset, to a character index.
-fn index(text: &str, position: Position) -> usize {
-    let mut chars = 0;
-    for (line, content) in text.split('\n').enumerate() {
-        if line == position.line {
-            let column = position.column.min(content.len());
-            let column = (0..=column)
-                .rev()
-                .find(|i| content.is_char_boundary(*i))
-                .unwrap_or(0);
-            return chars + content[..column].chars().count();
-        }
-        chars += content.chars().count() + 1;
-    }
-    text.chars().count()
+fn floor_boundary(text: &str, byte: usize) -> usize {
+    let byte = byte.min(text.len());
+    (0..=byte)
+        .rev()
+        .find(|i| text.is_char_boundary(*i))
+        .unwrap_or(0)
 }
 
-fn position(buffer: &Buffer, pos: usize) -> Position {
-    let pos = pos.min(buffer.len());
-    let start = buffer.line_start(pos);
-    Position {
-        line: buffer.line_of(pos),
-        column: buffer.chars[start..pos].iter().map(|c| c.len_utf8()).sum(),
-    }
+/// The byte offset of character index `pos`.
+fn byte_of(buffer: &Buffer, pos: usize) -> usize {
+    buffer.chars[..pos.min(buffer.len())]
+        .iter()
+        .map(|c| c.len_utf8())
+        .sum()
 }
 
-/// Writes `buffer` into `content`. `selection` is an (anchor, cursor) pair.
-pub fn write(content: &mut Content, buffer: &Buffer, selection: Option<(usize, usize)>) {
+/// Writes `buffer` into `edit`. `selection` is an (anchor, cursor) pair of
+/// character indices. A text change is one undo step that replaces only the
+/// changed middle, so undo restores the cursor near the change.
+pub fn write(edit: &mut TextEdit, buffer: &Buffer, selection: Option<(usize, usize)>) {
     let text = buffer.text();
-    if content.text() != text {
-        *content = Content::with_text(&text);
-    } else if content.selection().is_some() {
-        content.perform(text_editor::Action::Move(text_editor::Motion::Left));
+    if edit.text != text {
+        let old = edit.text.clone();
+        let prefix = old
+            .char_indices()
+            .zip(text.chars())
+            .take_while(|((_, a), b)| a == b)
+            .last()
+            .map_or(0, |((i, a), _)| i + a.len_utf8());
+        let suffix = old[prefix..]
+            .chars()
+            .rev()
+            .zip(text[prefix..].chars().rev())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a.len_utf8())
+            .sum::<usize>();
+        let replacement = text[prefix..text.len() - suffix].to_string();
+        edit.undo_group(|edit| {
+            edit.set_selection(prefix, old.len() - suffix);
+            edit.insert(&replacement);
+        });
     }
-    let cursor = match selection {
-        Some((anchor, cursor)) => Cursor {
-            position: position(buffer, cursor),
-            selection: Some(position(buffer, anchor)),
-        },
-        None => Cursor {
-            position: position(buffer, buffer.cursor),
-            selection: None,
-        },
-    };
-    content.move_to(cursor);
+    match selection {
+        Some((anchor, cursor)) => {
+            edit.set_selection(byte_of(buffer, anchor), byte_of(buffer, cursor))
+        }
+        None => edit.set_caret(byte_of(buffer, buffer.cursor)),
+    }
 }
 
 /// What the app must do after a key, besides writing the buffer back.
@@ -405,25 +406,24 @@ impl Vim {
 
     /// Removes the normal-mode block from `content`, so an ordinary edit lands
     /// at the cursor instead of replacing the character. Keeps other selections.
-    pub fn clear_block(&self, content: &mut Content) {
-        if self.mode != Mode::Normal || content.selection().is_none() {
+    pub fn clear_block(&self, edit: &mut TextEdit) {
+        if self.mode != Mode::Normal || edit.anchor == edit.focus {
             return;
         }
-        let buffer = Buffer::read(content);
+        let buffer = Buffer::read(edit);
         let Some((anchor, _)) = self.selection(&buffer) else {
             return;
         };
-        let cursor = content.cursor();
-        if cursor.selection == Some(position(&buffer, anchor)) {
-            write(content, &buffer, None);
+        if edit.anchor == byte_of(&buffer, anchor) {
+            write(edit, &buffer, None);
         }
     }
 
     /// Draws the normal-mode block unless `content` holds another selection.
-    pub fn show_block(&self, content: &mut Content) {
-        if self.mode == Mode::Normal && content.selection().is_none() {
-            let buffer = Buffer::read(content);
-            write(content, &buffer, self.selection(&buffer));
+    pub fn show_block(&self, edit: &mut TextEdit) {
+        if self.mode == Mode::Normal && edit.anchor == edit.focus {
+            let buffer = Buffer::read(edit);
+            write(edit, &buffer, self.selection(&buffer));
         }
     }
 
@@ -990,58 +990,66 @@ impl Vim {
     }
 }
 
-/// Key bindings for a focused box in vim mode. `fallback` gives the box's usual bindings.
-pub fn binding(
-    press: text_editor::KeyPress,
-    target: Target,
-    vim: &Vim,
-    sequence: &str,
-    fallback: impl FnOnce(text_editor::KeyPress) -> Option<Binding<Message>>,
-) -> Option<Binding<Message>> {
-    if !matches!(press.status, text_editor::Status::Focused { .. }) {
-        return None;
-    }
-    let send = |input| Some(Binding::Custom(Message::Vim(target, input)));
-    let plain = !press.modifiers.command() && !press.modifiers.control() && !press.modifiers.logo();
-    if press.key == Key::Named(Named::Escape) {
+/// Where a key goes when a box is in vim mode.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Route {
+    Vim(Input),
+    /// The box's usual handling: editing, sending, or closing.
+    Usual,
+    /// Swallowed, such as an unmapped key in normal mode.
+    Ignore,
+}
+
+/// Routes a key for a focused box in vim mode.
+pub fn route(event: &KeyEvent, target: Target, vim: &Vim, sequence: &str) -> Route {
+    let mods = event.mods;
+    let plain = !mods.cmd && !mods.ctrl && !mods.logo;
+    if event.key == Key::Escape {
         return if vim.idle() {
-            fallback(press)
+            Route::Usual
         } else {
-            send(Input::Escape)
+            Route::Vim(Input::Escape)
         };
     }
-    let text = press
-        .text
-        .as_deref()
-        .and_then(|text| text.chars().find(|c| !c.is_control()));
+    let text = match &event.key {
+        Key::Text(text) => text.chars().find(|c| !c.is_control()),
+        _ => None,
+    };
     if vim.mode == Mode::Insert {
         return match text {
-            Some(c) if plain && !sequence.is_empty() => send(Input::Char(c)),
-            _ => fallback(press),
+            Some(c) if plain && !sequence.is_empty() => Route::Vim(Input::Char(c)),
+            _ => Route::Usual,
         };
     }
-    if press.modifiers.control() && press.key.as_ref() == Key::Character("r") {
-        return send(Input::Redo);
+    let ctrl_r = mods.ctrl
+        && !mods.logo
+        && match &event.key {
+            Key::Text(text) => text.eq_ignore_ascii_case("r") || text == "\u{12}",
+            Key::Command(c) => c.eq_ignore_ascii_case(&'r'),
+            _ => false,
+        };
+    if ctrl_r {
+        return Route::Vim(Input::Redo);
     }
     if !plain {
-        return fallback(press);
+        return Route::Usual;
     }
-    let named = match press.key.as_ref() {
-        Key::Named(Named::ArrowLeft) | Key::Named(Named::Backspace) => Some('h'),
-        Key::Named(Named::ArrowRight) => Some('l'),
-        Key::Named(Named::ArrowUp) => Some('k'),
-        Key::Named(Named::ArrowDown) => Some('j'),
-        Key::Named(Named::Delete) => Some('x'),
-        Key::Named(Named::Home) => Some('0'),
-        Key::Named(Named::End) => Some('$'),
+    let named = match event.key {
+        Key::Left | Key::Backspace => Some('h'),
+        Key::Right => Some('l'),
+        Key::Up => Some('k'),
+        Key::Down => Some('j'),
+        Key::Delete => Some('x'),
+        Key::Home => Some('0'),
+        Key::End => Some('$'),
         // The reply box sends on Enter in every mode.
-        Key::Named(Named::Enter) if target == Target::Reply => return fallback(press),
-        Key::Named(Named::Enter) => Some('\n'),
+        Key::Enter if target == Target::Reply => return Route::Usual,
+        Key::Enter => Some('\n'),
         _ => None,
     };
     match named.or(text) {
-        Some(c) => send(Input::Char(c)),
-        None => None,
+        Some(c) => Route::Vim(Input::Char(c)),
+        None => Route::Ignore,
     }
 }
 

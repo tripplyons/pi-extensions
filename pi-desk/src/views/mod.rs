@@ -1,227 +1,322 @@
 //! Window layout: sidebar, row list, and detail pane, with focus mode, the
 //! board, and overlays on top.
 
-pub(crate) mod board;
+pub mod board;
 mod card;
 mod detail;
-mod line_reveal;
 mod list;
-mod live_text;
 mod overlays;
-mod preview;
 mod session;
 mod sidebar;
-mod stable_column;
 
 use crate::app::{App, Message};
 use crate::icon::{Icon, KeyPart};
 use crate::model::Timestamp;
-use crate::theme::{self, BOLD, FAINT, MONO, MUTED};
-use iced::widget::{
-    Space, button, column, container, opaque, rich_text, row, rule, span, stack, svg, text,
-};
-use iced::{Alignment, Color, Element, Fill, Length, Padding};
+use crate::theme::{self, P, size};
+use rune::{Color, Cx, El, ScrollSpec, Span, Transition, Tx, col, el, rich, row, text};
 
-pub fn root(app: &App) -> Element<'_, Message> {
-    let body: Element<'_, Message> = if app.focus && app.current().is_some() {
-        container(
-            column![card::view(app), detail::view(app)]
-                .spacing(16)
-                .max_width(900),
-        )
-        .padding(Padding {
-            top: 24.0,
-            right: 32.0,
-            bottom: 24.0,
-            left: 32.0,
-        })
-        .center_x(Fill)
-        .height(Fill)
-        .into()
+thread_local! {
+    /// Menus and popups built during a view, mounted above everything.
+    static LAYER: std::cell::RefCell<Vec<El>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Builds with the overlay layer, for rune-kit controls with popups.
+pub fn with_layer<R>(build: impl FnOnce(&mut Vec<El>) -> R) -> R {
+    LAYER.with(|layer| build(&mut layer.borrow_mut()))
+}
+
+/// The key of a task's row in the list, for scrolling it into view.
+pub fn row_key(id: &str) -> String {
+    format!("task-{id}")
+}
+
+/// A press handler that sends `message`.
+pub fn send(message: Message) -> impl Fn(&mut App, &mut Tx) + 'static {
+    move |app: &mut App, tx: &mut Tx| app.dispatch(message.clone(), tx)
+}
+
+pub fn root(app: &App, _cx: &mut Cx<App>) -> El {
+    LAYER.with(|layer| layer.borrow_mut().clear());
+    let window = window(app);
+    let layer = LAYER.with(|layer| std::mem::take(&mut *layer.borrow_mut()));
+    rune_kit::root(window, layer)
+}
+
+fn window(app: &App) -> El {
+    let body = if app.focus && app.current().is_some() {
+        row()
+            .key("focus")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .justify_center()
+            .child(
+                col()
+                    .key("focus-column")
+                    .w_full()
+                    .max_w(900.0)
+                    .h_full()
+                    .px(32.0)
+                    .py(24.0)
+                    .gap(16.0)
+                    .child(card::view(app))
+                    .child(detail::view(app)),
+            )
     } else {
-        let mut panes = row![];
+        let mut panes = row().key("panes").w_full().grow(1.0).min_h(0.0);
         if app.show_sidebar {
-            panes = panes
-                .push(sidebar::view(app))
-                .push(rule::vertical(1).style(divider));
+            panes = panes.child(sidebar::view(app)).child(vrule("sidebar-rule"));
         }
         if app.board {
-            panes.push(board::view(app)).into()
+            panes.child(board::view(app))
         } else {
             panes
-                .push(list::view(app))
-                .push(rule::vertical(1).style(divider))
-                .push(detail::pane(app))
-                .into()
+                .child(list::view(app))
+                .child(vrule("list-rule"))
+                .child(detail::pane(app))
         }
     };
-    let mut page = column![];
+    let mut page = col().key("page").w_full().h_full().fill(P.window);
     if let Some(error) = &app.error {
-        page = page.push(
-            container(
-                row![
-                    text(error.as_str()).size(theme::size::CONTROL).width(Fill),
-                    button(text("Dismiss").size(theme::size::CAPTION))
-                        .style(theme::ghost)
-                        .on_press(Message::DismissError)
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center),
-            )
-            .padding([8, 14])
-            .style(theme::error_banner),
+        page = page.child(
+            row()
+                .key("error-banner")
+                .w_full()
+                .px(14.0)
+                .py(8.0)
+                .gap(12.0)
+                .center_y()
+                .fill(P.red.alpha(0.16))
+                .border_sides([0.0, 0.0, 1.0, 0.0], P.red.alpha(0.35))
+                .transition(Transition::opacity())
+                .child(
+                    label(error, size::CONTROL, P.text)
+                        .wrap()
+                        .grow(1.0)
+                        .shrink(),
+                )
+                .child(ghost("dismiss-error", "Dismiss", &[], Message::DismissError)),
         );
     }
-    page = page.push(body);
-    let base = container(page)
-        .width(Fill)
-        .height(Fill)
-        .style(theme::window);
+    page = page.child(body);
 
-    let mut layers = stack![base].width(Fill).height(Fill);
+    // UI zoom: lay the page out at the zoomed size, then scale it to fill.
+    let zoom = app.scale_factor();
+    let page = match app.viewport {
+        Some((w, h)) if zoom != 1.0 => page
+            .w(w / zoom)
+            .h(h / zoom)
+            .scale(zoom)
+            .origin(0.0, 0.0)
+            .absolute(0.0, 0.0),
+        _ => page,
+    };
+    let mut window = el()
+        .key("window")
+        .w_full()
+        .h_full()
+        .fill(P.window)
+        .on_layout(|app: &mut App, rect: [f32; 4]| {
+            let size = (rect[2], rect[3]);
+            if app.viewport != Some(size) {
+                app.viewport = Some(size);
+            }
+        })
+        .on_drop_files(|app: &mut App, paths: &[std::path::PathBuf], tx: &mut Tx| {
+            for path in paths {
+                app.dispatch(Message::FileDropped(path.clone()), tx);
+            }
+        })
+        .child(page);
     if let Some(bar) = status_bar(app) {
-        layers = layers.push(
-            container(bar)
-                .width(Fill)
-                .height(Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::End)
-                .padding(18),
+        window = window.child(
+            row()
+                .key("status-layer")
+                .pin(Some(0.0), None, Some(0.0), Some(18.0))
+                .justify_center()
+                .child(bar),
         );
     }
     if let Some(sheet) = overlays::view(app) {
-        layers = layers.push(opaque(
-            container(sheet)
-                .width(Fill)
-                .height(Fill)
-                .align_x(Alignment::Center)
-                .padding(Padding {
-                    top: 90.0,
-                    ..Padding::ZERO
-                })
-                .style(theme::scrim),
-        ));
+        window = window.child(
+            col()
+                .key("scrim")
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .fill(P.scrim)
+                .items_center()
+                .pt(90.0)
+                .transition(Transition::opacity())
+                .on_press_tx(send(Message::CloseOverlay))
+                .child(sheet),
+        );
     }
-    layers.into()
+    window
 }
 
-/// One paragraph gives the label and count a shared typographic baseline.
-/// Equal widget bounds alone do not align fonts with different metrics.
-fn counted_heading(label: &str, count: usize, size: f32) -> Element<'static, Message> {
-    let spans: Vec<text::Span<'_, ()>> = vec![
-        span(label.to_owned()).font(BOLD),
-        span(format!(" {count}")).color(MUTED),
+/// A vertical hairline between panes.
+pub fn vrule(key: &str) -> El {
+    el().key(key).w(1.0).h_full().fill(P.border_soft)
+}
+
+/// A horizontal hairline.
+pub fn hrule(key: &str) -> El {
+    el().key(key).h(1.0).w_full().fill(P.border_soft)
+}
+
+/// Text in the interface face.
+pub fn label(content: impl Into<String>, size: f32, color: Color) -> El {
+    text(content).font(theme::sans(size)).color(color)
+}
+
+pub fn strong(content: impl Into<String>, size: f32, color: Color) -> El {
+    text(content).font(theme::bold(size)).color(color)
+}
+
+pub fn muted(content: impl Into<String>) -> El {
+    label(content, size::CONTROL, P.muted)
+}
+
+pub fn faint(content: impl Into<String>) -> El {
+    label(content, size::CAPTION, P.faint)
+}
+
+pub fn mono(content: impl Into<String>, size: f32, color: Color) -> El {
+    text(content).font(theme::mono(size)).color(color)
+}
+
+/// One paragraph gives the label and count a shared baseline.
+pub fn counted_heading(label: &str, count: usize, size: f32) -> El {
+    let content = format!("{label} {count}");
+    let spans = vec![
+        Span::new(0, label.len()).weight(theme::SEMIBOLD).color(P.text),
+        Span::new(label.len(), content.len()).color(P.muted),
     ];
-    rich_text(spans)
-        .size(size)
-        .line_height(iced::Pixels(size * 4.0 / 3.0))
-        .into()
+    rich(content, spans).font(theme::sans(size)).color(P.text)
 }
 
-/// Kept outside the sidebar so it remains reachable when the sidebar is hidden.
-fn sidebar_toggle(app: &App) -> Element<'_, Message> {
-    button(
-        row![
-            text(if app.show_sidebar {
-                "Hide sidebar"
-            } else {
-                "Show sidebar"
-            })
-            .size(theme::size::CAPTION),
-            key("S"),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    )
-    .style(theme::ghost)
-    .padding([3, 8])
-    .on_press(Message::ToggleSidebar)
-    .into()
-}
-
-/// The undo bar for deferred actions, or a short notice.
-fn status_bar(app: &App) -> Option<Element<'_, Message>> {
-    let content: Element<'_, Message> = if let Some(pending) = app.pending.last() {
-        let left = pending
-            .due
-            .saturating_duration_since(std::time::Instant::now())
-            .as_secs()
-            + 1;
-        row![
-            text(format!("{} in {left}s", pending.label)).size(theme::size::CONTROL),
-            Space::new().width(16),
-            button(
-                row![text("Undo").size(theme::size::CONTROL), key("Z")]
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-            )
-            .style(theme::ghost)
-            .padding([4, 10])
-            .on_press(Message::Undo),
-        ]
-        .align_y(Alignment::Center)
-        .into()
-    } else if let Some((message, _)) = &app.toast {
-        text(message.as_str()).size(theme::size::CONTROL).into()
-    } else {
-        return None;
-    };
-    Some(opaque(
-        container(content).padding([10, 16]).style(theme::sheet),
-    ))
-}
-
-pub fn divider(_: &iced::Theme) -> rule::Style {
-    rule::Style {
-        color: theme::BORDER,
-        radius: 0.0.into(),
-        fill_mode: rule::FillMode::Full,
-        snap: true,
-    }
+pub fn icon(glyph: Icon, size: f32, color: Color) -> El {
+    rune::icon(glyph.glyph(), size).color(color)
 }
 
 /// A key hint with one text key, such as `E` or `Esc`.
-pub fn key<'a>(label: &'a str) -> Element<'a, Message> {
+pub fn key(label: &str) -> El {
     keys(&[KeyPart::Text(label)])
 }
 
 /// A key hint whose modifiers and arrows draw as icons.
-pub fn keys<'a>(parts: &[KeyPart<'a>]) -> Element<'a, Message> {
-    let parts = parts.iter().map(|part| match *part {
-        KeyPart::Text(label) => text(label)
-            .size(theme::size::CAPTION)
-            .font(MONO)
-            .color(MUTED)
-            .into(),
-        KeyPart::Icon(glyph) => icon(glyph, theme::size::CAPTION, MUTED),
-    });
-    container(row(parts).spacing(2).align_y(Alignment::Center))
-        .padding([0, 5])
-        .style(|_: &iced::Theme| container::Style {
-            border: iced::Border {
-                color: theme::BORDER,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+pub fn keys(parts: &[KeyPart<'_>]) -> El {
+    let mut chip = row()
+        .gap(2.0)
+        .center_y()
+        .h(18.0)
+        .px(5.0)
+        .radius(4.0)
+        .fill(P.raised.alpha(0.6))
+        .border(1.0, P.border);
+    for (index, part) in parts.iter().enumerate() {
+        chip = chip.child(match *part {
+            KeyPart::Text(label) => mono(label, size::CAPTION - 1.0, P.muted).key(format!("k{index}")),
+            KeyPart::Icon(glyph) => icon(glyph, 11.0, P.muted).key(format!("k{index}")),
+        });
+    }
+    chip
 }
 
-pub fn icon<'a>(glyph: Icon, size: f32, color: Color) -> Element<'a, Message> {
-    svg(glyph.handle())
-        .width(size)
-        .height(size)
-        .style(move |_, _| svg::Style { color: Some(color) })
-        .into()
+/// A quiet button: a label and optional key hint on a hover fill.
+pub fn ghost(key: &str, label_text: &str, hint: &[KeyPart<'static>], message: Message) -> El {
+    let mut button = row()
+        .key(key)
+        .gap(6.0)
+        .center_y()
+        .px(10.0)
+        .h(28.0)
+        .radius(6.0)
+        .border(1.0, P.border)
+        .hover(P.hover)
+        .press(P.press)
+        .motion(theme::SNAPPY)
+        .label(label_text)
+        .role("button")
+        .on_press_tx(send(message))
+        .child(label(label_text, size::CONTROL, P.text));
+    if !hint.is_empty() {
+        button = button.child(keys(hint));
+    }
+    button
 }
 
-pub fn muted<'a>(label: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(label).size(theme::size::CONTROL).color(MUTED)
+/// The main action of a sheet: a raised neutral fill, or a red one for
+/// destructive actions.
+pub fn primary(
+    key: &str,
+    label_text: &str,
+    hint: &[KeyPart<'static>],
+    message: Option<Message>,
+    danger: bool,
+) -> El {
+    let (fill, edge, hover) = if danger {
+        (P.red.alpha(0.22), P.red.alpha(0.55), P.red.alpha(0.32))
+    } else {
+        (P.accent_soft, P.border_strong, theme::srgb(0.235, 0.235, 0.235))
+    };
+    let mut button = row()
+        .key(key)
+        .gap(6.0)
+        .center_y()
+        .px(12.0)
+        .h(28.0)
+        .radius(7.0)
+        .fill(fill)
+        .border(1.0, edge)
+        .label(label_text)
+        .role("button")
+        .child(text(label_text).font(theme::medium(size::CONTROL)).color(P.text));
+    if !hint.is_empty() {
+        button = button.child(keys(hint));
+    }
+    match message {
+        Some(message) => button
+            .hover(hover)
+            .press(P.press)
+            .motion(theme::SNAPPY)
+            .on_press_tx(send(message)),
+        None => button.opacity(0.45),
+    }
 }
 
-pub fn faint<'a>(label: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(label).size(theme::size::CAPTION).color(FAINT)
+/// A selectable row's background: raised when selected, a hover tint otherwise.
+pub fn selectable(element: El, selected: bool) -> El {
+    element
+        .radius(8.0)
+        .fill(if selected { P.selected } else { Color::TRANSPARENT })
+        .hover(if selected { Color::TRANSPARENT } else { P.hover })
+        .press(P.press)
+        .motion(theme::SNAPPY)
+}
+
+/// A small rounded label, such as a status.
+pub fn chip(content: impl Into<String>, color: Color) -> El {
+    row()
+        .h(18.0)
+        .px(6.0)
+        .center_y()
+        .radius(9.0)
+        .fill(color.alpha(0.14))
+        .child(text(content).font(theme::medium(size::CAPTION - 1.0)).color(color))
+}
+
+/// A vertical scroll area that takes the rest of its parent's height.
+pub fn scroller(key: &str, content: El) -> El {
+    col()
+        .key(key)
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .scroll(ScrollSpec { stick_bottom: false })
+        .scroll_edge_fade(12.0)
+        .child(content)
 }
 
 pub fn ago(now: Timestamp, at: Timestamp) -> String {
@@ -234,17 +329,65 @@ pub fn ago(now: Timestamp, at: Timestamp) -> String {
     }
 }
 
-pub fn empty<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
-    container(
-        column![
-            text(title).size(theme::size::BODY).color(MUTED),
-            faint(hint).size(theme::size::CAPTION)
-        ]
-        .spacing(6)
-        .align_x(Alignment::Center),
+pub fn empty(key: &str, title: &str, hint: &str) -> El {
+    let mut column = col()
+        .key(key)
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .center()
+        .gap(6.0)
+        .child(label(title, size::BODY, P.muted));
+    if !hint.is_empty() {
+        column = column.child(faint(hint));
+    }
+    column
+}
+
+/// Kept outside the sidebar so it stays reachable when the sidebar is hidden.
+fn sidebar_toggle(app: &App) -> El {
+    ghost(
+        "sidebar-toggle",
+        if app.show_sidebar {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        },
+        &[KeyPart::Text("S")],
+        Message::ToggleSidebar,
     )
-    .width(Fill)
-    .height(Length::Fill)
-    .center(Fill)
-    .into()
+}
+
+/// The undo bar for deferred actions, or a short notice.
+fn status_bar(app: &App) -> Option<El> {
+    let bar = row()
+        .key("status-bar")
+        .gap(16.0)
+        .center_y()
+        .px(16.0)
+        .py(10.0)
+        .radius(10.0)
+        .fill(P.raised)
+        .border(1.0, P.border)
+        .shadow(8.0, 24.0, P.shadow)
+        .transition(Transition::offset(0.0, 12.0).combined(Transition::opacity()));
+    if let Some(pending) = app.pending.last() {
+        let left = pending
+            .due
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs()
+            + 1;
+        Some(
+            bar.child(label(
+                format!("{} in {left}s", pending.label),
+                size::CONTROL,
+                P.text,
+            ))
+            .child(ghost("undo", "Undo", &[KeyPart::Text("Z")], Message::Undo)),
+        )
+    } else {
+        app.toast
+            .as_ref()
+            .map(|(message, _)| bar.child(label(message, size::CONTROL, P.text)))
+    }
 }

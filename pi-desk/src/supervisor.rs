@@ -1,13 +1,13 @@
 //! Runs Pi RPC child processes. The app talks to it through a [`Handle`] and
-//! receives [`Event`]s through an iced subscription.
+//! receives [`Event`]s from the stream that [`run`] returns.
 //!
 //! Each child gets its own writer, reader, and waiter tasks, so a child that
 //! stops reading stdin cannot stall the others. Stdout is split only on LF,
 //! as Pi's RPC framing requires. Every spawn carries a generation number, so
 //! events from a replaced process can be told apart from its successor's.
 
-use iced::futures::channel::mpsc;
-use iced::futures::{SinkExt, Stream, StreamExt};
+use futures::channel::mpsc;
+use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -83,8 +83,16 @@ struct Child {
     kill: Option<oneshot::Sender<()>>,
 }
 
+/// Starts the supervisor on the current tokio runtime. The first event is
+/// [`Event::Ready`] with the handle that accepts requests.
 pub fn run() -> impl Stream<Item = Event> {
-    iced::stream::channel(256, async |mut output: mpsc::Sender<Event>| {
+    let (output, events) = mpsc::channel(256);
+    tokio::spawn(supervise(output));
+    events
+}
+
+async fn supervise(mut output: mpsc::Sender<Event>) {
+    {
         let (sender, mut requests) = mpsc::unbounded();
         let _ = output.send(Event::Ready(Handle(sender))).await;
         let mut children: HashMap<String, Child> = HashMap::new();
@@ -131,7 +139,7 @@ pub fn run() -> impl Stream<Item = Event> {
                 }
             }
         }
-    })
+    }
 }
 
 fn start(spec: Spawn, output: mpsc::Sender<Event>) -> Result<Child, String> {

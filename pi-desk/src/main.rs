@@ -1,17 +1,8 @@
 //! pi-desk entry point.
 
-use pi_desk::app::App;
-
-fn main() -> iced::Result {
+fn main() {
     extend_path();
-    iced::application(App::boot, App::update, App::view)
-        .title(App::title)
-        .scale_factor(App::scale_factor)
-        .theme(|_: &App| pi_desk::theme::theme())
-        .subscription(App::subscription)
-        .settings(pi_desk::theme::settings())
-        .window_size((1440.0, 900.0))
-        .run()
+    rune::App::new(pi_desk::app::spec()).run();
 }
 
 /// Apps started from Finder get a minimal PATH. Add the usual places for

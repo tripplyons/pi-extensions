@@ -200,67 +200,94 @@ fn escape_cancels_pending_keys() {
     assert_eq!(buffer.text(), "bc");
 }
 
-#[test]
-fn positions_use_byte_columns() {
-    let mut content = Content::with_text("é🙂 x\nnext");
-    let buffer = Buffer::new("é🙂 x\nnext", 3);
-    write(&mut content, &buffer, None);
-    assert_eq!(content.cursor().position, Position { line: 0, column: 7 });
-    assert_eq!(Buffer::read(&content).cursor, 3);
-    let buffer = Buffer::new("é🙂 x\nnext", 6);
-    write(&mut content, &buffer, Some((1, 6)));
-    assert_eq!(content.selection().as_deref(), Some("🙂 x\nn"));
+fn edit(text: &str) -> TextEdit {
+    let mut edit = TextEdit::new(text);
+    edit.set_caret(0);
+    edit
 }
 
 #[test]
-fn bindings_route_keys_by_mode() {
-    use iced::keyboard::{Modifiers, key};
-    let press = |key: Key, text: Option<&str>| text_editor::KeyPress {
-        modified_key: key.clone(),
+fn positions_use_byte_offsets() {
+    let mut field = edit("é🙂 x\nnext");
+    let buffer = Buffer::new("é🙂 x\nnext", 3);
+    write(&mut field, &buffer, None);
+    assert_eq!((field.anchor, field.focus), (7, 7));
+    assert_eq!(Buffer::read(&field).cursor, 3);
+    let buffer = Buffer::new("é🙂 x\nnext", 6);
+    write(&mut field, &buffer, Some((1, 6)));
+    assert_eq!(field.selected(), "🙂 x\nn");
+}
+
+#[test]
+fn writes_are_single_undo_steps_that_keep_the_rest_of_the_text() {
+    let mut field = edit("one two three");
+    let mut buffer = Buffer::read(&field);
+    buffer.cursor = 4;
+    write(&mut field, &Buffer::new("one three", 4), None);
+    assert_eq!(field.text, "one three");
+    field.undo();
+    assert_eq!(field.text, "one two three");
+    buffer.cursor = 0;
+    write(&mut field, &buffer, None);
+    assert_eq!(field.focus, 0);
+}
+
+#[test]
+fn routes_keys_by_mode() {
+    use rune::{Key, KeyEvent, Mods};
+    let key = |key: Key| KeyEvent {
         key,
-        physical_key: key::Physical::Code(key::Code::KeyA),
-        modifiers: Modifiers::empty(),
-        text: text.map(Into::into),
-        status: text_editor::Status::Focused { is_hovered: false },
+        mods: Mods::default(),
     };
-    let fallback = |_| Some(Binding::Custom(Message::CancelReply));
-    let is_vim = |binding: Option<Binding<Message>>, expected: Input| matches!(binding, Some(Binding::Custom(Message::Vim(Target::Reply, input))) if input == expected);
+    let a = || key(Key::Text("a".into()));
     let mut vim = Vim::default();
-    let a = || press(Key::Character("a".into()), Some("a"));
-    let escape = || press(Key::Named(Named::Escape), None);
     // Insert mode: typed text goes through the escape-sequence check.
-    assert!(is_vim(
-        binding(a(), Target::Reply, &vim, "jk", fallback),
-        Input::Char('a')
-    ));
-    assert!(matches!(
-        binding(a(), Target::Reply, &vim, "", fallback),
-        Some(Binding::Custom(Message::CancelReply))
-    ));
-    assert!(is_vim(
-        binding(escape(), Target::Reply, &vim, "jk", fallback),
-        Input::Escape
-    ));
+    assert_eq!(
+        route(&a(), Target::Reply, &vim, "jk"),
+        Route::Vim(Input::Char('a'))
+    );
+    assert_eq!(route(&a(), Target::Reply, &vim, ""), Route::Usual);
+    assert_eq!(
+        route(&key(Key::Escape), Target::Reply, &vim, "jk"),
+        Route::Vim(Input::Escape)
+    );
     // Normal mode: keys become commands, and idle Escape uses the box's own action.
     vim.mode = Mode::Normal;
-    assert!(is_vim(
-        binding(a(), Target::Reply, &vim, "jk", fallback),
-        Input::Char('a')
-    ));
-    assert!(is_vim(
-        binding(
-            press(Key::Named(Named::ArrowDown), None),
-            Target::Reply,
-            &vim,
-            "jk",
-            fallback
-        ),
-        Input::Char('j')
-    ));
-    assert!(matches!(
-        binding(escape(), Target::Reply, &vim, "jk", fallback),
-        Some(Binding::Custom(Message::CancelReply))
-    ));
+    assert_eq!(
+        route(&a(), Target::Reply, &vim, "jk"),
+        Route::Vim(Input::Char('a'))
+    );
+    assert_eq!(
+        route(&key(Key::Down), Target::Reply, &vim, "jk"),
+        Route::Vim(Input::Char('j'))
+    );
+    assert_eq!(
+        route(&key(Key::Escape), Target::Reply, &vim, "jk"),
+        Route::Usual
+    );
+    assert_eq!(
+        route(&key(Key::Enter), Target::Reply, &vim, "jk"),
+        Route::Usual
+    );
+    assert_eq!(
+        route(&key(Key::Enter), Target::Composer, &vim, "jk"),
+        Route::Vim(Input::Char('\n'))
+    );
+    assert_eq!(
+        route(&key(Key::Tab), Target::Composer, &vim, "jk"),
+        Route::Ignore
+    );
+    let ctrl_r = KeyEvent {
+        key: Key::Text("r".into()),
+        mods: Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+    };
+    assert_eq!(
+        route(&ctrl_r, Target::Composer, &vim, "jk"),
+        Route::Vim(Input::Redo)
+    );
 }
 
 #[test]
@@ -276,10 +303,10 @@ fn normal_mode_draws_the_cursor_as_a_block() {
     assert_eq!(vim.selection(&Buffer::new("é🙂\n\nx", 5)), None);
     assert_eq!(vim.selection(&Buffer::new("", 0)), None);
 
-    let mut content = Content::with_text("é🙂\n\nx");
-    write(&mut content, &buffer, vim.selection(&buffer));
-    assert_eq!(content.selection().as_deref(), Some("🙂"));
-    assert_eq!(Buffer::read(&content).cursor, 1);
+    let mut field = edit("é🙂\n\nx");
+    write(&mut field, &buffer, vim.selection(&buffer));
+    assert_eq!(field.selected(), "🙂");
+    assert_eq!(Buffer::read(&field).cursor, 1);
 }
 
 #[test]
@@ -288,25 +315,25 @@ fn clearing_the_block_keeps_other_selections() {
         mode: Mode::Normal,
         ..Vim::default()
     };
-    let mut content = Content::with_text("abc");
-    vim.show_block(&mut content);
-    assert_eq!(content.selection().as_deref(), Some("a"));
-    vim.clear_block(&mut content);
-    assert_eq!(content.selection(), None);
-    assert_eq!(Buffer::read(&content).cursor, 0);
+    let mut field = edit("abc");
+    vim.show_block(&mut field);
+    assert_eq!(field.selected(), "a");
+    vim.clear_block(&mut field);
+    assert_eq!(field.selected(), "");
+    assert_eq!(Buffer::read(&field).cursor, 0);
 
     // A selection the user made, such as select-all, stays.
-    content.perform(text_editor::Action::SelectAll);
-    vim.clear_block(&mut content);
-    assert_eq!(content.selection().as_deref(), Some("abc"));
-    vim.show_block(&mut content);
-    assert_eq!(content.selection().as_deref(), Some("abc"));
+    field.set_selection(0, 3);
+    vim.clear_block(&mut field);
+    assert_eq!(field.selected(), "abc");
+    vim.show_block(&mut field);
+    assert_eq!(field.selected(), "abc");
 }
 
 #[test]
 fn insert_mode_has_no_block() {
     let vim = Vim::default();
-    let mut content = Content::with_text("abc");
-    vim.show_block(&mut content);
-    assert_eq!(content.selection(), None);
+    let mut field = edit("abc");
+    vim.show_block(&mut field);
+    assert_eq!(field.selected(), "");
 }
