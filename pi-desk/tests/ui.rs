@@ -2109,3 +2109,31 @@ fn mono_spans_use_the_platform_monospace() {
     // Markdown inline code asks for the mono family, as code blocks do.
     assert_eq!(pi_desk::app::spec().families, ("Inter", "ui-monospace"));
 }
+#[tokio::test]
+async fn the_task_selected_at_startup_loads_its_saved_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = seeded(dir.path());
+    let id = first.selected.clone().unwrap();
+    let file = dir.path().join("saved.jsonl");
+    let message = serde_json::json!({
+        "type": "message", "id": "m1", "parentId": null,
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Saved before restart."}]}
+    });
+    std::fs::write(
+        &file,
+        format!("{{\"type\":\"session\",\"id\":\"s\"}}\n{message}\n"),
+    )
+    .unwrap();
+    first.desk.state.agent_mut(&id).unwrap().session_file = Some(file);
+    first.store.save(&first.desk.state).unwrap();
+
+    let mut app = App::new(Store::new(dir.path().join("state")), common::fake_pi());
+    app.swarm_dir = dir.path().join("swarm");
+    let mut app = Desk::new(app);
+    assert_eq!(app.selected.as_deref(), Some(id.as_str()));
+    app.settle().await;
+    assert!(
+        app.shows("Saved before restart."),
+        "the startup selection's transcript must load"
+    );
+}

@@ -543,7 +543,10 @@ impl App {
             ui: Vec::new(),
             scratch: TextEdit::new(""),
         };
-        let _ = app.ensure_selection();
+        // Selecting the first task reads its transcript and diff in the
+        // background; that work must start, or the task stays loading.
+        let task = app.ensure_selection();
+        app.start(task);
         app
     }
 
