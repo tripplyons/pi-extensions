@@ -16,3 +16,7 @@ export async function waitForPolls(count: () => number) {
   while (count() < target && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
   expect(count()).toBeGreaterThanOrEqual(target);
 }
+
+// Report Pi's delivery of the newest queued message; the next swarm message waits for it.
+export const deliver = (h: { sentMessages: Array<{ message: any }>; emit(name: string, event: any): Promise<unknown> }) =>
+  h.emit("message_end", { message: { role: "custom", ...h.sentMessages.at(-1)!.message } });

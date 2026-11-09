@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, writeFile, readFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { git, prepareWorktree, removeWorktree } from "./git.ts";
+import { acquireLock, git, prepareWorktree, removeWorktree } from "./git.ts";
 async function fixture(run: (root: string) => Promise<void>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "pi-swarm-test-")));
   try {
@@ -50,4 +50,17 @@ test("commit-parent requires unprotected branch and cleanup validates branch ide
   await git(child.cwd, ["switch", "-c", "unexpected"]);
   await expect(removeWorktree(child)).rejects.toThrow("branch changed");
   await git(child.cwd, ["switch", child.branch!]); await removeWorktree(child);
+}));
+test("worktree preparation waits for a held lock and reclaims one whose owner died", () => fixture(async root => {
+  const lock = join(await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "pi-swarm-prepare.lock");
+  await acquireLock(lock, "busy");
+  await expect(acquireLock(lock, "busy", 50)).rejects.toThrow("busy");
+  setTimeout(() => void rm(lock, { recursive: true }), 100);
+  const waited = await prepareWorktree(root, join(root, "waited"), "pi-swarm/test/waited");
+  await removeWorktree(waited);
+  // No live process has this PID, as after a session killed mid-spawn.
+  await acquireLock(lock, "busy");
+  await writeFile(join(lock, "owner"), "2147483646");
+  const reclaimed = await prepareWorktree(root, join(root, "reclaimed"), "pi-swarm/test/reclaimed");
+  await removeWorktree(reclaimed);
 }));

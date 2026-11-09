@@ -81,3 +81,35 @@ test("stored objects are private and recall rejects unknown ids", async () => {
   await expect(h.call("obs_recall", { id: "obs_000000000000000000000000" })).rejects.toThrow("Unknown observation id");
   await expect(h.call("obs_recall", { id, offset: 10_000_000 })).rejects.toThrow("exceeds");
 });
+
+test("recalled pages stay under the threshold, split no character, and honor limit", async () => {
+  const { h, project } = await setup();
+  // One long line of two-byte characters: only the byte limit can end a page.
+  const line = "é".repeat(THRESHOLD_BYTES);
+  const placeholder = (await project(sent(result(line), FULL_SENDS)))[0].content[0].text as string;
+  expect(placeholder).toContain(`${"é".repeat(256)}…`);
+  expect(placeholder).toContain(`…${"é".repeat(256)}`);
+  const id = recallId(placeholder);
+  let offset = 0, rebuilt = "";
+  for (let eof = false; !eof;) {
+    const text = (await h.call("obs_recall", { id, offset })).content[0].text as string;
+    // A page that crossed the threshold would be replaced again and never stay readable.
+    expect((await project(sent(result(text, { toolName: "obs_recall" }), 5)))[0].content[0].text).toBe(text);
+    const [header, , ...body] = text.split("\n");
+    offset = Number(header!.match(/next_offset=(\d+)/)![1]);
+    eof = header!.includes("eof=true");
+    rebuilt += body.join("\n");
+  }
+  expect(rebuilt).toBe(line);
+  const slice = (await h.call("obs_recall", { id, offset: 2, limit: 101 })).content[0].text as string;
+  expect(slice).toContain("next_offset=102 eof=false");
+  expect(slice.split("\n")[2]).toBe("é".repeat(50));
+});
+
+test("the newest assignment read stays in full while older reads are replaced", async () => {
+  const { project } = await setup();
+  const read = (id: string) => result(big, { toolName: "swarm_task", toolCallId: id });
+  const projected = await project([read("old"), assistant, read("new"), assistant, assistant, assistant]);
+  expect(projected[0].content[0].text).toContain("[large tool result replaced");
+  expect(projected[2].content[0].text).toBe(big);
+});

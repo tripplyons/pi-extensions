@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import install from "./index.ts";
+import install, { messageEnd } from "./index.ts";
 import { SwarmStore } from "./state.ts";
+import { packageRevision } from "./version.ts";
 import { Workers, type Launch } from "./worker.ts";
 import { git } from "./git.ts";
 import { harness } from "../../lib/harness.ts";
-import { waitForPolls, withFastPolling } from "./test-polling.ts";
+import { deliver, waitForPolls, withFastPolling } from "./test-polling.ts";
 for (const objective of [undefined, " \t ", "  Build the feature  "]) {
   test(`/swarm:start accepts ${objective === undefined ? "no objective" : JSON.stringify(objective)} without spawning workers`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-swarm-activation-"));
@@ -102,7 +103,7 @@ test("inbox messages reach the session as readable notifications", () => withFas
     expect(h.sentMessages[0]).toEqual({
       message: {
         customType: "swarm-message",
-        content: `Swarm message from Worker (${child.id}):\nResult ready for review.`,
+        content: `Swarm message from Worker (${child.id}):\nResult ready for review.${messageEnd}`,
         display: true,
         details: { runId: identity.run, messageId: expect.any(String), from: child.id, kind: "message" },
       },
@@ -110,6 +111,7 @@ test("inbox messages reach the session as readable notifications", () => withFas
     });
     expect(await store.inbox(identity.run, identity.node)).toEqual([]);
     expect(background.at(-1).tasks).toHaveLength(1);
+    await deliver(h);
     const alerts: string[] = [];
     const statuses: Array<string | undefined> = [];
     h.ctx.ui.notify = (text: string) => alerts.push(text);
@@ -158,6 +160,7 @@ test("workers pause after completion and resume only after parent review", () =>
     while (!h.sentMessages.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     expect(h.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
     expect(h.sentMessages[0].message.content).toContain("Hand off now.");
+    await deliver(h);
     // Wait for durable acknowledgment before the next state update.
     while ((await store.inbox(run.id, child.id)).length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     expect(await h.emit("tool_call", { toolName: "bash" })).toEqual([undefined]);
@@ -183,12 +186,16 @@ test("workers pause after completion and resume only after parent review", () =>
     expect((await store.read(run.id)).nodes[child.id].resume).toMatchObject({ revision: 1, status: "queued" });
     const resumed = Date.now() + 3000;
     while ((await store.inbox(run.id, child.id)).length && Date.now() < resumed) await new Promise(resolve => setTimeout(resolve, 25));
-    expect(h.sentMessages).toHaveLength(3);
-    expect(h.sentMessages.slice(1).every(message => message.options.deliverAs === "steer")).toBe(true);
+    expect(h.sentMessages).toHaveLength(2);
+    expect(h.sentMessages[1].options.deliverAs).toBe("steer");
+    expect(h.sentMessages[1].message.content).toContain("Wait for review.");
+    expect(h.sentMessages[1].message.content).toContain("Fix one check");
     expect((await store.read(run.id)).nodes[child.id].resume?.status).toBe("delivered");
-    expect(h.sentMessages.some(message => message.message.content.includes("Historical checkpoint"))).toBe(false);
+    // The instruction set during review is not replayed alone; it stays in the resumed assignment.
+    expect(h.sentMessages.filter(message => message.message.content.includes("Historical checkpoint"))).toHaveLength(1);
     const revised = (await h.call("swarm_task", {})).details;
-    expect(revised.currentAssignment.text).toBe("Fix one check");
+    expect(revised.currentAssignment.text).toStartWith("Historical checkpoint; do not resume audit\n\nParent review of handoff revision 1 requests changes");
+    expect(revised.currentAssignment.text).toEndWith("\nFix one check");
     expect(revised.currentAssignment.generation).toBeGreaterThan(assignment.currentAssignment.generation);
     expect(revised.node.observedAssignment.generation).toBe(revised.currentAssignment.generation);
     expect(revised.historicalHandoff.handoff.status).toBe("changes-requested");
@@ -216,7 +223,7 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
   const h = harness();
   try {
-    install(h.pi); expect(h.tools.size).toBe(21);
+    install(h.pi); expect(h.tools.size).toBe(22);
     await expect(h.call("swarm_task", {})).rejects.toThrow("inactive");
     expect(await h.emit("before_agent_start")).toEqual([undefined]);
     await h.command("swarm:start", "Build the feature");
@@ -245,7 +252,8 @@ test("swarm activation is user-only, session-bound, and exposes all tools", asyn
       { id: identity.node, parent: undefined, name: "root", status: "running", activity: null, permission: "released", reload: null, versionState: expect.any(String), handoff: "none" },
       { id: worker.id, parent: identity.node, name: "Worker", status: "review", activity: null, permission: "released", reload: null, versionState: "unknown", handoff: "awaiting-parent" },
     ] });
-    await expect(h.call("swarm_tree", { nodeId: worker.id, brief: true })).rejects.toThrow("omit nodeId");
+    expect((await h.call("swarm_tree", { nodeId: worker.id, brief: true })).details).toEqual(
+      { id: worker.id, parent: identity.node, name: "Worker", status: "review", activity: null, permission: "released", reload: null, versionState: "unknown", handoff: "awaiting-parent" });
     expect((await h.call("swarm_tree", { nodeId: worker.id })).details.result).toBe("Detailed handoff ".repeat(100));
     expect((await h.call("swarm_tree", { nodeId: done.id })).details.status).toBe("accepted");
     await expect(h.call("swarm_tree", { nodeId: "unknown" })).rejects.toThrow("Unknown");
@@ -298,13 +306,21 @@ test("compact tree exposes current models, exact filtering and independent deliv
     expect((await h.call("swarm_tree", { model: "anthropic/claude" })).details.nodes).toHaveLength(0);
     await h.emit("model_select", { model: { provider: "openai", id: "other" } });
     expect((await store.read(identity.run)).nodes[worker.id].current?.model).toBe("openai/other");
+    // The replacement request is still queued, so the handoff waits until the worker has read it.
+    await expect(h.call("swarm_complete", { result: "Commit plus unverified WIP" })).rejects.toThrow("instruction that you have not read yet");
+    await h.call("swarm_task", {});
     await h.call("swarm_complete", { result: "Commit plus unverified WIP" });
     h.pi.appendEntry("pi:swarm", identity); await h.emit("session_start");
     snapshot = (await h.call("swarm_tree", {})).details;
     expect(snapshot.nodes.find((node: any) => node.id === worker.id)).toMatchObject({ handoff: "awaiting-parent", code: { records: [] } });
     await store.review(identity.run, identity.node, worker.id, "accept", "Received only");
     const revision = "a".repeat(40);
-    await h.call("swarm_record", { nodeId: worker.id, revision, stage: "reviewed", evidence: "Source inspected" });
+    // Every long text in the returned record is clipped, wherever it sits.
+    await store.update(identity.run, run => { run.nodes[worker.id].reload = { barrier: "b", stage: "released", checkpoint: "Checkpoint. ".repeat(500) }; });
+    const recorded = await h.call("swarm_record", { nodeId: worker.id, revision, stage: "reviewed", evidence: "Source inspected. ".repeat(100) });
+    expect(recorded.details.reload.checkpoint).toEndWith("… [6000 characters]");
+    expect(recorded.details.delivery[0].reviewed.text).toEndWith("… [1800 characters]");
+    expect(recorded.content[0].text.length).toBeLessThan(3000);
     snapshot = (await h.call("swarm_tree", { includeTerminal: true })).details;
     expect(snapshot.nodes.find((node: any) => node.id === worker.id)).toMatchObject({ handoff: "accepted", code: { source: "parent-reported", records: [{ revision, reviewed: true, tested: false, integrated: false }] } });
     await expect(h.call("swarm_tree", { nodeId: worker.id, model: "openai/other" })).rejects.toThrow("omit nodeId");
@@ -370,6 +386,16 @@ test("spawn and replacement inherit the spawning parent's fast preference", asyn
     await h.call("swarm_restart", { nodeId: second.id, model: "openai/scoped", thinking: "max", fast: true });
     expect(launches.at(-1)).toMatchObject({ model: "openai/scoped", thinking: "max", fast: true });
     const store = new SwarmStore(join(root, "swarm"));
+    // A running worker follows the root's scope, not the one its own process started with.
+    const peer = await store.reserve(identity.run, identity.node, "Peer", "Task");
+    await store.update(identity.run, run => { run.nodes[peer.id].status = "running"; });
+    h.pi.appendEntry("pi:swarm", { run: identity.run, node: peer.id }); await h.emit("session_start");
+    h.ctx.scopedModels = [{ model: { provider: "anthropic", id: "claude" } }];
+    expect((await h.call("swarm_models", {})).details).toEqual({ scoped: true, models: [{ model: "openai/scoped", thinking: "high", current: false }] });
+    await expect(h.call("swarm_spawn", { name: "Grandchild", task: "Task", model: "anthropic/claude" })).rejects.toThrow("Unavailable model: anthropic/claude");
+    h.ctx.scopedModels = [{ model: { provider: "openai", id: "scoped" }, thinkingLevel: "high" }];
+    h.pi.appendEntry("pi:swarm", identity); await h.emit("session_start");
+    await store.update(identity.run, run => { run.nodes[peer.id].status = "accepted"; });
     await store.complete(identity.run, second.id, "Review this");
     await expect(h.call("swarm_review", { nodeId: second.id, decision: "accept", feedback: "Done", fast: false })).rejects.toThrow("overrides require request-changes");
     const resumed = (await h.call("swarm_review", { nodeId: second.id, decision: "request-changes", feedback: "Fix it", model: "openai/scoped", thinking: "high", fast: false })).details;
@@ -379,6 +405,19 @@ test("spawn and replacement inherit the spawning parent's fast preference", asyn
     await store.update(identity.run, run => { run.nodes[second.id].current = { model: "openai/scoped", thinking: "low" }; });
     const fastOnly = (await h.call("swarm_review", { nodeId: second.id, decision: "request-changes", feedback: "Continue", fast: true })).details;
     expect(fastOnly.launch).toMatchObject({ model: "openai/scoped", thinking: "low", fast: true });
+    // A worker on an older package revision restarts at request-changes, unless it has jobs or unknown job ownership.
+    const session = join(root, "second.jsonl"); await writeFile(session, `${JSON.stringify({ type: "session", id: "second-session" })}\n`);
+    const stale = async (change: (node: any) => void) => {
+      await store.complete(identity.run, second.id, "Another review");
+      await store.update(identity.run, run => { Object.assign(run.nodes[second.id], { session, runtime: { revision: "older", loaded: new Date().toISOString() } }); change(run.nodes[second.id]); });
+      const before = launches.length;
+      const reviewed = (await h.call("swarm_review", { nodeId: second.id, decision: "request-changes", feedback: "Continue" })).details;
+      return { relaunched: launches.length - before, note: reviewed.note };
+    };
+    expect(await stale(() => {})).toEqual({ relaunched: 1, note: expect.stringContaining("restarted in its saved session to load") });
+    expect(launches.at(-1)).toMatchObject({ node: second.id, model: "openai/scoped", thinking: "low", fast: true });
+    expect(await stale(node => { delete node.session; })).toEqual({ relaunched: 0, note: undefined });
+    expect(await stale(node => { node.runtime.revision = packageRevision(); })).toEqual({ relaunched: 0, note: undefined });
     await h.call("swarm_replace", { nodeId: first.id, action: "request" });
     await store.complete(identity.run, first.id, "Accepted task");
     await store.review(identity.run, identity.node, first.id, "accept", "Received");

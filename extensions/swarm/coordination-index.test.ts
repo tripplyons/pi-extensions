@@ -125,8 +125,10 @@ test("health warnings steer the direct parent's agent once per episode, not the 
   const grandchild = await store.reserve(identity.run, nested.id, "Grandchild", "Task");
   await store.update(identity.run, state => { Object.assign(state.nodes[grandchild.id], { status: "running", session, started: old }); });
   live = false;
+  await nextHealthCheck(); // One missing probe can be a tmux hiccup or a restart gap.
+  expect(alerts()).toHaveLength(1);
   await nextHealthCheck();
-  await nextHealthCheck(); // A second health pass must not repeat either warning.
+  await nextHealthCheck(); // A later health pass must not repeat either warning.
   expect(alerts().map(entry => [entry.message.details.nodeId, entry.message.details.warning])).toEqual([
     [quiet.id, "quiet-no-job"], [quiet.id, "worker pane missing"], [nested.id, "worker pane missing"],
   ]);
@@ -150,7 +152,15 @@ test("checkpoint tool ends the worker turn and gates jobs until an explicit barr
     expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("checkpoint-hold");
   }
   expect((await h.emit("tool_call", { toolName: "decompress", input: { toFile: "checkpoint.md" } }))[0]).toMatchObject({ block: true, terminate: true });
-  expect((await h.call("swarm_reload", { action: "status", barrierId: barrier.id })).details.members[0]).toMatchObject({ permission: { status: "checkpoint-hold" }, reload: { stage: "checkpointed" }, runtime: { revision: expect.any(String) } });
+  // Status finds the caller's only open barrier and prints a checkpoint in full only on request.
+  const status = (await h.call("swarm_reload", { action: "status" })).details;
+  expect(status).toMatchObject({ id: barrier.id, note: expect.stringContaining("nodeIds") });
+  expect(status.members).toEqual([{ nodeId: worker.id, name: "Worker", status: "running", stage: "checkpointed", permission: "checkpoint-hold", revision: expect.any(String), revisionState: expect.any(String), model: null, thinking: null, checkpointChars: 45 }]);
+  const full = (await h.call("swarm_reload", { action: "status", barrierId: barrier.id, nodeIds: [worker.id] })).details;
+  expect(full.members[0].checkpoint).toBe("No jobs; pinned base and dirty files retained");
+  expect(full.note).toBeUndefined();
+  await expect(h.call("swarm_reload", { action: "status", nodeIds: ["missing"] })).rejects.toThrow("Not members of this barrier: missing");
+  expect((await store.inbox(run.id, run.root)).at(-1)!.text).toBe(`Reload ${barrier.id}: Worker checkpointed (45 characters). Read it with swarm_reload action=status nodeIds=["${worker.id}"].`);
   await expect(h.call("swarm_reload", { action: "status", barrierId: barrier.id, thinking: "low" })).rejects.toThrow("apply only to action=restart");
 }));
 
@@ -187,6 +197,7 @@ test("permission waits permit read-only inspection and housekeeping without rele
   expect((await store.read(run.id)).nodes[worker.id].permission?.status).toBe("released");
   await h.call("swarm_send", { to: run.root, kind: "message", text: "Step done; what next?", activity: "waiting-instructions" });
   expect(await h.emit("tool_call", { toolName: "swarm_complete", input: { result: "Finished handoff" } })).toEqual([undefined]);
+  await h.call("swarm_task", {});
   expect((await h.call("swarm_complete", { result: "Finished handoff" })).details).toMatchObject({ status: "review", result: "Finished handoff" });
 }));
 

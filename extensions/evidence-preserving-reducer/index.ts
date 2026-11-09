@@ -15,7 +15,29 @@ import { THEN_RUN_FAILED, THEN_RUN_SUCCEEDED } from "../action-fusion/index.ts";
 import { instructions, receiptText, reducerInput, RECEIPT_SCHEMA, sha256, validate, type Source } from "./receipt.ts";
 
 export const JOURNAL_TYPE = "evidence-preserving-reducer";
-export const DIAGNOSTIC_COMMAND = /(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+(?:build|test|check))?|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|bun\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
+const DIAGNOSTIC_PROGRAM = /^(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+(?:build|test|check))?|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|bun\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
+const WRAPPERS = /^(?:(?:[A-Za-z_]\w*=\S*|time|env|sudo|nice|exec|command|uv\s+run|uvx|npx|bunx|pnpm\s+exec|poetry\s+run|timeout\s+\S+|if|then|else|elif|do|while|until|!)\s+)*/;
+// Steps that print nothing worth keeping, so they may sit beside a build or test.
+const QUIET = /^(?:(?:cd|pushd|popd|export|set|unset|source|\.|echo|printf|true|:|mkdir|sleep|exit|wait|fi|done)(?:\s|$)|[A-Za-z_]\w*=\S*$)/;
+const QUOTED = /'[^']*'|"(?:\\.|[^"\\])*"/g;
+const REDIRECT = /\d*(?:>>?|<)&?\s*(?:[\w./~$-]+|\0\d+\0)|&>>?\s*(?:[\w./~$-]+|\0\d+\0)/g;
+// Every step of the command must be a build or test program or a quiet step. A
+// program named as an argument, as in `ps aux | grep cargo`, says nothing about the
+// output, and a step such as `git diff` prints text the agent asked to read in full.
+export function isDiagnostic(command: string): boolean {
+  const quoted: string[] = [];
+  const bare = command.replace(QUOTED, text => `\0${quoted.push(text.slice(1, -1)) - 1}\0`).replace(REDIRECT, " ").replace(/\|&/g, "|");
+  let found = false;
+  for (const step of bare.split(/&&|\|\||[;&\n]/)) {
+    // Later programs in a pipeline only filter what the first one prints.
+    const program = step.split("|")[0].replace(/[(){}]/g, " ").trim().replace(WRAPPERS, "");
+    if (!program || QUIET.test(program)) continue;
+    const shell = program.match(/^(?:ba|z)?sh\s+-l?c\s+\0(\d+)\0$/);
+    if (!(shell ? isDiagnostic(quoted[Number(shell[1])]) : DIAGNOSTIC_PROGRAM.test(program))) return false;
+    found = true;
+  }
+  return found;
+}
 const LIKELY_SECRET = /(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+/i;
 export const MIN_BYTES = 4096;
 const MAX_CHARS = 600_000;
@@ -91,7 +113,7 @@ export default function evidencePreservingReducer(pi: ExtensionAPI) {
 
   pi.on("tool_result", async (event, ctx) => {
     const found = await candidate(event);
-    if (!found || !DIAGNOSTIC_COMMAND.test(found.command) || Buffer.byteLength(found.body) < MIN_BYTES) return;
+    if (!found || !isDiagnostic(found.command) || Buffer.byteLength(found.body) < MIN_BYTES) return;
     const fallback = (reason: string, data: object = {}) => { journal("fallback", { toolCallId: event.toolCallId, reason, ...data }); };
     if (found.body.length > MAX_CHARS) return fallback("source-over-max-chars", { sourceChars: found.body.length });
     if (LIKELY_SECRET.test(found.body)) return fallback("likely-secret");

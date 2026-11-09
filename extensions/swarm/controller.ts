@@ -101,11 +101,12 @@ export class Swarm {
     if (actor !== run.root) throw new Error("Only root can stop the entire swarm");
     return this.stopNodes(runId, descendants(run, run.root));
   }
-  async review(runId: string, actor: string, child: string, decision: "accept" | "reject" | "request-changes", feedback: string, options: Pick<Launch, "model" | "thinking" | "fast"> = {}) {
+  async review(runId: string, actor: string, child: string, decision: "accept" | "reject" | "request-changes", feedback: string, options: Pick<Launch, "model" | "thinking" | "fast"> = {}, relaunch = false) {
     const node = await this.owned(runId, actor, child);
     if (node.status !== "review") throw new Error("Worker has no result awaiting review");
-    const reconfigure = Object.keys(options).length > 0;
-    if (reconfigure && decision !== "request-changes") throw new Error("Model, thinking and fast overrides require request-changes");
+    if (Object.keys(options).length && decision !== "request-changes") throw new Error("Model, thinking and fast overrides require request-changes");
+    // relaunch restarts the resumed worker with unchanged settings, to load an updated package.
+    const reconfigure = Object.keys(options).length > 0 || (relaunch && decision === "request-changes");
     if (reconfigure) {
       if (descendants(await this.store.read(runId), child).some(entry => !terminal(entry.status))) throw new Error("Stop descendants before changing resume settings");
       await this.workers.stop(child);

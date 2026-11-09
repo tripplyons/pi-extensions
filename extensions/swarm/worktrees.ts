@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { copyFile, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, realpath, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { acquireLock } from "./git.ts";
 const exec = promisify(execFile);
 export type DirtyMode = "exclude" | "commit-parent" | "commit-child" | "shared";
 export type Workspace = { cwd: string; repo: string; branch?: string; shared: boolean };
@@ -25,11 +26,7 @@ export async function prepareWorkspace(parent: string, destination: string, bran
   repo = await realpath(repo);
   const common = await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const lock = join(common, "pi-swarm.lock");
-  try { await mkdir(lock); }
-  catch (error: any) {
-    if (error.code === "EEXIST") throw new Error("Swarm Git preparation is locked; retry after the current operation finishes");
-    throw error;
-  }
+  await acquireLock(lock, "Swarm Git preparation is locked; retry after the current operation finishes");
   try {
     if (await git(repo, ["diff", "--name-only", "--diff-filter=U"])) throw new Error("Unresolved merges block spawn");
     const dirty = Boolean(await git(repo, ["status", "--porcelain=v1", "--untracked-files=all"]));

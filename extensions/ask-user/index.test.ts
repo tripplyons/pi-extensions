@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import { harness } from "../../lib/harness.ts";
 import install, { other, timeoutMs } from "./index.ts";
 
+// A host session may set the timeout, as pi-desk does; these tests cover the default.
+delete process.env.PI_ASK_USER_TIMEOUT;
+
 test("questions without choices ask for free text, cancellation is not an answer", async () => {
   const h = harness(); install(h.pi);
   let title: string | undefined;

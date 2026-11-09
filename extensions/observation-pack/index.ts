@@ -18,8 +18,13 @@ export const THRESHOLD_BYTES = 10 * 1024;
 // Provider requests that carry a large result before the placeholder replaces it.
 export const FULL_SENDS = 2;
 const EXCERPT_BYTES = 512;
-const RECALL_BYTES = 16 * 1024 - 512;
+// A recalled page, with its header, stays under the threshold. A larger page would
+// itself be replaced two requests later and could never be kept in view.
+const RECALL_BYTES = THRESHOLD_BYTES - 512;
 const RECALL_LINES = 398;
+// The newest result of these tools stays in full: a worker must be able to reread
+// its assignment for the whole task. Older copies are replaced as usual.
+const KEEP_LATEST = new Set(["swarm_task"]);
 
 type Observation = { id: string; path: string; tool: string; text: string; bytes: number; lines: number };
 
@@ -63,7 +68,14 @@ function excerpt(text: string, fromEnd: boolean) {
     if (bytes > EXCERPT_BYTES) break;
     kept.push(line);
   }
-  return (fromEnd ? kept.reverse() : kept).join("");
+  if (kept.length || !lines.length) return (fromEnd ? kept.reverse() : kept).join("");
+  // One long line, such as a JSON string, still shows its edge instead of nothing.
+  const line = Buffer.from(lines[0]!);
+  let start = fromEnd ? line.length - EXCERPT_BYTES : 0, end = fromEnd ? line.length : EXCERPT_BYTES;
+  while (start < end && (line[start]! & 0xc0) === 0x80) start++;
+  while (end > start && end < line.length && (line[end]! & 0xc0) === 0x80) end--;
+  const part = line.subarray(start, end).toString("utf8");
+  return fromEnd ? `…${part}` : `${part}…\n`;
 }
 
 export function placeholder(observation: Observation) {
@@ -74,28 +86,34 @@ export function placeholder(observation: Observation) {
     `original_bytes: ${observation.bytes}`,
     `original_lines: ${observation.lines}`,
     `estimated_tokens: ${Math.ceil(observation.text.length / 4)}`,
-    `retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
-    `[first complete lines, up to ${EXCERPT_BYTES} bytes]`,
+    `retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset; pages stay in context`,
+    `[first lines, up to ${EXCERPT_BYTES} bytes]`,
     excerpt(observation.text, false),
-    `[middle omitted; last complete lines, up to ${EXCERPT_BYTES} bytes]`,
+    `[middle omitted; last lines, up to ${EXCERPT_BYTES} bytes]`,
     excerpt(observation.text, true),
     `[${observation.bytes} original bytes omitted]`,
   ].join("\n");
 }
 
 // Read whole lines up to the page limits without splitting a UTF-8 character.
-async function readPage(path: string, offset: number) {
+async function readPage(path: string, offset: number, limit = RECALL_BYTES) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const { size } = await file.stat();
     if (offset > size) throw new Error(`Offset ${offset} exceeds observation size ${size}`);
-    const buffer = Buffer.alloc(Math.min(size - offset, RECALL_BYTES));
+    const buffer = Buffer.alloc(Math.min(size - offset, Math.max(limit, 4), RECALL_BYTES));
     await file.read(buffer, 0, buffer.length, offset);
     let end = buffer.length;
     for (let index = 0, lines = 0; index < buffer.length; index++) {
       if (buffer[index] === 0x0a && ++lines === RECALL_LINES) { end = index + 1; break; }
     }
-    while (end > 0 && end < size - offset && (buffer[end]! & 0xc0) === 0x80) end--;
+    // A page cut by the byte limit may end inside a character: drop its partial bytes.
+    if (end === buffer.length && end < size - offset) {
+      let lead = end - 1;
+      while (lead > 0 && (buffer[lead]! & 0xc0) === 0x80) lead--;
+      const first = buffer[lead]!, width = first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : first >= 0xc0 ? 2 : 1;
+      if (lead + width > end) end = lead;
+    }
     const text = buffer.subarray(0, end).toString("utf8");
     return { text, bytes: end, lines: countLines(text), nextOffset: offset + end, eof: offset + end >= size };
   } finally { await file.close(); }
@@ -106,15 +124,16 @@ export default function observationPack(pi: ExtensionAPI) {
   pi.registerTool({
     name: "obs_recall",
     label: "Recall observation",
-    description: "Read a stored large tool result by observation id and byte offset.",
+    description: `Read a stored large tool result by observation id and byte offset. A page holds up to ${RECALL_BYTES} bytes and is not replaced again; limit reads a smaller slice.`,
     promptSnippet: "Recall a paged excerpt from a previously replaced large tool result",
     parameters: Type.Object({
       id: Type.String({ pattern: "^obs_[a-f0-9]{24}$", description: "Observation id from a placeholder" }),
       offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, default 0" })),
+      limit: Type.Optional(Type.Integer({ minimum: 64, maximum: RECALL_BYTES, description: `Most bytes to return, default ${RECALL_BYTES}` })),
     }),
-    async execute(_id, { id, offset = 0 }, _signal, _onUpdate, ctx) {
+    async execute(_id, { id, offset = 0, limit }, _signal, _onUpdate, ctx) {
       if (!/^obs_[a-f0-9]{24}$/.test(id)) throw new Error(`Unknown observation id: ${id}`);
-      const page = await readPage(join(objectsDir(ctx), `${id}.txt`), offset).catch(error => {
+      const page = await readPage(join(objectsDir(ctx), `${id}.txt`), offset, limit).catch(error => {
         throw error?.code === "ENOENT" ? new Error(`Unknown observation id: ${id}`) : error;
       });
       const header = `[obs_recall id=${id} offset=${offset} next_offset=${page.nextOffset} eof=${page.eof}]\n[chunk_bytes=${page.bytes} chunk_lines=${page.lines}; use next_offset to continue]`;
@@ -130,10 +149,12 @@ export default function observationPack(pi: ExtensionAPI) {
     try { dir = objectsDir(ctx); } catch { return; }
     // Each later assistant message is one provider request that carried the result.
     let sends = 0;
+    const kept = new Set<string>();
     const messages = [...event.messages];
     for (let index = messages.length - 1; index >= 0; index--) {
       const message = messages[index]!;
       if (message.role === "assistant") { sends++; continue; }
+      if (message.role === "toolResult" && !message.isError && KEEP_LATEST.has(message.toolName) && !kept.has(message.toolName)) { kept.add(message.toolName); continue; }
       if (sends < FULL_SENDS) continue;
       const observation = observe(message, dir);
       if (!observation) continue;

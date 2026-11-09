@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { git, gitRaw, type Worktree } from "./git.ts";
+import { acquireLock, git, gitRaw, type Worktree } from "./git.ts";
 import type { Node, Provenance } from "./state.ts";
 
 async function fingerprint(path: string) {
@@ -19,7 +19,7 @@ export async function inheritWorktree(node: Node, destination: string, branch: s
   const common = await git(source.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   if (common !== await git(source.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) throw new Error("Predecessor repository changed");
   const lock = join(common, "pi-swarm-prepare.lock");
-  try { await mkdir(lock); } catch { throw new Error("Another swarm Git preparation holds the lock; retry after it finishes"); }
+  await acquireLock(lock, "Another swarm Git preparation holds the lock; retry after it finishes");
   try {
     if (await git(source.cwd, ["diff", "--name-only", "--diff-filter=U"])) throw new Error("Unresolved merges block replacement");
     const head = await git(source.cwd, ["rev-parse", "HEAD"]);

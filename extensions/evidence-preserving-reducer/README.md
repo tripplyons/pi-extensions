@@ -6,8 +6,12 @@ that matter, and checks every quote against the original log.
 It applies to Bash results, and to `then_run` output from
 [Action Fusion](../action-fusion), when all of these hold:
 
-- The command looks like a build or test run, such as `npm test`, `bun test`,
-  `cargo test`, `pytest`, `go test`, `make`, or `lake build`.
+- The command runs a build or test program, such as `npm test`, `bun test`,
+  `cargo test`, `pytest`, `go test`, `make`, or `lake build`. A program that is
+  only named in an argument, as in `ps aux | grep cargo`, does not count.
+- Every other step of the command is quiet, such as `cd`, `export`, or `echo`,
+  or filters the build output through a pipe. A command that also runs
+  `git diff` or `cat` is left alone, because that output was asked for in full.
 - The output is at least 4 KiB and at most 600,000 characters.
 - The output does not look like it contains a secret.
 
@@ -19,7 +23,7 @@ log and returns up to 12 exact quotes, each tagged `fatal`, `failure`,
 
 The receipt is used only if every check passes:
 
-- Each quote appears byte for byte in the log.
+- It has at least one quote, and each quote appears byte for byte in the log.
 - The status matches the tool result.
 - A failing log with failure text has at least one `fatal` or `failure` quote.
 - The receipt is smaller than the log.

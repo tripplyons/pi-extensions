@@ -64,6 +64,8 @@ export function validate(raw: string, source: Source): Receipt | string {
     evidence.set(`${kind}\0${quote}`, { kind, quote, line: lineCount(source.body.slice(0, index + 1)) });
   }
   const items = [...evidence.values()];
+  // A receipt without a quote would hide the whole log and show nothing for it.
+  if (!items.length) return "no-evidence";
   // A failing log must not pass as a clean summary.
   if (source.isError && FAILURE_SIGNAL.test(source.body) && !items.some(item => item.kind === "fatal" || item.kind === "failure")) {
     return "missing-failure-evidence";
@@ -83,9 +85,7 @@ export function receiptText(source: Source, receipt: Receipt, model: string) {
     `source_artifact=${source.path}`,
     `reducer_model=${model}`,
     "verified_evidence:",
-    ...receipt.evidence.length
-      ? receipt.evidence.map(item => `- kind=${item.kind} line=${item.line} quote_sha256=${sha256(item.quote)} quote=${JSON.stringify(item.quote)}`)
-      : ["- none"],
+    ...receipt.evidence.map(item => `- kind=${item.kind} line=${item.line} quote_sha256=${sha256(item.quote)} quote=${JSON.stringify(item.quote)}`),
     "authority=the agent keeps diagnosis, repair, reruns, and pass/fail decisions",
     "readback=use bash with an explicit byte or line range on source_artifact when exact context is needed",
   ].join("\n");

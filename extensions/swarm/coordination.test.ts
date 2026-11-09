@@ -57,8 +57,12 @@ test("reload checkpoints survive recovery and require all jobs stopped, readines
   }
   const assignments = [{ nodeId: a.id, task: "New bounded A" }, { nodeId: b.id, task: "New bounded B" }];
   await expect(manager.release(run.id, run.root, barrier.id, assignments)).rejects.toThrow("readiness");
+  const readyNotices = async () => (await store.read(run.id)).messages.filter(message => message.to === run.root && message.text.includes("ready")).map(message => message.text);
   await store.recordRuntime(run.id, a.id, "current", restarted.nodes[a.id].generation);
+  // The parent hears once, when the whole barrier is ready.
+  expect(await readyNotices()).toEqual([]);
   await store.recordRuntime(run.id, b.id, "outdated", restarted.nodes[b.id].generation);
+  expect(await readyNotices()).toEqual([`Reload ${barrier.id}: all 2 members are ready at differing package revisions (A current, B outdated) and remain on checkpoint hold until explicit release.`]);
   await expect(manager.release(run.id, run.root, barrier.id, assignments.slice(0, 1))).rejects.toThrow("every member");
   await expect(manager.release(run.id, run.root, barrier.id, assignments)).rejects.toThrow("revisions must match");
   await expect(manager.release(run.id, run.root, barrier.id, assignments, "current")).rejects.toThrow(`Mismatched members: B (${b.id}) on outdated. The parent is current. To fix the members, call swarm_reload action=restart on this barrier again`);
@@ -66,6 +70,7 @@ test("reload checkpoints survive recovery and require all jobs stopped, readines
   await manager.restart(run.id, run.root, barrier.id);
   expect(launches.map(launch => launch.node)).toEqual([a.id, b.id, b.id]);
   await store.recordRuntime(run.id, b.id, "current", (await store.read(run.id)).nodes[b.id].generation);
+  expect((await readyNotices()).at(-1)).toBe(`Reload ${barrier.id}: all 2 members are ready at package revision current and remain on checkpoint hold until explicit release.`);
   await manager.release(run.id, run.root, barrier.id, assignments);
   const released = await recovered.read(run.id);
   expect(released.barriers?.[barrier.id].phase).toBe("released");

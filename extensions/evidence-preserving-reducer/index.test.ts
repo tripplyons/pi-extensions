@@ -5,7 +5,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
 import { harness } from "../../lib/harness.ts";
 import { THEN_RUN_FAILED } from "../action-fusion/index.ts";
-import reducer, { JOURNAL_TYPE } from "./index.ts";
+import reducer, { isDiagnostic, JOURNAL_TYPE } from "./index.ts";
 import { EVIDENCE_RECEIPT, RECEIPT_SCHEMA, sha256 } from "./receipt.ts";
 
 const dirs: string[] = [];
@@ -73,6 +73,24 @@ test("a failing log needs failure evidence", async () => {
   const { h, run } = await setup(log => receipt(log, [{ kind: "summary", quote: "collected test_0 PASSED" }]));
   expect(await run(bash(failingLog))).toBeUndefined();
   expect(h.entries.at(-1).data.reason).toBe("missing-failure-evidence");
+});
+
+test("a receipt without quotes keeps the original output", async () => {
+  const { h, run } = await setup(log => receipt(log, [], "success"));
+  expect(await run(bash(failingLog, { isError: false }))).toBeUndefined();
+  expect(h.entries.at(-1).data.reason).toBe("no-evidence");
+});
+
+test("only commands that run a build or test program are reduced", () => {
+  for (const command of ["pytest -q", "cd app && cargo test", "FOO=1 uv run pytest -x", "bash -lc 'cd app && make'", "timeout 600 bun test 2>&1 | tail -40", "(npm test)",
+    "export CI=1\ncargo build > build.log 2>&1 || exit 1; cargo test |& tee \"test log.txt\"", "if ! make; then echo failed; fi"])
+    expect(isDiagnostic(command)).toBe(true);
+  for (const command of ["git diff; ps aux | grep cargo", "ps aux | grep -E 'lean|cargo test'", "git log --grep make", "cat Makefile", "ls -la", "echo 'run make; pytest'"])
+    expect(isDiagnostic(command)).toBe(false);
+  // Output the agent asked to read must not be hidden because a check ran in the same command.
+  for (const command of ["rg -n version notes.md | tail -n 18; git diff -- comm.cu; bash -n tests/*.sh; python3 -m py_compile bench.py",
+    "git diff && cargo test", "cargo test; cat report.txt", "bash -c 'git show HEAD; make'", "cat build.log | cargo fmt"])
+    expect(isDiagnostic(command)).toBe(false);
 });
 
 test("the receipt status must match the tool result", async () => {

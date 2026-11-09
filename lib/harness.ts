@@ -14,6 +14,7 @@ export function harness() {
     cwd: process.cwd(), getContextUsage: () => undefined, hasUI: true, hasPendingMessages: () => false,
     sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => "/test/session.jsonl" },
     ui: { setStatus() {}, notify() {}, input: async () => "answer" },
+    modelRegistry: { getAvailable: () => [] },
   };
   const pi: any = {
     registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut),

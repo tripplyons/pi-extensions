@@ -13,8 +13,10 @@ workers. Restarts reuse the worker's own settings: its reported current model an
 thinking level, then its launch settings, then the restarting parent's current
 settings for any value still missing. `swarm_spawn` and `swarm_restart` accept `model` (exact
 `provider/model`), `thinking` (reasoning effort), and `fast` (boolean) to override the inherited values. Replacement starts accept the same fields, with `model` required. `swarm_models`
-lists the accepted models: Pi's scoped models (`/scoped-models`, `enabledModels`,
-or `--models`), or all authenticated models when no scope is set. Omitted fields stay inherited.
+lists the accepted models: the root session's scoped models (`/scoped-models`,
+`enabledModels`, or `--models`), or all its authenticated models when no scope
+is set. The root shares this list through the run, so workers follow a change
+to it without a restart. Omitted fields stay inherited.
 For example, spawn or restart with `model: "openai/gpt-5.4"`,
 `thinking: "max"`, and `fast: true` (use an available model ID).
 Reasoning effort accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
@@ -63,15 +65,20 @@ on every turn, including after recovery. Workers ask their parent, not the user.
 They coordinate shared APIs before editing and report blockers rather than
 inventing substitute behavior or starting follow-on work.
 
-`swarm_task` returns the objective, full node record, parent ID and workspace,
-and nonterminal sibling IDs. Its `currentAssignment` has a numeric generation,
+`swarm_task` returns the objective, node record, parent ID and workspace,
+and nonterminal sibling IDs. The assignment text appears once, in
+`currentAssignment.text`: copies in the node record, such as `directive.text` and
+an appended-to `task`, are replaced by a pointer, and long activity and
+permission notes are clipped. `swarm_tree` with `nodeId` returns the full record.
+Its `currentAssignment` has a numeric generation,
 separate from the process launch generation. Each new directive increments it.
 `observedAssignment` records the generation and launch last read through
 `swarm_task`. It proves the durable assignment was read, not that work started or
 finished. A stale launch or a concurrent assignment change cannot acknowledge
 the new scope. Compact trees include both generations and the observation. Pass `brief: true` to
 `swarm_tree` for one short record per worker: ID, parent, name, status, activity,
-permission, reload stage, version state, and handoff. `swarm_tree` returns compact summaries by default:
+permission, reload stage, version state, and handoff. With `nodeId` as well,
+it returns that one worker's short record. `swarm_tree` returns compact summaries by default:
 active and terminal counts, status, branch, workspace, task preview, launch model,
 reported current model and thinking level, handoff state and revision, and code evidence.
 `finished` in the structured counts means terminal workers, not delivered code.
@@ -177,6 +184,23 @@ authorize edits, new jobs, or follow-on work.
 ```
 
 Messages are stored in run state and delivered through the recipient's inbox.
+Messages that are pending together arrive as one steering message, and the next
+one waits in the inbox until Pi delivers it, or for 30 seconds when a long tool
+call holds delivery. Pi's default `steeringMode` delivers one queued steering
+message per turn, so a queue of swarm messages would otherwise hold the user's
+own steering behind it, one turn per message. Each swarm message ends with an
+"End of swarm message" line, because Pi and some providers join steering
+messages that arrive together and the user's words must stay distinct.
+An appended instruction delivers only the appended text, plus any appends that
+were superseded before delivery; `swarm_task` holds the whole assignment.
+`swarm_send` returns the message record without its text. `swarm_sent` lists what
+you sent, newest first, as `queued`, `delivered`, or `superseded`. Check it before
+resending after an interrupted send, such as a missing tool result after a
+restart. A repeat of the sender's latest send to a recipient is not sent again:
+a message while the first copy is unread, an instruction while it is still the
+recipient's assignment and the recipient has not answered. The result has
+`duplicate: true`, and `swarm_broadcast` lists the skipped recipients in
+`duplicates`. A requested permission is still applied.
 Incoming messages identify the sender by name and node ID. Messages from agents
 other than the worker's direct parent include an informational-only notice.
 A busy recipient receives the message at a tool boundary; an idle recipient
@@ -228,8 +252,13 @@ Before this change, every instruction replaced the task. Existing callers that
 intend replacement must now send `assignmentMode: "replace"`.
 
 Handoff submission and its parent notification are saved atomically.
+`swarm_complete` fails while a parent instruction is queued for the worker but
+not yet in its conversation, so a handoff cannot pass over an instruction sent
+while it was being written. The worker reads `swarm_task` and submits again.
 `swarm_review` with `request-changes` saves the running state and resume instruction
-atomically. Its returned node includes `resume.status: "queued"`; this is not an
+atomically. The feedback is appended to the assignment the handoff answered,
+or to one the parent set during review, so earlier appended instructions stay
+in the worker's `swarm_task`. Its returned node includes `resume.status: "queued"`; this is not an
 acknowledgment from the worker. Inspect `swarm_tree` to see `delivered` after Pi
 accepts the steering instruction, then `observed` after the worker reaches a tool
 boundary in the resumed state. The parent receives a separate observed notice.
@@ -238,7 +267,8 @@ A pause error names the handoff revision and describes a snapshot at the tool
 check. A delayed snapshot can be superseded by a later parent resume.
 
 A new parent directive, request-changes, restart task, or reload release
-supersedes older queued instructions. An appended instruction saves and delivers
+supersedes older queued instructions. Request-changes keeps their text in the
+assignment. An appended instruction saves and delivers
 the full combined assignment, so superseding an unread message does not lose
 its update. Superseded instructions stay in the saved message history but are
 not replayed to the worker. An explicit restart task
@@ -278,8 +308,15 @@ and checkpoint holds.
 
 ## Reload barrier
 
-Use a reload barrier to update running direct children without letting restart
-instructions authorize new work:
+A package update does not need a barrier at once. Workers on the older revision
+keep working, and new workers load the installed package. A worker whose handoff
+gets `request-changes` is restarted in its saved session when its revision
+differs from the installed package and it owns no active jobs, so it picks up
+the update at a point where nothing is in flight. The result of `swarm_review`
+says so.
+
+Use a reload barrier to update running direct children now, without letting
+restart instructions authorize new work:
 
 1. Call `swarm_reload action=request`, optionally with `nodeIds`. Members must
    be running direct children with no pending replacement. A member's running
@@ -303,9 +340,12 @@ instructions authorize new work:
    `members: [{nodeId, model?, thinking?, fast?}]` to change them per member.
    Per-member values take precedence. A restart on a ready barrier also
    relaunches members whose settings change.
-4. Reload the parent too if its source is old. Read `action=status` until every
-   member reports readiness from its new launch generation. Status shows the
-   parent, installed, and per-member revisions. Ready workers remain on
+4. Reload the parent too if its source is old. The parent gets one notice when
+   every member has reported readiness from its new launch generation;
+   `action=status` shows progress before that. Status prints one short record
+   per member with the parent, installed, and per-member revisions. Pass
+   `nodeIds` to print those members' checkpoints in full. `barrierId` may be
+   omitted when the caller has one open barrier. Ready workers remain on
    checkpoint hold. Matching source fingerprints are required for release. A
    release error names the side to reload. Call `action=restart` again on a
    ready barrier to restart only members whose revision differs from the
@@ -330,7 +370,8 @@ way to add tools to an already loaded old runtime.
 Dirty parents require an explicit `exclude`, `commit-parent`, `commit-child`, or
 `shared` choice. The error lists up to 20 dirty paths. Shared/parent-commit modes reject `main` and `master`. Child
 snapshots use a private Git index, preserving the parent's staged changes and
-HEAD. Git preparations are serialized by a repository lock.
+HEAD. Git preparations are serialized by a repository lock. A spawn waits up to
+30 seconds for it, and reclaims a lock whose owner process has exited.
 
 Swarm tools never merge or push. Only the parent integrates worker branches into
 its branch. Workers may sync an explicitly approved base into their own branch.
@@ -515,7 +556,8 @@ read error. Quiet does not mean stalled, and a live job does not prove progress.
 The extension checks every ten seconds. Once per warning episode, it sends the
 direct parent's agent a steering message for a missing worker pane, an
 `errored` worker whose automatic resumes ran out, or a quiet worker without a
-known permission wait. An `errored` alert asks the parent to send the idle
+known permission wait. A pane counts as missing only after two consecutive
+checks, so one failed tmux probe or a restart in progress raises no alert. An `errored` alert asks the parent to send the idle
 worker a message to resume it. The message starts a turn for an idle
 parent and asks it to inspect the worker and report what it did. A
 `quiet-no-job` alert asks the parent to steer an idle worker and to stop or

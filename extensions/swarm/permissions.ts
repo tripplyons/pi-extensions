@@ -1,7 +1,7 @@
 // Holds permit inspection and session housekeeping, not arbitrary execution.
 const inspectionTools = new Set([
   "read", "grep", "find", "ls",
-  "swarm_task", "swarm_tree", "swarm_models", "swarm_send", "swarm_board", "swarm_reload", "swarm_health", "swarm_reviews", "swarm_observe", "swarm_inspect",
+  "swarm_task", "swarm_tree", "swarm_models", "swarm_send", "swarm_sent", "swarm_board", "swarm_reload", "swarm_health", "swarm_reviews", "swarm_observe", "swarm_inspect",
   "session_search", "session_read",
   "task_query", "task_output", "task_stop", "sleep",
   "compress", "search_context", "acp_status", "acp_cache", "complain",

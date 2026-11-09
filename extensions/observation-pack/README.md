@@ -4,14 +4,20 @@ Keeps large tool results from riding along in every later provider request.
 
 A successful text-only tool result over 10 KiB is sent in full for two provider
 requests. After that, the request carries a placeholder instead: the result's
-size, the first and last 512 bytes of whole lines, and an observation ID. The
+size, the first and last 512 bytes of whole lines, and an observation ID. A
+first or last line longer than that is cut to fit. The
 agent can read the full text again with `obs_recall`:
 
 ```json
 { "id": "obs_0123456789abcdef01234567", "offset": 0 }
 ```
 
-Each page holds up to about 16 KiB or 398 lines and reports `next_offset`.
+Each page holds up to 9.5 KiB or 398 lines and reports `next_offset`. A page is
+smaller than the threshold, so it stays in later requests and is never replaced
+itself. `limit` reads a smaller slice, from 64 bytes up.
+
+The newest `swarm_task` result is never replaced, so a swarm worker can always
+reread its assignment. Older `swarm_task` results are replaced as usual.
 
 Only the provider request changes. The session file keeps every result, so
 `/tree`, export, and compaction see the original text. Error results, results

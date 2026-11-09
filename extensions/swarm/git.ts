@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, rm, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 const exec = promisify(execFile);
 export type DirtyMode = "exclude" | "commit-parent" | "commit-child" | "shared";
 export type Worktree = { cwd: string; repository: string; branch?: string; shared: boolean };
@@ -11,6 +12,28 @@ export async function gitRaw(cwd: string, args: string[], env?: NodeJS.ProcessEn
 }
 export async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv) {
   return (await gitRaw(cwd, args, env)).trimEnd();
+}
+
+// Back-to-back spawns wait for each other instead of failing. A lock whose owner
+// process died, such as a session killed mid-spawn, is reclaimed.
+export async function acquireLock(lock: string, busy: string, waitMs = 30_000, staleMs = 10 * 60_000) {
+  const deadline = Date.now() + waitMs;
+  while (true) {
+    try { await mkdir(lock); break; }
+    catch (error: any) {
+      if (error.code !== "EEXIST") throw error;
+      const owner = () => readFile(join(lock, "owner"), "utf8").catch(() => "");
+      const pid = await owner();
+      // A lock without a recorded owner predates this check or is being created.
+      let dead = !pid && Date.now() - (await stat(lock).then(entry => entry.mtimeMs, () => Date.now())) > staleMs;
+      if (pid) try { process.kill(Number(pid), 0); } catch (failure: any) { dead = failure.code === "ESRCH"; }
+      // Another waiter may have reclaimed the lock since the owner was read.
+      if (dead && await owner() === pid) { await rm(lock, { recursive: true, force: true }); continue; }
+      if (Date.now() >= deadline) throw new Error(busy);
+      await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+    }
+  }
+  await writeFile(join(lock, "owner"), String(process.pid)).catch(() => {});
 }
 
 export async function prepareWorktree(parent: string, destination: string, branch: string, mode?: DirtyMode): Promise<Worktree> {
@@ -24,7 +47,7 @@ export async function prepareWorktree(parent: string, destination: string, branc
   if (!/^pi-swarm\/[a-zA-Z0-9/-]+$/.test(branch)) throw new Error("Invalid generated swarm branch");
   const common = await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const lock = join(common, "pi-swarm-prepare.lock");
-  try { await mkdir(lock); } catch { throw new Error("Another swarm Git preparation holds the lock; retry after it finishes"); }
+  await acquireLock(lock, "Another swarm Git preparation holds the lock; retry after it finishes");
   try {
     if (await git(cwd, ["diff", "--name-only", "--diff-filter=U"])) throw new Error("Unresolved merges block spawn");
     const status = await git(cwd, ["status", "--porcelain=v1", "--untracked-files=all"]), dirty = !!status;

@@ -24,9 +24,32 @@ function instructionText(node: Node, text: string, mode: AssignmentMode) {
   if (!assignment) throw new Error("No current assignment to append to; use assignmentMode=replace with a new bounded task");
   return `${assignment.text}\n\nAdditional parent instruction (preserve the task above; this update takes precedence where it conflicts):\n${text}`;
 }
+// A send repeated after an interrupted tool call must not reach the recipient twice or
+// append the same text to its assignment twice. A repeat is the sender's latest message to
+// that recipient again: still unread, or an instruction still in force and unanswered.
+function repeated(run: Run, from: string, to: string, kind: Message["kind"], text: string, mode?: AssignmentMode) {
+  const last = run.messages.findLast(message => message.from === from && message.to === to);
+  if (!last || last.kind !== kind || (last.appended ?? last.text) !== text) return;
+  if (kind === "message") return last.read ? undefined : last;
+  if (last.assignmentMode !== (mode ?? "append") || run.nodes[to].directive?.messageId !== last.id) return;
+  return run.messages.some(message => message.from === to && message.to === from && message.created >= last.created) ? undefined : last;
+}
+const repeatNote = "Identical to your previous send to this recipient, so nothing was sent again.";
 export function currentAssignment(node: Node) {
   const assignment = node.directive ?? (!node.result ? { text: node.task, source: "original" as const } : undefined);
   return assignment ? { ...assignment, generation: node.assignmentGeneration ?? 1 } : undefined;
+}
+// What an instruction adds for a worker that already holds the earlier assignment:
+// its appended text plus any appends superseded before delivery. Otherwise the whole assignment.
+export function instructionUpdate(run: Run, message: Message) {
+  if (message.appended === undefined) return { text: message.text, whole: true };
+  const earlier = run.messages.filter(entry => entry.to === message.to && entry.kind === "instruction");
+  const parts = [message.appended];
+  for (let index = earlier.findIndex(entry => entry.id === message.id) - 1; index >= 0 && earlier[index].superseded; index--) {
+    if (earlier[index].appended === undefined) return { text: message.text, whole: true };
+    parts.unshift(earlier[index].appended!);
+  }
+  return { text: parts.join("\n\n"), whole: false };
 }
 export function setDirective(run: Run, node: Node, directive: NonNullable<Node["directive"]>) {
   node.assignmentGeneration = (node.assignmentGeneration ?? 1) + 1;
@@ -57,6 +80,8 @@ export type Node = {
   provenance?: Provenance;
   resume?: { messageId: string; revision: number; status: "queued" | "delivered" | "observed" };
   worktree?: Worktree; branch?: string; session?: string; pane?: string; started?: string; result?: string; feedback?: string;
+  // The assignment a handoff awaiting review answered; request-changes builds on it.
+  answered?: string;
 };
 // Old running/stopped records cannot tell us whether their retained result was accepted.
 export function handoffRecord(node: Node): Handoff | undefined {
@@ -65,9 +90,12 @@ export function handoffRecord(node: Node): Handoff | undefined {
   const status = node.status === "review" ? "awaiting-parent" : node.status === "accepted" ? "accepted" : node.status === "rejected" ? "rejected" : "unknown";
   return { revision: 1, status, feedback: node.feedback };
 }
-export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean; superseded?: boolean; assignmentMode?: AssignmentMode };
+// An instruction's text is the whole resulting assignment; appended is only the part its sender wrote.
+export type Message = { id: string; from: string; to: string; kind: "message" | "instruction"; text: string; created: string; read: boolean; superseded?: boolean; assignmentMode?: AssignmentMode; appended?: string };
 export type BoardEntry = { value: string; author: string; updated: string; revision: number };
-export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier>; board?: Record<string, BoardEntry> };
+export type Run = { version: 1; id: string; root: string; objective: string; nodes: Record<string, Node>; messages: Message[]; barriers?: Record<string, Barrier>; board?: Record<string, BoardEntry>;
+  // The root session's model choices, which every worker in the run follows.
+  models?: { scoped: boolean; choices: { model: string; thinking?: string }[] } };
 const nonempty = (value: string, name: string) => { if (!value.trim()) throw new Error(`${name} must contain text`); };
 export function ownedChild(run: Run, actor: string, child: string) {
   const node = run.nodes[child];
@@ -76,6 +104,13 @@ export function ownedChild(run: Run, actor: string, child: string) {
 }
 export function descendants(run: Run, id: string): Node[] {
   return Object.values(run.nodes).filter(node => node.parent === id).flatMap(node => [node, ...descendants(run, node.id)]);
+}
+export function pendingMessages(run: Run, actor: string) {
+  if (!run.nodes[actor]) throw new Error("Unknown swarm node");
+  const directive = run.nodes[actor].directive;
+  return run.messages.filter(message => message.to === actor && !message.read && !message.superseded &&
+    (message.kind !== "instruction" || (directive?.messageId ? message.id === directive.messageId :
+      directive && message.created === directive.created && message.text === directive.text)));
 }
 export class SwarmStore {
   constructor(readonly root: string, readonly lockTimeoutMs = 5000) {}
@@ -105,7 +140,7 @@ export class SwarmStore {
           (message.id === directive.messageId || (message.created === directive.created && message.text === directive.text)));
         if (instruction) {
           directive.messageId = instruction.id;
-          node.activity = { status: instruction.read ? "instruction-delivered" : "instruction-queued", detail: instruction.text, updated: instruction.created, source: "instruction" };
+          node.activity = { status: instruction.read ? "instruction-delivered" : "instruction-queued", detail: instruction.appended ?? instruction.text, updated: instruction.created, source: "instruction" };
         }
       }
     }
@@ -145,9 +180,16 @@ export class SwarmStore {
       if (generation && node.reload?.stage === "restarted") {
         node.reload.stage = "ready";
         const barrier = run.barriers?.[node.reload.barrier];
-        if (barrier?.phase === "restarting" && barrier.members.every(id => run.nodes[id].reload?.stage === "ready")) barrier.phase = "ready";
-        if (barrier) run.messages.push({ id: randomUUID(), from: actor, to: barrier.owner, kind: "message", read: false, created: node.runtime.loaded,
-          text: `Reload ${barrier.id}: ${node.name} is ready at package revision ${revision.slice(0, 12)} and remains on checkpoint hold until explicit release.` });
+        const ready = barrier?.members.every(id => run.nodes[id].reload?.stage === "ready");
+        if (barrier?.phase === "restarting" && ready) barrier.phase = "ready";
+        // One notice for the barrier, not one per member: each notice interrupts the parent.
+        if (barrier && ready) {
+          const members = barrier.members.map(id => run.nodes[id]), short = (value?: string) => value?.slice(0, 12) ?? "unknown";
+          const revisions = members.every(member => member.runtime?.revision === revision) ? `at package revision ${short(revision)}`
+            : `at differing package revisions (${members.map(member => `${member.name} ${short(member.runtime?.revision)}`).join(", ")})`;
+          run.messages.push({ id: randomUUID(), from: actor, to: barrier.owner, kind: "message", read: false, created: node.runtime.loaded,
+            text: `Reload ${barrier.id}: ${members.length === 1 ? `${node.name} is` : `all ${members.length} members are`} ready ${revisions} and ${members.length === 1 ? "remains" : "remain"} on checkpoint hold until explicit release.` });
+        }
       }
       return node.runtime;
     });
@@ -197,9 +239,11 @@ export class SwarmStore {
         }
       }
       if (!activity && sender.status === "running" && sender.parent === to && kind === "message") sender.activity = { status: "checking-in", detail: text, updated: message.created, source: "message" };
-      if (kind === "instruction") {
+      const repeat = repeated(run, from, to, kind, text, assignmentMode);
+      if (kind === "instruction" && !repeat) {
         message.assignmentMode = assignmentMode ?? "append";
         message.text = instructionText(recipient, text, message.assignmentMode);
+        if (message.assignmentMode === "append") message.appended = text;
         setDirective(run, recipient, { text: message.text, source: "parent", created: message.created, messageId: message.id });
         recipient.activity = { status: "instruction-queued", detail: text, updated: message.created, source: "instruction" };
       }
@@ -208,6 +252,7 @@ export class SwarmStore {
         if (recipient.permission?.status === "checkpoint-hold") throw new Error("Use reload release to lift a checkpoint hold");
         recipient.permission = { status: permission, reason: text, updated: message.created, source: "parent" };
       }
+      if (repeat) return { ...repeat, duplicate: true, note: note ?? repeatNote };
       run.messages.push(message); return note ? { ...message, note } : message;
     });
   }
@@ -219,13 +264,19 @@ export class SwarmStore {
       if (!run.nodes[actor]) throw new Error("Unknown swarm node");
       const children = Object.values(run.nodes).filter(node => node.parent === actor && !terminal(node.status));
       const created = new Date().toISOString();
-      const messages: Message[] = children.map(node => ({ id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false }));
+      const messages: (Message & { duplicate?: true })[] = children.map(node => {
+        const repeat = repeated(run, actor, node.id, kind, text, assignmentMode);
+        return repeat ? { ...repeat, duplicate: true } : { id: randomUUID(), from: actor, to: node.id, kind, text, created, read: false };
+      });
       if (kind === "instruction") for (const message of messages) {
         const node = run.nodes[message.to];
-        message.assignmentMode = assignmentMode ?? "append";
-        message.text = instructionText(node, text, message.assignmentMode);
-        setDirective(run, node, { text: message.text, source: "parent", created, messageId: message.id });
-        node.activity = { status: "instruction-queued", detail: text, updated: created, source: "instruction" };
+        if (!message.duplicate) {
+          message.assignmentMode = assignmentMode ?? "append";
+          message.text = instructionText(node, text, message.assignmentMode);
+          if (message.assignmentMode === "append") message.appended = text;
+          setDirective(run, node, { text: message.text, source: "parent", created, messageId: message.id });
+          node.activity = { status: "instruction-queued", detail: text, updated: created, source: "instruction" };
+        }
         if (permission) {
           if (!["released", "waiting-approval", "waiting-dependency"].includes(permission)) throw new Error("Invalid permission");
           if (node.permission?.status === "checkpoint-hold") throw new Error("Use reload release to lift a checkpoint hold");
@@ -233,8 +284,14 @@ export class SwarmStore {
         }
       }
       if (permission && kind !== "instruction") throw new Error("Permission requires a parent instruction");
-      run.messages.push(...messages);
+      run.messages.push(...messages.filter(message => !message.duplicate));
       return messages;
+    });
+  }
+  async publishModels(id: string, actor: string, models: NonNullable<Run["models"]>) {
+    return this.update(id, run => {
+      if (run.root !== actor) throw new Error("Only the root session sets the run's model choices");
+      run.models = models;
     });
   }
   // Board entries are shared facts. Authors and their ancestors may change them; a missing value deletes the key.
@@ -252,13 +309,21 @@ export class SwarmStore {
       return { key, ...board[key] };
     });
   }
-  async inbox(id: string, actor: string) {
+  // Lets a sender whose tool call was interrupted check delivery before sending again.
+  async sent(id: string, actor: string, to?: string, limit = 10) {
     const run = await this.read(id);
     if (!run.nodes[actor]) throw new Error("Unknown swarm node");
-    const directive = run.nodes[actor].directive;
-    return run.messages.filter(message => message.to === actor && !message.read && !message.superseded &&
-      (message.kind !== "instruction" || (directive?.messageId ? message.id === directive.messageId :
-        directive && message.created === directive.created && message.text === directive.text)));
+    if (to !== undefined && !Object.hasOwn(run.nodes, to)) throw new Error("Unknown node in this swarm run; use swarm_tree to find node IDs");
+    return run.messages.filter(message => message.from === actor && (!to || message.to === to)).slice(-limit).reverse().map(message => {
+      const text = message.appended ?? message.text;
+      return { id: message.id, to: message.to, toName: run.nodes[message.to]?.name ?? "unknown", kind: message.kind,
+        ...(message.assignmentMode ? { assignmentMode: message.assignmentMode } : {}), created: message.created,
+        delivery: message.read && !message.superseded ? "delivered" : message.superseded ? "superseded" : "queued",
+        text: text.length > 300 ? `${text.slice(0, 300)}…` : text, chars: text.length };
+    });
+  }
+  async inbox(id: string, actor: string) {
+    return pendingMessages(await this.read(id), actor);
   }
   async observeAssignment(id: string, actor: string, generation: number, launchGeneration?: string) {
     return this.update(id, run => {
@@ -299,7 +364,7 @@ export class SwarmStore {
       message.read = true;
       const node = run.nodes[actor];
       if (message.kind === "instruction" && node.directive?.messageId === messageId && node.activity?.status === "instruction-queued") {
-        node.activity = { status: "instruction-delivered", detail: message.text, updated: new Date().toISOString(), source: "instruction" };
+        node.activity = { status: "instruction-delivered", detail: message.appended ?? message.text, updated: new Date().toISOString(), source: "instruction" };
       }
       const resume = node.resume;
       if (resume?.messageId === messageId && resume.status === "queued") resume.status = "delivered";
@@ -312,6 +377,8 @@ export class SwarmStore {
       if (!node?.parent || node.status !== "running") throw new Error("Only running workers submit results");
       if (descendants(run, actor).some(child => !terminal(child.status))) throw new Error("All descendants must be terminal before completion");
       if (node.permission?.status === "checkpoint-hold") throw new Error("Use swarm_reload checkpoint during a reload barrier");
+      const answered = currentAssignment(node)?.text;
+      if (answered) node.answered = answered; else delete node.answered;
       node.handoff = { revision: (node.handoff?.revision ?? 0) + 1, status: "awaiting-parent", submitted: new Date().toISOString() };
       node.permission = { status: "waiting-approval", reason: "Handoff awaits parent review", source: "worker", updated: node.handoff.submitted! };
       node.status = "review"; node.result = result; delete node.resume; delete node.directive; delete node.activity;
@@ -362,15 +429,19 @@ export class SwarmStore {
       node.handoff = { revision: node.handoff?.revision ?? 1,
         status: decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "changes-requested", feedback, submitted: node.handoff?.submitted };
       node.feedback = feedback;
+      // The feedback extends the assignment the handoff answered, or one the parent set during review.
+      const base = node.directive?.text ?? node.answered;
+      delete node.answered;
       if (decision === "request-changes") {
-        const messageId = randomUUID();
-        node.permission = { status: "released", reason: feedback || "Revise the submitted result", source: "parent", updated: new Date().toISOString() };
+        const messageId = randomUUID(), created = new Date().toISOString();
+        const appended = feedback || "Revise the submitted result and resubmit for review.";
+        const text = base ? `${base}\n\nParent review of handoff revision ${node.handoff.revision} requests changes (preserve the task above; this feedback takes precedence where it conflicts):\n${appended}` : appended;
+        node.permission = { status: "released", reason: feedback || "Revise the submitted result", source: "parent", updated: created };
         delete node.activity;
-        const directive = setDirective(run, node, { text: feedback || "Revise the submitted result and resubmit for review.", source: "parent", created: new Date().toISOString(), messageId });
+        const directive = setDirective(run, node, { text, source: "parent", created, messageId });
         node.resume = { messageId, revision: node.handoff.revision, status: "queued" };
-        node.activity = { status: "instruction-queued", detail: directive.text, updated: directive.created, source: "instruction" };
-        run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false, created: new Date().toISOString(),
-          text: feedback || "Revise the submitted result and resubmit for review." });
+        node.activity = { status: "instruction-queued", detail: appended, updated: directive.created, source: "instruction" };
+        run.messages.push({ id: messageId, from: actor, to: child, kind: "instruction", read: false, created, text, ...(base ? { assignmentMode: "append" as const, appended } : {}) });
       }
       return node;
     });

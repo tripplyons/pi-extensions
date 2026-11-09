@@ -43,7 +43,10 @@ test("current parent directives survive recovery without reviving completed assi
     expect(currentAssignment(state.nodes[worker.id])?.text).toHaveLength(300);
     await store.complete(run.id, worker.id, "Second result");
     await store.review(run.id, run.root, worker.id, "request-changes", "Fix one source citation");
-    expect(currentAssignment((await store.read(run.id)).nodes[worker.id])?.text).toBe("Fix one source citation");
+    // Requested changes extend the assignment the handoff answered.
+    state = await store.read(run.id);
+    expect(currentAssignment(state.nodes[worker.id])?.text).toBe(`${"y".repeat(300)}\n\nParent review of handoff revision 2 requests changes (preserve the task above; this feedback takes precedence where it conflicts):\nFix one source citation`);
+    expect(state.nodes[worker.id].answered).toBeUndefined();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -73,7 +73,7 @@ export class ReloadBarrier {
       if (!barrier || barrier.phase !== "checkpoint" || worker.reload?.stage !== "requested" || worker.status !== "running") throw new Error("Checkpoint is not pending");
       worker.reload.stage = "checkpointed"; worker.reload.checkpoint = text;
       const messageId = randomUUID(), created = new Date().toISOString();
-      state.messages.push({ id: messageId, from: actor, to: barrier.owner, kind: "message", read: false, created, text: `Reload ${barrierId}: ${worker.name} checkpointed. Recovery details are in swarm_reload action=status.` });
+      state.messages.push({ id: messageId, from: actor, to: barrier.owner, kind: "message", read: false, created, text: `Reload ${barrierId}: ${worker.name} checkpointed (${text.length} characters). Read it with swarm_reload action=status nodeIds=["${actor}"].` });
       return worker.reload;
     });
   }
