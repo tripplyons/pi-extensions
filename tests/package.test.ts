@@ -5,8 +5,8 @@ import manifest from "../package.json";
 
 test("Pi SDK development dependencies and minimum host versions stay aligned", () => {
   for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"] as const) {
-    expect(manifest.devDependencies[name]).toBe("1.4.0");
-    expect(manifest.peerDependencies[name]).toBe(">=1.4.0");
+    expect(manifest.devDependencies[name]).toBe("1.5.0");
+    expect(manifest.peerDependencies[name]).toBe(">=1.5.0");
     expect(manifest.peerDependenciesMeta[name].optional).toBe(true);
   }
 });

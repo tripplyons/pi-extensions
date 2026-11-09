@@ -130,3 +130,18 @@ test("progress reports provider and timeout while executing, then stops", () => 
     clock.mockRestore();
   }
 }));
+
+test("registers the bundled skill and runs its CLI by default", async () => {
+  const previous = process.env.PI_WEB_CLI;
+  delete process.env.PI_WEB_CLI;
+  try {
+    const h = setup();
+    const [{ skillPaths }] = await h.emit("resources_discover");
+    expect(skillPaths).toHaveLength(1);
+    expect(await Bun.file(`${skillPaths[0]}/web-search-and-extract/SKILL.md`).exists()).toBe(true);
+    await h.call("web_search", { query: "news" });
+    expect(h.calls[0][1][3]).toBe(`${skillPaths[0]}/web-search-and-extract/scripts/web-search-and-extract.py`);
+  } finally {
+    if (previous !== undefined) process.env.PI_WEB_CLI = previous;
+  }
+});

@@ -1,19 +1,21 @@
 # Web tools
 
-Adds `web_search` and `web_extract`, backed by the installed
-web-search-and-extract skill's Python CLI. MiniMax keeps both tools active.
+Adds `web_search` and `web_extract`, backed by the bundled
+web-search-and-extract skill's Python CLI. MiniMax keeps both tools active. The
+extension also registers the skill in
+`skills/web-search-and-extract`, so agents can run the CLI directly.
 
 Call previews show the query or URL, provider, timeout, and supplied options.
 While running, a progress line shows elapsed time. Results preview the actual
 CLI text, including titles, links, and citations, rather than only provider
 metadata. Expand the result to see all returned text.
 
-Requires `uv` on PATH and the script at
-`~/.agents/skills/web-search-and-extract/scripts/web-search-and-extract.py`.
-Set `PI_WEB_CLI` to an absolute script path to override it. The extension runs
+Requires `uv` on PATH. The tools run
+`skills/web-search-and-extract/scripts/web-search-and-extract.py` from this
+directory. Set `PI_WEB_CLI` to an absolute script path to override it. The extension runs
 `uv run --python 3.12`; uv may download Python and the script's dependencies on
 first use. Execution uses the home directory, not the current project's uv
-configuration. No script, credentials, or caches are copied into this repo.
+configuration. No credentials or caches are stored in this repo.
 
 Both tools default to `openai-codex`, using the CLI's existing subscription
 login discovery. The endpoint is experimental and quota accounting is

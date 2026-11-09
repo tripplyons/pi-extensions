@@ -2,7 +2,7 @@
 
 Pi extensions for coding tools, context management, background tasks, and session UI.
 
-Pi 1.4.0 or newer is required. Pi owns file/search tools, images, codemode, tool discovery, and compaction.
+Pi 1.5.0 or newer is required. Pi owns file/search tools, images, codemode, tool discovery, and compaction.
 Background tasks remain a focused extension. The compact UI keeps its
 look through public Pi APIs and tested spacing adapters. OpenAI requests require
 ChatGPT OAuth; API keys and paid OpenAI gateways are blocked before dispatch.
@@ -12,7 +12,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 
 | Extension | Behavior |
 | --- | --- |
-| [web](extensions/web) | CLI web search and extraction with query/URL previews, elapsed time and text results |
+| [web](extensions/web) | Web search and extraction tools, plus the bundled web-search-and-extract skill and CLI |
 | [swarm](extensions/swarm) | Optional-objective activation, isolated workers, messaging, reviews, reload barriers, health checks, saved-conversation inspection, and T3 Code running-state reporting |
 | [session-search](extensions/session-search) | Local project-history search with original-message retrieval, summary expansion and a read-only inspector |
 | [ask-user](extensions/ask-user) | Scrollable questions, recommended choices, configurable timeout, and plain-text answers |

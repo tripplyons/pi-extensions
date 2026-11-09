@@ -22,7 +22,7 @@ code or assets are included.
 ## Run
 
 Requires a current stable Rust toolchain (edition 2024), Git 2.38 or newer
-(`merge-tree --write-tree`), and Pi 1.4.0 or newer on PATH. Install this repo's
+(`merge-tree --write-tree`), and Pi 1.5.0 or newer on PATH. Install this repo's
 Pi extensions and sign in to your chosen provider first:
 
 ```sh

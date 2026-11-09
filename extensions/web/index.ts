@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ToolDefinition, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderResult, toolCall } from "../../lib/tool-preview.ts";
@@ -13,12 +14,17 @@ const common = {
   max_chars: Type.Optional(Type.Integer({ minimum: 1, maximum: 30000, description: "CLI output cap; default 8000 for search, 20000 for extraction." })),
 };
 
+const skillsDir = fileURLToPath(new URL("./skills", import.meta.url));
+const bundledScript = join(skillsDir, "web-search-and-extract/scripts/web-search-and-extract.py");
+
 export default function web(pi: ExtensionAPI) {
+  pi.on("resources_discover", () => ({ skillPaths: [skillsDir] }));
+
   async function run(command: string, value: string, provider: string, timeout: number, maxChars: number, flags: string[], signal?: AbortSignal, onUpdate?: Parameters<ToolDefinition["execute"]>[3]) {
     signal?.throwIfAborted();
-    const script = process.env.PI_WEB_CLI ?? join(homedir(), ".agents/skills/web-search-and-extract/scripts/web-search-and-extract.py");
+    const script = process.env.PI_WEB_CLI ?? bundledScript;
     if (!isAbsolute(script)) throw new Error("PI_WEB_CLI must be an absolute path.");
-    try { await access(script); } catch { throw new Error(`Web CLI not found at ${script}. Install the web-search-and-extract skill or set PI_WEB_CLI to its script's absolute path.`); }
+    try { await access(script); } catch { throw new Error(`Web CLI not found at ${script}. Reinstall this package or set PI_WEB_CLI to its script's absolute path.`); }
     const started = Date.now();
     const progress = () => onUpdate?.({
       content: [{ type: "text", text: `${command === "search" ? "Searching" : "Extracting"} with ${provider}, ${Math.floor((Date.now() - started) / 1000)}s elapsed, ${timeout}s timeout` }],
