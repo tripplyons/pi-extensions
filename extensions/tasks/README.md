@@ -56,6 +56,8 @@ on the first of these events:
 - a swarm inbox message, health alert, worker check-in, or review reminder,
   reported as `swarm`
 - the end of any background task on the current branch, reported as `task`
+- the exit of the last process a Bash command left running, for example with
+  `nohup job > log &`, reported as `process`
 
 For example:
 
@@ -76,8 +78,20 @@ report `running`. If a later `sleep` starts while a reported task still has
 unread output, it returns at once with the reason `unread` and lists those
 tasks. It reminds only once per task, so the next sleep waits as asked.
 
+Each Bash shell leads its own process group, and the runner records its PID.
+If processes started with `&` or `nohup` are still in that group when the shell
+exits, the Bash result or completion notice says so, and the group is watched
+once a second. When it empties, a sleeping conversation wakes with
+`processes_exited`, which names the command; one that exited before the sleep
+makes the sleep return at once. Each exit is reported once. A process that
+leaves the group, for example with `setsid`, is not tracked, and neither are
+processes on another machine: a local `modal run` client is tracked, a detached
+remote app is not. This catches a remote job that fails within seconds while
+the agent sleeps for many minutes.
+
 If no event arrives before `seconds` elapses, the result reports `timeout` and
-a progress snapshot for each running task on the branch. A snapshot holds the
+a progress snapshot for each running task on the branch. Tracked groups that are
+still running appear in `detached`. A snapshot holds the
 elapsed time, captured output bytes, seconds since the last output, remaining
 deadline, and up to five recent output lines. It does not move the output
 cursor. Output silence does not prove that a process is stuck. To follow a log

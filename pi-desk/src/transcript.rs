@@ -71,6 +71,12 @@ pub enum Entry {
 #[derive(Debug, Clone, Default)]
 pub struct Transcript {
     pub entries: Vec<Entry>,
+    /// Replies sent to a working agent that it has not read yet. They become
+    /// `Entry::User` rows when Pi delivers them.
+    pub waiting: Vec<String>,
+    /// Tool calls a saved session ended on without results. After a restart
+    /// these are the calls that were cut off.
+    pub interrupted: Vec<String>,
     tools: HashMap<String, usize>,
     active_assistant: Option<usize>,
     next_assistant_id: usize,
@@ -300,6 +306,12 @@ impl Transcript {
                 is_error,
                 ..
             } => self.finish_tool(id, result, *is_error),
+            Incoming::Queue { waiting } => {
+                if self.waiting == *waiting {
+                    return false;
+                }
+                self.waiting = waiting.clone();
+            }
             Incoming::CompactionStart => self.note("Compacting context"),
             Incoming::CompactionEnd { aborted, error } => {
                 if let Some(error) = error {
@@ -315,6 +327,32 @@ impl Transcript {
             _ => return false,
         }
         true
+    }
+
+    /// Tool calls at the end of the transcript that are still running, as
+    /// `name: preview` lines.
+    fn unfinished_tools(&self) -> Vec<String> {
+        let mut calls: Vec<String> = self
+            .entries
+            .iter()
+            .rev()
+            .map_while(|entry| match entry {
+                Entry::Tool {
+                    name,
+                    preview,
+                    running,
+                    ..
+                } => Some((name, preview, *running)),
+                _ => None,
+            })
+            .filter(|(_, _, running)| *running)
+            .map(|(name, preview, _)| match preview.is_empty() {
+                true => name.clone(),
+                false => format!("{name}: {preview}"),
+            })
+            .collect();
+        calls.reverse();
+        calls
     }
 
     pub fn from_messages<'a>(messages: impl IntoIterator<Item = &'a Value>) -> Self {
@@ -368,6 +406,7 @@ impl Transcript {
             }
         }
         // Calls without results were interrupted, not still running.
+        transcript.interrupted = transcript.unfinished_tools();
         for entry in &mut transcript.entries {
             if let Entry::Tool { running, .. } = entry {
                 *running = false;

@@ -19,6 +19,7 @@ pub const OTHER: &str = "Other (type an answer)";
 
 const RESUME: &str =
     "pi-desk restarted while you were working. Continue the task from where you left off.";
+const INTERRUPTED: &str = "These tool calls were running and their results were lost. Each may or may not have taken effect, so check before repeating one that changes something:";
 
 /// RPC ids for requests that have at most one in flight per process.
 const STARTUP: &str = "startup";
@@ -143,7 +144,6 @@ struct Runtime {
     live: bool,
     /// Stdin was closed or the process was killed on purpose.
     closing: bool,
-    streaming: bool,
     compacting: bool,
     pending: HashMap<String, Pending>,
     ask: Option<Ask>,
@@ -300,9 +300,9 @@ impl Desk {
         request
     }
 
-    fn prompt(&mut self, id: &str, text: &str, streaming: Option<&str>) -> Effect {
+    fn prompt(&mut self, id: &str, text: &str) -> Effect {
         let request = self.track(id, "prompt", Pending::Prompt);
-        send(id, rpc::prompt(&request, text, streaming))
+        send(id, rpc::prompt(&request, text))
     }
 
     fn repo(&self, agent: &Agent) -> PathBuf {
@@ -586,7 +586,7 @@ impl Desk {
             return Vec::new();
         };
         self.edit(id, |agent| agent.outbox = None);
-        vec![self.prompt(id, &outbox.text, None)]
+        vec![self.prompt(id, &outbox.text)]
     }
 
     pub fn on_lines(&mut self, id: &str, generation: u64, lines: &[String]) -> Vec<Effect> {
@@ -627,10 +627,7 @@ impl Desk {
                     self.rt(id).goal = text.is_some();
                 }
             }
-            Incoming::AgentStart => {
-                self.rt(id).streaming = true;
-                self.rt(id).cancel_settle();
-            }
+            Incoming::AgentStart => self.rt(id).cancel_settle(),
             Incoming::CompactionStart => {
                 self.rt(id).compacting = true;
                 self.rt(id).cancel_settle();
@@ -688,7 +685,6 @@ impl Desk {
             }
             Incoming::Ui(request) => return self.on_ui(id, request),
             Incoming::AgentSettled { aborted } => {
-                self.rt(id).streaming = false;
                 return self.check_idle(id, aborted.then(|| "Pi run was aborted".into()));
             }
             _ => {}
@@ -736,8 +732,27 @@ impl Desk {
             }
             Some(Pending::Messages) => {
                 if let Some(messages) = data.get("messages").and_then(Value::as_array) {
-                    self.transcripts
-                        .insert(id.to_string(), Transcript::from_messages(messages.iter()));
+                    let transcript = Transcript::from_messages(messages.iter());
+                    // The agent cannot tell a lost result from a call that never ran.
+                    let interrupted = transcript.interrupted.clone();
+                    self.transcripts.insert(id.to_string(), transcript);
+                    if !interrupted.is_empty() {
+                        self.edit(id, |agent| {
+                            if let Some(outbox) = &mut agent.outbox
+                                && outbox.kind == OutboxKind::Resume
+                            {
+                                // A reply the user queued meanwhile stays last.
+                                let (head, rest) = match outbox.text.split_once("\n\n") {
+                                    Some((head, rest)) => (head, format!("\n\n{rest}")),
+                                    None => (outbox.text.as_str(), String::new()),
+                                };
+                                outbox.text = format!(
+                                    "{head}\n\n{INTERRUPTED}\n- {}{rest}",
+                                    interrupted.join("\n- ")
+                                );
+                            }
+                        });
+                    }
                 }
                 self.send_outbox(id)
             }
@@ -932,7 +947,6 @@ impl Desk {
     }
 
     fn settle(&mut self, id: &str, fallback_error: Option<String>) -> Vec<Effect> {
-        self.rt(id).streaming = false;
         let Some(agent) = self.state.agent(id) else {
             return Vec::new();
         };
@@ -990,10 +1004,13 @@ impl Desk {
         if !self.current(id, generation) {
             return Vec::new();
         }
+        // Pi's queue died with the process.
+        if let Some(transcript) = self.transcripts.get_mut(id) {
+            transcript.waiting.clear();
+        }
         let runtime = self.rt(id);
         runtime.live = false;
         runtime.goal = false;
-        runtime.streaming = false;
         runtime.pending.clear();
         runtime.deferred_idle = None;
         let expected = runtime.closing;
@@ -1306,6 +1323,20 @@ impl Desk {
         self.schedule(now())
     }
 
+    /// Whether [`Desk::reply`] would act on a reply now. A working task whose
+    /// process is stopping, or a task with a git job running, cannot take one.
+    pub fn accepts_reply(&self, id: &str) -> bool {
+        self.busy(id).is_none()
+            && self
+                .state
+                .agent(id)
+                .is_some_and(|agent| match agent.status {
+                    Status::Working => self.is_live(id),
+                    Status::Question => agent.question.is_some(),
+                    _ => true,
+                })
+    }
+
     /// R: your own words. Answers a question, sends a finished agent back,
     /// or steers a working one.
     pub fn reply(&mut self, id: &str, text: &str) -> Vec<Effect> {
@@ -1337,19 +1368,13 @@ impl Desk {
                     QuestionKind::Select | QuestionKind::Confirm => {
                         // These dialogs take no free text: dismiss it and steer.
                         self.resume_working(id);
-                        return vec![
-                            send(id, rpc::ui_cancel(&request)),
-                            self.prompt(id, text, Some("steer")),
-                        ];
+                        return vec![send(id, rpc::ui_cancel(&request)), self.prompt(id, text)];
                     }
                 };
                 self.resume_working(id);
                 vec![send(id, line)]
             }
-            Status::Working if live => {
-                let streaming = self.rt(id).streaming;
-                vec![self.prompt(id, text, streaming.then_some("steer"))]
-            }
+            Status::Working if live => vec![self.prompt(id, text)],
             Status::Queued => {
                 self.edit(id, |agent| {
                     agent.outbox = Some(match agent.outbox.take() {
@@ -1978,6 +2003,46 @@ mod tests {
             agent.summary.as_ref().unwrap().did,
             "Finished after compaction."
         );
+    }
+
+    #[test]
+    fn a_reply_to_a_working_task_steers_and_waits_in_view_until_read() {
+        let (mut f, generation) = started();
+        let id = f.id.clone();
+        // The desk has seen no agent_start, as when an extension message starts
+        // the run. Pi rejects a prompt without a streaming behavior then.
+        assert!(f.desk.accepts_reply(&id));
+        let commands = sent(&f.desk.reply(&id, "Use the other API"));
+        assert_eq!(commands[0]["type"], "prompt");
+        assert_eq!(commands[0]["streamingBehavior"], "steer");
+        feed(
+            &mut f,
+            generation,
+            &[json!({"type":"queue_update","steering":["Use the other API"],"followUp":[]})],
+        );
+        assert_eq!(f.desk.transcripts[&id].waiting, ["Use the other API"]);
+        feed(
+            &mut f,
+            generation,
+            &[
+                json!({"type":"queue_update","steering":[],"followUp":[]}),
+                json!({"type":"message_start","message":{"role":"user","content":"Use the other API"}}),
+            ],
+        );
+        assert!(f.desk.transcripts[&id].waiting.is_empty());
+
+        // A stopping process takes no reply, and the queue dies with it.
+        feed(
+            &mut f,
+            generation,
+            &[json!({"type":"queue_update","steering":["Lost"],"followUp":[]})],
+        );
+        f.desk.rt(&id).live = false;
+        assert!(!f.desk.accepts_reply(&id));
+        assert!(f.desk.reply(&id, "Too late").is_empty());
+        f.desk.rt(&id).closing = true;
+        f.desk.on_exit(&id, generation, Some(0), "");
+        assert!(f.desk.transcripts[&id].waiting.is_empty());
     }
 
     #[test]
@@ -2759,6 +2824,55 @@ mod tests {
         let agent = desk.state.agent(&f.id).unwrap().clone();
         assert_eq!(agent.status, Status::Queued);
         assert_eq!(agent.outbox.unwrap().kind, OutboxKind::Resume);
+    }
+
+    #[test]
+    fn a_resume_names_the_tool_calls_that_lost_their_results() {
+        let (f, _) = started();
+        let mut desk = Desk::new(f.desk.state.clone(), "pi", f._dir.path().join("worktrees"));
+        let generation = spawned_generation(&desk.schedule(now()));
+        let effects = desk.on_lines(
+            &f.id,
+            generation,
+            &[json!({
+                "type":"response", "id":"startup", "command":"get_state", "success":true,
+                "data":{"model":{"provider":"fake","id":"reasoning"}, "thinkingLevel":"medium"}
+            })
+            .to_string()],
+        );
+        assert_eq!(sent(&effects)[0]["type"], "get_messages");
+        let call = |id: &str, name: &str, arguments: Value| json!({"type":"toolCall","id":id,"name":name,"arguments":arguments});
+        let effects = desk.on_lines(
+            &f.id,
+            generation,
+            &[json!({
+                "type":"response", "id":"messages", "command":"get_messages", "success":true,
+                "data":{"messages":[
+                    {"role":"user","content":"Fix the bug"},
+                    {"role":"assistant","content":[call("old","bash",json!({"command":"ls"}))]},
+                    {"role":"toolResult","toolCallId":"old","content":[{"type":"text","text":"a"}]},
+                    {"role":"assistant","content":[
+                        call("a","bash",json!({"command":"git status"})),
+                        call("b","swarm_send",json!({"to":"w1","kind":"instruction","text":"Rebase"})),
+                        call("c","sleep",json!({"seconds":60})),
+                    ]},
+                    {"role":"toolResult","toolCallId":"a","content":[{"type":"text","text":"clean"}]},
+                ]}
+            })
+            .to_string()],
+        );
+        let prompt = sent(&effects)[0]["message"].as_str().unwrap().to_string();
+        assert!(prompt.starts_with(RESUME), "{prompt}");
+        assert!(prompt.contains("results were lost"), "{prompt}");
+        assert!(
+            prompt.contains("\n- swarm_send: {\"kind\":\"instruction\""),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("\n- sleep: {\"seconds\":60}"), "{prompt}");
+        assert!(
+            !prompt.contains("git status") && !prompt.contains("- bash"),
+            "{prompt}"
+        );
     }
 
     #[test]

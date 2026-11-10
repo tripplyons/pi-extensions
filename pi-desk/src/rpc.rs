@@ -73,6 +73,10 @@ pub enum Incoming {
         is_error: bool,
     },
     Ui(UiRequest),
+    /// The replies Pi holds until the agent reaches a point where it reads them.
+    Queue {
+        waiting: Vec<String>,
+    },
     ExtensionError {
         error: String,
     },
@@ -210,6 +214,15 @@ pub fn parse(line: &str) -> Result<Incoming, String> {
                 })
                 .unwrap_or_default(),
         }),
+        "queue_update" => Incoming::Queue {
+            waiting: ["steering", "followUp"]
+                .iter()
+                .filter_map(|key| record.get(*key).and_then(Value::as_array))
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+        },
         "extension_error" => Incoming::ExtensionError {
             error: string(&record, "error"),
         },
@@ -228,13 +241,11 @@ fn line(value: Value) -> String {
     text
 }
 
-/// `streaming` is `None` when idle, or `steer`/`followUp` during a run.
-pub fn prompt(id: &str, message: &str, streaming: Option<&str>) -> String {
-    let mut command = json!({ "id": id, "type": "prompt", "message": message });
-    if let Some(behavior) = streaming {
-        command["streamingBehavior"] = json!(behavior);
-    }
-    line(command)
+/// Always asks Pi to steer: Pi ignores the field when idle and rejects a
+/// prompt without it during a run. A run can start without the desk knowing,
+/// for example from an extension message, so the desk does not guess.
+pub fn prompt(id: &str, message: &str) -> String {
+    line(json!({ "id": id, "type": "prompt", "message": message, "streamingBehavior": "steer" }))
 }
 
 pub fn command(id: &str, kind: &str) -> String {
@@ -309,6 +320,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_waiting_reply_queue() {
+        assert_eq!(
+            parse(r#"{"type":"queue_update","steering":["first","second"],"followUp":["later"]}"#)
+                .unwrap(),
+            Incoming::Queue {
+                waiting: vec!["first".into(), "second".into(), "later".into()]
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"queue_update","steering":[],"followUp":[]}"#).unwrap(),
+            Incoming::Queue { waiting: vec![] }
+        );
+    }
+
+    #[test]
     fn parses_extension_statuses() {
         assert_eq!(
             parse(r#"{"type":"extension_ui_request","id":"s1","method":"setStatus","statusKey":"goal","statusText":"goal"}"#).unwrap(),
@@ -356,12 +382,8 @@ mod tests {
             serde_json::from_str::<Value>(&text).unwrap()
         };
         assert_eq!(
-            record(prompt("p1", "Go", None)),
-            json!({"id":"p1","type":"prompt","message":"Go"})
-        );
-        assert_eq!(
-            record(prompt("p2", "Also", Some("steer")))["streamingBehavior"],
-            "steer"
+            record(prompt("p1", "Go")),
+            json!({"id":"p1","type":"prompt","message":"Go","streamingBehavior":"steer"})
         );
         assert_eq!(
             record(set_model("m1", "provider", "model")),

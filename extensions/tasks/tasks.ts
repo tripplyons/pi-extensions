@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -20,6 +20,15 @@ export function backgroundTimeout(timeout?: number) {
   return timeout === undefined || !Number.isFinite(timeout) || timeout <= 0 ? 1800 : Math.min(timeout, 2147483.647);
 }
 const terminal = (status: Status) => !["queued", "running", "stopping"].includes(status);
+export const groupPollMs = 1_000;
+/** A process group that outlived its command's shell, such as `nohup job &`. */
+type Group = { pgid: number; exited_at?: string };
+
+/** Whether any process is left in group `pgid`. EPERM means one exists. */
+export function groupAlive(pgid: number) {
+  try { process.kill(-pgid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 function outputLength(buffer: Buffer, unfinished: boolean) {
   let end = buffer.length;
@@ -85,9 +94,63 @@ export class Tasks {
   completionNotice(id: string) {
     const task = this.query(id);
     const exit = typeof task.exit_code === "number" ? ` (exit ${task.exit_code}${task.exit_code === 0 && task.command.includes("|") && !task.pipefail ? "; without pipefail, a pipeline reports only its last command's exit code" : ""})` : "";
-    return `Background Bash task ${id} is ${task.status}${exit}.`;
+    return `Background Bash task ${id} is ${task.status}${exit}.${this.groupNotice(id)}`;
   }
-  constructor(readonly root = join(getAgentDir(), "minimax", "tasks"), private operations: BashOperations = createLocalBashOperations(), private yieldMs = promotionMs) {}
+  private operations: BashOperations;
+  private trackGroups: boolean;
+  /** Test hook: whether a process group still has members. */
+  alive = groupAlive;
+  /**
+   * `operations` replaces the local shell, which also turns off process-group
+   * tracking unless `trackGroups` is set: tracking prefixes each command.
+   */
+  constructor(readonly root = join(getAgentDir(), "minimax", "tasks"), operations?: BashOperations, private yieldMs = promotionMs, trackGroups?: boolean) {
+    this.operations = operations ?? createLocalBashOperations();
+    this.trackGroups = trackGroups ?? !operations;
+  }
+  // Reloads swap the prototype of a live runner, so these fields may be missing.
+  private get groups() { return (this as unknown as { _groups?: Map<string, Group> })._groups ??= new Map(); }
+  private get groupEvents() { return (this as unknown as { _groupEvents?: EventEmitter })._groupEvents ??= new EventEmitter(); }
+  /** Calls `listener` with the task ID when the last process its command left running exits. */
+  onGroupExit(listener: (id: string) => void) {
+    this.groupEvents.on("exit", listener);
+    return () => { this.groupEvents.off("exit", listener); };
+  }
+  /** Process groups that commands in `ids` left running, with their state. */
+  detachedGroups(ids: string[]) {
+    return ids.flatMap(id => {
+      const group = this.groups.get(id);
+      return group ? [{ task_id: id, command: this.query(id).command.slice(0, 200), pgid: group.pgid, ...(group.exited_at ? { exited_at: group.exited_at } : {}) }] : [];
+    });
+  }
+  /** Stops reporting an exited group. */
+  forgetGroup(id: string) {
+    if (this.groups.get(id)?.exited_at) this.groups.delete(id);
+  }
+  private groupNotice(id: string) {
+    const group = this.groups.get(id);
+    return group && !group.exited_at ? ` Processes it started in the background are still running (process group ${group.pgid}); sleep wakes when they all exit.` : "";
+  }
+  /** Starts watching the group the shell recorded in `file`, if processes outlived the shell. */
+  private watchGroup(id: string, file: string) {
+    let pgid: number;
+    try { pgid = Number(readFileSync(file, "utf8")); rmSync(file, { force: true }); } catch { return; }
+    if (!Number.isSafeInteger(pgid) || pgid <= 1 || !this.alive(pgid)) return;
+    this.groups.set(id, { pgid });
+    const self = this as unknown as { _groupTimer?: ReturnType<typeof setInterval> };
+    if (self._groupTimer) return;
+    self._groupTimer = setInterval(() => {
+      let watching = false;
+      for (const [taskId, group] of this.groups) {
+        if (group.exited_at) continue;
+        if (this.alive(group.pgid)) { watching = true; continue; }
+        group.exited_at = new Date().toISOString();
+        this.groupEvents.emit("exit", taskId);
+      }
+      if (!watching) { clearInterval(self._groupTimer); self._groupTimer = undefined; }
+    }, groupPollMs);
+    self._groupTimer.unref?.();
+  }
   private path(id: string, suffix: string) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid task ID");
     return join(this.root, `${id}.${suffix}`);
@@ -140,8 +203,12 @@ export class Tasks {
     const task: Running = { record, controller: new AbortController(), done: Promise.resolve(), background: args.run_in_background === true };
     this.running.set(id, task);
     let storageError: Error | undefined;
+    // The shell leads its own process group. Recording its PID shows whether
+    // processes it started with `&` or nohup outlive it. The record shares the
+    // first line, so Bash error line numbers stay unchanged.
+    const groupFile = this.trackGroups ? this.path(id, "pgid") : undefined;
     const tool = createBashTool(cwd, { commandPrefix: args.pipefail ? "set -o pipefail" : undefined, operations: { exec: async (command, directory, options) => {
-      const exit = await this.operations.exec(command, directory, { ...options, onData: data => {
+      const exit = await this.operations.exec(groupFile ? `printf '%s' "$$" > ${quote(groupFile)} 2>/dev/null; ${command}` : command, directory, { ...options, onData: data => {
         try {
           let offset = 0;
           while (offset < data.length) offset += writeSync(fd, data, offset, data.length - offset);
@@ -153,6 +220,7 @@ export class Tasks {
         }
       } });
       record.exit_code = exit.exitCode;
+      if (groupFile) this.watchGroup(id, groupFile);
       return exit;
     } } });
     const abort = () => { record.status = "stopping"; task.controller.abort(); };
@@ -200,7 +268,9 @@ export class Tasks {
       signal?.removeEventListener("abort", abort);
       if (terminal(record.status)) {
         if (task.error) throw task.error;
-        return this.foregroundResult(task);
+        const output = await this.foregroundResult(task);
+        const notice = this.groupNotice(id).trim();
+        return notice ? { ...output, content: [...output.content, { type: "text" as const, text: `\n\n[${notice}]` }] } : output;
       }
       signal?.throwIfAborted();
       task.background = true;
@@ -273,7 +343,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   const reported = new Set<string>();
   // Steering releases only the current waits. It must not cancel their processes
   // or make later waits yield to a message Pi has already delivered.
-  type Wake = "steering" | "swarm" | "task";
+  type Wake = "steering" | "swarm" | "task" | "process";
   const sleepers = new Set<(reason: Wake) => void>();
   let steering = new AbortController();
   const releaseWaits = (reason: "steering" | "swarm") => {
@@ -295,6 +365,10 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     // A sleeping conversation receives the notice in its sleep result instead of a new turn.
     if (sleepers.size && current && ids(current).includes(id)) { for (const wake of [...sleepers]) wake("task"); return; }
     flush();
+  });
+  // A sleep also waits on processes a command left running, such as `nohup job &`.
+  const detachGroups = tasks.onGroupExit(id => {
+    if (sleepers.size && current && ids(current).includes(id)) for (const wake of [...sleepers]) wake("process");
   });
   const ids = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom" && entry.customType === taskKey ? [entry.data as string] : []);
   // Full branch-scoped snapshots let hosts restore state after either extension reloads.
@@ -343,7 +417,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   pi.on("session_tree", load);
   pi.on("before_agent_start", load);
   pi.on("session_shutdown", async event => {
-    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); detach(); detachBackground(); detachSwarm();
+    shuttingDown = true; current = undefined; clearTimeout(notificationTimer); detach(); detachGroups(); detachBackground(); detachSwarm();
     if (event.reason && event.reason !== "quit") return;
     await tasks.shutdown();
     const pool = pools[poolKey];
@@ -357,7 +431,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   };
   pi.registerTool({
     name: "bash", label: "Bash", renderCall: renderCommandCall, renderResult,
-    description: "Execute Bash in the current working directory. A command still running after 5 seconds returns a background task ID for the same process; user steering or a swarm message returns it sooner. Do not rerun a returned task; call sleep to wait for it, then task_output to read it. run_in_background returns the task ID immediately. Every command has a 1800-second default deadline; set timeout for a longer one. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
+    description: "Execute Bash in the current working directory. A command still running after 5 seconds returns a background task ID for the same process, and processes a command leaves running with & or nohup are tracked until they exit; user steering or a swarm message returns it sooner. Do not rerun a returned task; call sleep to wait for it, then task_output to read it. run_in_background returns the task ID immediately. Every command has a 1800-second default deadline; set timeout for a longer one. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
     parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Deadline in seconds, default 1800. Non-positive values use 1800; values are capped at 2147483.647. Background promotion keeps the deadline. Expiry kills the process tree." })), run_in_background: Type.Optional(Type.Boolean({ description: "Return the task ID immediately instead of waiting up to 5 seconds." })), pipefail: Type.Optional(Type.Boolean({ description: "Enable set -o pipefail: a pipeline returns the rightmost nonzero exit status, or zero if all commands succeed. Off by default; does not enable set -e or report each command's status." })) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
@@ -367,7 +441,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     },
   });
   pi.registerTool({ name: "sleep", label: "sleep", renderCall: toolCall("sleep"), renderResult,
-    description: `Wait without polling. Returns early when the user steers, a swarm message, alert or check-in arrives, or a background task on this branch finishes; otherwise returns after seconds (1-${maxSleepSeconds}) with a progress snapshot of running tasks. The result names the wake reason and includes completion notices, which replace a separate completion turn. Read finished output with task_output before claiming success; do not call task_output in the same batch as sleep, because batched calls run at once and the read happens before the task finishes. A sleep after a reported completion whose output is still unread returns at once with woke "unread". Sleeping never stops or extends a task. Silence in a snapshot does not prove that a process is stuck.`,
+    description: `Wait without polling. Returns early when the user steers, a swarm message, alert or check-in arrives, a background task on this branch finishes, or the last process a Bash command left running (for example with nohup or &) exits; otherwise returns after seconds (1-${maxSleepSeconds}) with a progress snapshot of running tasks. The result names the wake reason and includes completion notices, which replace a separate completion turn. Read finished output with task_output before claiming success; do not call task_output in the same batch as sleep, because batched calls run at once and the read happens before the task finishes. A sleep after a reported completion whose output is still unread returns at once with woke "unread". Sleeping never stops or extends a task. Silence in a snapshot does not prove that a process is stuck.`,
     parameters: Type.Object({ seconds: Type.Integer({ minimum: 1, maximum: maxSleepSeconds, description: "Longest wait in seconds. The call returns sooner on a wake event." }) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); signal?.throwIfAborted(); current = ctx;
@@ -380,8 +454,10 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
       const owned = new Set(ids(ctx));
       const unread = [...reported].filter(id => owned.has(id) && tasks.unreadBytes(id, session) > 0);
       for (const id of [...reported]) if (owned.has(id)) reported.delete(id);
+      const exited = () => tasks.detachedGroups(ids(ctx)).filter(group => group.exited_at);
       let reason: Wake | "timeout" | "unread" = "task";
       if (unread.length && !ready().length) reason = "unread";
+      else if (!ready().length && exited().length) reason = "process";
       else if (!ready().length) {
         try {
           reason = await new Promise<Wake | "timeout">((resolve, reject) => {
@@ -412,12 +488,17 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
         const { task_id, command, status, elapsed_seconds, output_bytes, output_silence_seconds, deadline_remaining_seconds, recent_output } = await tasks.progress(taskId);
         return { task_id, command: command.slice(0, 200), status, elapsed_seconds, output_bytes, output_silence_seconds, deadline_remaining_seconds, recent_output };
       }));
+      const groups = tasks.detachedGroups(ids(ctx));
+      const ended = groups.filter(group => group.exited_at);
+      for (const group of ended) tasks.forgetGroup(group.task_id);
+      const detached = reason !== "timeout" ? undefined : groups.filter(group => !group.exited_at).map(({ task_id, command, pgid }) => ({ task_id, command, pgid }));
       const message = reason === "steering" ? "New user input is waiting. Read and handle it."
         : reason === "swarm" ? "A swarm message is waiting. Read and handle it."
         : reason === "task" ? "Use task_output to inspect the results before claiming success."
         : reason === "unread" ? "These tasks already finished, but their output was not read to the end. Read it with task_output; nothing is left to wait for."
-        : running?.length ? "Sleep finished. Report progress from the snapshot, or sleep again." : "Sleep finished. No background tasks are running on this branch.";
-      return result({ woke: reason, slept_seconds: Math.round((Date.now() - started) / 100) / 10, completed, ...(reminders ? { unread: reminders } : {}), ...(running ? { running } : {}), message });
+        : reason === "process" ? "Every process these commands left running has exited. Check their logs or results; they may have failed."
+        : running?.length || detached?.length ? "Sleep finished. Report progress from the snapshot, or sleep again." : "Sleep finished. No background tasks are running on this branch.";
+      return result({ woke: reason, slept_seconds: Math.round((Date.now() - started) / 100) / 10, completed, ...(ended.length ? { processes_exited: ended } : {}), ...(reminders ? { unread: reminders } : {}), ...(running ? { running } : {}), ...(detached?.length ? { detached } : {}), message });
     },
   });
   const definitions = [

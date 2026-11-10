@@ -11,9 +11,11 @@ fn main() {
 
 /// Apps started from Finder get a minimal PATH. Add the usual places for
 /// `pi` and `git` so agents start the same way they do from a shell.
+/// Pi's managed installer puts its launcher in `<agent dir>/bin`.
 fn extend_path() {
     let home = std::env::var("HOME").unwrap_or_default();
     let extra = [
+        pi_desk::store::agent_dir().join("bin").to_string_lossy().into_owned(),
         format!("{home}/.local/share/vite-plus/bin"),
         format!("{home}/.local/bin"),
         format!("{home}/.cargo/bin"),

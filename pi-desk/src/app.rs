@@ -1351,6 +1351,12 @@ impl App {
                 if text.trim().is_empty() {
                     return Task::none();
                 }
+                // Keep the text when the task cannot take it, instead of clearing
+                // the box as if it had been sent.
+                if !self.desk.accepts_reply(&id) {
+                    self.notify("This task cannot take a reply right now. Your text is kept.");
+                    return Task::none();
+                }
                 // A reopened main-checkout task diffs from the checkout's
                 // current commit, not from its first start.
                 let start = match self

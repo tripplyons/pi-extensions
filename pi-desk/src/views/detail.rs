@@ -185,7 +185,7 @@ fn transcript(app: &App, id: &str) -> El {
         .py(14.0)
         .growth(GrowthSpec::default())
         .virtual_rows(
-            transcript.entries.len(),
+            transcript.entries.len() + transcript.waiting.len(),
             48.0,
             |_: &App, index| format!("entry-{index}").into(),
             move |app: &App, index| entry_row(app, &task, index),
@@ -206,7 +206,22 @@ fn entry_row(app: &App, id: &str, index: usize) -> El {
         return el();
     };
     let Some(entry) = transcript.entries.get(index) else {
-        return el();
+        // Replies the agent has not read yet follow the transcript.
+        let Some(reply) = transcript.waiting.get(index - transcript.entries.len()) else {
+            return el();
+        };
+        return col().w_full().pt(12.0).child(panel(
+            col()
+                .gap(4.0)
+                .child(faint(
+                    "You · waiting for the agent to finish its current step",
+                ))
+                .child(
+                    label(reply.as_str(), size::BODY, P.muted)
+                        .wrap()
+                        .selectable(true),
+                ),
+        ));
     };
     let working = app
         .current()

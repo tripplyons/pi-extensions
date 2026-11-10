@@ -134,9 +134,17 @@ the app does not reset them.
    tasks for that project wait in Queued; worktree tasks are not affected.
 4. Questions enter Inbox with choices, an optional recommendation, and a typed
    reply. Agents are asked to end with `Did:` and `Needs:` lines for review cards.
+   The reply box and card actions stay pinned to the bottom of the detail card;
+   a long goal, question, or choice list scrolls above them.
+   They are also told to keep working until the task is done: to wait for a
+   long job with `sleep` instead of ending the turn to report progress.
    Drop a file, such as a screenshot, onto the window to type its path into
    the open New task box or reply. With neither open, the drop starts a reply
    to the selected task. Paths with spaces are single-quoted.
+   A reply to a working task steers it: the agent reads it after its current
+   step. Until then the reply shows at the end of the Transcript as waiting.
+   When a task cannot take a reply, such as during a merge, the text stays in
+   the reply box.
 5. Inspect the live Transcript or the highlighted Diff, including untracked
    files. Session files and diffs are read, parsed, and highlighted off the
    interface thread, so J/K stays responsive on large tasks. Only the file
@@ -316,7 +324,9 @@ leave more room for task details.
 App state and worktrees live under `~/.pi/agent/pi-desk/`, outside this repo.
 `PI_CODING_AGENT_DIR` overrides `~/.pi/agent`. Pi owns session files in its usual
 session directory. The app stores session IDs and paths, so working agents can
-resume with their history after relaunch.
+resume with their history after relaunch. Tool calls that were running when
+the app closed lose their results. The resume prompt lists them, so the agent
+checks whether each took effect before repeating it.
 
 Open questions are saved, but RPC dialog handles are not. After restart, an
 answer is sent as a follow-up prompt in the resumed session instead of to a

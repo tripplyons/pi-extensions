@@ -444,7 +444,9 @@ pub fn view(app: &App) -> El {
         body = body.child(list);
     }
 
-    if app.replying {
+    // The reply box and actions stay pinned below the scrolling content, so a
+    // long goal, question, or choice list cannot push them out of view.
+    let footer = if app.replying {
         let placeholder = match agent.status {
             Status::Question => "Answer in your own words",
             Status::Working => "Steer the agent; it reads this after its current step",
@@ -452,7 +454,7 @@ pub fn view(app: &App) -> El {
             Status::Done { .. } => "Reopen the task; the agent picks up where it left off",
             _ => "Tell the agent what to change; it picks up where it left off",
         };
-        body = body.child(reply_editor(app, placeholder));
+        reply_editor(app, placeholder)
     } else {
         let mut actions = row()
             .key("actions")
@@ -463,8 +465,8 @@ pub fn view(app: &App) -> El {
                 .child(action("later-action", "L", "Later", Message::OpenLater))
                 .child(action("discard-action", "X", "Discard", Message::Discard));
         }
-        body = body.child(actions);
-    }
+        actions
+    };
 
     col()
         .key(format!("card-{}", agent.id))
@@ -476,8 +478,25 @@ pub fn view(app: &App) -> El {
         .fill(P.surface)
         .border(1.0, P.border)
         .shadow(4.0, 16.0, P.shadow)
-        .scroll(ScrollSpec { stick_bottom: false })
-        .child(body.padding(20.0))
+        .child(
+            col()
+                .key("card-scroll")
+                .w_full()
+                .shrink()
+                .min_h(0.0)
+                .scroll(ScrollSpec { stick_bottom: false })
+                .scroll_edge_fade(12.0)
+                .child(body.padding(20.0).pb(12.0)),
+        )
+        .child(
+            col()
+                .key("card-footer")
+                .w_full()
+                .px(20.0)
+                .pt(0.0)
+                .pb(20.0)
+                .child(footer),
+        )
 }
 
 /// The color that marks a status in chips and dots.

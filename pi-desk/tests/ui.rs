@@ -2196,3 +2196,34 @@ async fn the_task_selected_at_startup_loads_its_saved_transcript() {
         "the startup selection's transcript must load"
     );
 }
+
+#[test]
+fn a_long_question_scrolls_and_keeps_the_reply_box_in_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let question = app
+        .desk
+        .state
+        .agent_mut("agent-1")
+        .unwrap()
+        .question
+        .as_mut()
+        .unwrap();
+    question.text = "The cache sizing tradeoff needs a decision. ".repeat(60);
+    question.choices = (1..=8).map(|n| format!("Choice number {n}")).collect();
+    app.resize((1100.0, 640.0));
+    let _ = app.update(Message::Select("agent-1".into()));
+    let _ = app.update(Message::StartReply);
+    assert!(app.replying);
+    let card = app.keyed("card-agent-1").unwrap();
+    let scroll = app.keyed("card-scroll").unwrap();
+    let reply = app.keyed("reply").expect("the reply box must be shown");
+    // The question scrolls; the reply box stays inside the card and window.
+    assert!(scroll[3] < card[3], "{scroll:?} {card:?}");
+    assert!(reply[1] >= scroll[1] + scroll[3] - 0.5, "{reply:?} {scroll:?}");
+    assert!(reply[1] + reply[3] <= card[1] + card[3] + 0.5, "{reply:?} {card:?}");
+    assert!(card[1] + card[3] <= 640.0, "{card:?}");
+    // The transcript tabs keep their room below the card.
+    assert!(app.keyed("tabs").is_some());
+    app.snapshot("long-question-reply");
+}
