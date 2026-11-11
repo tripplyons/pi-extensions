@@ -387,11 +387,13 @@ fn seeded(dir: &std::path::Path) -> Desk {
                 id: "p1".into(),
                 name: "api".into(),
                 path: repo.clone(),
+                kind: Default::default(),
             },
             Project {
                 id: "p2".into(),
                 name: "website".into(),
                 path: repo,
+                kind: Default::default(),
             },
         ],
         agents,
@@ -1762,7 +1764,11 @@ fn focus_palette_and_project_views_render() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = seeded(dir.path());
     app.key("b");
-    assert!(!app.commands().iter().any(|command| command.label.contains("Board")));
+    assert!(
+        !app.commands()
+            .iter()
+            .any(|command| command.label.contains("Board"))
+    );
     app.key("f");
     assert!(app.focus);
     app.snapshot("focus");
@@ -1962,13 +1968,14 @@ async fn swarm_roots_list_their_active_agents() {
     let mut app = seeded(dir.path());
     let run = app.swarm_dir.join("run-1");
     std::fs::create_dir_all(&run).unwrap();
-    let node = |id: &str, parent: Option<&str>, name: &str, depth: u32, status: &str, session: &str| {
-        serde_json::json!({
-            "id": id, "parent": parent, "name": name, "depth": depth, "status": status,
-            "session": session, "current": {"model": "anthropic/claude-sonnet-5-5"},
-            "activity": {"status": "working"}
-        })
-    };
+    let node =
+        |id: &str, parent: Option<&str>, name: &str, depth: u32, status: &str, session: &str| {
+            serde_json::json!({
+                "id": id, "parent": parent, "name": name, "depth": depth, "status": status,
+                "session": session, "current": {"model": "anthropic/claude-sonnet-5-5"},
+                "activity": {"status": "working"}
+            })
+        };
     let nodes = serde_json::json!({
         "root": "root",
         "nodes": {
@@ -1999,9 +2006,17 @@ async fn swarm_roots_list_their_active_agents() {
 #[test]
 fn an_empty_app_shows_the_welcome_state() {
     let dir = tempfile::tempdir().unwrap();
-    let mut app = Desk::new(App::new(Store::new(dir.path().join("state")), common::fake_pi()));
+    let mut app = Desk::new(App::new(
+        Store::new(dir.path().join("state")),
+        common::fake_pi(),
+    ));
     assert!(app.desk.state.projects.is_empty());
-    for text in ["Add a project to start", "Add project", "New task", "All tasks"] {
+    for text in [
+        "Add a project to start",
+        "Add project",
+        "New task",
+        "All tasks",
+    ] {
         assert!(app.shows(text), "{text:?} should be shown");
     }
     app.snapshot("empty");
@@ -2197,6 +2212,124 @@ async fn the_task_selected_at_startup_loads_its_saved_transcript() {
     );
 }
 
+#[tokio::test]
+async fn the_composer_files_a_task_in_a_regular_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let folder = dir.path().join("notes");
+    std::fs::create_dir(&folder).unwrap();
+    let project = app.desk.add_project(&folder).unwrap();
+    let _ = app.update(Message::Show(View::Project(project.clone())));
+    let task = app.update(Message::NewTask);
+    app.finish(task).await;
+    assert!(!app.shows("Use worktree"));
+    let Some(Overlay::Composer(composer)) = &mut app.overlay else { panic!("composer should open") };
+    assert!(composer.base.is_ok());
+    composer.content.text = "Organize these notes".into();
+    // Even a stale worktree setting cannot enable Git for this project.
+    composer.use_worktree = true;
+    let _ = app.update(Message::ComposerSubmit);
+    assert!(app.overlay.is_none());
+    let agent = app.desk.state.agents.iter().find(|agent| agent.project_id == project).unwrap();
+    assert_eq!(agent.title, "Organize these notes");
+    assert_eq!(agent.workspace, Workspace::Folder { folder: folder.canonicalize().unwrap() });
+    assert!(agent.base_branch.is_empty());
+    assert!(!folder.join(".git").exists());
+}
+
+#[test]
+fn folder_tasks_hide_git_controls_and_offer_mark_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = seeded(dir.path());
+    let agent = app.desk.state.agent_mut("agent-4").unwrap();
+    agent.workspace = Workspace::Folder {
+        folder: dir.path().into(),
+    };
+    agent.base_branch.clear();
+    let project_id = agent.project_id.clone();
+    app.desk
+        .state
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .unwrap()
+        .kind = ProjectKind::Folder;
+    let _ = app.update(Message::Select("agent-4".into()));
+    let _ = app.update(Message::SetTab(pi_desk::app::Tab::Diff));
+    assert_eq!(app.tab, pi_desk::app::Tab::Transcript);
+    assert!(app.shows("Mark done"));
+    assert!(!app.shows("Merge"));
+    assert!(app.keyed("tab-diff").is_none());
+    assert!(
+        app.commands()
+            .iter()
+            .all(|command| command.label != "Show diff")
+    );
+    app.click("Mark done");
+    assert_eq!(app.pending[0].action, pi_desk::app::Deferred::MarkDone);
+    app.key("z");
+    let _ = app.update(Message::Show(View::Project(project_id)));
+    app.key("n");
+    assert!(!app.shows("Use worktree"));
+    assert!(
+        app.shows("Works directly in this folder. No Git diff, commits, or automatic rollback.")
+    );
+    let _ = app.update(Message::ComposerWorktree(true));
+    assert!(matches!(&app.overlay, Some(Overlay::Composer(composer)) if !composer.use_worktree));
+}
+
+#[test]
+fn a_long_question_keeps_choices_visible_and_clickable() {
+    for size in [(1100.0, 640.0), SIZE] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = seeded(dir.path());
+        let agent = app.desk.state.agent_mut("agent-1").unwrap();
+        agent.title = "A long title that wraps in the detail pane. ".repeat(12);
+        agent.summary = Some(Summary {
+            did: "Earlier work. ".repeat(100),
+            needs: "Decide".into(),
+        });
+        let question = agent.question.as_mut().unwrap();
+        question.text = "A long question that needs your decision. ".repeat(200);
+        question.choices = (1..=8).map(|n| format!("Choice number {n}")).collect();
+        app.resize(size);
+        let _ = app.update(Message::Select("agent-1".into()));
+        let card = app.keyed("card-agent-1").unwrap();
+        let message = app.keyed("card-scroll").unwrap();
+        let choices = app.keyed("question-choices").unwrap();
+        let first = app.keyed("choice-0").unwrap();
+        assert!(
+            choices[1] >= message[1] + message[3] - 0.5,
+            "{choices:?} {message:?}"
+        );
+        assert!(
+            first[1] >= choices[1] && first[1] + first[3] <= choices[1] + choices[3],
+            "{first:?} {choices:?}"
+        );
+        assert!(
+            choices[1] + choices[3] <= card[1] + card[3],
+            "{choices:?} {card:?}"
+        );
+        // Scroll only the choices to the last item, then answer by clicking it.
+        app.rt.wheel(
+            choices[0] + choices[2] / 2.0,
+            choices[1] + choices[3] / 2.0,
+            -2000.0,
+        );
+        app.render();
+        let last = app.keyed("choice-7").unwrap();
+        assert!(
+            last[1] >= choices[1] && last[1] + last[3] <= choices[1] + choices[3] + 0.5,
+            "{last:?} {choices:?}"
+        );
+        app.click("Choice number 8");
+        assert_ne!(
+            app.desk.state.agent("agent-1").unwrap().status,
+            Status::Question
+        );
+    }
+}
+
 #[test]
 fn a_long_question_scrolls_and_keeps_the_reply_box_in_view() {
     let dir = tempfile::tempdir().unwrap();
@@ -2218,10 +2351,25 @@ fn a_long_question_scrolls_and_keeps_the_reply_box_in_view() {
     let card = app.keyed("card-agent-1").unwrap();
     let scroll = app.keyed("card-scroll").unwrap();
     let reply = app.keyed("reply").expect("the reply box must be shown");
+    let choices = app
+        .keyed("question-choices")
+        .expect("choices stay outside the message scroll");
+    let first = app.keyed("choice-0").unwrap();
+    assert!(
+        first[1] >= choices[1] && first[1] + first[3] <= choices[1] + choices[3],
+        "{first:?} {choices:?}"
+    );
+    assert!(choices[1] + choices[3] <= reply[1], "{choices:?} {reply:?}");
     // The question scrolls; the reply box stays inside the card and window.
     assert!(scroll[3] < card[3], "{scroll:?} {card:?}");
-    assert!(reply[1] >= scroll[1] + scroll[3] - 0.5, "{reply:?} {scroll:?}");
-    assert!(reply[1] + reply[3] <= card[1] + card[3] + 0.5, "{reply:?} {card:?}");
+    assert!(
+        reply[1] >= scroll[1] + scroll[3] - 0.5,
+        "{reply:?} {scroll:?}"
+    );
+    assert!(
+        reply[1] + reply[3] <= card[1] + card[3] + 0.5,
+        "{reply:?} {card:?}"
+    );
     assert!(card[1] + card[3] <= 640.0, "{card:?}");
     // The transcript tabs keep their room below the card.
     assert!(app.keyed("tabs").is_some());

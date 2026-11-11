@@ -189,6 +189,8 @@ enum Undo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
     Worktree,
+    /// Work directly in a regular folder, without Git.
+    Folder,
     /// Work in the project's checkout, measured from commit `start`.
     Main {
         start: String,
@@ -345,8 +347,21 @@ impl Desk {
     }
 
     pub fn add_project(&mut self, path: &Path) -> Result<Id, String> {
-        let root = crate::git::toplevel(path)
-            .map_err(|_| format!("{} is not inside a git repository", path.display()))?;
+        let path = path.canonicalize().map_err(|error| error.to_string())?;
+        if !path.is_dir() {
+            return Err(format!("{} is not a directory", path.display()));
+        }
+        let (root, kind) = match crate::git::toplevel(&path) {
+            Ok(root) => (
+                root.canonicalize().map_err(|error| error.to_string())?,
+                ProjectKind::Git,
+            ),
+            // Do not mistake a broken repository or a Git error for a plain folder.
+            Err(error) if path.ancestors().any(|parent| parent.join(".git").exists()) => {
+                return Err(error);
+            }
+            Err(_) => (path, ProjectKind::Folder),
+        };
         if let Some(existing) = self
             .state
             .projects
@@ -364,6 +379,7 @@ impl Desk {
             id: id.clone(),
             name,
             path: root,
+            kind,
         });
         self.dirty = true;
         Ok(id)
@@ -411,6 +427,12 @@ impl Desk {
         let Some(project) = self.state.project(project_id).cloned() else {
             return Vec::new();
         };
+        // Folder projects never prepare worktrees, even if a caller kept a stale toggle.
+        let isolation = if project.kind == ProjectKind::Folder {
+            Isolation::Folder
+        } else {
+            isolation
+        };
         for draft in drafts {
             let id = new_id();
             let short = &id[id.len() - 6..];
@@ -427,6 +449,9 @@ impl Desk {
                 updated_at: at,
                 base_branch: base.to_string(),
                 workspace: match &isolation {
+                    Isolation::Folder => Workspace::Folder {
+                        folder: project.path.clone(),
+                    },
                     Isolation::Worktree => Workspace::Worktree {
                         worktree: self.worktree_root.join(slug(&project.name, 40)).join(&name),
                         branch: format!("pi-desk/{name}"),
@@ -509,6 +534,7 @@ impl Desk {
                         let kind = match agent.workspace {
                             Workspace::Worktree { .. } => "worktree",
                             Workspace::Main { .. } => "checkout",
+                            Workspace::Folder { .. } => "folder",
                         };
                         agent.status = Status::Failed {
                             error: format!(
@@ -1120,6 +1146,7 @@ impl Desk {
                 self.answer(id, index)
             }
             Status::Failed { .. } => self.retry(id),
+            Status::Review if agent.workspace.is_folder() => self.mark_done(id),
             Status::Review => {
                 self.rt(id).busy = Some(Busy::WritingCommitMessage);
                 self.edit(id, |agent| agent.note = None);
@@ -1159,6 +1186,7 @@ impl Desk {
                 };
                 let repo = project.path.clone();
                 match agent.workspace {
+                    Workspace::Folder { .. } => Vec::new(),
                     Workspace::Worktree { worktree, branch } => {
                         self.rt(id).busy = Some(Busy::Merging);
                         vec![Effect::Merge {
@@ -1254,7 +1282,9 @@ impl Desk {
                 });
             }
             // The user's checkout is never cleaned up; its files stay as they are.
-            Workspace::Main { .. } => effects.extend(self.on_removed(id, outcome, Ok(()))),
+            Workspace::Main { .. } | Workspace::Folder { .. } => {
+                effects.extend(self.on_removed(id, outcome, Ok(())))
+            }
         }
         effects
     }
@@ -1637,6 +1667,7 @@ mod tests {
             id: "p".into(),
             name: "Repo".into(),
             path: dir.path().into(),
+            kind: ProjectKind::Git,
         });
         let mut desk = Desk::new(state, "pi", dir.path().join("worktrees"));
         let effects = desk.file(
@@ -2412,6 +2443,7 @@ mod tests {
             id: "p".into(),
             name: "Repo".into(),
             path: dir.path().into(),
+            kind: ProjectKind::Git,
         });
         let mut desk = Desk::new(state, "pi", dir.path().join("worktrees"));
         let drafts = titles
@@ -2527,6 +2559,125 @@ mod tests {
                 outcome: Outcome::Merged
             }
         );
+    }
+
+    #[test]
+    fn folder_projects_run_serially_and_never_request_git_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().canonicalize().unwrap();
+        let worktrees = folder.join("worktrees");
+        let mut desk = Desk::new(State::default(), "pi", worktrees.clone());
+        let project = desk.add_project(&folder).unwrap();
+        assert_eq!(
+            desk.state.project(&project).unwrap().kind,
+            ProjectKind::Folder
+        );
+        assert_eq!(desk.add_project(&folder.join(".")).unwrap(), project);
+        assert!(desk.add_project(&folder.join("missing")).is_err());
+        std::fs::write(folder.join("keep.txt"), "User work").unwrap();
+        assert!(desk.add_project(&folder.join("keep.txt")).is_err());
+
+        let effects = desk.file(
+            &project,
+            "",
+            Isolation::Worktree,
+            SessionSettings::default(),
+            ["First", "Second"]
+                .into_iter()
+                .map(|title| Draft {
+                    title: title.into(),
+                    prompt: title.into(),
+                })
+                .collect(),
+        );
+        assert!(
+            effects
+                .iter()
+                .all(|effect| matches!(effect, Effect::Spawn(_) | Effect::Send { .. }))
+        );
+        let spawns: Vec<_> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Spawn(spawn) => Some(spawn),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].cwd, folder);
+        let prompt = spawns[0]
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--append-system-prompt")
+            .unwrap();
+        assert!(prompt[1].contains("Do not initialize Git"));
+        assert!(!prompt[1].contains("Review and merge"));
+        let first = desk.state.agents[0].id.clone();
+        let second = desk.state.agents[1].id.clone();
+        assert!(desk.state.agent(&first).unwrap().workspace.is_folder());
+        assert_eq!(desk.state.agent(&second).unwrap().status, Status::Queued);
+
+        // Reloading preserves the folder mode and its direct-workspace lock.
+        let state: State =
+            serde_json::from_str(&serde_json::to_string(&desk.state).unwrap()).unwrap();
+        let mut desk = Desk::new(state, "pi", worktrees.clone());
+        desk.state.agent_mut(&first).unwrap().status = Status::Review;
+        assert!(desk.schedule(now()).is_empty());
+        let effects = desk.approve(&first);
+        assert!(
+            effects
+                .iter()
+                .all(|effect| matches!(effect, Effect::Spawn(_) | Effect::Send { .. }))
+        );
+        assert_eq!(
+            desk.state.agent(&first).unwrap().status,
+            Status::Done {
+                outcome: Outcome::Closed
+            }
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Spawn(spawn) if spawn.agent == second))
+        );
+        let effects = desk.discard(&second);
+        assert!(
+            effects
+                .iter()
+                .all(|effect| matches!(effect, Effect::Kill { .. }))
+        );
+        assert_eq!(
+            std::fs::read_to_string(folder.join("keep.txt")).unwrap(),
+            "User work"
+        );
+        assert!(!worktrees.exists());
+        assert!(!folder.join(".git").exists());
+        let effects = desk.reopen(&first, "Again", None);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Spawn(spawn) if spawn.cwd == folder))
+        );
+        assert!(desk.state.agent(&first).unwrap().workspace.is_folder());
+    }
+
+    #[test]
+    fn a_broken_repository_is_not_treated_as_a_regular_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".git"), "gitdir: missing\n").unwrap();
+        let child = dir.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let mut desk = Desk::new(State::default(), "pi", dir.path().join("worktrees"));
+        assert!(desk.add_project(&child).is_err());
+        assert!(desk.state.projects.is_empty());
+    }
+
+    #[test]
+    fn old_projects_default_to_git() {
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "Repo", "path": "/tmp/repo"
+        }))
+        .unwrap();
+        assert_eq!(project.kind, ProjectKind::Git);
     }
 
     #[test]

@@ -124,7 +124,7 @@ pub fn view(app: &App, brand: bool) -> El {
     }
     if state.projects.is_empty() {
         projects = projects.child(
-            faint("Add a git repository to file work in it.")
+            faint("Add a folder or git repository to file work in it.")
                 .key("no-projects")
                 .wrap()
                 .px(10.0)

@@ -2,7 +2,7 @@
 name = "pi-desk"
 version = "0.1.0"
 edition = "2024"
-description = "A desktop inbox for parallel Pi agents, each in its own git worktree"
+description = "A desktop inbox for Pi agents in folders, checkouts, or git worktrees"
 publish = false
 
 [dependencies]

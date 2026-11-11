@@ -442,7 +442,14 @@ pub fn choices(agent: &Agent) -> Vec<Choice> {
             })
             .collect(),
         Status::Review => actions(vec![
-            ("Merge", Message::Approve),
+            (
+                if agent.workspace.is_folder() {
+                    "Mark done"
+                } else {
+                    "Merge"
+                },
+                Message::Approve,
+            ),
             ("Send back with a reply", Message::StartReply),
             ("Discard", Message::Discard),
         ]),
@@ -825,7 +832,7 @@ impl App {
         let Some(agent) = self.desk.state.agent(id) else {
             return Task::none();
         };
-        if !agent.workspace.path().exists() {
+        if agent.workspace.is_folder() || !agent.workspace.path().exists() {
             return Task::none();
         }
         let (worktree, base) = (
@@ -1053,7 +1060,12 @@ impl App {
                     message: Message::Discard,
                 });
                 commands.push(PaletteCommand {
-                    label: "Mark done (keep branch)".into(),
+                    label: if agent.workspace.is_folder() {
+                        "Mark done"
+                    } else {
+                        "Mark done (keep branch)"
+                    }
+                    .into(),
                     keys: &[],
                     message: Message::MarkDone,
                 });
@@ -1065,7 +1077,12 @@ impl App {
                     message: Message::Approve,
                 }),
                 Status::Review => commands.push(PaletteCommand {
-                    label: "Merge".into(),
+                    label: if agent.workspace.is_folder() {
+                        "Mark done"
+                    } else {
+                        "Merge"
+                    }
+                    .into(),
                     keys: &[KeyPart::Text("E")],
                     message: Message::Approve,
                 }),
@@ -1094,11 +1111,16 @@ impl App {
                 message: Message::OpenEditor,
             });
         }
-        commands.push(PaletteCommand {
-            label: "Show diff".into(),
-            keys: &[KeyPart::Text("D")],
-            message: Message::SetTab(Tab::Diff),
-        });
+        if self
+            .current()
+            .is_none_or(|agent| !agent.workspace.is_folder())
+        {
+            commands.push(PaletteCommand {
+                label: "Show diff".into(),
+                keys: &[KeyPart::Text("D")],
+                message: Message::SetTab(Tab::Diff),
+            });
+        }
         commands.push(PaletteCommand {
             label: "Show transcript".into(),
             keys: &[KeyPart::Text("T")],
@@ -1248,6 +1270,14 @@ impl App {
                 Task::none()
             }
             Message::SetTab(tab) => {
+                let tab = if self
+                    .current()
+                    .is_some_and(|agent| agent.workspace.is_folder())
+                {
+                    Tab::Transcript
+                } else {
+                    tab
+                };
                 self.tab = tab;
                 match (tab, self.selected.clone()) {
                     (Tab::Diff, Some(id)) => self.load_diff(&id),
@@ -1291,7 +1321,11 @@ impl App {
                 };
                 let id = agent.id.clone();
                 match agent.status {
-                    Status::Review => self.defer(Deferred::Merge),
+                    Status::Review => self.defer(if agent.workspace.is_folder() {
+                        Deferred::MarkDone
+                    } else {
+                        Deferred::Merge
+                    }),
                     _ => self.act(&id, |desk| desk.approve(&id)),
                 }
             }
@@ -1615,7 +1649,12 @@ impl App {
             Message::ComposerSubmit => self.submit_composer(),
             Message::ComposerWorktree(on) => {
                 if let Some(Overlay::Composer(composer)) = &mut self.overlay {
-                    composer.use_worktree = on;
+                    composer.use_worktree = on
+                        && composer
+                            .project
+                            .as_deref()
+                            .and_then(|id| self.desk.state.project(id))
+                            .is_some_and(|project| project.kind == ProjectKind::Git);
                 }
                 Task::none()
             }
@@ -1928,7 +1967,11 @@ impl App {
         let project = project
             .and_then(|id| self.desk.state.project(id))
             .ok_or("Choose a project")?;
-        git::current_branch(&project.path)
+        if project.kind == ProjectKind::Folder {
+            Ok(String::new())
+        } else {
+            git::current_branch(&project.path)
+        }
     }
 
     fn edit_settings(&mut self, change: impl FnOnce(&mut SettingsForm)) -> Task {
@@ -2092,11 +2135,7 @@ impl App {
         }
     }
 
-    fn load_session(
-        &mut self,
-        target: Option<Id>,
-        change: Option<SessionSettings>,
-    ) -> Task {
+    fn load_session(&mut self, target: Option<Id>, change: Option<SessionSettings>) -> Task {
         let (cwd, settings) = match &target {
             Some(id) => {
                 let Some(agent) = self.desk.state.agent(id) else {
@@ -2167,14 +2206,20 @@ impl App {
             return Task::none();
         };
         // Read the branch again: it may have changed since the sheet opened.
-        let base = match git::current_branch(&project.path) {
+        let base = match if project.kind == ProjectKind::Folder {
+            Ok(String::new())
+        } else {
+            git::current_branch(&project.path)
+        } {
             Ok(base) => base,
             Err(error) => {
                 composer.error = Some(error);
                 return Task::none();
             }
         };
-        let isolation = if composer.use_worktree {
+        let isolation = if project.kind == ProjectKind::Folder {
+            Isolation::Folder
+        } else if composer.use_worktree {
             match git::is_unborn(&project.path) {
                 Ok(false) => Isolation::Worktree,
                 Ok(true) => {
@@ -2332,16 +2377,17 @@ impl App {
                     _ => return None,
                 },
                 // The box binds the same keys while it has focus.
-                Some(Overlay::Composer(composer)) if !mods.shift && !mods.alt => {
-                    match command {
-                        Some('e') => composer.use_worktree = !composer.use_worktree,
-                        Some('p') => return Some(self.handle(Message::ComposerProjectSearch)),
-                        _ if event.key == Key::Enter && mods.cmd => {
-                            return Some(self.handle(Message::ComposerSubmit));
-                        }
-                        _ => return None,
+                Some(Overlay::Composer(composer)) if !mods.shift && !mods.alt => match command {
+                    Some('e') => {
+                        let on = !composer.use_worktree;
+                        return Some(self.handle(Message::ComposerWorktree(on)));
                     }
-                }
+                    Some('p') => return Some(self.handle(Message::ComposerProjectSearch)),
+                    _ if event.key == Key::Enter && mods.cmd => {
+                        return Some(self.handle(Message::ComposerSubmit));
+                    }
+                    _ => return None,
+                },
                 Some(Overlay::ConfirmDiscard(_)) if !captured => {
                     if event.key == Key::Enter || typed(event) == Some("x") {
                         return Some(self.handle(Message::ConfirmDiscard));
@@ -2516,7 +2562,7 @@ impl App {
                 }),
                 Ui::PickFolder => tx.open_folder(
                     rune::FileDialogOptions {
-                        title: "Choose a git repository".into(),
+                        title: "Choose a project folder".into(),
                         ..Default::default()
                     },
                     |s: &mut App, result, tx| {

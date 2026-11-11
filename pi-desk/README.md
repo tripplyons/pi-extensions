@@ -2,9 +2,9 @@
 
 A Rust desktop inbox for parallel Pi coding agents, built with
 [Rune](https://github.com/anomalyco/rune). Each task runs in the project's own
-checkout, or in its own git worktree when you check Use worktree. Questions and
-completed work enter your Inbox; answer, review the diff, and merge without
-switching terminals.
+checkout, in its own git worktree when you check Use worktree, or directly in a
+regular non-Git folder. Questions and completed work enter your Inbox; answer,
+review, and finish without switching terminals.
 
 Panels, controls, selections, and primary buttons use neutral grays. Errors,
 red/green diffs, and subdued syntax colors keep semantic cues visible.
@@ -21,8 +21,8 @@ code or assets are included.
 
 ## Run
 
-Requires a current stable Rust toolchain (edition 2024), Git 2.38 or newer
-(`merge-tree --write-tree`), and Pi 1.5.0 or newer on PATH. Install this repo's
+Requires a current stable Rust toolchain (edition 2024) and Pi 1.5.0 or newer on
+PATH. Git projects also require Git 2.38 or newer (`merge-tree --write-tree`). Install this repo's
 Pi extensions and sign in to your chosen provider first:
 
 ```sh
@@ -88,8 +88,8 @@ This builds a native release binary for the current Mac, packages and verifies
 `pi-desk/target/macos/pi-desk.app`, and installs it as
 `/Applications/pi-desk.app`. Open it from Finder or Spotlight. Quit any other
 pi-desk instance first, since concurrent writers to the same state directory are
-not supported. Pi, Git, credentials, and this repo's extensions are still required;
-they are not bundled. Finder launches use the usual local tool directories on PATH.
+not supported. Pi, credentials, and this repo's extensions are still required;
+Git is required for Git projects. These dependencies are not bundled. Finder launches use the usual local tool directories on PATH.
 
 The script requires Rust and Apple's command-line tools. It uses built-in macOS
 packaging tools, with no extra Cargo packaging dependency. To build without
@@ -111,8 +111,12 @@ the app does not reset them.
 
 ## Flow
 
-1. Click **+** beside Projects and choose a git repository. Check out the branch
-   that new tasks should merge into, and configure git author identity first.
+1. Click **+** beside Projects and choose a folder. Pi-desk detects whether it
+   belongs to a Git repository. For Git projects, check out the branch that new
+   tasks should merge into, and configure Git author identity first. Regular
+   folders use folder mode, with no commits, worktrees, or Git diff. Edits take
+   effect immediately; Mark done and Discard leave all files unchanged. There is
+   no automatic rollback. The project mode is saved when you add it.
 2. Open **New task** with the outlined sidebar button or N. The whole text
    becomes one task, titled from its first line; a list stays one task. Submit
    with Cmd+Enter. Tasks use the project's current branch as their base. Use worktree starts unchecked each
@@ -123,7 +127,8 @@ the app does not reset them.
    it to give the task its own worktree and `pi-desk/` branch. A repository
    with no commits yet, as after `git init`, works for unchecked tasks: the diff
    shows every file as added, and approval makes the first commit. Worktree
-   tasks need a first commit.
+   tasks need a first commit. Folder projects hide Use worktree and run directly
+   in the selected folder.
 3. Four agents run at once by default. Settings lets you change the slot limit.
    Scheduling uses project order, then replies before new work, then oldest
    queued task first. Display order does not change scheduling. Priority is not
@@ -131,11 +136,14 @@ the app does not reset them.
    Reorder projects by dragging or with Alt+Up/Down in a project view.
    A project's checkout holds one main-checkout task at a time, from its first
    start until it is merged, discarded, or marked done. Later main-checkout
-   tasks for that project wait in Queued; worktree tasks are not affected.
+   tasks for that project wait in Queued; worktree tasks are not affected. Folder
+   projects use the same one-task-at-a-time rule until the current task is done
+   or discarded.
 4. Questions enter Inbox with choices, an optional recommendation, and a typed
    reply. Agents are asked to end with `Did:` and `Needs:` lines for review cards.
    The reply box and card actions stay pinned to the bottom of the detail card;
-   a long goal, question, or choice list scrolls above them.
+   a long goal or question scrolls above them. Question choices stay in a separate
+   area above the reply controls, with their own scroll for long choice lists.
    They are also told to keep working until the task is done: to wait for a
    long job with `sleep` instead of ending the turn to report progress.
    Drop a file, such as a screenshot, onto the window to type its path into
@@ -165,10 +173,13 @@ the app does not reset them.
    instructions to rebase and resolve them. For a main-checkout task, approval
    commits all changes in the checkout onto its branch, including any of your
    own uncommitted edits there. It refuses if the checkout is on another branch.
+   Folder tasks offer Mark done instead, with no commit-message request or Git
+   operation. Use the summary, transcript, and files themselves to review them.
 7. Reply to a Done task to reopen it. The task returns to Queued and resumes its
    Pi session with your reply. A worktree task gets its worktree back on its
    kept branch, or on a fresh branch from the base after a merge or discard. A
    main-checkout task diffs from the checkout's commit at the time of the reply.
+   A folder task resumes in the same folder without a Git operation.
 
 Before merging, pi-desk makes a separate `pi --print --no-session` request with
 no tools or MCP access. It sends the task title, completed-work summary, and final
@@ -235,8 +246,8 @@ rejected, stopped, and failed workers are not.
 Merge, discard, and mark-done actions have a five-second undo window. The
 selected task stays listed during the window; other views omit it. Discard
 removes the worktree and branch, including uncommitted changes, after confirmation.
-Mark done keeps the branch. For main-checkout tasks, discard and mark done stop
-the agent and leave the checkout's files unchanged. Undo is not a way to reverse a merge after it runs.
+Mark done keeps the branch. For main-checkout and folder tasks, discard and
+mark done stop the agent and leave all files unchanged. Undo is not a way to reverse a merge after it runs.
 
 ## Keys
 

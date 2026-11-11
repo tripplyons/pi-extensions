@@ -37,9 +37,11 @@ fn title(content: &str) -> El {
 }
 
 fn error(key: &str, message: &Option<String>) -> Option<El> {
-    message
-        .as_ref()
-        .map(|message| label(message.as_str(), size::CAPTION, P.red).key(key).wrap())
+    message.as_ref().map(|message| {
+        label(message.as_str(), size::CAPTION, P.red)
+            .key(key)
+            .wrap()
+    })
 }
 
 fn hint(key: &str, parts: &[KeyPart<'_>], what: &str) -> El {
@@ -336,7 +338,7 @@ pub fn view(app: &App) -> Option<El> {
             let name = agent
                 .map(|agent| agent.title.as_str())
                 .unwrap_or("this task");
-            let effect = if agent.is_some_and(|agent| agent.workspace.is_main()) {
+            let effect = if agent.is_some_and(|agent| agent.workspace.is_direct()) {
                 "stops. Its changes stay in the main checkout"
             } else {
                 "stops, and its worktree and branch are deleted"
@@ -423,10 +425,19 @@ fn composer_sheet(app: &App, composer: &crate::app::Composer) -> El {
     }
     .key("preview")
     .truncate();
-    let base = match (&composer.base, composer.use_worktree) {
-        (Ok(branch), true) => format!("Merges into {branch}"),
-        (Ok(branch), false) => format!("Works in the main checkout on {branch}"),
-        (Err(error), _) => error.clone(),
+    let folder = composer
+        .project
+        .as_deref()
+        .and_then(|id| app.desk.state.project(id))
+        .is_some_and(|project| project.kind == crate::model::ProjectKind::Folder);
+    let base = if folder {
+        "Works directly in this folder. No Git diff, commits, or automatic rollback.".into()
+    } else {
+        match (&composer.base, composer.use_worktree) {
+            (Ok(branch), true) => format!("Merges into {branch}"),
+            (Ok(branch), false) => format!("Works in the main checkout on {branch}"),
+            (Err(error), _) => error.clone(),
+        }
     };
     let vim = app.desk.state.settings.vim_mode;
     let field = text_input(&composer.content, theme::sans(size::BODY))
@@ -450,28 +461,28 @@ fn composer_sheet(app: &App, composer: &crate::app::Composer) -> El {
         editor = editor.child(super::card::mode(&composer.vim));
     }
     let use_worktree = composer.use_worktree;
-    let mut body = col()
-        .child(title("New task"))
-        .child(
-            row()
-                .key("project-row")
-                .w_full()
-                .gap(12.0)
-                .center_y()
-                .child(project)
-                .child(keys(&[COMMAND, KeyPart::Text("P")]))
-                .child(el().key("spacer").grow(1.0))
-                .child(
-                    Checkbox::new(use_worktree)
-                        .label("Use worktree")
-                        .on_toggle_tx(move |app: &mut App, tx: &mut Tx| {
-                            app.dispatch(Message::ComposerWorktree(!use_worktree), tx)
-                        })
-                        .build(&KIT)
-                        .key("worktree"),
-                )
-                .child(keys(&[COMMAND, KeyPart::Text("E")])),
-        );
+    let mut project_row = row()
+        .key("project-row")
+        .w_full()
+        .gap(12.0)
+        .center_y()
+        .child(project)
+        .child(keys(&[COMMAND, KeyPart::Text("P")]))
+        .child(el().key("spacer").grow(1.0));
+    if !folder {
+        project_row = project_row
+            .child(
+                Checkbox::new(use_worktree)
+                    .label("Use worktree")
+                    .on_toggle_tx(move |app: &mut App, tx: &mut Tx| {
+                        app.dispatch(Message::ComposerWorktree(!use_worktree), tx)
+                    })
+                    .build(&KIT)
+                    .key("worktree"),
+            )
+            .child(keys(&[COMMAND, KeyPart::Text("E")]));
+    }
+    let mut body = col().child(title("New task")).child(project_row);
     if let Some(search) = &composer.project_search {
         let mut list = col().key("matches").w_full().gap(1.0);
         let matches = app.project_matches();

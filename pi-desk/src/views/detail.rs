@@ -20,7 +20,7 @@ pub fn pane(app: &App) -> El {
             .gap(10.0)
             .child(label("Add a project to start", size::HEADING, P.muted))
             .child(faint(
-                "pi-desk runs each task as a Pi agent in your checkout or in its own git worktree.",
+                "pi-desk runs each task as a Pi agent in your folder, checkout, or git worktree.",
             ))
             .child(primary(
                 "welcome-add-project",
@@ -97,26 +97,26 @@ pub fn view(app: &App) -> El {
             format!("Diff  +{added} -{removed}")
         })
         .unwrap_or_else(|| "Diff".into());
-    let transcript_active = app.tab == Tab::Transcript;
-    let tabs = row()
-        .key("tabs")
-        .gap(16.0)
-        .child(tab(
-            "tab-transcript",
-            "Transcript".into(),
-            "T",
-            transcript_active,
-            Message::SetTab(Tab::Transcript),
-        ))
-        .child(tab(
+    let folder = agent.workspace.is_folder();
+    let transcript_active = folder || app.tab == Tab::Transcript;
+    let mut tabs = row().key("tabs").gap(16.0).child(tab(
+        "tab-transcript",
+        "Transcript".into(),
+        "T",
+        transcript_active,
+        Message::SetTab(Tab::Transcript),
+    ));
+    if !folder {
+        tabs = tabs.child(tab(
             "tab-diff",
             counts,
             "D",
             !transcript_active,
             Message::SetTab(Tab::Diff),
         ));
+    }
 
-    let content = match app.tab {
+    let content = match if folder { Tab::Transcript } else { app.tab } {
         Tab::Transcript => transcript(app, &agent.id),
         Tab::Diff => diff_view(app, &agent.id),
     };

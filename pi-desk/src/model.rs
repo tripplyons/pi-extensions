@@ -72,6 +72,15 @@ pub struct Project {
     pub id: Id,
     pub name: String,
     pub path: PathBuf,
+    #[serde(default)]
+    pub kind: ProjectKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectKind {
+    #[default]
+    Git,
+    Folder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +226,8 @@ pub enum Workspace {
     /// The project's own checkout. `start` is the commit HEAD named at filing;
     /// the task's diff is everything since then.
     Main { checkout: PathBuf, start: String },
+    /// A regular folder. Edits are immediate, with no Git review or cleanup.
+    Folder { folder: PathBuf },
 }
 
 impl Workspace {
@@ -224,11 +235,21 @@ impl Workspace {
         match self {
             Workspace::Worktree { worktree, .. } => worktree,
             Workspace::Main { checkout, .. } => checkout,
+            Workspace::Folder { folder } => folder,
         }
+    }
+
+    /// Direct workspaces share the project's files and must run serially.
+    pub fn is_direct(&self) -> bool {
+        matches!(self, Workspace::Main { .. } | Workspace::Folder { .. })
     }
 
     pub fn is_main(&self) -> bool {
         matches!(self, Workspace::Main { .. })
+    }
+
+    pub fn is_folder(&self) -> bool {
+        matches!(self, Workspace::Folder { .. })
     }
 }
 
@@ -238,6 +259,7 @@ impl Agent {
         match &self.workspace {
             Workspace::Worktree { .. } => &self.base_branch,
             Workspace::Main { start, .. } => start,
+            Workspace::Folder { .. } => "",
         }
     }
 

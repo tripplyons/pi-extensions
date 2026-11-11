@@ -462,6 +462,100 @@ async fn free_text_replies_and_restarts_keep_questions_answerable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_folder_task_runs_answers_reopens_and_finishes_without_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("notes");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("keep.txt"), "User work").unwrap();
+    let worktrees = dir.path().join("worktrees");
+    let mut h = start(State::default(), worktrees.clone()).await;
+    let project = h.desk.add_project(&folder).unwrap();
+    let effects = h.desk.file(
+        &project,
+        "",
+        Isolation::Folder,
+        SessionSettings::default(),
+        vec![Draft {
+            title: "Write a greeting".into(),
+            prompt: "Write a greeting".into(),
+        }],
+    );
+    let id = h.desk.state.agents[0].id.clone();
+    assert!(
+        effects
+            .iter()
+            .all(|effect| matches!(effect, Effect::Spawn(_) | Effect::Send { .. }))
+    );
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        desk.state.agent(&id).unwrap().status == Status::Question
+    })
+    .await;
+    let effects = h.desk.approve(&id);
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        desk.state.agent(&id).unwrap().status == Status::Review
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(folder.join("answer.txt")).unwrap(),
+        "Hi\n"
+    );
+    let effects = h.desk.approve(&id);
+    assert!(
+        effects
+            .iter()
+            .all(|effect| matches!(effect, Effect::Kill { .. }))
+    );
+    h.run(effects).await;
+    assert_eq!(
+        h.desk.state.agent(&id).unwrap().status,
+        Status::Done {
+            outcome: Outcome::Closed
+        }
+    );
+
+    let effects = h.desk.reopen(&id, "Use Howdy instead", None);
+    assert!(
+        effects
+            .iter()
+            .all(|effect| matches!(effect, Effect::Spawn(_) | Effect::Send { .. }))
+    );
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        desk.state.agent(&id).unwrap().status == Status::Question
+    })
+    .await;
+    let effects = h.desk.reply(&id, "Howdy");
+    h.run(effects).await;
+    h.until(&id, |desk| {
+        desk.state.agent(&id).unwrap().status == Status::Review
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(folder.join("answer.txt")).unwrap(),
+        "Howdy\n"
+    );
+    let effects = h.desk.discard(&id);
+    assert!(
+        effects
+            .iter()
+            .all(|effect| matches!(effect, Effect::Kill { .. }))
+    );
+    h.run(effects).await;
+    assert_eq!(
+        std::fs::read_to_string(folder.join("answer.txt")).unwrap(),
+        "Howdy\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("keep.txt")).unwrap(),
+        "User work"
+    );
+    assert!(!folder.join(".git").exists());
+    assert!(!worktrees.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_main_checkout_task_edits_the_project_and_commits_on_approve() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());

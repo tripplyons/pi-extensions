@@ -15,6 +15,13 @@ uncommitted changes there may be the user's; do not revert or discard them, and 
 branches. The user is not watching: they review your diff later, and pi-desk commits all changes \
 in the checkout onto the branch when they approve. You may commit.";
 
+const FOLDER: &str = "\
+You work directly in the user's regular folder, not a Git repository or worktree. Other files \
+may be the user's; do not revert, discard, or delete unrelated work. Edits take effect immediately. \
+Do not initialize Git, commit, or create branches or worktrees. Pi-desk does not commit, show a \
+Git diff, or roll back files in this mode. The user marks the task done after reviewing your \
+summary. Use \"Review\" for Needs when no further action is required.";
+
 const REST: &str = "\
 Keep working until the task is done; the user may not reply for hours. Do not end your turn \
 to report progress or to wait for a job. Start long jobs with bash run_in_background, or with \
@@ -32,9 +39,15 @@ pub fn system_prompt(workspace: &Workspace) -> String {
     let place = match workspace {
         Workspace::Worktree { .. } => WORKTREE,
         Workspace::Main { .. } => MAIN,
+        Workspace::Folder { .. } => FOLDER,
+    };
+    let rest = if workspace.is_folder() {
+        REST.replace("Review and merge", "Review")
+    } else {
+        REST.to_string()
     };
     format!(
-        "You are running inside pi-desk, a desktop inbox for parallel Pi agents. {place}\n\n{REST}"
+        "You are running inside pi-desk, a desktop inbox for parallel Pi agents. {place}\n\n{rest}"
     )
 }
 

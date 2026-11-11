@@ -267,6 +267,7 @@ pub fn view(app: &App) -> El {
                             Workspace::Main { .. } => {
                                 format!("{} (main checkout)", agent.base_branch)
                             }
+                            Workspace::Folder { .. } => "Folder (no Git)".into(),
                         },
                         size::CAPTION,
                         P.faint,
@@ -399,6 +400,7 @@ pub fn view(app: &App) -> El {
     }
 
     let options = choices(agent);
+    let mut question_choices = None;
     if !options.is_empty() {
         let mut list = col().key("choices").w_full().gap(6.0);
         for (index, choice) in options.iter().enumerate().take(9) {
@@ -441,11 +443,27 @@ pub fn view(app: &App) -> El {
             }
             list = list.child(line);
         }
-        body = body.child(list);
+        if agent.status == Status::Question {
+            question_choices = Some(
+                col()
+                    .key("question-choices")
+                    .w_full()
+                    .max_h(240.0)
+                    .min_h(60.0)
+                    .shrink()
+                    .scroll(ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .scroll_edge_fade(8.0)
+                    .child(list.px(20.0).py(8.0)),
+            );
+        } else {
+            body = body.child(list);
+        }
     }
 
-    // The reply box and actions stay pinned below the scrolling content, so a
-    // long goal, question, or choice list cannot push them out of view.
+    // Question choices and reply controls stay outside the message scroll.
+    // Long choices scroll independently, so the question cannot hide them.
     let footer = if app.replying {
         let placeholder = match agent.status {
             Status::Question => "Answer in your own words",
@@ -488,6 +506,7 @@ pub fn view(app: &App) -> El {
                 .scroll_edge_fade(12.0)
                 .child(body.padding(20.0).pb(12.0)),
         )
+        .children(question_choices)
         .child(
             col()
                 .key("card-footer")

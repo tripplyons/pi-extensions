@@ -82,6 +82,7 @@ mod tests {
                 id: "p".into(),
                 name: "Repo".into(),
                 path: "/tmp/repo".into(),
+                kind: Default::default(),
             }],
             agents: vec![],
             settings: Settings {

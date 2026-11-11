@@ -74,7 +74,7 @@ pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
     let mut holders: HashMap<&str, &str> = state
         .agents
         .iter()
-        .filter(|agent| agent.workspace.is_main() && agent.started && !agent.status.is_done())
+        .filter(|agent| agent.workspace.is_direct() && agent.started && !agent.status.is_done())
         .map(|agent| (agent.project_id.as_str(), agent.id.as_str()))
         .collect();
     let mut queued: Vec<&Agent> = state
@@ -86,7 +86,7 @@ pub fn to_start(state: &State, running: usize, at: Timestamp) -> Vec<String> {
     queued
         .into_iter()
         .filter(|agent| {
-            if !agent.workspace.is_main() {
+            if !agent.workspace.is_direct() {
                 return true;
             }
             let holder = holders
@@ -137,11 +137,13 @@ pub(crate) mod tests {
                     id: "first".into(),
                     name: "First".into(),
                     path: "/a".into(),
+                    kind: Default::default(),
                 },
                 Project {
                     id: "second".into(),
                     name: "Second".into(),
                     path: "/b".into(),
+                    kind: Default::default(),
                 },
             ],
             agents,
