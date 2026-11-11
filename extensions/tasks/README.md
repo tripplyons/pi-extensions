@@ -17,9 +17,7 @@ bash command="npm run build" timeout=3600
 `run_in_background: true` returns the task ID immediately. Wait for a task
 with `sleep`, and query, read, or stop it with `task_query`, `task_output`, and
 `task_stop`. Expiry and stop terminate the process group. Nonzero exits fail the
-task, including Pi 1.0's non-throwing Bash results. The [Python tool](../python)
-uses this same runner for inline uv scripts and returns task IDs immediately.
-Failed foreground commands
+task, including Pi 1.0's non-throwing Bash results. Failed foreground commands
 return the native stdout/stderr, exit status, truncation metadata, and full-output
 path when present. Task failure tracking does not replace those diagnostics with
 an exit-code-only error.
@@ -104,10 +102,44 @@ unobserved completion still starts a new turn.
 
 When run through T3 Code's Pi provider, live background tasks keep the thread
 marked as running after Pi's foreground turn ends. This includes explicit
-background Bash, auto-promoted commands, and Python tasks. Completion or stop
+background Bash and auto-promoted commands. Completion or stop
 clears the task without waiting for its notification to reach an idle agent.
 Update both T3 Code and these extensions, then restart the Pi provider session
 to load the reporting bridge.
+
+## Interactive input
+
+Commands read an empty stdin by default. Pass `stdin: true` to `bash` to connect
+stdin to a pipe instead, then send text with `task_input`:
+
+```text
+bash command="stockfish" stdin=true run_in_background=true
+task_input task_id=<id> text="position startpos moves e2e4\ngo depth 12\n" wait_seconds=3
+task_input task_id=<id> text="quit\n" eof=true
+```
+
+`task_input` writes the text, then waits up to `wait_seconds` (0 to 60, default
+2) or until the task ends. It returns the bytes written, whether stdin is
+closed, and new output from the automatic `task_output` cursor. `eof: true`
+closes stdin after the write, so a program that reads to end of input can
+finish. A task started without `stdin: true` rejects input. If the process does
+not read and the pipe fills, the call reports how many bytes it wrote.
+
+The pipe is a named FIFO in the task directory. The runner holds it open, so
+the shell never blocks when it opens stdin, and the reader sees end of input
+only after `eof`. stdin is not a terminal. A program that buffers its output
+when not on a terminal may need an unbuffered flag, such as `python -u`, or a
+pseudo-terminal wrapper, such as `script`.
+
+## Long jobs
+
+The `bash` description tells the model to estimate a long job's run time and
+try a small case first, and to run servers and interactive programs in the
+background. The `sleep` description tells it to read `task_output` between
+sleeps and stop a job that is not progressing at the estimated rate, instead
+of waiting for the deadline. In the FrontierHarness Eval live run (November
+2026), most of stock Pi's pass-rate gap to Codex CLI came from agent timeouts
+on long or interactive tasks.
 
 ## Opt-in pipeline failure detection
 

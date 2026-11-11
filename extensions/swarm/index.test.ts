@@ -36,6 +36,31 @@ for (const objective of [undefined, " \t ", "  Build the feature  "]) {
   });
 }
 
+test("swarm tools stay inactive until /swarm:start and follow the restored identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-swarm-tools-"));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+  const h = harness(); h.pi.registerTool({ name: "read" }); install(h.pi);
+  const swarmActive = () => [...h.active].filter(name => name.startsWith("swarm_"));
+  try {
+    await h.emit("session_start");
+    expect(swarmActive()).toEqual([]);
+    expect(h.active.has("read")).toBe(true);
+    await h.command("swarm:start", "Build the feature");
+    expect(swarmActive().sort()).toEqual([...h.tools.keys()].filter(name => name.startsWith("swarm_")).sort());
+    expect(h.active.has("read")).toBe(true);
+    h.pi.setActiveTools(["read"]);
+    await h.emit("session_start");
+    expect(swarmActive().length).toBeGreaterThan(20);
+    await h.call("swarm_clear", {});
+    expect(swarmActive()).toEqual([]);
+    expect(h.active.has("read")).toBe(true);
+  } finally {
+    await h.emit("session_shutdown");
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("publishes active swarm descendants including reviews, not the root or terminal workers", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-swarm-background-"));
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;

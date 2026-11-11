@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -12,10 +13,11 @@ import { renderResult, toolCall } from "../../lib/tool-preview.ts";
 export const taskKey = "pi:minimax-task";
 export const taskStatuses = ["queued", "running", "stopping", "succeeded", "failed", "canceled", "lost"] as const;
 type Status = typeof taskStatuses[number];
-type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string; deadline_at?: string; last_output_at?: string; pipefail?: boolean };
-type Running = { record: Record; controller: AbortController; done: Promise<void>; output?: Awaited<ReturnType<ReturnType<typeof createBashTool>["execute"]>>; background: boolean; error?: Error };
+type Record = { task_id: string; command: string; cwd: string; status: Status; created_at: string; finished_at?: string; error?: string; exit_code?: number | null; reason?: string; deadline_at?: string; last_output_at?: string; pipefail?: boolean; stdin?: boolean };
+type Running = { record: Record; controller: AbortController; done: Promise<void>; output?: Awaited<ReturnType<ReturnType<typeof createBashTool>["execute"]>>; background: boolean; error?: Error; stdinFd?: number };
 export const promotionMs = 5_000;
 export const maxSleepSeconds = 1800;
+export const maxInputWaitSeconds = 60;
 export function backgroundTimeout(timeout?: number) {
   return timeout === undefined || !Number.isFinite(timeout) || timeout <= 0 ? 1800 : Math.min(timeout, 2147483.647);
 }
@@ -191,16 +193,32 @@ export class Tasks {
         truncatedBy: limit as "lines" | "bytes", outputLines, outputBytes: preview.next_offset, lastLinePartial } },
     };
   }
-  async run(cwd: string, args: { command: string; timeout?: number; run_in_background?: boolean; pipefail?: boolean }, signal: AbortSignal | undefined, started: (id: string) => void, completed: (id: string) => void, steering?: AbortSignal) {
+  async run(cwd: string, args: { command: string; timeout?: number; run_in_background?: boolean; pipefail?: boolean; stdin?: boolean }, signal: AbortSignal | undefined, started: (id: string) => void, completed: (id: string) => void, steering?: AbortSignal) {
     signal?.throwIfAborted();
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const fd = openSync(this.path(id, "output"), "wx", 0o600);
     // Every command can outlive its first five seconds, so all share one deadline rule.
     const timeout = backgroundTimeout(args.timeout);
-    const record: Record = { task_id: id, command: args.command, cwd, status: "running", created_at: new Date().toISOString(), deadline_at: new Date(Date.now() + timeout * 1000).toISOString(), ...(args.pipefail ? { pipefail: true } : {}) };
-    try { this.save(record); started(id); } catch (error) { closeSync(fd); throw error; }
-    const task: Running = { record, controller: new AbortController(), done: Promise.resolve(), background: args.run_in_background === true };
+    const record: Record = { task_id: id, command: args.command, cwd, status: "running", created_at: new Date().toISOString(), deadline_at: new Date(Date.now() + timeout * 1000).toISOString(), ...(args.pipefail ? { pipefail: true } : {}), ...(args.stdin ? { stdin: true } : {}) };
+    // stdin=true connects the command to a FIFO. The runner holds it open read-write, so the
+    // shell's open never blocks and the reader sees EOF only after task_input closes it.
+    const fifo = args.stdin ? this.path(id, "stdin") : undefined;
+    let stdinFd: number | undefined;
+    try {
+      if (fifo) {
+        const made = spawnSync("mkfifo", ["-m", "600", fifo]);
+        if (made.status !== 0) throw new Error(`Cannot create stdin pipe: ${made.stderr?.toString().trim() || made.error?.message || `mkfifo exited with ${made.status}`}`);
+        stdinFd = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+      }
+      this.save(record); started(id);
+    } catch (error) {
+      closeSync(fd);
+      if (stdinFd !== undefined) closeSync(stdinFd);
+      if (fifo) rmSync(fifo, { force: true });
+      throw error;
+    }
+    const task: Running = { record, controller: new AbortController(), done: Promise.resolve(), background: args.run_in_background === true, stdinFd };
     this.running.set(id, task);
     let storageError: Error | undefined;
     // The shell leads its own process group. Recording its PID shows whether
@@ -208,7 +226,9 @@ export class Tasks {
     // first line, so Bash error line numbers stay unchanged.
     const groupFile = this.trackGroups ? this.path(id, "pgid") : undefined;
     const tool = createBashTool(cwd, { commandPrefix: args.pipefail ? "set -o pipefail" : undefined, operations: { exec: async (command, directory, options) => {
-      const exit = await this.operations.exec(groupFile ? `printf '%s' "$$" > ${quote(groupFile)} 2>/dev/null; ${command}` : command, directory, { ...options, onData: data => {
+      // The shell removes the FIFO's name once it has opened it, which tells input() the reader is attached.
+      const stdin = fifo ? `exec 0<${quote(fifo)}; rm -f ${quote(fifo)}; ` : "";
+      const exit = await this.operations.exec(`${groupFile ? `printf '%s' "$$" > ${quote(groupFile)} 2>/dev/null; ` : ""}${stdin}${command}`, directory, { ...options, onData: data => {
         try {
           let offset = 0;
           while (offset < data.length) offset += writeSync(fd, data, offset, data.length - offset);
@@ -238,6 +258,8 @@ export class Tasks {
       } finally {
         signal?.removeEventListener("abort", abort);
         closeSync(fd);
+        if (task.stdinFd !== undefined) { closeSync(task.stdinFd); task.stdinFd = undefined; }
+        if (fifo) rmSync(fifo, { force: true });
         record.finished_at = new Date().toISOString();
         try { this.save(record); } catch (error) {
           task.error = new Error(`Cannot save task status: ${error}`);
@@ -276,6 +298,40 @@ export class Tasks {
       task.background = true;
     }
     return result({ task_id: id, status: args.run_in_background ? "started" : "auto_promoted", message: "The command is running in the background. Do not rerun it. Use task_output to read output; unobserved completion will notify the owning conversation." });
+  }
+  /** Writes `text` to a running task's stdin; `eof` then closes it. */
+  async input(id: string, text = "", eof = false) {
+    const task = this.running.get(id);
+    if (!task || terminal(task.record.status)) throw new Error(`Task ${id} is not running`);
+    if (!task.record.stdin) throw new Error("This task has no stdin pipe. Start the command with bash stdin=true to send it input.");
+    if (task.stdinFd === undefined) throw new Error("This task's stdin is already closed");
+    const data = Buffer.from(text);
+    let written = 0;
+    try {
+      while (written < data.length) written += writeSync(task.stdinFd, data, written, data.length - written);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EAGAIN") throw error;
+      throw new Error(`The pipe is full because the process is not reading stdin; wrote ${written} of ${data.length} bytes.`);
+    }
+    if (eof) {
+      // Closing before the shell opens the FIFO would leave its open() waiting for a writer forever.
+      const fifo = this.path(id, "stdin");
+      for (let waited = 0; existsSync(fifo) && waited < 5_000 && !terminal(task.record.status); waited += 20) await new Promise(resolve => setTimeout(resolve, 20));
+      if (task.stdinFd !== undefined) { closeSync(task.stdinFd); task.stdinFd = undefined; }
+    }
+    return { bytes_written: written, stdin_closed: task.stdinFd === undefined };
+  }
+  /** Waits until the task ends, `ms` elapses, or `signal` aborts. */
+  async settle(id: string, ms: number, signal?: AbortSignal) {
+    const task = this.running.get(id);
+    if (!task || ms <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined, abort = () => {};
+    try {
+      await Promise.race([task.done, new Promise<void>(resolve => {
+        timer = setTimeout(resolve, ms); abort = resolve;
+        signal?.addEventListener("abort", abort, { once: true });
+      })]);
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
   }
   async output(id: string, offset: number | undefined, signal?: AbortSignal, sessionId = "") {
     signal?.throwIfAborted();
@@ -431,8 +487,8 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
   };
   pi.registerTool({
     name: "bash", label: "Bash", renderCall: renderCommandCall, renderResult,
-    description: "Execute Bash in the current working directory. A command still running after 5 seconds returns a background task ID for the same process, and processes a command leaves running with & or nohup are tracked until they exit; user steering or a swarm message returns it sooner. Do not rerun a returned task; call sleep to wait for it, then task_output to read it. run_in_background returns the task ID immediately. Every command has a 1800-second default deadline; set timeout for a longer one. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops.",
-    parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Deadline in seconds, default 1800. Non-positive values use 1800; values are capped at 2147483.647. Background promotion keeps the deadline. Expiry kills the process tree." })), run_in_background: Type.Optional(Type.Boolean({ description: "Return the task ID immediately instead of waiting up to 5 seconds." })), pipefail: Type.Optional(Type.Boolean({ description: "Enable set -o pipefail: a pipeline returns the rightmost nonzero exit status, or zero if all commands succeed. Off by default; does not enable set -e or report each command's status." })) }),
+    description: "Execute Bash in the current working directory. A command still running after 5 seconds returns a background task ID for the same process, and processes a command leaves running with & or nohup are tracked until they exit; user steering or a swarm message returns it sooner. Do not rerun a returned task; call sleep to wait for it, then task_output to read it. run_in_background returns the task ID immediately. Every command has a 1800-second default deadline; set timeout for a longer one. Output is bounded to 2000 lines or 50KB; full output is saved. pipefail=true enables Bash pipeline failure detection without enabling errexit. Stopping or timing out a local process does not guarantee that remote work stops. Before a long job, estimate its run time and try a small case first, such as one epoch or a data subset. Run servers and interactive programs in the background. stdin is empty unless stdin=true.",
+    parameters: Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ description: "Deadline in seconds, default 1800. Non-positive values use 1800; values are capped at 2147483.647. Background promotion keeps the deadline. Expiry kills the process tree." })), run_in_background: Type.Optional(Type.Boolean({ description: "Return the task ID immediately instead of waiting up to 5 seconds." })), pipefail: Type.Optional(Type.Boolean({ description: "Enable set -o pipefail: a pipeline returns the rightmost nonzero exit status, or zero if all commands succeed. Off by default; does not enable set -e or report each command's status." })), stdin: Type.Optional(Type.Boolean({ description: "Keep stdin open as a pipe so task_input can write to it, for REPLs, debuggers, engines, and VM consoles. Off by default." })) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); current = ctx;
       try {
@@ -441,7 +497,7 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
     },
   });
   pi.registerTool({ name: "sleep", label: "sleep", renderCall: toolCall("sleep"), renderResult,
-    description: `Wait without polling. Returns early when the user steers, a swarm message, alert or check-in arrives, a background task on this branch finishes, or the last process a Bash command left running (for example with nohup or &) exits; otherwise returns after seconds (1-${maxSleepSeconds}) with a progress snapshot of running tasks. The result names the wake reason and includes completion notices, which replace a separate completion turn. Read finished output with task_output before claiming success; do not call task_output in the same batch as sleep, because batched calls run at once and the read happens before the task finishes. A sleep after a reported completion whose output is still unread returns at once with woke "unread". Sleeping never stops or extends a task. Silence in a snapshot does not prove that a process is stuck.`,
+    description: `Wait without polling. Returns early when the user steers, a swarm message, alert or check-in arrives, a background task on this branch finishes, or the last process a Bash command left running (for example with nohup or &) exits; otherwise returns after seconds (1-${maxSleepSeconds}) with a progress snapshot of running tasks. The result names the wake reason and includes completion notices, which replace a separate completion turn. Read finished output with task_output before claiming success; do not call task_output in the same batch as sleep, because batched calls run at once and the read happens before the task finishes. A sleep after a reported completion whose output is still unread returns at once with woke "unread". Sleeping never stops or extends a task. Silence in a snapshot does not prove that a process is stuck, but read task_output between sleeps: if a job is not progressing at the rate you estimated, stop it with task_stop and change approach instead of waiting for its deadline.`,
     parameters: Type.Object({ seconds: Type.Integer({ minimum: 1, maximum: maxSleepSeconds, description: "Longest wait in seconds. The call returns sooner on a wake event." }) }),
     async execute(_id, args, signal, _update, ctx) {
       check(ctx); signal?.throwIfAborted(); current = ctx;
@@ -506,6 +562,14 @@ export function registerTaskTools(pi: ExtensionAPI, tasks = taskRunner()) {
       run: async (args: { task_id?: string; status?: Status }, _signal: AbortSignal | undefined, ctx: ExtensionContext) => args.task_id ? tasks.query(args.task_id) : ids(ctx).map(id => tasks.query(id)).filter(task => !args.status || task.status === args.status) },
     { name: "task_output", description: "Read output from a background task without waiting. Call sleep to wait for output or completion instead of polling. Returning terminal status acknowledges completion without discarding unread output. Omit offset consistently for an automatic cursor; explicit offsets do not advance it.", parameters: Type.Object({ task_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, not a page number. Use next_offset for incremental reads; 0 replays existing output." })) }),
       run: (args: { task_id: string; offset?: number }, signal: AbortSignal | undefined, ctx: ExtensionContext) => tasks.output(args.task_id, args.offset, signal, ctx.sessionManager.getSessionId()) },
+    { name: "task_input", description: "Write text to the stdin of a running task started with bash stdin=true, such as a REPL, debugger, chess engine, or VM console. End the text with a newline to submit a line. eof=true closes stdin after the write. Then waits up to wait_seconds or until the task ends, and returns new output from the automatic task_output cursor. stdin is a pipe, not a terminal; a program that buffers output off a terminal may need an unbuffered flag such as python -u, or a pseudo-terminal wrapper such as script.", parameters: Type.Object({ task_id: Type.String(), text: Type.Optional(Type.String({ description: "Text to write. Escape sequences are not interpreted; send control characters literally." })), eof: Type.Optional(Type.Boolean({ description: "Close stdin after writing." })), wait_seconds: Type.Optional(Type.Number({ minimum: 0, maximum: maxInputWaitSeconds, description: `Seconds to wait for output before returning, 0-${maxInputWaitSeconds}, default 2.` })) }),
+      run: async (args: { task_id: string; text?: string; eof?: boolean; wait_seconds?: number }, signal: AbortSignal | undefined, ctx: ExtensionContext) => {
+        const wait = args.wait_seconds ?? 2;
+        if (!Number.isFinite(wait) || wait < 0 || wait > maxInputWaitSeconds) throw new Error(`wait_seconds must be between 0 and ${maxInputWaitSeconds}`);
+        const written = await tasks.input(args.task_id, args.text, args.eof);
+        await tasks.settle(args.task_id, wait * 1000, signal);
+        return { ...written, ...await tasks.output(args.task_id, undefined, signal, ctx.sessionManager.getSessionId()) };
+      } },
     { name: "task_stop", description: "Stop a background task by task_id, killing its local process tree. This does not guarantee that remote work stops; track remote IDs and verify remote cleanup separately. Finished tasks are unchanged.", parameters: Type.Object({ task_id: Type.String(), reason: Type.Optional(Type.String()) }),
       run: (args: { task_id: string; reason?: string }) => tasks.stop(args.task_id, args.reason) },
   ];

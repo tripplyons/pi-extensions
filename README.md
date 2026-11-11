@@ -19,8 +19,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [autocomplete](extensions/autocomplete) | Fuzzy command, skill, and file completions |
 | [codemode-timeout](extensions/codemode-timeout) | Five-minute maximum for codemode scripts, including calls without a timeout |
 | [complain](extensions/complain) | Private harness issue records in `~/.pi/agent/complaints` |
-| [tasks](extensions/tasks) | Native Bash with 5-second background promotion, a 30-minute default deadline, a `sleep` tool woken by steering, swarm messages, or task completion, reload-safe tasks, T3 Code running-state reporting, pipeline failure detection, and bounded output |
-| [python](extensions/python) | Inline Python with uv, script-defined dependencies and Python versions, and managed background tasks |
+| [tasks](extensions/tasks) | Native Bash with 5-second background promotion, a 30-minute default deadline, opt-in stdin with `task_input`, a `sleep` tool woken by steering, swarm messages, or task completion, reload-safe tasks, T3 Code running-state reporting, pipeline failure detection, and bounded output |
 | [action-fusion](extensions/action-fusion) | Managed `then_run` commands after edit and write, with background tracking |
 | [observation-pack](extensions/observation-pack) | Large tool results replaced by excerpts after two requests, with `obs_recall` paging |
 | [evidence-preserving-reducer](extensions/evidence-preserving-reducer) | Long build and test logs reduced by GPT 6 Luna to receipts with verified quotes |
@@ -29,6 +28,7 @@ See [the migration notes](docs/pi-1.0.md) for changes and sign-in.
 | [presentation](extensions/presentation) | Compact tool rows with streaming previews, progress, color-matched result ellipses, and expanded output; one-row thinking while collapsed; visible narration and a context footer with session and background activity |
 | [startup-screen](extensions/startup-screen) | PI header and project-only resource lists |
 | [skills](extensions/skills) | Skill-use instructions; native Pi discovery |
+| [verification](extensions/verification) | Finishing rules: check each requirement and run reviewer checks before reporting done |
 | [usage](extensions/usage) | `/usage` plan windows for Claude bridge and legacy Codex, a ChatGPT usage link, and API cost |
 | [models](extensions/models) | Model listing and selection |
 | [lm-studio](extensions/lm-studio) | Local LM Studio provider with model discovery, catalog-based thinking levels, and catalog refresh |

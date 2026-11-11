@@ -19,8 +19,7 @@ function findFd(): string {
   return found;
 }
 
-test.each(["nested tools", "python task", "malformed image", "waiting-approval", "waiting-dependency", "checkpoint-hold"])("pinned Pi codemode safely handles %s without model requests", async (scenario) => {
-  if (scenario === "python task" && !Bun.which("uv")) return;
+test.each(["nested tools", "malformed image", "waiting-approval", "waiting-dependency", "checkpoint-hold"])("pinned Pi codemode safely handles %s without model requests", async (scenario) => {
   const home = await mkdtemp(join(tmpdir(), "pi-codemode-"));
   const held = ["waiting-approval", "waiting-dependency", "checkpoint-hold"].includes(scenario);
   let identity: { run: string; node: string } | undefined;
@@ -35,7 +34,6 @@ text(await tools.swarm_send({to: task.node.parent, kind: "message",
 const results = await Promise.allSettled([
   tools.write({path: "forbidden.txt", content: "must not write"}),
   tools.bash({command: "touch forbidden-bash.txt"}),
-  tools.python({code: '# /// script\\n# requires-python = ">=3.11"\\n# dependencies = []\\n# ///\\nprint("must not run")'}),
   tools.future_tool({}),
 ]);
 for (const result of results) {
@@ -43,22 +41,6 @@ for (const result of results) {
   text(String(result.reason));
 }
 text("held codemode verified");
-`
-    : scenario === "python task"
-    ? `
-const launched = JSON.parse(await tools.python({code: '# /// script\\n# requires-python = ">=3.11"\\n# dependencies = []\\n# ///\\nimport time\\ntime.sleep(0.1)\\nprint("python output verified")'}));
-if (launched.status !== "started" || !launched.task_id || !launched.script_path) throw new Error("No managed Python task: " + JSON.stringify(launched));
-text(launched);
-let output = "", finished = false;
-for (let i = 0; i < 10; i++) {
-  await tools.sleep({seconds: 1});
-  const part = JSON.parse(await tools.task_output({task_id: launched.task_id}));
-  output += part.output;
-  if (part.status === "succeeded") { finished = true; break; }
-  if (["failed", "canceled", "lost"].includes(part.status)) throw new Error(output);
-}
-if (!finished || !output.includes("python output verified")) throw new Error("Python task did not finish: " + output);
-text("python nested task verified");
 `
     : scenario === "nested tools"
     ? 'if (ALL_TOOLS.some(tool => tool.name === "swarm_complete")) throw new Error("Completion must remain a direct model tool"); await tools.write({path: "nested.txt", content: "verified nested tools"}); const values = await Promise.all([tools.read({path: "nested.txt"}), tools.grep({path: "nested.txt", pattern: "verified"}), tools.find({path: ".", pattern: "nested.txt"}), tools.ls({path: "."}), tools.future_tool({})]); for (const value of values) text(value);'
@@ -97,7 +79,8 @@ export default function (pi) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 }],
     streamSimple(model, context) {
       const names = getCurrentTools(context.messages).map(tool => tool.name);
-      if (JSON.stringify(names) !== '["codemode","swarm_complete"]') throw new Error("Unexpected model tools: " + JSON.stringify(names));
+      // Swarm tools stay inactive until a swarm is attached; held workers have one.
+      if (JSON.stringify(names) !== '${held ? '["codemode","swarm_complete"]' : '["codemode"]'}') throw new Error("Unexpected model tools: " + JSON.stringify(names));
       requests++;
       if (requests > 2) throw new Error("Unexpected continuation");
       if (requests === 2) {
@@ -105,8 +88,6 @@ export default function (pi) {
         const scenario = ${JSON.stringify(scenario)};
         if (scenario === "nested tools" && (!JSON.stringify(results).includes("Script completed") || !JSON.stringify(results).includes("verified nested tools") || !JSON.stringify(results).includes("future tool survived")))
           throw new Error("Codemode did not execute the nested tools: " + JSON.stringify(results));
-        if (scenario === "python task" && !JSON.stringify(results).includes("python nested task verified"))
-          throw new Error("Python nested task failed: " + JSON.stringify(results));
         if (${held} && (!JSON.stringify(results).includes("held codemode verified") || !JSON.stringify(results).includes("read during hold")))
           throw new Error("Held codemode did not inspect and reject mutations: " + JSON.stringify(results));
         if (scenario === "malformed image") {

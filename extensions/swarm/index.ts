@@ -277,6 +277,14 @@ export default function install(pi: ExtensionAPI) {
   }
   pi.on("model_select", (event, ctx) => saveCurrent(ctx, event.model));
   pi.on("thinking_level_select", (event, ctx) => saveCurrent(ctx, ctx.model, event.level));
+  // Swarm tools follow the session's swarm identity. setActiveTools replaces the whole set.
+  const swarmTools: string[] = [];
+  const syncTools = () => {
+    const names = new Set(pi.getActiveTools());
+    const before = names.size;
+    for (const name of swarmTools) identity ? names.add(name) : names.delete(name);
+    if (names.size !== before) pi.setActiveTools([...names]);
+  };
   const load = async (_event: unknown, ctx: ExtensionContext) => {
     queuedMessage = undefined;
     currentContext = ctx;
@@ -291,6 +299,7 @@ export default function install(pi: ExtensionAPI) {
     if (identity) {
       await store.recordRuntime(identity.run, identity.node, revision, process.env.PI_SWARM_GENERATION || undefined);
       await saveCurrent(ctx); timer = setInterval(() => void poll(ctx), 1000); timer.unref(); }
+    syncTools();
     await publishBackground(ctx);
     if (view) { if (identity) await show(ctx); else hide(ctx); }
   };
@@ -368,6 +377,7 @@ export default function install(pi: ExtensionAPI) {
     if (identity) throw new Error("A swarm is already associated with this session");
     const run = await store.create(ctx.sessionManager.getSessionId(), ctx.cwd, objective.trim() || "Follow the user's instructions in this session.");
     identity = { run: run.id, node: run.root }; pi.appendEntry(key, identity);
+    syncTools();
     pi.events.emit("pi:swarm-attached", ctx);
     await load({}, ctx); ctx.ui.notify("Swarm activated. Workers start only when spawned.", "info");
   } });
@@ -418,7 +428,9 @@ export default function install(pi: ExtensionAPI) {
   const child = Type.Object({ nodeId: Type.String() });
   function tool(name: string, description: string, parameters: any, execute: (args: any, ctx: ExtensionContext, signal?: AbortSignal) => Promise<unknown>) {
     const completing = name === "swarm_complete";
-    pi.registerTool({ renderCall: toolCall(name), renderResult, name, label: name, description: `${description} Requires user activation through /swarm:start.`, parameters,
+    swarmTools.push(name);
+    // Inactive until a swarm is attached, so ordinary sessions do not send these schemas.
+    pi.registerTool({ renderCall: toolCall(name), renderResult, name, label: name, description: `${description} Requires user activation through /swarm:start.`, parameters, defaultActive: false,
       exposure: completing ? "model-only" : undefined,
       annotations: name === "swarm_inspect" ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } : undefined,
       async execute(_id, args, signal, _update, ctx) {
@@ -599,7 +611,7 @@ export default function install(pi: ExtensionAPI) {
     if (node.id !== run.root) throw new Error("Only root can clear a swarm");
     for (const descendant of descendants(run, run.root)) if (descendant.worktree) await preflightWorktree(descendant.worktree);
     const swarm = await controller(); await swarm.kill(run.id, node.id); await swarm.cleanup(run.id, node.id);
-    await rm(store.path(run.id), { recursive: true }); identity = undefined; pi.appendEntry(key, null);
+    await rm(store.path(run.id), { recursive: true }); identity = undefined; pi.appendEntry(key, null); syncTools();
     if (timer) clearInterval(timer); if (view) hide(ctx); return { cleared: run.id };
   });
 }

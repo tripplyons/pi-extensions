@@ -63,7 +63,7 @@ estimated cost, and extension statuses. The model appears as its family name wit
 reasoning effort and fast mode in parentheses, for example `opus (medium, fast)`
 for `claude-opus-5-5`. The family name drops versions, dates, and the `claude` or
 `gpt` prefix, so `gpt-6.1-sol` shows as `sol`. While the agent runs or this
-session branch has managed background Bash/Python tasks, an ASCII spinner appears
+session branch has managed background Bash tasks, an ASCII spinner appears
 before the folder: `[/]`, `[-]`, `[\]`, `[|]`, advancing every 150 ms. It disappears
 when both are idle. Separate swarm-worker sessions do not keep it active. Task
 snapshots restore background activity after reload and branch changes; footer

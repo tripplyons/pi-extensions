@@ -1,6 +1,9 @@
 # Swarm
 
-`/swarm:start [objective]` activates twenty-one swarm tools. The objective is
+`/swarm:start [objective]` activates twenty-two swarm tools. Until then they are
+inactive, so model requests do not include their schemas. A session that
+resumes an attached swarm, and every worker, activates them at session start;
+`swarm_clear` deactivates them. The objective is
 optional. Without one, it uses "Follow the user's instructions in this session."
 Activation only enables the tools; it does not infer a task from old messages or
 launch workers. An explicit objective still sets the run's shared objective.

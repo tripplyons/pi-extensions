@@ -8,6 +8,7 @@ export function harness() {
   const commands = new Map<string, any>();
   const hooks = new Map<string, Function[]>();
   const entries: any[] = [];
+  const active = new Set<string>();
   const sent: string[] = [];
   const sentMessages: Array<{ message: any; options: any }> = [];
   const ctx: any = {
@@ -18,7 +19,9 @@ export function harness() {
   };
   const pi: any = {
     registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut),
-    registerTool: (tool: any) => tools.set(tool.name, tool),
+    registerTool: (tool: any) => { tools.set(tool.name, tool); if (tool.defaultActive !== false) active.add(tool.name); },
+    getActiveTools: () => [...active],
+    setActiveTools: (names: string[]) => { active.clear(); for (const name of names) if (tools.has(name)) active.add(name); },
     registerToolRenderer: (resolver: any) => toolRenderers.push(resolver),
     registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (name: string, fn: Function) => hooks.set(name, [...(hooks.get(name) ?? []), fn]),
@@ -33,7 +36,7 @@ export function harness() {
     sendMessage: (message: any, options: any) => sentMessages.push({ message, options }),
     sendUserMessage: (message: string) => sent.push(message),
   };
-  return { pi, ctx, tools, toolRenderers, commands, shortcuts, entries, sent, sentMessages,
+  return { pi, ctx, tools, active, toolRenderers, commands, shortcuts, entries, sent, sentMessages,
     async emit(name: string, event: any = {}) { if (name === "before_agent_start") event.systemPromptOptions ??= { sections: {}, promptGuidelines: [] }; const results = []; for (const fn of hooks.get(name) ?? []) results.push(await fn(event, ctx)); return results; },
     call(name: string, args: unknown, signal?: AbortSignal) { return tools.get(name).execute("test-call", args, signal, undefined, ctx); },
     command(name: string, args = "") { return commands.get(name).handler(args, ctx); },

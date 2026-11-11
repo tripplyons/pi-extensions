@@ -647,3 +647,41 @@ test("Pi 1.0 session replacement preserves tasks and rebinds notifications witho
   await other.emit("session_start", { reason: "resume" });
   expect(other.sentMessages).toHaveLength(1);
 });
+
+test("stdin=true lets task_input drive an interactive process and close its input", async () => {
+  const { h } = await taskHarness();
+  const { task_id: id } = (await h.call("bash", { command: "while read line; do echo \"got:$line\"; done; echo done", stdin: true, run_in_background: true })).details;
+  const first = (await h.call("task_input", { task_id: id, text: "e2e4\n", wait_seconds: 0.2 })).details;
+  expect(first).toMatchObject({ task_id: id, bytes_written: 5, stdin_closed: false });
+  for (let i = 0; i < 100 && !first.output.includes("got:e2e4"); i++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    first.output += (await h.call("task_output", { task_id: id })).details.output;
+  }
+  expect(first.output).toContain("got:e2e4\n");
+  const last = (await h.call("task_input", { task_id: id, text: "quit\n", eof: true, wait_seconds: 10 })).details;
+  expect(last).toMatchObject({ bytes_written: 5, stdin_closed: true, status: "succeeded" });
+  expect(last.output).toContain("got:quit\ndone\n");
+});
+
+test("eof sent at once still reaches a shell that has not opened stdin yet", async () => {
+  const { h } = await taskHarness();
+  const { task_id: id } = (await h.call("bash", { command: "cat; echo end", stdin: true, run_in_background: true })).details;
+  const result = (await h.call("task_input", { task_id: id, text: "abc", eof: true, wait_seconds: 10 })).details;
+  expect(result).toMatchObject({ stdin_closed: true, status: "succeeded" });
+  expect(result.output).toBe("abcend\n");
+});
+
+test("task_input explains missing or closed stdin and keeps the default stdin empty", async () => {
+  const { h, tasks } = await taskHarness();
+  const empty = (await h.call("bash", { command: "cat; echo eof" })).content[0].text;
+  expect(empty).toContain("eof");
+  const { task_id: plain } = (await h.call("bash", { command: "sleep 30", run_in_background: true })).details;
+  await expect(h.call("task_input", { task_id: plain, text: "x\n" })).rejects.toThrow("stdin=true");
+  const { task_id: id } = (await h.call("bash", { command: "sleep 30", stdin: true, run_in_background: true })).details;
+  await h.call("task_input", { task_id: id, eof: true, wait_seconds: 0 });
+  await expect(h.call("task_input", { task_id: id, text: "x" })).rejects.toThrow("already closed");
+  await expect(h.call("task_input", { task_id: id, wait_seconds: 61 })).rejects.toThrow("wait_seconds");
+  await tasks.stop(id);
+  await expect(h.call("task_input", { task_id: id, text: "x" })).rejects.toThrow("not running");
+  await expect(readFile(join(tasks.root, `${id}.stdin`))).rejects.toThrow();
+});
